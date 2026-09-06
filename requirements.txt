@@ -1,0 +1,7 @@
+# AI 自动生成小说 - 依赖清单
+# 安装：pip install -r requirements.txt
+#
+# openai 官方 SDK 同时兼容 DeepSeek / 豆包火山方舟 / OpenAI，一个 SDK 覆盖多 Provider
+openai>=1.30.0
+# 配置文件解析（config.yaml）
+PyYAML>=6.0

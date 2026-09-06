@@ -1,0 +1,1067 @@
+# -*- coding: utf-8 -*-
+"""
+小说生成 Web 后端（FastAPI）：多用户 SaaS 版。
+
+相对单用户版的改动：
+1. 用户系统：注册/登录/登出，token 鉴权（SQLite 持久化）
+2. 项目隔离：每个项目归属一个用户，只能看/操作自己的项目（管理员可见全部）
+3. Key 集中管理：LLM API Key 只放服务端环境变量，前端不再需要填 Key
+4. 按单本收费：创建项目时按字数档位从余额扣费，余额不足拒绝
+5. 人工收款：充值由管理员命令行手动加余额（见 webapp/admin_cli.py）
+"""
+from __future__ import annotations
+
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from novel_gen.config import (
+    GENRES,
+    PROVIDER_DEFAULTS,
+    NovelConfig,
+    LLMConfig,
+    SearchConfig,
+    validate_config,
+)
+from novel_gen.export.cover import generate_cover
+from novel_gen.export.book_formats import export_epub, export_docx
+from novel_gen.llm.factory import create_llm
+from novel_gen.pipeline.manager import NovelPipeline
+from novel_gen.store.project import ProjectStore, _safe_name
+
+from . import db
+from . import mailer
+from .logger import get_logger
+from .pricing import FREE_REGISTER_BONUS, price_for, tier_name_for, tiers
+from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
+                       REFERRAL_BONUS, agent_price, round_money)
+
+logger = get_logger("server")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECTS_DIR = BASE_DIR / "projects"
+OUTPUT_DIR = BASE_DIR / "output"
+WEB_DIR = Path(__file__).resolve().parent / "webui"
+
+app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
+
+# 允许前端跨域（前端独立部署时用）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------- 运行中的任务注册表：project_id -> 控制句柄 ----------
+class _RunHandle:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.error: Optional[str] = None
+
+
+_RUNS: dict[str, _RunHandle] = {}
+_LOCK = threading.Lock()
+
+
+# ---------- 请求/响应模型 ----------
+class LLMReq(BaseModel):
+    provider: str = "deepseek"
+    model: str = ""
+    base_url: str = ""
+    temperature: float = 0.8
+    top_p: float = 0.8
+    max_tokens: int = 8000
+
+
+class SearchReq(BaseModel):
+    provider: str = ""      # "" / bocha / serper
+    api_key: str = ""
+
+
+class ProjectCreateReq(BaseModel):
+    title: str = Field(..., min_length=1)
+    genre: str = "玄幻"
+    total_words: int = 100_000
+    chapter_words: int = 2500
+    style: str = ""
+    premise: str = ""
+    background: str = ""
+    hero: str = ""
+    characters: list[str] = []
+    plot_direction: str = ""
+    forbidden: list[str] = []
+    editor_review: bool = True
+    de_ai: bool = True
+    anti_similarity: bool = True
+    confirm: bool = False
+    memory_window: int = 5
+    mode: str = "auto"              # auto=现有工作流；expand=AI扩写（提供大纲/简要内容）
+    expand_input: str = ""          # 扩写模式必填：用户提供的大纲或简要内容
+    llm: LLMReq = Field(default_factory=LLMReq)
+    search: SearchReq = Field(default_factory=SearchReq)
+
+
+class RegisterReq(BaseModel):
+    username: str = Field(..., min_length=1, max_length=20)
+    password: str = Field(..., min_length=4)
+    invite_code: str = ""   # 上级邀请码（选填）
+
+
+class BindReferrerReq(BaseModel):
+    invite_code: str = Field(..., min_length=1)
+
+
+class RechargeAdminReq(BaseModel):
+    amount: float = Field(..., gt=0)
+
+
+class RefundApplyReq(BaseModel):
+    amount: float = Field(..., gt=0)
+    reason: str = ""
+
+
+class RefundHandleReq(BaseModel):
+    action: str  # approve 确认已退 / reject 拒绝
+    admin_note: str = ""
+
+
+class LoginReq(BaseModel):
+    username: str
+    password: str
+
+
+# ---------- 辅助 ----------
+def _cfg_to_dict(cfg: NovelConfig) -> dict:
+    return {
+        "title": cfg.title,
+        "genre": cfg.genre,
+        "total_words": cfg.total_words,
+        "chapter_words": cfg.chapter_words,
+        "num_chapters": cfg.num_chapters,
+        "style": cfg.style,
+        "premise": cfg.premise,
+        "background": cfg.background,
+        "hero": cfg.hero,
+        "characters": list(cfg.characters),
+        "plot_direction": cfg.plot_direction,
+        "forbidden": list(cfg.forbidden),
+        "editor_review": cfg.editor_review,
+        "de_ai": cfg.de_ai,
+        "anti_similarity": cfg.anti_similarity,
+        "confirm": cfg.confirm,
+        "memory_window": cfg.memory_window,
+        "mode": cfg.mode,
+        "expand_input": cfg.expand_input,
+        "llm": {
+            "provider": cfg.llm.provider,
+            "model": cfg.llm.model,
+            "base_url": cfg.llm.base_url,
+            "temperature": cfg.llm.temperature,
+            "top_p": cfg.llm.top_p,
+            "max_tokens": cfg.llm.max_tokens,
+            "has_api_key": bool(cfg.llm.api_key),
+        },
+        "search": {"provider": cfg.search.provider, "has_api_key": bool(cfg.search.api_key)},
+    }
+
+
+def _server_api_key(provider: str) -> str:
+    """从服务端环境变量取 API Key（Key 集中管理，前端不可见）。"""
+    env_key = PROVIDER_DEFAULTS.get(provider, {}).get("env_key", "")
+    return os.environ.get(env_key, "") if env_key else ""
+
+
+def _resolve_llm(provider: str, model: str, base_url: str,
+                 temperature: float, top_p: float, max_tokens: int) -> LLMConfig:
+    """组装 LLMConfig：api_key 一律用服务端环境变量，忽略前端传入。"""
+    return LLMConfig(
+        provider=provider,
+        model=model,
+        api_key=_server_api_key(provider),
+        base_url=base_url,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    )
+
+
+def _find_project(project_id: str) -> ProjectStore:
+    p = PROJECTS_DIR / project_id
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"项目不存在：{project_id}")
+    return ProjectStore.open(p)
+
+
+def _cover_files(store: ProjectStore) -> tuple:
+    """返回 (output 封面路径, 项目内封面路径)。书名固定，路径可预判。"""
+    cfg = store.load_config()
+    filename = f"{_safe_name(cfg.effective_title())}.png"
+    return OUTPUT_DIR / filename, store.dir / filename
+
+
+def _open_pipeline(store: ProjectStore) -> NovelPipeline:
+    cfg = store.load_config()
+    # 若 config.json 未落盘 key（设计如此），从服务端环境变量补齐
+    if cfg.llm.provider != "mock" and not cfg.llm.api_key:
+        cfg.llm.api_key = _server_api_key(cfg.llm.provider)
+    if cfg.search.provider and not cfg.search.api_key:
+        from novel_gen.config import SEARCH_PROVIDER_DEFAULTS
+        cfg.search.api_key = os.environ.get(
+            SEARCH_PROVIDER_DEFAULTS.get(cfg.search.provider, {}).get("env_key", ""), "")
+    llm = create_llm(cfg.llm)
+    return NovelPipeline(cfg, store, llm)
+
+
+# ---------- 鉴权 ----------
+def _require_user(authorization: str = Header(default="")) -> dict:
+    """从 Authorization: Bearer <token> 解析当前用户。"""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="请先登录")
+    token = authorization[7:].strip()
+    uid = db.get_session_user(token)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    user = db.get_user(uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    return user
+
+
+def _require_admin(user: dict = Depends(_require_user)) -> dict:
+    """管理后台专用：仅站长（is_admin）可访问。"""
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="仅站长可访问管理后台")
+    return user
+
+
+def _check_project_access(project_id: str, user: dict) -> None:
+    """校验当前用户是否有权访问该项目（管理员可访问全部）。"""
+    if user["is_admin"]:
+        return
+    owner = db.project_owner(project_id)
+    if owner is None:
+        # 未登记归属的历史项目：普通用户无权访问
+        raise HTTPException(status_code=403, detail="无权访问该项目")
+    if owner != user["id"]:
+        raise HTTPException(status_code=403, detail="无权访问该项目")
+
+
+def _assign_legacy_projects() -> None:
+    """把磁盘上未登记归属的历史项目全部分配给管理员。"""
+    admin = db.get_user_by_name("admin")
+    if not admin:
+        return
+    if not PROJECTS_DIR.exists():
+        return
+    owners = db.all_projects()
+    for d in PROJECTS_DIR.iterdir():
+        if d.is_dir() and d.name not in owners:
+            db.claim_project(d.name, admin["id"])
+
+
+# ---------- 项目列表（按用户过滤） ----------
+def _list_projects(user: dict) -> list[dict]:
+    if not PROJECTS_DIR.exists():
+        return []
+    allowed = None if user["is_admin"] else db.list_user_projects(user["id"])
+    items = []
+    for d in sorted(PROJECTS_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        if allowed is not None and d.name not in allowed:
+            continue
+        try:
+            store = ProjectStore.open(d)
+            cfg = store.load_config()
+            state = store.load_state()
+            outline = store.load_outline()
+            chapters = store.list_chapters()
+            total = len(outline.chapters) if outline else cfg.num_chapters
+            items.append({
+                "id": d.name,
+                "title": cfg.effective_title(),
+                "genre": cfg.genre,
+                "total_words": cfg.total_words,
+                "created": d.stat().st_mtime,
+                "phase": state.phase,
+                "chapters_done": len(chapters),
+                "chapters_total": total,
+                "running": d.name in _RUNS,
+                "has_error": bool(_RUNS.get(d.name) and _RUNS[d.name].error),
+            })
+        except Exception:
+            continue
+    return items
+
+
+def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
+    """后台线程：从断点续跑整条流水线，结束后自动导出。
+
+    手动编排阶段并在每章之间检查停止标记，使「停止」真实生效。
+    start_from > 0 时：跳过 research/outline/world，直接从 start_from 章开始生成
+    （用于「从某章重新生成」，此时这些前置产物已存在）。
+    """
+    cfg = store.load_config()
+    logger.info("生成线程启动: project=%s title=%s start_from=%d",
+                store.dir.name, cfg.effective_title(), start_from)
+    try:
+        pipeline = _open_pipeline(store)
+
+        if start_from > 0:
+            done = start_from - 1
+        else:
+            pipeline.run_research()
+            if handle.stop_event.is_set():
+                logger.info("生成停止: project=%s 阶段=research", store.dir.name)
+                return
+            pipeline.run_outline()
+            if handle.stop_event.is_set():
+                logger.info("生成停止: project=%s 阶段=outline", store.dir.name)
+                return
+            pipeline.run_editor_review()
+            if handle.stop_event.is_set():
+                logger.info("生成停止: project=%s 阶段=editor_review", store.dir.name)
+                return
+            pipeline.run_world()
+            if handle.stop_event.is_set():
+                logger.info("生成停止: project=%s 阶段=world", store.dir.name)
+                return
+            done, _total = pipeline.progress()
+
+        done, total = pipeline.progress()
+        for no in range(done + 1, total + 1):
+            if handle.stop_event.is_set():
+                print(f"[web] 收到停止请求，第 {no} 章暂停")
+                logger.info("生成停止: project=%s 阶段=writing 第 %d 章暂停", store.dir.name, no)
+                break
+            pipeline.write_chapter(no, silent=False)
+
+        # 未停止则导出成品
+        if not handle.stop_event.is_set():
+            pipeline.export()
+        logger.info("生成完成: project=%s title=%s", store.dir.name, cfg.effective_title())
+    except Exception as exc:  # noqa: BLE001
+        handle.error = f"{type(exc).__name__}: {exc}"
+        logger.exception("生成失败: project=%s title=%s error=%s",
+                         store.dir.name, cfg.effective_title(), exc)
+    finally:
+        with _LOCK:
+            _RUNS.pop(store.dir.name, None)
+        logger.info("生成线程结束: project=%s", store.dir.name)
+
+
+# ---------- 基础 ----------
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+@app.get("/api/genres")
+def genres():
+    return {"genres": GENRES}
+
+
+@app.get("/api/pricing")
+def pricing():
+    return {"tiers": tiers(), "register_bonus": FREE_REGISTER_BONUS}
+
+
+# ---------- 用户 ----------
+@app.post("/api/register", status_code=201)
+def register(req: RegisterReq):
+    # 第一个注册的用户自动成为管理员（站长）
+    is_first = db.get_user(1) is None
+    ok, msg = db.create_user(req.username, req.password,
+                             is_admin=is_first, invite_code=req.invite_code)
+    if not ok:
+        logger.warning("注册失败: username=%s reason=%s", req.username, msg)
+        raise HTTPException(status_code=400, detail=msg)
+    user = db.get_user_by_name(req.username)
+    # 注册赠送余额
+    if FREE_REGISTER_BONUS > 0:
+        db.change_balance(user["id"], FREE_REGISTER_BONUS, "注册赠送")
+        user = db.get_user(user["id"])  # 重新取余额快照
+    # 第一个管理员：把历史项目分配给他
+    if is_first:
+        _assign_legacy_projects()
+    # 拉新奖励：注册填了上级邀请码且上级是代理 → 给上级发奖励（默认关闭）
+    if REFERRAL_BONUS > 0 and user.get("referrer_id"):
+        ref = db.get_user(user["referrer_id"])
+        if ref and ref.get("is_agent"):
+            db.pay_commission(ref["id"], user["id"], REFERRAL_BONUS, "register",
+                              note=f"拉新奖励（{user['username']} 注册）")
+    token = db.create_session(user["id"])
+    logger.info("注册成功: uid=%d username=%s is_admin=%d referrer=%s",
+                user["id"], user["username"], int(is_first), user.get("referrer_id"))
+    return {"token": token, "user": _public_user(user), "note": msg if msg != "ok" else ""}
+
+
+def _public_user(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "balance": user["balance"],
+        "is_admin": bool(user["is_admin"]),
+        "is_agent": bool(user.get("is_agent", 0)),
+        "agent_discount": float(user.get("agent_discount", 1.0)),
+        "invite_code": user.get("invite_code") or db.get_invite_code(user["id"]),
+        "referrer_id": user.get("referrer_id"),
+    }
+
+
+@app.post("/api/login")
+def login(req: LoginReq):
+    uid = db.authenticate(req.username, req.password)
+    if uid is None:
+        logger.warning("登录失败: username=%s", req.username)
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    user = db.get_user(uid)
+    token = db.create_session(uid)
+    logger.info("登录成功: uid=%d username=%s", uid, user["username"])
+    return {"token": token, "user": _public_user(user)}
+
+
+@app.post("/api/logout")
+def logout(authorization: str = Header(default="")):
+    if authorization.startswith("Bearer "):
+        db.delete_session(authorization[7:].strip())
+        logger.info("退出登录: token 已注销")
+    return {"ok": True}
+
+
+@app.post("/api/admin/login")
+def admin_login(req: LoginReq):
+    """管理后台登录：仅站长（is_admin=1）可登录，普通用户返回 403。"""
+    uid = db.authenticate(req.username, req.password)
+    if uid is None:
+        logger.warning("管理登录失败: username=%s", req.username)
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    user = db.get_user(uid)
+    if not user["is_admin"]:
+        logger.warning("非管理员尝试登录管理后台: uid=%d username=%s", uid, user["username"])
+        raise HTTPException(status_code=403, detail="非管理员账号无权登录管理后台")
+    token = db.create_session(uid)
+    logger.info("管理后台登录成功: uid=%d username=%s", uid, user["username"])
+    return {"token": token, "user": _public_user(user)}
+
+
+# ---------- 管理后台 ----------
+@app.get("/api/admin/stats")
+def admin_stats(user: dict = Depends(_require_admin)):
+    return {"stats": db.admin_stats()}
+
+
+@app.get("/api/admin/users")
+def admin_users(user: dict = Depends(_require_admin)):
+    return {"users": db.list_users_admin()}
+
+
+@app.post("/api/admin/users/{user_id}/recharge")
+def admin_recharge(user_id: int, req: RechargeAdminReq, user: dict = Depends(_require_admin)):
+    """人工收款后给用户充值（amount > 0）。"""
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    new_balance = db.change_balance(user_id, req.amount, f"管理员手动充值 {req.amount:.1f}")
+    logger.info("管理员充值: by=%s to_uid=%d to=%s amount=%.2f new_balance=%.2f",
+                user["username"], user_id, target["username"], req.amount, new_balance)
+    # 充值返佣（仅当配置为 recharge 基数时触发）
+    if req.amount > 0 and target.get("referrer_id"):
+        ref = db.get_user(target["referrer_id"])
+        if ref and ref.get("is_agent") and COMMISSION_BASE == "recharge":
+            commission = round_money(req.amount * COMMISSION_RATE)
+            db.pay_commission(ref["id"], user_id, commission, "recharge",
+                              note=f"下级 {target['username']} 充值返佣")
+            logger.info("充值返佣: agent_uid=%d buyer_uid=%d amount=%.2f", ref["id"], user_id, commission)
+    return {"ok": True, "balance": new_balance}
+
+
+class AgentSetReq(BaseModel):
+    discount: float = 0.8
+
+
+@app.post("/api/admin/users/{user_id}/agent")
+def admin_set_agent(user_id: int, req: AgentSetReq, user: dict = Depends(_require_admin)):
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    db.set_agent(user_id, req.discount)
+    logger.info("设为代理: by=%s target_uid=%d target=%s discount=%.2f",
+                user["username"], user_id, target["username"], req.discount)
+    return {"ok": True, "username": target["username"], "discount": req.discount}
+
+
+@app.post("/api/admin/users/{user_id}/unagent")
+def admin_unset_agent(user_id: int, user: dict = Depends(_require_admin)):
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    db.unset_agent(user_id)
+    logger.info("取消代理: by=%s target_uid=%d target=%s", user["username"], user_id, target["username"])
+    return {"ok": True, "username": target["username"]}
+
+
+@app.get("/api/admin/users/{user_id}/downline")
+def admin_downline(user_id: int, user: dict = Depends(_require_admin)):
+    return {"downline": db.list_downline(user_id, limit=200)}
+
+
+@app.get("/api/admin/users/{user_id}/commissions")
+def admin_commissions(user_id: int, user: dict = Depends(_require_admin)):
+    return {"commissions": db.list_commissions(user_id, limit=200),
+            "total": db.sum_commission(user_id)}
+
+
+@app.get("/api/admin/recharges")
+def admin_recharges(user: dict = Depends(_require_admin)):
+    rows = db.list_recharges(None, limit=200)
+    names = {u["id"]: u["username"] for u in db.list_users_admin()}
+    return {"recharges": [{**r, "username": names.get(r["user_id"], f"#{r['user_id']}")} for r in rows]}
+
+
+@app.get("/api/admin/projects")
+def admin_projects(user: dict = Depends(_require_admin)):
+    """所有项目总览：标题 / 归属用户 / 题材 / 进度 / 状态。"""
+    owners = {p["project_id"]: p["username"] for p in db.all_projects_with_owner()}
+    items = []
+    if PROJECTS_DIR.exists():
+        for d in sorted(PROJECTS_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if not d.is_dir():
+                continue
+            try:
+                store = ProjectStore.open(d)
+                cfg = store.load_config()
+                state = store.load_state()
+                outline = store.load_outline()
+                chapters = store.list_chapters()
+                total = len(outline.chapters) if outline else cfg.num_chapters
+                items.append({
+                    "id": d.name,
+                    "title": cfg.effective_title(),
+                    "genre": cfg.genre,
+                    "owner": owners.get(d.name, "（无归属）"),
+                    "created": d.stat().st_mtime,
+                    "phase": state.phase,
+                    "chapters_done": len(chapters),
+                    "chapters_total": total,
+                    "running": d.name in _RUNS,
+                })
+            except Exception:
+                continue
+    return {"projects": items}
+
+
+@app.get("/api/admin/settings")
+def admin_settings(user: dict = Depends(_require_admin)):
+    """系统参数（只读展示）：定价档位 + 返佣规则 + 健康状态。"""
+    import time as _time
+    return {
+        "tiers": tiers(),
+        "register_bonus": FREE_REGISTER_BONUS,
+        "agent_discount": AGENT_DISCOUNT,
+        "commission_rate": COMMISSION_RATE,
+        "commission_base": COMMISSION_BASE,
+        "referral_bonus": REFERRAL_BONUS,
+        "server_time": _time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "2.1.0",
+        "mail_configured": mailer.is_configured(),
+    }
+
+
+@app.get("/api/admin/logs")
+def admin_logs(lines: int = 200, user: dict = Depends(_require_admin)):
+    """读取系统日志尾部（供站长在后台排查问题）。"""
+    from .logger import LOG_FILE, read_logs
+    data = read_logs(lines)
+    return {"logs": data, "log_file": str(LOG_FILE)}
+
+
+# ---------- 退款管理（站长侧） ----------
+@app.get("/api/admin/refunds")
+def admin_refunds(status: str = "", user: dict = Depends(_require_admin)):
+    """退款申请列表。status 可传 pending/approved/rejected，默认全部。"""
+    rows = db.list_refund_requests(None, status or None)
+    names = {u["id"]: u["username"] for u in db.list_users_admin()}
+    return {"refunds": [{**r, "username": names.get(r["user_id"], f"#{r['user_id']}")} for r in rows],
+            "mail_configured": mailer.is_configured()}
+
+
+@app.post("/api/admin/refunds/{request_id}/handle")
+def admin_handle_refund(request_id: int, req: RefundHandleReq,
+                        user: dict = Depends(_require_admin)):
+    """处理退款：approve=确认已线下转账并扣余额；reject=拒绝。"""
+    if req.action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action 只能是 approve 或 reject")
+    ok, why = db.handle_refund(request_id, req.action, req.admin_note)
+    if not ok:
+        raise HTTPException(status_code=400, detail=why)
+    logger.info("退款处理: request_id=%d action=%s by_admin=%s note=%s",
+                request_id, req.action, user["username"], req.admin_note)
+    return {"ok": True, "message": why}
+
+
+@app.get("/api/me")
+def me(user: dict = Depends(_require_user)):
+    return {"user": _public_user(user)}
+
+
+@app.get("/api/me/recharges")
+def my_recharges(user: dict = Depends(_require_user)):
+    return {"recharges": db.list_recharges(user["id"])}
+
+
+# ---------- 代理中心 ----------
+@app.get("/api/me/referral")
+def my_referral(user: dict = Depends(_require_user)):
+    """我的推广信息：邀请码、推广链接、下级数、累计返佣、返佣明细、上级。"""
+    invite_code = db.get_invite_code(user["id"])
+    downline = db.list_downline(user["id"])
+    commissions = db.list_commissions(user["id"])
+    ref = db.get_referrer(user["id"])
+    return {
+        "invite_code": invite_code,
+        "invite_link": f"/?invite={invite_code}",
+        "is_agent": bool(user.get("is_agent")),
+        "agent_discount": float(user.get("agent_discount", 1.0)),
+        "commission_rate": COMMISSION_RATE,
+        "referral_bonus": REFERRAL_BONUS,
+        "referrer": ref,
+        "downline_count": len(downline),
+        "downline": [{"id": r["id"], "username": r["username"], "created_at": r["created_at"]}
+                     for r in downline[:50]],
+        "total_commission": db.sum_commission(user["id"]),
+        "commissions": [
+            {"id": c["id"], "amount": c["amount"], "kind": c["kind"],
+             "project_id": c["project_id"], "note": c["note"], "created_at": c["created_at"]}
+            for c in commissions[:50]
+        ],
+    }
+
+
+@app.post("/api/me/bind-referrer")
+def bind_referrer(req: BindReferrerReq, user: dict = Depends(_require_user)):
+    """注册时没填邀请码的用户，可在首次使用前补绑上级。"""
+    if user.get("referrer_id"):
+        raise HTTPException(status_code=400, detail="你已经绑定了上级，无法更换")
+    ok, why = db.bind_referrer(user["id"], req.invite_code)
+    if not ok:
+        raise HTTPException(status_code=400, detail=why)
+    return {"ok": True, "message": "绑定成功"}
+
+
+# ---------- 退款申请（用户侧） ----------
+@app.get("/api/me/refundable")
+def me_refundable(user: dict = Depends(_require_user)):
+    """可退金额（仅含充值部分，赠金/返佣不可退）。"""
+    return {"refundable": db.refundable_amount(user["id"])}
+
+
+@app.post("/api/me/refund-request")
+def me_refund_request(req: RefundApplyReq, user: dict = Depends(_require_user)):
+    """提交退款申请 → 入库 + 邮件通知站长。"""
+    ok, why = db.create_refund_request(user["id"], req.amount, req.reason)
+    if not ok:
+        logger.warning("退款申请被拒: uid=%d amount=%.2f reason=%s", user["id"], req.amount, why)
+        raise HTTPException(status_code=400, detail=why)
+    # 邮件通知站长（失败不影响申请入库）
+    mail_ok = mailer.notify_refund_request(
+        user["username"], user["id"], req.amount, req.reason,
+        admin_url="http://127.0.0.1:8000/admin.html",
+    )
+    logger.info("退款申请提交: uid=%d username=%s amount=%.2f email_sent=%s",
+                user["id"], user["username"], req.amount, mail_ok)
+    return {"ok": True, "message": "退款申请已提交，站长处理后到账",
+            "email_sent": mail_ok}
+
+
+@app.get("/api/me/refund-requests")
+def me_refund_requests(user: dict = Depends(_require_user)):
+    return {"requests": db.list_refund_requests(user["id"])}
+
+
+# ---------- 项目 ----------
+@app.get("/api/projects")
+def projects(user: dict = Depends(_require_user)):
+    return {"projects": _list_projects(user)}
+
+
+@app.post("/api/projects", status_code=201)
+def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
+    cfg = NovelConfig(
+        title=req.title,
+        genre=req.genre,
+        total_words=req.total_words,
+        chapter_words=req.chapter_words,
+        style=req.style,
+        premise=req.premise,
+        background=req.background,
+        hero=req.hero,
+        characters=list(req.characters),
+        plot_direction=req.plot_direction,
+        forbidden=list(req.forbidden),
+        editor_review=req.editor_review,
+        de_ai=req.de_ai,
+        anti_similarity=req.anti_similarity,
+        confirm=req.confirm,
+        memory_window=req.memory_window,
+        mode=req.mode,
+        expand_input=req.expand_input,
+        llm=_resolve_llm(req.llm.provider, req.llm.model, req.llm.base_url,
+                         req.llm.temperature, req.llm.top_p, req.llm.max_tokens),
+        search=SearchConfig(
+            provider=req.search.provider,
+            api_key=_server_api_key(req.search.provider)
+            if req.search.provider else "",
+            count=5,
+        ),
+    )
+
+    # 配置校验（非硬约束问题仅警告）
+    issues = validate_config(cfg)
+    real_issues = [i for i in issues if "硬约束" not in i]
+
+    # 扩写模式校验：必须提供大纲/简要内容
+    if req.mode == "expand" and not req.expand_input.strip():
+        raise HTTPException(status_code=400, detail="AI 扩写模式必须填写『大纲或简要内容』")
+
+    # 按单本收费：创建项目即扣费（代理按折扣价）
+    base_price = price_for(cfg.total_words)
+    discount = float(user.get("agent_discount", 1.0)) if user.get("is_agent") else 1.0
+    price = agent_price(base_price, discount)
+    if user["balance"] < price:
+        logger.warning("创建项目失败(余额不足): uid=%d title=%s price=%.2f balance=%.2f",
+                       user["id"], cfg.effective_title(), price, user["balance"])
+        raise HTTPException(
+            status_code=400,
+            detail=f"余额不足：本书定价 {price:.1f} 元（{tier_name_for(cfg.total_words)}"
+                   f"{'，代理价' + str(int(discount * 100)) + ' 折' if discount < 1 else ''}），"
+                   f"当前余额 {user['balance']:.1f} 元。请先充值。",
+        )
+
+    store = ProjectStore.create(PROJECTS_DIR, cfg)
+    db.claim_project(store.dir.name, user["id"])
+    db.change_balance(user["id"], -price, f"创建《{cfg.effective_title()}》（{tier_name_for(cfg.total_words)}）")
+    logger.info("创建项目: uid=%d project=%s title=%s mode=%s price=%.2f(原价%.2f) words=%d",
+                user["id"], store.dir.name, cfg.effective_title(), cfg.mode,
+                price, base_price, cfg.total_words)
+
+    # 消费返佣：上级是代理时按实付金额给上级返佣（默认开启）
+    if COMMISSION_BASE == "consume" and user.get("referrer_id"):
+        ref = db.get_user(user["referrer_id"])
+        if ref and ref.get("is_agent"):
+            commission = round_money(price * COMMISSION_RATE)
+            db.pay_commission(
+                ref["id"], user["id"], commission, "consume",
+                project_id=store.dir.name,
+                note=f"下级 {user['username']} 消费《{cfg.effective_title()}》",
+            )
+            logger.info("消费返佣: agent_uid=%d buyer_uid=%d amount=%.2f project=%s",
+                        ref["id"], user["id"], commission, store.dir.name)
+    return {
+        "id": store.dir.name,
+        "title": cfg.effective_title(),
+        "price": price,
+        "base_price": base_price,
+        "balance": db.get_user(user["id"])["balance"],
+        "config": _cfg_to_dict(cfg),
+        "warnings": real_issues,
+    }
+
+
+@app.get("/api/projects/{project_id}")
+def project_detail(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    state = store.load_state()
+    outline = store.load_outline()
+    chapters = store.list_chapters()
+    total = len(outline.chapters) if outline else cfg.num_chapters
+    handle = _RUNS.get(project_id)
+    return {
+        "id": store.dir.name,
+        "config": _cfg_to_dict(cfg),
+        "state": state.to_dict(),
+        "outline_title": outline.title if outline else "",
+        "outline_intro": outline.intro if outline else "",
+        "chapters_done": len(chapters),
+        "chapters_total": total,
+        "running": bool(handle and handle.thread and handle.thread.is_alive()),
+        "error": handle.error if handle else None,
+        "generated_words": sum(len(c.content) for c in chapters),
+        "has_txt": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.txt").exists(),
+        "has_cover": _cover_files(store)[0].exists(),
+        "has_epub": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.epub").exists(),
+        "has_docx": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.docx").exists(),
+    }
+
+
+@app.get("/api/projects/{project_id}/outline")
+def project_outline(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline:
+        return {"chapters": []}
+    return {
+        "title": outline.title,
+        "intro": outline.intro,
+        "chapters": [{"no": c.no, "title": c.title, "goal": c.goal} for c in outline.chapters],
+    }
+
+
+@app.get("/api/projects/{project_id}/chapters")
+def project_chapters(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    chapters = store.list_chapters()
+    return {
+        "chapters": [
+            {"no": c.no, "title": c.title, "words": len(c.content), "summary": c.summary}
+            for c in chapters
+        ]
+    }
+
+
+@app.get("/api/projects/{project_id}/chapters/{no}")
+def project_chapter(project_id: str, no: int, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    ch = store.load_chapter(no)
+    if not ch:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    return {"no": ch.no, "title": ch.title, "content": ch.content, "summary": ch.summary}
+
+
+class ChapterEditReq(BaseModel):
+    title: str = ""
+    content: str = ""
+    summary: str = ""   # 可留空：留空时自动用 LLM 重新生成摘要
+    regen_summary: bool = True   # 是否在正文变更后重新生成摘要
+
+
+@app.put("/api/projects/{project_id}/chapters/{no}")
+def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
+                 user: dict = Depends(_require_user)):
+    """编辑单章：改标题/正文，可选重新生成摘要，供「人工修改后继续生成」使用。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    ch = store.load_chapter(no)
+    if not ch:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+
+    if req.title:
+        ch.title = req.title
+    if req.content:
+        ch.content = req.content
+
+    # 摘要处理：用户显式给 → 用之；否则若正文变了且允许 → 自动重新生成
+    if req.summary:
+        ch.summary = req.summary
+    elif req.regen_summary and req.content and req.content != _load_prev_content(store, no):
+        new_summary = _regenerate_summary(store, ch)
+        if new_summary:
+            ch.summary = new_summary
+
+    store.save_chapter(ch)
+    if ch.summary:
+        store.append_summary(no, ch.summary)
+    logger.info("章节编辑: uid=%d project=%s no=%d title=%s words=%d",
+                user["id"], project_id, no, ch.title, len(ch.content))
+    return {"no": ch.no, "title": ch.title, "summary": ch.summary, "words": len(ch.content)}
+
+
+def _load_prev_content(store: ProjectStore, no: int) -> str:
+    old = store.load_chapter(no)
+    return old.content if old else ""
+
+
+def _regenerate_summary(store: ProjectStore, ch) -> str:
+    """用 LLM 重新生成章节摘要（正文被人工修改后，记忆库要跟着更新）。失败返回空串。"""
+    try:
+        pipeline = _open_pipeline(store)
+        return pipeline.chapter_writer._gen_summary(ch.no, ch.title, ch.content)
+    except Exception:
+        return ""
+
+
+@app.post("/api/projects/{project_id}/regenerate-from/{no}")
+def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """从第 no 章重新生成：删除 no 及之后所有章节与记忆，然后从 no 重新开跑。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline or no < 1 or no > len(outline.chapters):
+        raise HTTPException(status_code=400, detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+
+    # 删除 no 及之后章节 + 对应记忆
+    for ch in store.list_chapters():
+        if ch.no >= no:
+            p = store.chapter_path(ch.no)
+            if p.exists():
+                p.unlink()
+    summaries = [s for s in store.load_summaries() if int(s.get("no", 0)) < no]
+    store._write_json(store.memory_path(), summaries)
+
+    logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
+    t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
+    handle.thread = t
+    t.start()
+    return {"started": True, "project_id": project_id, "from_chapter": no}
+
+
+@app.post("/api/projects/{project_id}/cover")
+def gen_cover(project_id: str, user: dict = Depends(_require_user)):
+    """生成/重新生成程序化封面（PNG）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    outline = store.load_outline()
+    subtitle = (outline.intro[:18] + "…") if outline and len(outline.intro) > 18 else (outline.intro if outline else "")
+    out_path, proj_path = _cover_files(store)
+    generate_cover(
+        title=cfg.effective_title(),
+        genre=cfg.genre,
+        subtitle=subtitle,
+        out_path=proj_path,  # 先生成到项目目录
+    )
+    # 复制到 output/ 主输出
+    proj_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(proj_path.read_bytes())
+    return {"ok": True, "cover_url": f"/api/projects/{project_id}/cover"}
+
+
+@app.get("/api/projects/{project_id}/cover")
+def get_cover(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    out_path, proj_path = _cover_files(store)
+    p = out_path if out_path.exists() else proj_path
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="封面尚未生成")
+    return FileResponse(str(p), media_type="image/png")
+
+
+@app.get("/api/projects/{project_id}/world")
+def project_world(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    world = store.load_world()
+    if not world:
+        return {"world_view": "", "characters": [], "foreshadowing": []}
+    return {
+        "world_view": world.world_view,
+        "characters": [{"name": c.name, "role": c.role, "desc": c.desc} for c in world.characters],
+        "foreshadowing": list(world.foreshadowing),
+    }
+
+
+@app.get("/api/projects/{project_id}/research")
+def project_research(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    r = store.load_research()
+    if not r:
+        return {}
+    return r.to_dict()
+
+
+# ---------- 生成控制 ----------
+@app.post("/api/projects/{project_id}/start")
+def start_generation(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    t = threading.Thread(target=_run_generation, args=(store, handle), daemon=True)
+    handle.thread = t
+    t.start()
+    return {"started": True, "project_id": project_id}
+
+
+@app.post("/api/projects/{project_id}/stop")
+def stop_generation(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    handle = _RUNS.get(project_id)
+    if not handle:
+        return {"stopped": False, "message": "项目未在运行"}
+    handle.stop_event.set()
+    return {"stopped": True, "project_id": project_id, "message": "已请求停止，当前章节完成后生效"}
+
+
+@app.get("/api/projects/{project_id}/download")
+def download(project_id: str, format: str = "txt", user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    name = _safe_name(cfg.effective_title())
+    fmt = (format or "txt").lower()
+
+    if fmt == "txt":
+        out = OUTPUT_DIR / f"{name}.txt"
+        media = "text/plain; charset=utf-8"
+        if not out.exists():
+            try:
+                pipeline = _open_pipeline(store)
+                out = pipeline.export()
+            except Exception as exc:
+                raise HTTPException(status_code=404, detail=f"尚未生成可下载的 txt：{exc}")
+    elif fmt == "epub":
+        out = OUTPUT_DIR / f"{name}.epub"
+        media = "application/epub+zip"
+        if not out.exists():
+            try:
+                out = export_epub(store)
+            except Exception as exc:
+                raise HTTPException(status_code=404, detail=f"导出 epub 失败：{exc}")
+    elif fmt == "docx":
+        out = OUTPUT_DIR / f"{name}.docx"
+        media = ("application/vnd.openxmlformats-officedocument."
+                 "wordprocessingml.document")
+        if not out.exists():
+            try:
+                out = export_docx(store)
+            except Exception as exc:
+                raise HTTPException(status_code=404, detail=f"导出 docx 失败：{exc}")
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的导出格式：{format}")
+
+    if not out.exists():
+        raise HTTPException(status_code=404, detail="尚未生成可下载的文件")
+    logger.info("下载导出: uid=%d project=%s format=%s file=%s", user["id"], project_id, fmt, out.name)
+    return FileResponse(str(out), filename=out.name, media_type=media)
+
+
+# ---------- 静态前端（同源部署时） ----------
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="webui")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -1,0 +1,73 @@
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 扩写大纲（expand_input 91 字）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 扩写大纲（剑出昆仑，2 章）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 人物/世界观 world
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 人物/世界观 world（1 个人物）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 1 章「第1回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 1 章「第1回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 导出完成: C:\Users\pc\AppData\Local\Temp\output\扩写测试本.txt
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 调研 research
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 调研 research（摘要 玄幻题材以修炼升级为骨架，2026年流行『轻松向反套路』与『强开局强张力』，情绪代偿优先于单纯爽感。）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 大纲 outline
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 大纲 outline（剑出昆仑，6 章）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 人物/世界观 world
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 人物/世界观 world（1 个人物）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 1 章「第1回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 1 章「第1回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 2 章「第2回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 2 章「第2回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 3 章「第3回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 3 章「第3回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 4 章「第4回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 4 章「第4回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 5 章「第5回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 5 章「第5回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 6 章「第6回 风云再起」（is_final=True）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 6 章「第6回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 导出完成: C:\Users\pc\AppData\Local\Temp\pytest-of-pc\pytest-42\output\端到端测试书.txt
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 调研 research
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 调研 research（摘要 玄幻题材以修炼升级为骨架，2026年流行『轻松向反套路』与『强开局强张力』，情绪代偿优先于单纯爽感。）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 大纲 outline
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 大纲 outline（剑出昆仑，4 章）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 人物/世界观 world
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 人物/世界观 world（1 个人物）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 1 章「第1回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 1 章「第1回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 2 章「第2回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 2 章「第2回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 流水线开始: 《端到端测试书》mode=auto total_words=4000
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 编辑质检 editor_review
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 编辑质检（通过，评分 7.0，问题 0 条）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 3 章「第3回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 3 章「第3回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 4 章「第4回 风云再起」（is_final=True）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 4 章「第4回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 流水线完成: 《端到端测试书》共 4 章
+2026-09-05 13:34:51 [INFO] pipeline: 流水线开始: 《端到端测试书》mode=auto total_words=2000
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 调研 research
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 调研 research（摘要 玄幻题材以修炼升级为骨架，2026年流行『轻松向反套路』与『强开局强张力』，情绪代偿优先于单纯爽感。）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 大纲 outline
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 大纲 outline（剑出昆仑，2 章）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 编辑质检 editor_review
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 编辑质检（通过，评分 7.0，问题 0 条）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 人物/世界观 world
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 人物/世界观 world（1 个人物）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 1 章「第1回 风云再起」（is_final=False）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 1 章「第1回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 2 章「第2回 风云再起」（is_final=True）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 2 章「第2回 风云再起」（127 字）
+2026-09-05 13:34:51 [INFO] pipeline: 流水线完成: 《端到端测试书》共 2 章
+2026-09-05 13:34:51 [INFO] pipeline: 导出完成: C:\Users\pc\AppData\Local\Temp\pytest-of-pc\pytest-42\output\端到端测试书.txt
+2026-09-05 13:34:51 [INFO] pipeline: 流水线开始: 《端到端测试书》mode=auto total_words=2000
+2026-09-05 13:34:51 [INFO] pipeline: 流水线完成: 《端到端测试书》共 2 章
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 调研 research
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 调研 research（摘要 玄幻题材以修炼升级为骨架，2026年流行『轻松向反套路』与『强开局强张力』，情绪代偿优先于单纯爽感。）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 大纲 outline
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 大纲 outline（剑出昆仑，1 章）
+2026-09-05 13:34:51 [INFO] pipeline: 阶段开始: 人物/世界观 world
+2026-09-05 13:34:51 [INFO] pipeline: 阶段完成: 人物/世界观 world（1 个人物）
+2026-09-05 13:34:51 [INFO] pipeline: 章节开始: 第 1 章「第1回 风云再起」（is_final=True）
+2026-09-05 13:34:51 [INFO] pipeline: 章节完成: 第 1 章「第1回 风云再起」（127 字）
+2026-09-05 13:34:59 [INFO] run: 服务启动: host=127.0.0.1 port=8000 deepseek_key=已配置
+2026-09-05 13:35:19 [INFO] server: 注册成功: uid=14 username=logtest_c122a8 is_admin=0 referrer=None
+2026-09-05 13:35:19 [WARNING] server: 登录失败: username=logtest_c122a8
+2026-09-05 13:35:19 [INFO] server: 管理后台登录成功: uid=14 username=logtest_c122a8

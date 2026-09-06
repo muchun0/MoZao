@@ -1,0 +1,37 @@
+# =============================================================
+# 短篇小说专用配置（5000-25000字）
+# 注意：短篇 total_words 有硬约束——必须大于 7000 字（≤7000 会阻止生成）
+# 基于2026年热门短篇趋势：前三句立住绝境、情绪价值>爽感、题材跨界混搭
+# 用法：复制本文件为具体书名的配置，修改 title/题材/设定后运行
+#   python -m novel_gen all --config config_xxx.yaml --new
+# =============================================================
+
+title: "短篇小说"
+genre: "都市"
+total_words: 10000
+chapter_words: 2000
+style: "快节奏强冲突，前三句立住绝境，每章结尾留钩子，情绪密度高，避免冗长铺垫"
+premise: ""
+
+# ---- 用户自定义设定 ----
+background: ""
+hero: ""
+characters: []
+plot_direction: ""
+forbidden: []
+
+confirm: false
+memory_window: 3
+
+llm:
+  provider: "deepseek"
+  model: ""
+  api_key: "***REMOVED***"
+  base_url: ""
+  temperature: 0.85
+  max_tokens: 4096
+
+search:
+  provider: "bocha"
+  api_key: "***REMOVED***"
+  count: 5

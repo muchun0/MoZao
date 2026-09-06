@@ -1,0 +1,135 @@
+# -*- coding: utf-8 -*-
+"""数据结构定义：大纲 / 人物世界观 / 章节 / 章节摘要 / 项目状态。"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+
+@dataclass
+class ChapterPlan:
+    """大纲中的单章计划。"""
+    no: int
+    title: str = ""
+    goal: str = ""  # 本章剧情目标/一句话剧情
+
+    def to_dict(self) -> dict:
+        return {"no": self.no, "title": self.title, "goal": self.goal}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ChapterPlan":
+        return cls(no=int(d.get("no", 0)), title=d.get("title", ""), goal=d.get("goal", ""))
+
+
+@dataclass
+class Outline:
+    """整本书的大纲。"""
+    title: str = ""
+    intro: str = ""
+    chapters: list[ChapterPlan] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "title": self.title,
+            "intro": self.intro,
+            "chapters": [c.to_dict() for c in self.chapters],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Outline":
+        return cls(
+            title=d.get("title", ""),
+            intro=d.get("intro", ""),
+            chapters=[ChapterPlan.from_dict(c) for c in d.get("chapters", [])],
+        )
+
+
+@dataclass
+class Character:
+    name: str = ""
+    role: str = ""   # 主角/配角/反派...
+    desc: str = ""
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "role": self.role, "desc": self.desc}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Character":
+        return cls(name=d.get("name", ""), role=d.get("role", ""), desc=d.get("desc", ""))
+
+
+@dataclass
+class World:
+    """世界观 + 人物卡 + 伏笔清单（记忆系统的「设定库」）。"""
+    world_view: str = ""
+    characters: list[Character] = field(default_factory=list)
+    foreshadowing: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "world_view": self.world_view,
+            "characters": [c.to_dict() for c in self.characters],
+            "foreshadowing": list(self.foreshadowing),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "World":
+        def _norm_str(v):
+            """把 LLM 可能返回的 dict/list 等非标量规范化为字符串。"""
+            if isinstance(v, dict):
+                return " ".join(f"{k}:{_norm_str(val)}" for k, val in v.items())
+            if isinstance(v, list):
+                return "；".join(_norm_str(x) for x in v)
+            return str(v) if v is not None else ""
+
+        raw_foreshadow = d.get("foreshadowing", []) or []
+        foreshadowing = [_norm_str(x) for x in raw_foreshadow]
+        return cls(
+            world_view=_norm_str(d.get("world_view", "")),
+            characters=[Character.from_dict(c) for c in (d.get("characters", []) or [])],
+            foreshadowing=foreshadowing,
+        )
+
+
+@dataclass
+class Chapter:
+    """已生成的单章。"""
+    no: int
+    title: str = ""
+    content: str = ""
+    summary: str = ""  # 本章摘要，用于后续章节的记忆回填
+
+    def to_dict(self) -> dict:
+        return {"no": self.no, "title": self.title, "content": self.content, "summary": self.summary}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Chapter":
+        return cls(
+            no=int(d.get("no", 0)),
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            summary=d.get("summary", ""),
+        )
+
+
+@dataclass
+class ProjectState:
+    """任务状态机：记录当前推进到哪个阶段，用于断点续传。"""
+    phase: str = "outline"   # outline -> world -> writing -> done
+    last_chapter: int = 0    # 已写到的章节号（writing 阶段用）
+    total_chapters: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "phase": self.phase,
+            "last_chapter": self.last_chapter,
+            "total_chapters": self.total_chapters,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ProjectState":
+        return cls(
+            phase=d.get("phase", "outline"),
+            last_chapter=int(d.get("last_chapter", 0)),
+            total_chapters=int(d.get("total_chapters", 0)),
+        )

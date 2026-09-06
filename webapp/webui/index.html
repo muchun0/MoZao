@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 小说生成器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- ========== 登录视图（未登录时显示） ========== -->
+  <section id="view-login" class="view">
+    <div class="login-wrap">
+      <div class="login-card card">
+        <h1 class="login-title">📚 AI 小说生成器</h1>
+        <p class="login-sub">输入题材，自动生成整本小说，支持在线阅读与下载</p>
+
+        <div class="login-tabs">
+          <button class="tab active" data-ltab="login">登录</button>
+          <button class="tab" data-ltab="register">注册</button>
+        </div>
+
+        <form id="login-form" class="login-form">
+          <div class="field">
+            <label>用户名</label>
+            <input name="username" required autocomplete="username">
+          </div>
+          <div class="field">
+            <label>密码</label>
+            <input name="password" type="password" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn primary block">登 录</button>
+          <div id="login-error" class="error-box hidden"></div>
+        </form>
+
+        <form id="register-form" class="login-form hidden">
+          <div class="field">
+            <label>用户名</label>
+            <input name="username" required autocomplete="username" maxlength="20">
+          </div>
+          <div class="field">
+            <label>密码（至少 4 位）</label>
+            <input name="password" type="password" required minlength="4" autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label>邀请码（选填）</label>
+            <input name="invite_code" id="reg-invite" placeholder="推广你的人邀请码，可留空">
+            <small>填写后与邀请人绑定，邀请人可获得返佣</small>
+          </div>
+          <button type="submit" class="btn primary block">注册并登录</button>
+          <div id="register-error" class="error-box hidden"></div>
+        </form>
+        <p class="login-note" id="bonus-note"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 主应用 ========== -->
+  <div id="app-main" class="hidden">
+    <header class="topbar">
+      <div class="brand">📚 AI 小说生成器</div>
+      <nav>
+        <button class="nav-btn active" data-view="projects">我的项目</button>
+        <button class="nav-btn" data-view="create">新建小说</button>
+      </nav>
+      <div class="user-box">
+        <span class="balance" id="balance-label">余额 0.0 元</span>
+        <button class="btn small" id="btn-recharge">充值</button>
+        <button class="btn small" id="btn-referral">🔗 代理中心</button>
+        <a class="btn small" id="btn-admin-panel" href="/admin.html" target="_blank" style="display:none">⚙ 管理后台</a>
+        <span class="username" id="username-label"></span>
+        <button class="btn ghost small" id="btn-logout">退出</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- 视图：项目列表 -->
+      <section id="view-projects" class="view active">
+        <div class="view-head">
+          <h2>我的项目</h2>
+          <button class="btn primary" id="btn-new-top">＋ 新建小说</button>
+        </div>
+        <div id="project-list" class="project-grid"></div>
+      </section>
+
+      <!-- 视图：新建项目 -->
+      <section id="view-create" class="view">
+        <h2>新建小说</h2>
+        <div class="card">
+          <div id="price-tip" class="price-tip"></div>
+          <form id="create-form">
+            <div class="mode-selector">
+              <div class="mode-label">生成模式</div>
+              <div class="mode-options">
+                <label class="mode-option">
+                  <input type="radio" name="mode" value="auto" checked>
+                  <span class="mode-card">
+                    <strong>智能生成</strong>
+                    <small>联网调研 → 自动大纲 → 人物世界观 → 逐章正文</small>
+                  </span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="mode" value="expand">
+                  <span class="mode-card">
+                    <strong>AI 扩写</strong>
+                    <small>提供大纲或简要内容，AI 按你的设定扩写成文</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div id="expand-input-wrap" class="hidden">
+              <div class="field span-2">
+                <label>大纲 / 简要内容 <span class="req">*</span></label>
+                <textarea name="expand_input" rows="8" placeholder="粘贴你已有的大纲、章节脉络或简要故事内容。支持两种形式：&#10;1. 已分章的大纲（每章写清发生了什么）&#10;2. 一段完整的故事梗概 / 简要内容（AI 会按字数自动拆分章节）"></textarea>
+                <small>扩写模式会严格遵循你的内容脉络，只做细化与合理延展</small>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="field span-2">
+                <label>小说名称 <span class="req">*</span></label>
+                <input name="title" required placeholder="例如：洪荒：我为混沌证道">
+              </div>
+              <div class="field">
+                <label>题材</label>
+                <select name="genre" id="genre-select"></select>
+              </div>
+              <div class="field">
+                <label>目标总字数 <span class="req">*</span></label>
+                <input name="total_words" type="number" value="100000" min="1">
+                <small>字数由你决定，创建时按档位扣费</small>
+              </div>
+              <div class="field">
+                <label>单章字数</label>
+                <input name="chapter_words" type="number" value="2500" min="200">
+              </div>
+              <div class="field span-2">
+                <label>文风要求</label>
+                <input name="style" placeholder="例如：冷峻写实、克制冷冽（可留空）">
+              </div>
+              <div class="field span-2" data-expand-hide>
+                <label>核心创意 / 一句话简介</label>
+                <textarea name="premise" rows="2" placeholder="一句话说明这本书要写什么（可留空）"></textarea>
+              </div>
+              <div class="field span-2">
+                <label>故事背景 / 世界观（强约束）</label>
+                <textarea name="background" rows="3" placeholder="时代、世界格局、力量体系、核心矛盾…"></textarea>
+              </div>
+              <div class="field span-2" data-expand-hide>
+                <label>主角设定（强约束）</label>
+                <textarea name="hero" rows="2" placeholder="姓名、身份、性格、目标、口头禅…"></textarea>
+              </div>
+              <div class="field span-2" data-expand-hide>
+                <label>配角 / 反派预设（强约束，每行一个）</label>
+                <textarea name="characters" rows="3" placeholder="例：&#10;玄清：先天清气所化，与主角亦敌亦友&#10;后土：巫族之母，主角挚爱"></textarea>
+              </div>
+              <div class="field span-2" data-expand-hide>
+                <label>剧情走向 / 关键情节（参考方向）</label>
+                <textarea name="plot_direction" rows="3" placeholder="希望发生的故事脉络、关键桥段…"></textarea>
+              </div>
+              <div class="field span-2">
+                <label>避雷 / 不想要的内容（每行一个）</label>
+                <textarea name="forbidden" rows="2" placeholder="例：&#10;无脑打脸&#10;主角开挂"></textarea>
+              </div>
+            </div>
+
+            <div class="switch-row">
+              <label class="switch"><input type="checkbox" name="editor_review" checked><span>编辑质检（大纲自动审阅修正）</span></label>
+              <label class="switch"><input type="checkbox" name="de_ai" checked><span>去 AI 味</span></label>
+              <label class="switch"><input type="checkbox" name="anti_similarity" checked><span>防同质化</span></label>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn primary">创建项目（将扣费）</button>
+              <button type="button" class="btn ghost" id="btn-create-cancel">取消</button>
+            </div>
+            <div id="create-error" class="error-box hidden"></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 视图：项目详情 -->
+      <section id="view-detail" class="view">
+        <div class="view-head">
+          <button class="btn ghost" id="btn-back">← 返回列表</button>
+          <h2 id="detail-title"></h2>
+        </div>
+
+        <div class="card detail-card">
+          <div class="detail-top">
+            <div class="cover-wrap" id="cover-wrap">
+              <div class="cover-empty" id="cover-empty">尚未生成封面</div>
+              <img id="cover-img" class="cover-img hidden" alt="封面">
+              <button class="btn small cover-btn" id="btn-gen-cover">🖼 生成封面</button>
+            </div>
+            <div class="detail-main">
+              <div class="detail-meta" id="detail-meta"></div>
+              <div class="progress-wrap">
+                <div class="progress-label"><span id="progress-text">0 / 0 章</span><span id="progress-pct">0%</span></div>
+                <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+              </div>
+              <div class="detail-actions">
+                <button class="btn primary" id="btn-start">▶ 开始生成</button>
+                <button class="btn danger" id="btn-stop" disabled>⏹ 停止</button>
+                <span class="dl-group">
+                  <button class="btn" id="btn-download" disabled>⬇ 下载</button>
+                  <select id="dl-format" class="dl-select" disabled>
+                    <option value="txt">txt</option>
+                    <option value="epub">epub</option>
+                    <option value="docx">docx</option>
+                  </select>
+                </span>
+                <span id="run-status" class="run-status"></span>
+              </div>
+              <div id="detail-error" class="error-box hidden"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="tabs">
+            <button class="tab active" data-tab="chapters">章节</button>
+            <button class="tab" data-tab="outline">大纲</button>
+            <button class="tab" data-tab="world">人物 / 世界观</button>
+          </div>
+          <div id="tab-chapters" class="tab-panel active">
+            <div id="chapter-list" class="chapter-list"></div>
+          </div>
+          <div id="tab-outline" class="tab-panel">
+            <div id="outline-box" class="outline-box"></div>
+          </div>
+          <div id="tab-world" class="tab-panel">
+            <div id="world-box" class="world-box"></div>
+          </div>
+        </div>
+
+        <!-- 章节阅读弹层 -->
+        <div id="reader-modal" class="modal hidden">
+          <div class="modal-content">
+            <div class="modal-head">
+              <h3 id="reader-title"></h3>
+              <div class="modal-head-actions">
+                <button class="btn small" id="btn-edit-chapter">✎ 编辑本章</button>
+                <button class="btn ghost" id="btn-close-reader">✕ 关闭</button>
+              </div>
+            </div>
+            <div class="reader-body" id="reader-body"></div>
+            <div class="reader-nav">
+              <button class="btn" id="btn-prev-ch">← 上一章</button>
+              <button class="btn danger small" id="btn-regen-from" disabled>↻ 从此章重新生成</button>
+              <button class="btn" id="btn-next-ch">下一章 →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 章节编辑弹层 -->
+        <div id="edit-modal" class="modal hidden">
+          <div class="modal-content edit-modal-content">
+            <div class="modal-head">
+              <h3 id="edit-title"></h3>
+              <button class="btn ghost" id="btn-close-edit">✕ 关闭</button>
+            </div>
+            <div class="edit-body">
+              <div class="field">
+                <label>章节标题</label>
+                <input id="edit-ch-title" type="text">
+              </div>
+              <div class="field">
+                <label>正文（可直接修改，保存后后续章节将基于你的修改继续生成）</label>
+                <textarea id="edit-ch-content" rows="18"></textarea>
+              </div>
+            </div>
+            <div class="reader-nav">
+              <button class="btn primary" id="btn-save-edit">💾 保存修改</button>
+              <span class="edit-hint" id="edit-hint"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ========== 代理中心弹层 ========== -->
+  <div id="referral-modal" class="modal hidden">
+    <div class="modal-content referral-modal">
+      <div class="modal-head">
+        <h3>🔗 代理中心</h3>
+        <button class="btn ghost" id="btn-close-referral">✕ 关闭</button>
+      </div>
+      <div class="referral-body" id="referral-body">加载中…</div>
+    </div>
+  </div>
+
+  <!-- ========== 充值弹层 ========== -->
+  <div id="recharge-modal" class="modal hidden">
+    <div class="modal-content narrow">
+      <div class="modal-head">
+        <h3>充值说明</h3>
+        <button class="btn ghost" id="btn-close-recharge">✕ 关闭</button>
+      </div>
+      <div class="recharge-body">
+        <div class="recharge-steps">
+          <p><strong>1.</strong> 扫描下方收款码（微信 / 支付宝均可）完成转账。</p>
+          <p><strong>2.</strong> 转账时备注你的用户名：<span class="hl" id="recharge-username"></span></p>
+          <p><strong>3.</strong> 付款后联系管理员（站长）确认到账，确认后余额自动到账。</p>
+        </div>
+        <div class="qr-placeholder">
+          收款码图片（由站长自行替换为真实收款码）
+        </div>
+        <p class="recharge-note">定价：极短篇（≤5000 字）0.99 元 <span class="price-original">原价 2.99</span> / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元</p>
+        <div class="recharge-footer">
+          <button class="btn small ghost" id="btn-open-refund">💰 申请退款（充值余额可退）</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 退款申请弹层 ========== -->
+  <div id="refund-modal" class="modal hidden">
+    <div class="modal-content narrow">
+      <div class="modal-head">
+        <h3>退款申请</h3>
+        <button class="btn ghost" id="btn-close-refund">✕ 关闭</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">可退金额（仅充值部分，赠金/返佣不可退）：<strong id="refund-available" class="hl">0.00</strong> 元</p>
+        <div class="field" style="margin-top:12px">
+          <label>退款金额（元）</label>
+          <input id="refund-amount" type="number" min="0.01" step="0.01" placeholder="0.99">
+        </div>
+        <div class="field">
+          <label>退款原因（选填）</label>
+          <textarea id="refund-reason" rows="3" placeholder="例如：充值多了用不完，想退回余额"></textarea>
+        </div>
+        <button class="btn primary block" id="btn-submit-refund">提交申请</button>
+        <div id="refund-error" class="error-box hidden"></div>
+        <div id="refund-history" class="refund-history"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

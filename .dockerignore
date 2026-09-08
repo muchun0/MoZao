@@ -1,0 +1,32 @@
+# 密钥与本地数据不进镜像
+.env
+*.env
+!docker-compose.yml
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时数据（用卷持久化，不打包）
+projects/
+output/
+logs/
+webapp/novel_web.db
+webapp/novel_web.db-wal
+webapp/novel_web.db-shm
+
+# 根目录临时脚本
+_*.py
+
+# 测试与开发文件
+tests/
+pytest.ini
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

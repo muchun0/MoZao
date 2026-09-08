@@ -1,2 +1,29 @@
-﻿.env
+# ===== 密钥与敏感文件（绝不提交） =====
+.env
 
+# ===== Python 缓存/虚拟环境 =====
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# ===== 运行时数据（不入库） =====
+logs/
+projects/
+output/
+webapp/novel_web.db*
+webapp/*.db*
+
+# ===== 收款码等运营私有素材（不入库） =====
+webapp/webui/payment_qr.png
+
+# ===== 临时脚本/工具 =====
+_*.py
+_*.sh
+*.tar.gz
+
+# ===== IDE =====
+.idea/
+.vscode/

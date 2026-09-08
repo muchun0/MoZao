@@ -1,0 +1,39 @@
+# ============================================================
+# 墨造 · AI 小说创作平台 — Docker Compose 部署
+#
+# 用法（在项目根目录，即 Dockerfile 所在目录）：
+#   docker compose up -d --build     # 构建并后台启动
+#   docker compose logs -f           # 查看日志
+#   docker compose down              # 停止（数据保留在卷中）
+#   docker compose down -v           # 停止并清空数据（慎用！）
+#
+# 说明：
+#   - .env 文件（API Key / SMTP 等）在宿主机项目根目录，通过 env_file 注入，
+#     不写入镜像；.env 缺失时服务也能启动，只是 Key 为空。
+#   - 四个命名卷持久化：projects 中间产物 / output 成品 / logs 日志 / data 数据库。
+#   - 首次注册的用户自动成为站长。
+# ============================================================
+services:
+  novel-gen:
+    build: .
+    image: novel-gen:latest
+    container_name: novel-gen
+    restart: unless-stopped
+    ports:
+      - "80:8000"           # 80 对外访问；如需改端口，如 8080:8000
+    env_file:
+      - .env
+    environment:
+      - NOVEL_DB_PATH=/data/novel_web.db
+      - TZ=Asia/Shanghai
+    volumes:
+      - novel_projects:/app/projects
+      - novel_output:/app/output
+      - novel_logs:/app/logs
+      - novel_data:/data
+
+volumes:
+  novel_projects:
+  novel_output:
+  novel_logs:
+  novel_data:

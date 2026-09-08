@@ -120,9 +120,30 @@
       $("#stat-grid").innerHTML = cards.map(([l, n]) =>
         '<div class="stat-card"><div class="num">' + esc(n) + '</div><div class="lbl">' + esc(l) + "</div></div>"
       ).join("");
+      renderChart(stats);
     } catch (e) {
       $("#stat-grid").textContent = "加载失败：" + e.message;
     }
+  }
+
+  // 资金对比图：充值 vs 消费 vs 返佣（纯 CSS 柱状，按最大值归一化）
+  function renderChart(stats) {
+    const items = [
+      { key: "recharge", val: Number(stats.total_recharge || 0) },
+      { key: "consume", val: Number(stats.total_consume || 0) },
+      { key: "commission", val: Number(stats.total_commission || 0) },
+    ];
+    const max = Math.max.apply(null, items.map((i) => i.val));
+    const barH = 150; // 最大柱高 px
+    items.forEach((it) => {
+      const bar = $("#bar-" + it.key);
+      const val = $("#bar-" + it.key + "-val");
+      if (!bar) return;
+      const h = max > 0 ? Math.max(6, Math.round((it.val / max) * barH)) : 6;
+      bar.style.height = h + "px";
+      bar.textContent = it.val > 0 ? fmtMoney(it.val) : "0.00";
+      if (val) val.textContent = fmtMoney(it.val);
+    });
   }
 
   // ---------- 用户管理 ----------
@@ -138,6 +159,7 @@
         return "<tr>" +
           "<td>" + u.id + "</td>" +
           "<td>" + esc(u.username) + "</td>" +
+          "<td>" + (u.email ? esc(u.email) : '<span class="muted">—</span>') + "</td>" +
           '<td class="money">' + fmtMoney(u.balance) + "</td>" +
           "<td>" + role + "</td>" +
           "<td>" + (u.is_agent ? Math.round(u.agent_discount * 100) + "%" : "—") + "</td>" +

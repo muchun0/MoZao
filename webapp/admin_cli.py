@@ -81,14 +81,15 @@ def cmd_recharges(args: list[str]) -> None:
 def cmd_users(args: list[str]) -> None:
     with __import__("sqlite3").connect(str(db.DB_PATH)) as conn:
         conn.row_factory = __import__("sqlite3").Row
-        rows = conn.execute("SELECT id, username, balance, is_admin, created_at FROM users ORDER BY id").fetchall()
+        rows = conn.execute("SELECT id, username, email, balance, is_admin, created_at FROM users ORDER BY id").fetchall()
     if not rows:
         print("暂无用户")
         return
-    print(f"{'ID':<4} {'用户名':<20} {'余额':>8}  {'管理员':<4} {'注册时间'}")
+    print(f"{'ID':<4} {'用户名':<16} {'邮箱':<32} {'余额':>8}  {'管理员':<4} {'注册时间'}")
     for r in rows:
         t = __import__("time").strftime("%Y-%m-%d %H:%M", __import__("time").localtime(r["created_at"]))
-        print(f"{r['id']:<4} {r['username']:<20} {r['balance']:>8.1f}  {'是' if r['is_admin'] else '否':<4} {t}")
+        email = (r["email"] or "")[:30]
+        print(f"{r['id']:<4} {r['username']:<16} {email:<32} {r['balance']:>8.1f}  {'是' if r['is_admin'] else '否':<4} {t}")
 
 
 def cmd_agent(args: list[str]) -> None:

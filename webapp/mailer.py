@@ -19,6 +19,7 @@ from email.header import Header
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from pathlib import Path
+from typing import Optional
 
 from .logger import get_logger
 
@@ -53,16 +54,16 @@ def is_configured() -> bool:
                 and os.getenv("SMTP_PASS") and os.getenv("ADMIN_EMAIL"))
 
 
-def send_mail(subject: str, html: str) -> bool:
-    """给站长发邮件。成功返回 True；未配置或失败返回 False（不抛异常）。"""
+def send_mail(subject: str, html: str, to_addr: Optional[str] = None) -> bool:
+    """发邮件。to_addr 为空时发给站长（ADMIN_EMAIL）；成功返回 True；未配置或失败返回 False（不抛异常）。"""
     _load_env()
     host = os.getenv("SMTP_HOST", "")
     port = int(os.getenv("SMTP_PORT", "465") or 465)
     user = os.getenv("SMTP_USER", "")
     password = os.getenv("SMTP_PASS", "")
-    to_addr = os.getenv("ADMIN_EMAIL", "")
+    to_addr = (to_addr or os.getenv("ADMIN_EMAIL", "")).strip()
     if not (host and user and password and to_addr):
-        logger.warning("邮件未发送（SMTP 未完整配置）: subject=%s", subject)
+        logger.warning("邮件未发送（SMTP 未完整配置或无收件人）: subject=%s to=%s", subject, to_addr)
         return False
     try:
         msg = MIMEText(html, "html", "utf-8")
@@ -84,7 +85,6 @@ def send_mail(subject: str, html: str) -> bool:
         logger.error("邮件发送失败: to=%s subject=%s error=%s: %s",
                      to_addr, subject, type(e).__name__, e)
         return False
-
 
 def notify_refund_request(username: str, user_id: int, amount: float,
                           reason: str, admin_url: str) -> bool:

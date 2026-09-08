@@ -3,17 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>管理后台 · AI 小说生成器</title>
+<title>管理后台 · 墨造 AI 小说创作平台</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="admin.css">
 </head>
 <body>
 <div id="admin-app">
   <!-- ========== 登录视图（仅站长） ========== -->
-  <section id="view-login" class="view active">
+  <section id="view-login" class="view">
     <div class="login-wrap">
-      <div class="login-card card">
-        <h1 class="login-title">🔐 管理后台</h1>
-        <p class="login-sub">仅站长可登录 · AI 小说生成器</p>
+      <div class="login-card">
+        <h1 class="login-title">墨造 · 管理后台</h1>
+        <p class="login-sub">仅站长可登录</p>
         <form id="login-form">
           <div class="field">
             <label>站长账号</label>
@@ -33,7 +35,7 @@
   <!-- ========== 管理主界面 ========== -->
   <section id="view-main" class="view">
     <header class="topbar">
-      <div class="brand">⚙ 管理后台 · AI 小说生成器</div>
+      <div class="brand">墨造 · 管理后台</div>
       <div class="topbar-right">
         <span class="admin-name" id="admin-name"></span>
         <a class="btn ghost small" href="/" target="_blank">← 返回前台</a>
@@ -58,6 +60,28 @@
         <div id="view-overview" class="panel active">
           <h2>经营概览</h2>
           <div class="stat-grid" id="stat-grid">加载中…</div>
+          <!-- 资金对比图：充值 vs 消费 vs 返佣 -->
+          <div class="chart-card">
+            <h4>资金流向对比（累计）</h4>
+            <div class="chart-bars" id="chart-bars">
+              <div class="chart-col recharge">
+                <div class="bar" id="bar-recharge" style="height:0">—</div>
+                <div class="bar-label" id="bar-recharge-val">0.00</div>
+                <div class="bar-name">充值总额</div>
+              </div>
+              <div class="chart-col consume">
+                <div class="bar" id="bar-consume" style="height:0">—</div>
+                <div class="bar-label" id="bar-consume-val">0.00</div>
+                <div class="bar-name">消费总额</div>
+              </div>
+              <div class="chart-col commission">
+                <div class="bar" id="bar-commission" style="height:0">—</div>
+                <div class="bar-label" id="bar-commission-val">0.00</div>
+                <div class="bar-name">累计返佣</div>
+              </div>
+            </div>
+            <div class="chart-note">柱高按三项最大值的相对比例显示</div>
+          </div>
         </div>
 
         <!-- 用户管理 -->
@@ -66,7 +90,7 @@
           <div class="table-wrap">
             <table class="tbl" id="user-table">
               <thead><tr>
-                <th>ID</th><th>用户名</th><th>余额</th><th>身份</th><th>代理折扣</th>
+                <th>ID</th><th>用户名</th><th>邮箱</th><th>余额</th><th>身份</th><th>代理折扣</th>
                 <th>邀请码</th><th>下级</th><th>累计返佣</th><th>注册时间</th><th>操作</th>
               </tr></thead>
               <tbody></tbody>
@@ -163,11 +187,11 @@
     </div>
     <div class="modal-body">
       <p class="muted">用户 <strong id="rm-user"></strong> 当前余额 <strong id="rm-balance"></strong> 元</p>
-      <div class="field">
+      <div class="field" style="margin-top:12px">
         <label>充值金额（元）</label>
         <input id="rm-amount" type="number" min="0.01" step="0.01" placeholder="0.99">
       </div>
-      <button class="btn primary block" id="btn-confirm-rm">确认到账</button>
+      <button class="btn primary block" id="btn-confirm-rm" style="margin-top:6px">确认到账</button>
       <div id="rm-error" class="error-box hidden"></div>
     </div>
   </div>
@@ -182,11 +206,11 @@
     </div>
     <div class="modal-body">
       <p class="muted">用户 <strong id="am-user"></strong></p>
-      <div class="field">
+      <div class="field" style="margin-top:12px">
         <label>消费折扣（0.8 = 8 折）</label>
         <input id="am-discount" type="number" min="0.01" max="1" step="0.05" value="0.8">
       </div>
-      <button class="btn primary block" id="btn-confirm-am">确认开通</button>
+      <button class="btn primary block" id="btn-confirm-am" style="margin-top:6px">确认开通</button>
       <div id="am-error" class="error-box hidden"></div>
     </div>
   </div>

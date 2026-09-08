@@ -4,7 +4,7 @@
 
 为什么用 SQLite：单机部署、零配置、无额外服务，够支撑内测期的多用户并发。
 表结构：
-    users          用户（id, username, pass_hash, balance, is_admin, created_at,
+    users          用户（id, username, pass_hash, email, balance, is_admin, created_at,
                          is_agent, agent_discount, invite_code, referrer_id）
     sessions       登录会话（token, user_id, created_at）
     project_owner  项目归属（project_id -> user_id）
@@ -16,13 +16,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).resolve().parent / "novel_web.db"
+# 数据库路径：默认在 webapp/ 包目录；Docker 部署可用环境变量 NOVEL_DB_PATH 指向卷内路径
+DB_PATH = Path(os.environ.get("NOVEL_DB_PATH")
+               or Path(__file__).resolve().parent / "novel_web.db")
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _valid_email(email: str) -> bool:
+    return bool(EMAIL_RE.match(email))
 
 
 def _connect() -> sqlite3.Connection:
@@ -57,6 +66,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS project_owner (
                 project_id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
+                price REAL NOT NULL DEFAULT 0,   -- 创建时实扣金额（代理按折扣价），用于项目退费
                 created_at REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS recharges (
@@ -90,6 +100,9 @@ def init_db() -> None:
         )
         # 代理相关列迁移（老库升级用）
         cols = _column_names(conn, "users")
+        if "email" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         if "is_agent" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN is_agent INTEGER NOT NULL DEFAULT 0")
         if "agent_discount" not in cols:
@@ -99,6 +112,10 @@ def init_db() -> None:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_invite ON users(invite_code)")
         if "referrer_id" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER")
+        # 项目归属表补 price 列（老库升级用，退费功能）
+        pcols = _column_names(conn, "project_owner")
+        if "price" not in pcols:
+            conn.execute("ALTER TABLE project_owner ADD COLUMN price REAL NOT NULL DEFAULT 0")
         # 老用户补邀请码（无码则按 id 生成 INV+id）
         rows = conn.execute("SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
         for r in rows:
@@ -117,22 +134,33 @@ def _hash_password(password: str, salt: str) -> str:
 
 # ---------- 用户 ----------
 def create_user(username: str, password: str, is_admin: bool = False,
-                invite_code: str = "") -> tuple[bool, str]:
-    """注册。返回 (成功?, 信息)。用户名已存在返回 (False, 原因)。
+                invite_code: str = "", email: str = "") -> tuple[bool, str]:
+    """注册。返回 (成功?, 信息)。用户名或邮箱已存在返回 (False, 原因)。
 
+    email 必填：格式校验 + 全站唯一（不区分大小写，统一存小写）。
+    历史老用户 email 为空（NULL）不受影响。
     invite_code 非空时立即尝试绑定上级；绑定失败只记录在 info 里，不阻断注册。
     """
     username = username.strip()
+    email = (email or "").strip().lower()
     if not username or not password:
         return False, "用户名和密码不能为空"
     if len(username) > 20:
         return False, "用户名不能超过 20 个字符"
+    if not email:
+        return False, "邮箱不能为空"
+    if not _valid_email(email):
+        return False, "邮箱格式不正确"
     salt = secrets.token_hex(8)
     with _connect() as conn:
+        # 先查邮箱占用，给出友好错误（唯一索引兜底）
+        ex = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+        if ex:
+            return False, "该邮箱已被注册"
         try:
             cur = conn.execute(
-                "INSERT INTO users (username, pass_hash, balance, is_admin, created_at) VALUES (?,?,?,?,?)",
-                (username, _hash_password(password, salt) + ":" + salt, 0, int(is_admin), time.time()),
+                "INSERT INTO users (username, pass_hash, email, balance, is_admin, created_at) VALUES (?,?,?,?,?,?)",
+                (username, _hash_password(password, salt) + ":" + salt, email, 0, int(is_admin), time.time()),
             )
         except sqlite3.IntegrityError:
             return False, "用户名已被注册"
@@ -259,10 +287,16 @@ def list_agents() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def authenticate(username: str, password: str) -> Optional[int]:
-    """校验登录，成功返回 user_id。"""
+def authenticate(identifier: str, password: str) -> Optional[int]:
+    """校验登录，成功返回 user_id。identifier 支持用户名或邮箱（邮箱不区分大小写）。"""
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
     with _connect() as conn:
-        row = conn.execute("SELECT id, pass_hash FROM users WHERE username=?", (username.strip(),)).fetchone()
+        if "@" in identifier:
+            row = conn.execute("SELECT id, pass_hash FROM users WHERE email=?", (identifier.lower(),)).fetchone()
+        else:
+            row = conn.execute("SELECT id, pass_hash FROM users WHERE username=?", (identifier,)).fetchone()
     if not row:
         return None
     pass_hash, salt = (row["pass_hash"] or "").rsplit(":", 1)
@@ -281,6 +315,28 @@ def get_user_by_name(username: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE username=?", (username.strip(),)).fetchone()
     return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email=?", ((email or "").strip().lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def update_password(user_id: int, new_password: str) -> None:
+    """重置密码（忘记密码用）。"""
+    if not new_password or len(new_password) < 4:
+        return
+    salt = secrets.token_hex(8)
+    with _connect() as conn:
+        conn.execute("UPDATE users SET pass_hash=? WHERE id=?",
+                     (_hash_password(new_password, salt) + ":" + salt, user_id))
+
+
+def delete_user_sessions(user_id: int) -> None:
+    """删除某用户全部会话（重置密码后强制重新登录）。"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
 
 def change_balance(user_id: int, delta: float, note: str = "") -> float:
@@ -331,7 +387,7 @@ def list_users_admin() -> list[dict]:
     """管理用用户列表（含代理/邀请/下级数/累计返佣）。"""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT u.id, u.username, u.balance, u.is_admin, u.is_agent, u.agent_discount, "
+            "SELECT u.id, u.username, u.email, u.balance, u.is_admin, u.is_agent, u.agent_discount, "
             "u.invite_code, u.created_at, "
             "(SELECT COUNT(*) FROM users d WHERE d.referrer_id=u.id) AS downline_count, "
             "(SELECT COALESCE(SUM(amount),0) FROM commission_log cl WHERE cl.agent_id=u.id) AS total_commission "
@@ -370,11 +426,29 @@ def delete_session(token: str) -> None:
 
 
 # ---------- 项目归属 ----------
-def claim_project(project_id: str, user_id: int) -> None:
+def claim_project(project_id: str, user_id: int, price: float = 0.0) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO project_owner (project_id, user_id, created_at) VALUES (?,?,?)",
-            (project_id, user_id, time.time()))
+            "INSERT OR IGNORE INTO project_owner (project_id, user_id, price, created_at) VALUES (?,?,?,?)",
+            (project_id, user_id, price, time.time()))
+
+
+def project_price(project_id: str) -> float:
+    """项目创建时实扣金额（含代理折扣）。老项目无记录返回 0（不可退费）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT price FROM project_owner WHERE project_id=?", (project_id,)).fetchone()
+    return float(row["price"]) if row and row["price"] is not None else 0.0
+
+
+def find_commission_by_project(project_id: str) -> Optional[dict]:
+    """查触发该项目的消费返佣记录（用于退费冲正）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM commission_log WHERE project_id=? AND kind='consume' "
+            "ORDER BY id LIMIT 1",
+            (project_id,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def project_owner(project_id: str) -> Optional[int]:

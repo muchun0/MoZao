@@ -1,4 +1,4 @@
-/* AI 小说生成器 - 前端逻辑（原生 JS，无框架依赖）多用户版 */
+/* 墨造 · AI 小说创作平台 - 前端逻辑（原生 JS，无框架依赖）多用户版 */
 (function () {
   "use strict";
 
@@ -12,6 +12,10 @@
   let detailCache = null; // 详情页缓存
   let chaptersCache = []; // 章节列表（含 no/title/words/summary）
   let me = null; // 当前登录用户
+  let projectsCache = []; // 项目列表缓存（供搜索/筛选）
+  let pricingCache = null; // 定价缓存
+  let readerFont = parseInt(localStorage.getItem("novel_reader_font") || "17", 10);
+  let readerTheme = localStorage.getItem("novel_reader_theme") || "paper";
 
   // ---------- 工具 ----------
   function $(sel) { return document.querySelector(sel); }
@@ -69,6 +73,11 @@
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
   }
 
+  function fmtPrice(v) {
+    const n = Number(v);
+    return (Math.round(n * 100) % 10 === 0) ? n.toFixed(1) : n.toFixed(2);
+  }
+
   // ---------- 登录 / 用户 ----------
   function showLogin() {
     currentView = "login";
@@ -112,10 +121,70 @@
       const isLogin = tab.dataset.ltab === "login";
       $("#login-form").classList.toggle("hidden", !isLogin);
       $("#register-form").classList.toggle("hidden", isLogin);
+      $("#reset-form").classList.add("hidden");
       $("#login-error").classList.add("hidden");
       $("#register-error").classList.add("hidden");
+      $("#reset-error").classList.add("hidden");
     });
   });
+
+  // 忘记密码 / 返回登录
+  $("#btn-forgot").addEventListener("click", () => {
+    $("#login-form").classList.add("hidden");
+    $("#register-form").classList.add("hidden");
+    $("#reset-form").classList.remove("hidden");
+    $("#login-error").classList.add("hidden");
+    $("#reset-error").classList.add("hidden");
+    $$(".login-tabs .tab").forEach((t) => t.classList.remove("active"));
+  });
+  $("#btn-reset-back").addEventListener("click", () => {
+    $("#reset-form").classList.add("hidden");
+    $("#login-form").classList.remove("hidden");
+    $$(".login-tabs .tab").forEach((t) => t.classList.remove("active"));
+    document.querySelector('.login-tabs .tab[data-ltab="login"]').classList.add("active");
+  });
+
+  // 获取验证码（注册 / 重置共用）：60 秒倒计时防刷
+  function bindSendCode(btnSel, apiPath, errSel) {
+    const btn = $(btnSel);
+    btn.addEventListener("click", async () => {
+      const form = btn.closest("form");
+      const email = (form.email ? form.email.value : "").trim();
+      if (!email) {
+        toast("请先填写邮箱");
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await api(apiPath, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        toast(r.msg || "验证码已发送");
+      } catch (err) {
+        if (errSel) { const eb = $(errSel); eb.textContent = "获取验证码失败：" + err.message; eb.classList.remove("hidden"); }
+        else toast("获取验证码失败：" + err.message);
+        btn.disabled = false;
+        return;
+      }
+      let left = 60;
+      const origin = btn.textContent;
+      btn.textContent = left + "s 后重发";
+      const timer = setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(timer);
+          btn.textContent = origin;
+          btn.disabled = false;
+        } else {
+          btn.textContent = left + "s 后重发";
+        }
+      }, 1000);
+    });
+  }
+  bindSendCode("#btn-reg-send-code", "/api/send-register-code", "#register-error");
+  bindSendCode("#btn-reset-send-code", "/api/send-reset-code", "#reset-error");
 
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -147,6 +216,8 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: e.target.username.value.trim(),
+          email: (e.target.email ? e.target.email.value.trim() : ""),
+          code: (e.target.code ? e.target.code.value.trim() : ""),
           password: e.target.password.value,
           invite_code: (e.target.invite_code ? e.target.invite_code.value : "").trim(),
         }),
@@ -162,6 +233,32 @@
     }
   });
 
+  $("#reset-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errBox = $("#reset-error");
+    errBox.classList.add("hidden");
+    try {
+      const r = await api("/api/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: e.target.email.value.trim(),
+          code: e.target.code.value.trim(),
+          new_password: e.target.new_password.value,
+        }),
+      });
+      toast(r.msg || "密码已重置");
+      e.target.reset();
+      $("#reset-form").classList.add("hidden");
+      $("#login-form").classList.remove("hidden");
+      $$(".login-tabs .tab").forEach((t) => t.classList.remove("active"));
+      document.querySelector('.login-tabs .tab[data-ltab="login"]').classList.add("active");
+    } catch (err) {
+      errBox.textContent = "重置失败：" + err.message;
+      errBox.classList.remove("hidden");
+    }
+  });
+
   $("#btn-logout").addEventListener("click", async () => {
     try { await api("/api/logout", { method: "POST" }); } catch (e) { /* ignore */ }
     setToken("");
@@ -173,6 +270,7 @@
   // 充值弹层
   $("#btn-recharge").addEventListener("click", () => {
     if (me) $("#recharge-username").textContent = me.username;
+    renderRechargeTiers();
     $("#recharge-modal").classList.remove("hidden");
   });
   $("#btn-close-recharge").addEventListener("click", () => $("#recharge-modal").classList.add("hidden"));
@@ -198,7 +296,7 @@
       const r = await api("/api/me/refund-requests");
       if (!r.requests.length) { box.innerHTML = ""; return; }
       const statusNames = { pending: "⏳ 待处理", approved: "✅ 已退款", rejected: "❌ 已拒绝" };
-      box.innerHTML = '<hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">' +
+      box.innerHTML = '<hr style="margin:14px 0;border:none;border-top:1px solid var(--card-line)">' +
         "<div class='muted' style='margin-bottom:6px'>我的退款申请：</div>" +
         r.requests.map((q) =>
           "<div class='refund-item'><span>" + fmtTime(q.created_at) + " · " + q.amount.toFixed(2) + " 元 · " +
@@ -318,10 +416,49 @@
   async function loadPricing() {
     try {
       const r = await api("/api/pricing");
+      pricingCache = r;
       if (r.register_bonus > 0) {
-        $("#bonus-note").textContent = "新用户注册即送 " + r.register_bonus + " 元体验金";
+        const note = $("#bonus-note");
+        note.innerHTML = "新用户注册即送 <b>" + r.register_bonus + " 元</b> 体验金";
+        note.classList.remove("hidden");
       }
+      renderRechargeTiers();
+      const wordsInput = document.querySelector('#create-form input[name="total_words"]');
+      if (wordsInput) updateFee();
     } catch (e) { /* ignore */ }
+  }
+
+  // 充值弹层：按定价档位展示常用充值金额
+  function renderRechargeTiers() {
+    const box = $("#recharge-tiers");
+    const note = $("#recharge-note");
+    if (!box) return;
+    if (!pricingCache || !pricingCache.tiers || !pricingCache.tiers.length) {
+      box.innerHTML = "";
+      note.textContent = "定价：极短篇（≤5000 字）0.99 元 / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元";
+      return;
+    }
+    box.innerHTML = pricingCache.tiers.map((t, i) =>
+      '<button type="button" class="tier-btn" data-i="' + i + '">' +
+        "<b>" + fmtPrice(t.price) + " 元</b>" +
+        (t.original_price != null && t.original_price > t.price ? '<small><s>' + fmtPrice(t.original_price) + "</s> 优惠</small>" : "") +
+        "<small>" + esc(t.name) + (t.max_words ? " ≤" + (t.max_words >= 10000 ? (t.max_words / 10000) + "万" : t.max_words) + "字" : " 不限") + "</small>" +
+      "</button>"
+    ).join("");
+    box.querySelectorAll(".tier-btn").forEach((b) => {
+      b.addEventListener("click", () => {
+        box.querySelectorAll(".tier-btn").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        const t = pricingCache.tiers[parseInt(b.dataset.i, 10)];
+        if (t) {
+          note.innerHTML = "按「" + esc(t.name) + "」档位充值 <b>" + fmtPrice(t.price) +
+            " 元</b>，约可创作 1 部" + (t.max_words ? "（≤ " + t.max_words.toLocaleString() + " 字）" : "（不限字数）") +
+            "。转账后联系站长确认到账。";
+        }
+      });
+    });
+    // 默认说明
+    note.textContent = "定价：极短篇（≤5000 字）0.99 元 / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元";
   }
 
   // ---------- 视图切换 ----------
@@ -340,39 +477,100 @@
   $("#btn-create-cancel").addEventListener("click", () => switchView("projects"));
 
   // ---------- 项目列表 ----------
+  function projectState(p) {
+    if (p.running) return "running";
+    if (p.has_error) return "error";
+    if (p.chapters_total && p.chapters_done >= p.chapters_total) return "done";
+    if (p.chapters_done > 0) return "paused";
+    return "ready";
+  }
+  function stateBadge(p) {
+    const st = projectState(p);
+    const names = { running: "生成中", done: "已完成", error: "出错", ready: "未开始", paused: "已暂停" };
+    return '<span class="badge ' + st + '">' + names[st] + "</span>";
+  }
+
+  function applyProjectFilter() {
+    const kw = ($("#project-search").value || "").trim().toLowerCase();
+    const f = (document.querySelector("#project-filters button.active") || {}).dataset?.filter || "all";
+    let list = projectsCache;
+    if (f !== "all") list = list.filter((p) => projectState(p) === f);
+    if (kw) {
+      list = list.filter((p) =>
+        (p.title || "").toLowerCase().includes(kw) ||
+        (p.genre || "").toLowerCase().includes(kw) ||
+        String(p.chapters_done).includes(kw)
+      );
+    }
+    const grid = $("#project-list");
+    if (!list.length) {
+      grid.innerHTML = '<div class="empty"><span class="empty-seal">墨</span>' +
+        (projectsCache.length ? "没有符合条件的作品" : "书案还空着，点击「＋ 新建小说」开始创作") + "</div>";
+      return;
+    }
+    grid.innerHTML = list.map((p) => {
+      const pct = p.chapters_total ? Math.round((p.chapters_done / p.chapters_total) * 100) : 0;
+      return (
+        '<div class="project-card" data-id="' + esc(p.id) + '">' +
+          '<h3>' + esc(p.title) + '</h3>' +
+          '<div class="genre">' + esc(p.genre) + ' · ' + fmtWords(p.total_words) + " · " + fmtTime(p.created) + '</div>' +
+          '<div class="p-meta"><span>' + p.chapters_done + '/' + p.chapters_total + ' 章（' + pct + '%）</span>' + stateBadge(p) + '</div>' +
+          (p.price > 0
+            ? '<div class="p-price">创作扣费 <b>' + fmtPrice(p.price) + " 元</b></div>"
+            : "") +
+          (p.price > 0 && p.chapters_done === 0
+            ? '<button class="btn small p-refund" data-id="' + esc(p.id) + '" data-title="' + esc(p.title) + '" data-price="' + esc(String(p.price)) + '">退费删除</button>'
+            : '') +
+        '</div>'
+      );
+    }).join("");
+    grid.querySelectorAll(".project-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        currentProjectId = card.dataset.id;
+        switchView("detail");
+      });
+    });
+    // 退费删除（仅未开始生成的项目）：阻止冒泡，确认后调用退费接口
+    grid.querySelectorAll(".p-refund").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const pid = btn.dataset.id;
+        const title = btn.dataset.title;
+        const price = Number(btn.dataset.price || 0);
+        if (!window.confirm("确认退费并删除《" + title + "》？\n将退回 " + price.toFixed(2) + " 元到余额，且删除该项目（不可恢复）。")) return;
+        try {
+          btn.disabled = true;
+          const r = await api("/api/projects/" + pid + "/refund", "POST");
+          toast("已退费 " + (r.refunded || 0).toFixed(2) + " 元，项目已删除");
+          loadProjects();
+          loadMe();
+        } catch (err) {
+          toast("退费失败：" + (err.message || "请稍后重试"));
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
   async function loadProjects() {
     try {
       const { projects } = await api("/api/projects");
-      const grid = $("#project-list");
-      if (!projects.length) {
-        grid.innerHTML = '<div class="empty">还没有项目，点击「新建小说」开始创作</div>';
-        return;
-      }
-      grid.innerHTML = projects.map((p) => {
-        const pct = p.chapters_total ? Math.round((p.chapters_done / p.chapters_total) * 100) : 0;
-        const badge = p.running ? '<span class="badge running">生成中</span>'
-          : p.has_error ? '<span class="badge error">出错</span>'
-          : p.chapters_done >= p.chapters_total && p.chapters_total > 0 ? '<span class="badge done">已完成</span>'
-          : p.chapters_done > 0 ? '<span class="badge running">进行中</span>'
-          : '<span class="badge ready">未开始</span>';
-        return (
-          '<div class="project-card" data-id="' + esc(p.id) + '">' +
-            '<h3>' + esc(p.title) + '</h3>' +
-            '<div class="genre">' + esc(p.genre) + ' · ' + fmtWords(p.total_words) + ' · ' + fmtTime(p.created) + '</div>' +
-            '<div class="p-meta"><span>' + p.chapters_done + '/' + p.chapters_total + ' 章（' + pct + '%）</span>' + badge + '</div>' +
-          '</div>'
-        );
-      }).join("");
-      grid.querySelectorAll(".project-card").forEach((card) => {
-        card.addEventListener("click", () => {
-          currentProjectId = card.dataset.id;
-          switchView("detail");
-        });
-      });
+      projectsCache = projects;
+      applyProjectFilter();
     } catch (e) {
       toast("加载项目失败：" + e.message);
     }
   }
+
+  // 搜索 & 筛选
+  $("#project-search").addEventListener("input", applyProjectFilter);
+  document.querySelectorAll("#project-filters button").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#project-filters button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      applyProjectFilter();
+    });
+  });
 
   // ---------- 新建 ----------
   async function initCreateForm() {
@@ -385,37 +583,13 @@
         sel.dataset.loaded = "1";
       } catch (e) { /* ignore */ }
     }
-    // 价格提示（随字数变化）
+    // 价格/费用联动（随字数变化）
     const wordsInput = document.querySelector('#create-form input[name="total_words"]');
-    const priceTip = $("#price-tip");
-    // 价格格式化：整数/一位小数显示一位，两位小数（如 0.99）显示两位
-    function fmtPrice(v) {
-      const n = Number(v);
-      return (Math.round(n * 100) % 10 === 0) ? n.toFixed(1) : n.toFixed(2);
+    if (wordsInput && !wordsInput.dataset.bound) {
+      wordsInput.dataset.bound = "1";
+      wordsInput.addEventListener("input", updateFee);
     }
-    const updatePrice = async () => {
-      try {
-        const words = parseInt(wordsInput.value, 10) || 100000;
-        const r = await api("/api/pricing");
-        const tiers = r.tiers || [];
-        let tier = tiers[tiers.length - 1];
-        for (const t of tiers) {
-          if (t.max_words == null || words <= t.max_words) { tier = t; break; }
-        }
-        let priceHtml = "本书为<strong>" + esc(tier.name) + "</strong>，";
-        if (tier.original_price != null && tier.original_price > tier.price) {
-          priceHtml += '<span class="price-original">原价 ' + fmtPrice(tier.original_price) + " 元</span>，现价 <strong class=\"price-now\">" + fmtPrice(tier.price) + " 元</strong> <span class=\"price-tag\">限时优惠</span>。";
-        } else {
-          priceHtml += "定价 <strong>" + fmtPrice(tier.price) + " 元</strong>。";
-        }
-        priceHtml += "创建项目时将从余额扣费。";
-        priceTip.innerHTML = priceHtml;
-      } catch (e) { /* ignore */ }
-    };
-    if (wordsInput) {
-      wordsInput.addEventListener("input", updatePrice);
-      updatePrice();
-    }
+    updateFee();
     // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写
     const modeRadios = $$('#create-form input[name="mode"]');
     const expandWrap = $("#expand-input-wrap");
@@ -430,6 +604,134 @@
     };
     modeRadios.forEach((r) => r.addEventListener("change", applyMode));
     applyMode();
+  }
+
+  // 费用明细：右侧面板 + 顶部简提示
+  async function updateFee() {
+    if (!pricingCache) {
+      try {
+        const r = await api("/api/pricing");
+        pricingCache = r;
+      } catch (e) { return; }
+    }
+    const wordsInput = document.querySelector('#create-form input[name="total_words"]');
+    const words = parseInt(wordsInput && wordsInput.value, 10) || 100000;
+    const tiers = pricingCache.tiers || [];
+    let tier = tiers[tiers.length - 1];
+    for (const t of tiers) {
+      if (t.max_words == null || words <= t.max_words) { tier = t; break; }
+    }
+    if (!tier) return;
+    // 顶部简提示
+    const tip = $("#price-tip");
+    if (tip) {
+      let h = "本书为<strong>" + esc(tier.name) + "</strong>，";
+      if (tier.original_price != null && tier.original_price > tier.price) {
+        h += '<span class="price-original">原价 ' + fmtPrice(tier.original_price) + " 元</span>，现价 <strong class=\"price-now\">" + fmtPrice(tier.price) + " 元</strong> <span class=\"price-tag\">限时优惠</span>。";
+      } else {
+        h += "定价 <strong class=\"price-now\">" + fmtPrice(tier.price) + " 元</strong>。";
+      }
+      h += "创建项目时将从余额扣费。";
+      tip.innerHTML = h;
+    }
+    // 右侧费用明细
+    const fee = $("#fee-detail");
+    if (fee) {
+      const maxWords = tier.max_words != null ? (tier.max_words >= 10000 ? (tier.max_words / 10000) + " 万字" : tier.max_words + " 字") : "不限";
+      let rows =
+        '<div class="fee-row"><span>当前字数</span><b>' + fmtWords(words) + "</b></div>" +
+        '<div class="fee-row"><span>适用档位</span><b>' + esc(tier.name) + "</b></div>" +
+        '<div class="fee-row"><span>字数范围</span><b>' + (tier.max_words != null ? "≤ " + maxWords : "不限") + "</b></div>";
+      if (tier.original_price != null && tier.original_price > tier.price) {
+        rows += '<div class="fee-row"><span>原价</span><span class="price-original">' + fmtPrice(tier.original_price) + " 元</span></div>" +
+          '<div class="fee-row"><span>优惠价</span><b class="gold">' + fmtPrice(tier.price) + " 元</b> <span class='fee-tag'>限时优惠</span></div>";
+      } else {
+        rows += '<div class="fee-row"><span>单价</span><b class="gold">' + fmtPrice(tier.price) + " 元</b></div>";
+      }
+      rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(tier.price) + "</b></div>" +
+        '<div class="fee-hint">创建项目时立即从余额扣费；未开始生成的项目可在「我的书案」中申请退费删除。</div>';
+      fee.innerHTML = rows;
+    }
+  }
+
+  // ---------- 上传大纲智能解析 ----------
+  const outlineFile = $("#outline-file");
+  const parseBtn = $("#btn-parse-outline");
+  const parseStatus = $("#parse-status");
+  const setParseStatus = (msg, isErr) => {
+    parseStatus.textContent = msg;
+    parseStatus.className = "parse-status" + (isErr ? " parse-error" : "");
+  };
+  const setFormVal = (name, val) => {
+    const el = document.querySelector('#create-form [name="' + name + '"]');
+    if (el && val != null && String(val) !== "") {
+      el.value = val;
+      // 触发价格联动（total_words 变化时）
+      if (name === "total_words") el.dispatchEvent(new Event("input"));
+    }
+  };
+  if (parseBtn && outlineFile) {
+    parseBtn.addEventListener("click", async () => {
+      const file = outlineFile.files[0];
+      if (!file) { setParseStatus("请先选择大纲文件", true); return; }
+      if (file.size > 2 * 1024 * 1024) { setParseStatus("文件超过 2MB 限制", true); return; }
+      parseBtn.disabled = true;
+      setParseStatus("AI 解析中…（约 10-30 秒）", false);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const resp = await fetch("/api/parse-outline", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
+          body: fd,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          setParseStatus((data.detail || "解析失败，请稍后重试"), true);
+          return;
+        }
+        const d = data.data || {};
+        // 题材：解析值在列表中则选中，否则追加为自定义选项
+        const genreSel = $("#genre-select");
+        const g = (d.genre || "").trim();
+        if (g) {
+          let hit = Array.from(genreSel.options).find((o) => o.value === g);
+          if (!hit) {
+            const opt = document.createElement("option");
+            opt.value = g; opt.textContent = g;
+            genreSel.appendChild(opt);
+          }
+          genreSel.value = g;
+        }
+        setFormVal("title", d.title);
+        setFormVal("total_words", d.total_words);
+        setFormVal("chapter_words", d.chapter_words);
+        setFormVal("style", d.style);
+        setFormVal("premise", d.premise);
+        setFormVal("background", d.background);
+        setFormVal("hero", d.hero);
+        if (Array.isArray(d.characters) && d.characters.length) {
+          setFormVal("characters", d.characters.join("\n"));
+        }
+        setFormVal("plot_direction", d.plot_direction);
+        // 扩写模式：把原文也放入扩写输入框，方便直接走 AI 扩写
+        if (d.plot_direction || d.background) {
+          const expandWrap = $("#expand-input-wrap");
+          if (expandWrap && !expandWrap.classList.contains("hidden")) {
+            const expandInput = document.querySelector('#create-form [name="expand_input"]');
+            if (expandInput) {
+              const parts = [d.premise, d.background, d.hero, d.plot_direction].filter(Boolean);
+              expandInput.value = parts.join("\n\n");
+            }
+          }
+        }
+        setParseStatus("解析完成，已填充表单，请核对修改", false);
+      } catch (e) {
+        setParseStatus("网络错误：" + (e.message || "请重试"), true);
+      } finally {
+        parseBtn.disabled = false;
+      }
+    });
   }
 
   $("#create-form").addEventListener("submit", async (e) => {
@@ -463,6 +765,7 @@
       editor_review: f.editor_review.checked,
       de_ai: f.de_ai.checked,
       anti_similarity: f.anti_similarity.checked,
+      character_depth: f.character_depth.checked,
       confirm: false,
       memory_window: 5,
       mode,
@@ -489,7 +792,7 @@
       // 更新余额
       me.balance = res.balance;
       renderUserBar();
-      toast("项目「" + res.title + "」创建成功，已扣费 " + res.price.toFixed(1) + " 元");
+      toast("项目「" + res.title + "」创建成功，已扣费 " + fmtPrice(res.price) + " 元");
       currentProjectId = res.id;
       switchView("detail");
     } catch (err) {
@@ -539,6 +842,33 @@
     }
   }
 
+  // 六阶段进度映射：调研 → 大纲 → 人物 → 正文 → 质检 → 导出
+  function calcStage(d) {
+    const total = d.chapters_total || 0;
+    const done = d.chapters_done || 0;
+    if (d.has_error) {
+      return { stage: done > 0 ? 3 : 1, pct: done > 0 ? Math.round(done / total * 100) : 0, label: "生成出错" };
+    }
+    if (total === 0) return { stage: 0, pct: 0, label: "等待开始" };
+    if (done >= total) {
+      return { stage: d.running ? 4 : 5, pct: d.running ? 94 : 100, label: d.running ? "质检 / 导出中" : "已完结 · 可下载" };
+    }
+    if (done > 0) return { stage: 3, pct: Math.round(done / total * 100), label: "正文创作中" };
+    return { stage: d.running ? 1 : 0, pct: d.running ? 30 : 0, label: d.running ? "世界构建中（调研 → 大纲 → 人物）" : "等待开始" };
+  }
+
+  function renderPipeline(d) {
+    const s = calcStage(d);
+    $("#pipe-fill").style.width = s.pct + "%";
+    $("#progress-pct").textContent = s.pct + "%";
+    $("#progress-text").textContent = (d.chapters_total ? d.chapters_done + " / " + d.chapters_total + " 章 · " : "") + s.label;
+    document.querySelectorAll("#pipe-steps .pipe-step").forEach((el) => {
+      const i = parseInt(el.dataset.s, 10);
+      el.classList.toggle("done", i < s.stage);
+      el.classList.toggle("active", i === s.stage);
+    });
+  }
+
   function renderDetail(d) {
     const cfg = d.config;
     $("#detail-title").textContent = cfg.title;
@@ -564,10 +894,8 @@
       coverEmpty.classList.remove("hidden");
     }
 
-    const pct = d.chapters_total ? Math.round((d.chapters_done / d.chapters_total) * 100) : 0;
-    $("#progress-text").textContent = d.chapters_done + " / " + d.chapters_total + " 章";
-    $("#progress-pct").textContent = pct + "%";
-    $("#progress-fill").style.width = pct + "%";
+    // 六阶段进度条
+    renderPipeline(d);
 
     const running = d.running;
     $("#btn-start").disabled = running;
@@ -575,13 +903,21 @@
     // 下载：有任一格式即可用；未生成的格式现场导出
     $("#btn-download").disabled = !(d.has_txt || d.has_epub || d.has_docx || d.chapters_done > 0);
     $("#dl-format").disabled = $("#btn-download").disabled;
-    $("#run-status").textContent = running
-      ? "⏳ 正在生成…（自动刷新）"
-      : d.error
-        ? "⚠ 出错：" + d.error
-        : d.chapters_done >= d.chapters_total && d.chapters_total > 0
-          ? "✅ 已完成"
-          : d.chapters_done > 0 ? "⏸ 已暂停（进度已保存，可继续）" : "未开始";
+    const statusEl = $("#run-status");
+    statusEl.className = "run-status";
+    if (running) {
+      statusEl.textContent = "⏳ 正在生成…（自动刷新）";
+    } else if (d.error) {
+      statusEl.textContent = "⚠ 出错：" + d.error;
+      statusEl.classList.add("err");
+    } else if (d.chapters_done >= d.chapters_total && d.chapters_total > 0) {
+      statusEl.textContent = "✅ 已完成";
+      statusEl.classList.add("ok");
+    } else if (d.chapters_done > 0) {
+      statusEl.textContent = "⏸ 已暂停（进度已保存，可继续）";
+    } else {
+      statusEl.textContent = "未开始";
+    }
 
     const errBox = $("#detail-error");
     if (d.error) { errBox.textContent = "生成出错：" + d.error; errBox.classList.remove("hidden"); }
@@ -598,6 +934,7 @@
     try {
       const o = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline");
       const ob = $("#outline-box");
+      ob.innerHTML = "";
       if (o.title) {
         ob.innerHTML = '<div class="ol-intro"><strong>《' + esc(o.title) + '》</strong><br>' + esc(o.intro) + "</div>";
       }
@@ -635,7 +972,7 @@
       if (c) {
         items.push(
           '<div class="ch-item" data-no="' + i + '">' +
-            '<div class="ch-no">第 ' + i + ' 章</div>' +
+            '<div class="ch-no">第 ' + i + " 章</div>" +
             '<div class="ch-title">' + esc(c.title) + "</div>" +
             '<div class="ch-words">' + c.words + " 字 · " + (c.summary ? esc(c.summary.slice(0, 36)) + "…" : "") + "</div>" +
           "</div>"
@@ -661,6 +998,8 @@
         await openReader(no);
       });
     });
+    // 同步阅读器目录
+    renderReaderToc();
   }
 
   // ---------- 阅读器 ----------
@@ -676,15 +1015,35 @@
     return t;
   }
 
+  function renderReaderToc() {
+    const sel = $("#reader-toc");
+    if (!sel) return;
+    const total = detailCache ? detailCache.chapters_total : 0;
+    let html = '<option value="">目录…</option>';
+    for (let i = 1; i <= total; i++) {
+      const c = chaptersCache.find((x) => x.no === i);
+      html += '<option value="' + i + '">第 ' + i + " 章" + (c ? " " + esc(c.title) : "（未生成）") + "</option>";
+    }
+    sel.innerHTML = html;
+    sel.value = currentChapterNo ? String(currentChapterNo) : "";
+  }
+
   async function openReader(no) {
     try {
       const ch = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/chapters/" + no);
       $("#reader-title").textContent = "第 " + ch.no + " 章 " + ch.title;
       const body = $("#reader-body");
       body.innerHTML = cleanContent(ch.content).split(/\n+/).map((p) => p.trim()).filter(Boolean).map((p) => "<p>" + esc(p) + "</p>").join("");
+      // 应用字号与主题
+      body.style.fontSize = readerFont + "px";
+      body.className = "reader-body theme-" + readerTheme;
+      document.querySelectorAll("#reader-themes .theme-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.theme === readerTheme));
+      $("#reader-fontsize-label").textContent = readerFont;
       $("#reader-modal").classList.remove("hidden");
       body.scrollTop = 0;
       updateReaderNav(no);
+      renderReaderToc();
       $("#btn-regen-from").disabled = false;
     } catch (e) {
       toast("读取章节失败：" + e.message);
@@ -708,6 +1067,46 @@
       currentChapterNo += 1;
       await openReader(currentChapterNo);
     }
+  });
+
+  // 目录跳转
+  $("#reader-toc").addEventListener("change", async (e) => {
+    const no = parseInt(e.target.value, 10);
+    if (!no) return;
+    if (!chaptersCache.find((x) => x.no === no)) { toast("该章节还未生成"); return; }
+    currentChapterNo = no;
+    await openReader(no);
+  });
+
+  // 字号调节
+  function applyReaderFont() {
+    const body = $("#reader-body");
+    if (body) body.style.fontSize = readerFont + "px";
+    const lbl = $("#reader-fontsize-label");
+    if (lbl) lbl.textContent = readerFont;
+    localStorage.setItem("novel_reader_font", String(readerFont));
+  }
+  $("#btn-font-up").addEventListener("click", () => { readerFont = Math.min(28, readerFont + 1); applyReaderFont(); });
+  $("#btn-font-down").addEventListener("click", () => { readerFont = Math.max(12, readerFont - 1); applyReaderFont(); });
+
+  // 阅读主题
+  document.querySelectorAll("#reader-themes .theme-btn").forEach((b) => {
+    b.addEventListener("click", () => {
+      readerTheme = b.dataset.theme;
+      localStorage.setItem("novel_reader_theme", readerTheme);
+      document.querySelectorAll("#reader-themes .theme-btn").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      const body = $("#reader-body");
+      body.className = "reader-body theme-" + readerTheme;
+    });
+  });
+
+  // 键盘翻页（阅读器打开时）
+  document.addEventListener("keydown", (e) => {
+    const modal = $("#reader-modal");
+    if (!modal || modal.classList.contains("hidden")) return;
+    if (e.key === "ArrowRight") $("#btn-next-ch").click();
+    else if (e.key === "ArrowLeft") $("#btn-prev-ch").click();
   });
 
   // ---------- 单章人工修改后继续生成 ----------

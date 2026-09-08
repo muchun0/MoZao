@@ -1,7 +1,27 @@
 # AI 自动生成小说 - 依赖清单
 # 安装：pip install -r requirements.txt
-#
+
+# ===== Web 服务（多用户 SaaS 前端/后端） =====
+fastapi>=0.110.0        # 后端 REST API
+uvicorn>=0.27.0         # ASGI 服务器，run_web.py 启动用
+python-multipart>=0.0.9 # FastAPI 表单/文件上传（上传大纲解析必须）
+
+# ===== LLM 调用 =====
 # openai 官方 SDK 同时兼容 DeepSeek / 豆包火山方舟 / OpenAI，一个 SDK 覆盖多 Provider
 openai>=1.30.0
-# 配置文件解析（config.yaml）
-PyYAML>=6.0
+# 重要：httpx 必须 <0.28。openai 1.x 仍使用 proxies 参数，httpx 0.28 已移除该参数，
+# 会导致所有 LLM 调用在创建客户端时报 TypeError: unexpected keyword argument 'proxies'
+httpx<0.28,>=0.23
+
+# ===== 配置与数据 =====
+PyYAML>=6.0             # config.yaml 解析
+
+# ===== 封面生成（程序化绘制，零外部 API） =====
+Pillow>=10.0.0
+
+# ===== 多格式导出 =====
+ebooklib>=0.18          # EPUB 3 导出
+python-docx>=1.1.0      # Word DOCX 导出
+
+# ===== 测试（可选，开发用） =====
+# pytest>=8.0.0

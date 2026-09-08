@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,7 +42,9 @@ from novel_gen.store.project import ProjectStore, _safe_name
 
 from . import db
 from . import mailer
+from . import verify_code
 from .logger import get_logger
+from .outline_parser import extract_text, parse_outline_text
 from .pricing import FREE_REGISTER_BONUS, price_for, tier_name_for, tiers
 from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
                        REFERRAL_BONUS, agent_price, round_money)
@@ -108,6 +110,7 @@ class ProjectCreateReq(BaseModel):
     editor_review: bool = True
     de_ai: bool = True
     anti_similarity: bool = True
+    character_depth: bool = True    # 人物立体化：角色卡一致性/选择代价/生活体感/出场标签与对话辨识度
     confirm: bool = False
     memory_window: int = 5
     mode: str = "auto"              # auto=现有工作流；expand=AI扩写（提供大纲/简要内容）
@@ -119,7 +122,19 @@ class ProjectCreateReq(BaseModel):
 class RegisterReq(BaseModel):
     username: str = Field(..., min_length=1, max_length=20)
     password: str = Field(..., min_length=4)
+    email: str = ""          # 邮箱（必填，全站唯一，格式校验）
+    code: str = ""           # 邮箱验证码（必填，先"获取验证码"）
     invite_code: str = ""   # 上级邀请码（选填）
+
+
+class SendCodeReq(BaseModel):
+    email: str = ""
+
+
+class ResetPasswordReq(BaseModel):
+    email: str = ""
+    code: str = ""
+    new_password: str = Field(..., min_length=4)
 
 
 class BindReferrerReq(BaseModel):
@@ -163,6 +178,7 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
         "editor_review": cfg.editor_review,
         "de_ai": cfg.de_ai,
         "anti_similarity": cfg.anti_similarity,
+        "character_depth": cfg.character_depth,
         "confirm": cfg.confirm,
         "memory_window": cfg.memory_window,
         "mode": cfg.mode,
@@ -303,6 +319,7 @@ def _list_projects(user: dict) -> list[dict]:
                 "chapters_total": total,
                 "running": d.name in _RUNS,
                 "has_error": bool(_RUNS.get(d.name) and _RUNS[d.name].error),
+                "price": db.project_price(d.name),
             })
         except Exception:
             continue
@@ -381,13 +398,62 @@ def pricing():
     return {"tiers": tiers(), "register_bonus": FREE_REGISTER_BONUS}
 
 
+@app.post("/api/parse-outline")
+async def parse_outline(file: UploadFile = File(...), user: dict = Depends(_require_user)):
+    """上传大纲文档（txt/md/docx），智能解析成新建表单字段。"""
+    try:
+        data = await file.read()
+        text = extract_text(file.filename or "", data)
+    except ValueError as e:
+        logger.info(f"解析大纲失败（文件读取/格式）：{e}，user={user['username']}")
+        raise HTTPException(status_code=400, detail=str(e))
+    api_key = _server_api_key("deepseek")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="服务端未配置解析模型（DEEPSEEK_API_KEY），请联系站长")
+    llm = create_llm(LLMConfig(provider="deepseek", model="", base_url="", api_key=api_key,
+                               temperature=0.2, top_p=0.7, max_tokens=2000))
+    try:
+        result = parse_outline_text(text, llm)
+    except Exception as e:
+        logger.exception(f"解析大纲异常：{e}，user={user['username']}")
+        raise HTTPException(status_code=500, detail="大纲解析失败，请稍后重试")
+    logger.info(f"解析大纲成功：{file.filename or '?'}，title={result.get('title')}，user={user['username']}")
+    return {"ok": True, "data": result}
+
+
 # ---------- 用户 ----------
+@app.post("/api/send-register-code", status_code=201)
+def send_register_code(req: SendCodeReq):
+    """注册验证码：邮箱格式 + 未被注册校验，通过则发邮件。"""
+    email = (req.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="邮箱不能为空")
+    if not db._valid_email(email):
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+    if db.get_user_by_email(email):
+        raise HTTPException(status_code=400, detail="该邮箱已被注册")
+    ok, msg = verify_code.send_code("reg", email)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "msg": msg}
+
+
 @app.post("/api/register", status_code=201)
 def register(req: RegisterReq):
+    email = (req.email or "").strip().lower()
+    # 邮箱占用提前校验（避免消耗验证码）
+    if db.get_user_by_email(email):
+        raise HTTPException(status_code=400, detail="该邮箱已被注册")
+    # 验证码校验
+    ok, why = verify_code.verify_code("reg", email, req.code)
+    if not ok:
+        logger.warning("注册失败: username=%s reason=%s", req.username, why)
+        raise HTTPException(status_code=400, detail=why)
     # 第一个注册的用户自动成为管理员（站长）
     is_first = db.get_user(1) is None
     ok, msg = db.create_user(req.username, req.password,
-                             is_admin=is_first, invite_code=req.invite_code)
+                             is_admin=is_first, invite_code=req.invite_code,
+                             email=email)
     if not ok:
         logger.warning("注册失败: username=%s reason=%s", req.username, msg)
         raise HTTPException(status_code=400, detail=msg)
@@ -411,10 +477,44 @@ def register(req: RegisterReq):
     return {"token": token, "user": _public_user(user), "note": msg if msg != "ok" else ""}
 
 
+@app.post("/api/send-reset-code", status_code=201)
+def send_reset_code(req: SendCodeReq):
+    """忘记密码验证码：邮箱已注册才发；未注册也返回同样提示（不暴露注册状态）。"""
+    email = (req.email or "").strip().lower()
+    if not email or not db._valid_email(email):
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+    if db.get_user_by_email(email):
+        ok, msg = verify_code.send_code("reset", email)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+    logger.info("发送重置验证码请求: email=%s", email)
+    return {"ok": True, "msg": "若该邮箱已注册，验证码邮件已发送，请查收"}
+
+
+@app.post("/api/reset-password")
+def reset_password(req: ResetPasswordReq):
+    """忘记密码重置：验证码 + 新密码。成功则删除该账号全部会话，强制重新登录。"""
+    email = (req.email or "").strip().lower()
+    if not email or not db._valid_email(email):
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+    ok, why = verify_code.verify_code("reset", email, req.code)
+    if not ok:
+        logger.warning("重置密码失败: email=%s reason=%s", email, why)
+        raise HTTPException(status_code=400, detail=why)
+    user = db.get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=400, detail="该邮箱未注册")
+    db.update_password(user["id"], req.new_password)
+    db.delete_user_sessions(user["id"])
+    logger.info("密码重置成功: uid=%d email=%s", user["id"], email)
+    return {"ok": True, "msg": "密码已重置，请使用新密码登录"}
+
+
 def _public_user(user: dict) -> dict:
     return {
         "id": user["id"],
         "username": user["username"],
+        "email": user.get("email") or "",
         "balance": user["balance"],
         "is_admin": bool(user["is_admin"]),
         "is_agent": bool(user.get("is_agent", 0)),
@@ -426,10 +526,11 @@ def _public_user(user: dict) -> dict:
 
 @app.post("/api/login")
 def login(req: LoginReq):
+    # req.username 支持「用户名 或 邮箱」两种登录方式
     uid = db.authenticate(req.username, req.password)
     if uid is None:
-        logger.warning("登录失败: username=%s", req.username)
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        logger.warning("登录失败: identifier=%s", req.username)
+        raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)
     token = db.create_session(uid)
     logger.info("登录成功: uid=%d username=%s", uid, user["username"])
@@ -446,11 +547,11 @@ def logout(authorization: str = Header(default="")):
 
 @app.post("/api/admin/login")
 def admin_login(req: LoginReq):
-    """管理后台登录：仅站长（is_admin=1）可登录，普通用户返回 403。"""
+    """管理后台登录：仅站长（is_admin=1）可登录，普通用户返回 403。支持用户名或邮箱。"""
     uid = db.authenticate(req.username, req.password)
     if uid is None:
-        logger.warning("管理登录失败: username=%s", req.username)
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        logger.warning("管理登录失败: identifier=%s", req.username)
+        raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)
     if not user["is_admin"]:
         logger.warning("非管理员尝试登录管理后台: uid=%d username=%s", uid, user["username"])
@@ -717,6 +818,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         editor_review=req.editor_review,
         de_ai=req.de_ai,
         anti_similarity=req.anti_similarity,
+        character_depth=req.character_depth,
         confirm=req.confirm,
         memory_window=req.memory_window,
         mode=req.mode,
@@ -754,7 +856,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         )
 
     store = ProjectStore.create(PROJECTS_DIR, cfg)
-    db.claim_project(store.dir.name, user["id"])
+    db.claim_project(store.dir.name, user["id"], price)
     db.change_balance(user["id"], -price, f"创建《{cfg.effective_title()}》（{tier_name_for(cfg.total_words)}）")
     logger.info("创建项目: uid=%d project=%s title=%s mode=%s price=%.2f(原价%.2f) words=%d",
                 user["id"], store.dir.name, cfg.effective_title(), cfg.mode,
@@ -1011,6 +1113,63 @@ def stop_generation(project_id: str, user: dict = Depends(_require_user)):
         return {"stopped": False, "message": "项目未在运行"}
     handle.stop_event.set()
     return {"stopped": True, "project_id": project_id, "message": "已请求停止，当前章节完成后生效"}
+
+
+@app.post("/api/projects/{project_id}/refund")
+def refund_project(project_id: str, user: dict = Depends(_require_user)):
+    """未开始生成（零章节产出）的项目：全额退费 + 删除作品。
+
+    退费条件：项目归属当前用户、尚未生成任何章节正文、创建时确有扣费。
+    退费时同步冲正上级消费返佣（防刷量），然后删除项目目录与归属记录。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    title = store.load_config().effective_title()
+
+    if store.list_chapters():
+        raise HTTPException(status_code=400, detail="该项目已开始生成正文，无法退费删除")
+
+    price = db.project_price(project_id)
+    if price <= 0:
+        raise HTTPException(status_code=400, detail="该项目无可退金额（可能为历史项目或已退过）")
+
+    # 若正在生成（调研/大纲/设定阶段，尚未产出章节）：先请求停止并等待线程结束
+    handle = _RUNS.get(project_id)
+    if handle:
+        handle.stop_event.set()
+        if handle.thread and handle.thread.is_alive():
+            handle.thread.join(timeout=30)
+
+    # 退费
+    db.change_balance(user["id"], price, f"项目退费：《{title}》（未开始生成）")
+    # 返佣冲正：该项目触发的消费返佣扣回上级
+    comm = db.find_commission_by_project(project_id)
+    if comm:
+        db.change_balance(comm["agent_id"], -comm["amount"],
+                          f"返佣冲正：《{title}》项目退费")
+        logger.info("返佣冲正: agent_uid=%d amount=%.2f project=%s", 
+                    comm["agent_id"], comm["amount"], project_id)
+
+    # 删除作品：归属记录 + 项目目录 + 已导出的成品文件
+    db.delete_project_owner(project_id)
+    try:
+        import shutil
+        shutil.rmtree(store.dir, ignore_errors=True)
+        from novel_gen.store.project import _safe_name
+        for ext in ("txt", "epub", "docx", "png"):
+            f = OUTPUT_DIR / f"{_safe_name(title)}.{ext}"
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+    except Exception:
+        logger.exception("删除项目文件失败: project=%s", project_id)
+
+    balance = db.get_user(user["id"])["balance"]
+    logger.info("项目退费删除: uid=%d project=%s title=%s price=%.2f new_balance=%.2f",
+                user["id"], project_id, title, price, balance)
+    return {"ok": True, "refunded": price, "balance": balance, "project_id": project_id}
 
 
 @app.get("/api/projects/{project_id}/download")

@@ -3,17 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 小说生成器</title>
+<title>墨造 · AI 小说创作平台</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
-  <!-- ========== 登录视图（未登录时显示） ========== -->
+  <!-- ========== 登录视图（深夜书房） ========== -->
   <section id="view-login" class="view">
-    <div class="login-wrap">
-      <div class="login-card card">
-        <h1 class="login-title">📚 AI 小说生成器</h1>
-        <p class="login-sub">输入题材，自动生成整本小说，支持在线阅读与下载</p>
+    <div class="login-stage">
+      <div class="login-card">
+        <div class="login-brand">
+          <div class="brand-seal">墨</div>
+          <h1>墨造</h1>
+          <p class="login-sub">AI 小说创作平台</p>
+        </div>
 
         <div class="login-tabs">
           <button class="tab active" data-ltab="login">登录</button>
@@ -22,14 +27,17 @@
 
         <form id="login-form" class="login-form">
           <div class="field">
-            <label>用户名</label>
-            <input name="username" required autocomplete="username">
+            <label>用户名 / 邮箱</label>
+            <input name="username" required autocomplete="username" placeholder="用户名或邮箱">
           </div>
           <div class="field">
             <label>密码</label>
             <input name="password" type="password" required autocomplete="current-password">
           </div>
-          <button type="submit" class="btn primary block">登 录</button>
+          <button type="submit" class="btn gold block">登 录</button>
+          <div class="login-links">
+            <button type="button" class="link-btn" id="btn-forgot">忘记密码？</button>
+          </div>
           <div id="login-error" class="error-box hidden"></div>
         </form>
 
@@ -37,6 +45,18 @@
           <div class="field">
             <label>用户名</label>
             <input name="username" required autocomplete="username" maxlength="20">
+          </div>
+          <div class="field">
+            <label>邮箱</label>
+            <div class="code-row">
+              <input name="email" type="email" required autocomplete="email" placeholder="用于登录与找回密码">
+              <button type="button" class="btn small code-btn" id="btn-reg-send-code">获取验证码</button>
+            </div>
+            <small>填写邮箱后先获取验证码，验证码会发送到你的邮箱</small>
+          </div>
+          <div class="field">
+            <label>邮箱验证码</label>
+            <input name="code" required placeholder="6 位数字验证码" inputmode="numeric" maxlength="6">
           </div>
           <div class="field">
             <label>密码（至少 4 位）</label>
@@ -47,10 +67,34 @@
             <input name="invite_code" id="reg-invite" placeholder="推广你的人邀请码，可留空">
             <small>填写后与邀请人绑定，邀请人可获得返佣</small>
           </div>
-          <button type="submit" class="btn primary block">注册并登录</button>
+          <button type="submit" class="btn gold block">注册并登录</button>
           <div id="register-error" class="error-box hidden"></div>
         </form>
-        <p class="login-note" id="bonus-note"></p>
+
+        <form id="reset-form" class="login-form hidden">
+          <div class="field">
+            <label>注册邮箱</label>
+            <div class="code-row">
+              <input name="email" type="email" required autocomplete="email" placeholder="输入注册时使用的邮箱">
+              <button type="button" class="btn small code-btn" id="btn-reset-send-code">获取验证码</button>
+            </div>
+            <small>若该邮箱已注册，验证码邮件会发送到邮箱（未注册则不发送）</small>
+          </div>
+          <div class="field">
+            <label>邮箱验证码</label>
+            <input name="code" required placeholder="6 位数字验证码" inputmode="numeric" maxlength="6">
+          </div>
+          <div class="field">
+            <label>新密码（至少 4 位）</label>
+            <input name="new_password" type="password" required minlength="4" autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn gold block">重置密码</button>
+          <div class="login-links">
+            <button type="button" class="link-btn" id="btn-reset-back">← 返回登录</button>
+          </div>
+          <div id="reset-error" class="error-box hidden"></div>
+        </form>
+        <div class="login-bonus hidden" id="bonus-note"></div>
       </div>
     </div>
   </section>
@@ -58,132 +102,168 @@
   <!-- ========== 主应用 ========== -->
   <div id="app-main" class="hidden">
     <header class="topbar">
-      <div class="brand">📚 AI 小说生成器</div>
+      <div class="brand"><span class="seal">墨</span>墨造<span class="brand-sub">AI 小说创作平台</span></div>
       <nav>
-        <button class="nav-btn active" data-view="projects">我的项目</button>
-        <button class="nav-btn" data-view="create">新建小说</button>
+        <button class="nav-btn active" data-view="projects">我的书案</button>
+        <button class="nav-btn" data-view="create">开卷 · 新建</button>
       </nav>
       <div class="user-box">
         <span class="balance" id="balance-label">余额 0.0 元</span>
         <button class="btn small" id="btn-recharge">充值</button>
-        <button class="btn small" id="btn-referral">🔗 代理中心</button>
-        <a class="btn small" id="btn-admin-panel" href="/admin.html" target="_blank" style="display:none">⚙ 管理后台</a>
+        <button class="btn small" id="btn-referral">代理中心</button>
+        <a class="btn small" id="btn-admin-panel" href="/admin.html" target="_blank" style="display:none">管理后台</a>
         <span class="username" id="username-label"></span>
         <button class="btn ghost small" id="btn-logout">退出</button>
       </div>
     </header>
 
     <main>
-      <!-- 视图：项目列表 -->
+      <!-- 视图：我的书案 -->
       <section id="view-projects" class="view active">
         <div class="view-head">
-          <h2>我的项目</h2>
-          <button class="btn primary" id="btn-new-top">＋ 新建小说</button>
+          <h2>我的书案</h2>
+          <button class="btn gold" id="btn-new-top">＋ 新建小说</button>
+        </div>
+        <div class="project-toolbar">
+          <div class="search-box">
+            <input id="project-search" type="text" placeholder="搜索书名、题材、章节进度…" autocomplete="off">
+          </div>
+          <div class="filter-tabs" id="project-filters">
+            <button data-filter="all" class="active">全部</button>
+            <button data-filter="ready">未开始</button>
+            <button data-filter="running">生成中</button>
+            <button data-filter="paused">已暂停</button>
+            <button data-filter="done">已完成</button>
+            <button data-filter="error">出错</button>
+          </div>
         </div>
         <div id="project-list" class="project-grid"></div>
       </section>
 
-      <!-- 视图：新建项目 -->
+      <!-- 视图：开卷 · 新建 -->
       <section id="view-create" class="view">
-        <h2>新建小说</h2>
-        <div class="card">
-          <div id="price-tip" class="price-tip"></div>
-          <form id="create-form">
-            <div class="mode-selector">
-              <div class="mode-label">生成模式</div>
-              <div class="mode-options">
-                <label class="mode-option">
-                  <input type="radio" name="mode" value="auto" checked>
-                  <span class="mode-card">
-                    <strong>智能生成</strong>
-                    <small>联网调研 → 自动大纲 → 人物世界观 → 逐章正文</small>
-                  </span>
-                </label>
-                <label class="mode-option">
-                  <input type="radio" name="mode" value="expand">
-                  <span class="mode-card">
-                    <strong>AI 扩写</strong>
-                    <small>提供大纲或简要内容，AI 按你的设定扩写成文</small>
-                  </span>
-                </label>
+        <div class="view-head">
+          <h2>开卷 · 新建小说</h2>
+        </div>
+        <div class="create-layout">
+          <div class="card create-main">
+            <div id="price-tip" class="price-tip"></div>
+            <form id="create-form">
+              <div class="mode-selector">
+                <div class="mode-label">选择生成模式</div>
+                <div class="mode-options">
+                  <label class="mode-option">
+                    <input type="radio" name="mode" value="auto" checked>
+                    <span class="mode-card">
+                      <strong>智能生成</strong>
+                      <small>联网调研 → 自动大纲 → 人物世界观 → 逐章正文</small>
+                    </span>
+                  </label>
+                  <label class="mode-option">
+                    <input type="radio" name="mode" value="expand">
+                    <span class="mode-card">
+                      <strong>AI 扩写</strong>
+                      <small>提供大纲或简要内容，AI 按你的设定扩写成文</small>
+                    </span>
+                  </label>
+                </div>
               </div>
-            </div>
 
-            <div id="expand-input-wrap" class="hidden">
-              <div class="field span-2">
-                <label>大纲 / 简要内容 <span class="req">*</span></label>
-                <textarea name="expand_input" rows="8" placeholder="粘贴你已有的大纲、章节脉络或简要故事内容。支持两种形式：&#10;1. 已分章的大纲（每章写清发生了什么）&#10;2. 一段完整的故事梗概 / 简要内容（AI 会按字数自动拆分章节）"></textarea>
-                <small>扩写模式会严格遵循你的内容脉络，只做细化与合理延展</small>
+              <div id="expand-input-wrap" class="hidden">
+                <div class="field span-2">
+                  <label>大纲 / 简要内容 <span class="req">*</span></label>
+                  <textarea name="expand_input" rows="8" placeholder="粘贴你已有的大纲、章节脉络或简要故事内容。支持两种形式：&#10;1. 已分章的大纲（每章写清发生了什么）&#10;2. 一段完整的故事梗概 / 简要内容（AI 会按字数自动拆分章节）"></textarea>
+                  <small>扩写模式会严格遵循你的内容脉络，只做细化与合理延展</small>
+                </div>
               </div>
-            </div>
 
-            <div class="form-grid">
-              <div class="field span-2">
-                <label>小说名称 <span class="req">*</span></label>
-                <input name="title" required placeholder="例如：洪荒：我为混沌证道">
+              <div class="outline-upload">
+                <div class="outline-upload-title">📄 上传大纲，智能解析（选填）</div>
+                <div class="outline-upload-row">
+                  <input type="file" id="outline-file" accept=".txt,.md,.docx">
+                  <button type="button" class="btn small gold" id="btn-parse-outline">解析并填充表单</button>
+                  <span id="parse-status" class="parse-status"></span>
+                </div>
+                <small>支持 .txt / .md / .docx（2MB 内）。解析后自动填入下方字段，可再手动修改。</small>
               </div>
-              <div class="field">
-                <label>题材</label>
-                <select name="genre" id="genre-select"></select>
-              </div>
-              <div class="field">
-                <label>目标总字数 <span class="req">*</span></label>
-                <input name="total_words" type="number" value="100000" min="1">
-                <small>字数由你决定，创建时按档位扣费</small>
-              </div>
-              <div class="field">
-                <label>单章字数</label>
-                <input name="chapter_words" type="number" value="2500" min="200">
-              </div>
-              <div class="field span-2">
-                <label>文风要求</label>
-                <input name="style" placeholder="例如：冷峻写实、克制冷冽（可留空）">
-              </div>
-              <div class="field span-2" data-expand-hide>
-                <label>核心创意 / 一句话简介</label>
-                <textarea name="premise" rows="2" placeholder="一句话说明这本书要写什么（可留空）"></textarea>
-              </div>
-              <div class="field span-2">
-                <label>故事背景 / 世界观（强约束）</label>
-                <textarea name="background" rows="3" placeholder="时代、世界格局、力量体系、核心矛盾…"></textarea>
-              </div>
-              <div class="field span-2" data-expand-hide>
-                <label>主角设定（强约束）</label>
-                <textarea name="hero" rows="2" placeholder="姓名、身份、性格、目标、口头禅…"></textarea>
-              </div>
-              <div class="field span-2" data-expand-hide>
-                <label>配角 / 反派预设（强约束，每行一个）</label>
-                <textarea name="characters" rows="3" placeholder="例：&#10;玄清：先天清气所化，与主角亦敌亦友&#10;后土：巫族之母，主角挚爱"></textarea>
-              </div>
-              <div class="field span-2" data-expand-hide>
-                <label>剧情走向 / 关键情节（参考方向）</label>
-                <textarea name="plot_direction" rows="3" placeholder="希望发生的故事脉络、关键桥段…"></textarea>
-              </div>
-              <div class="field span-2">
-                <label>避雷 / 不想要的内容（每行一个）</label>
-                <textarea name="forbidden" rows="2" placeholder="例：&#10;无脑打脸&#10;主角开挂"></textarea>
-              </div>
-            </div>
 
-            <div class="switch-row">
-              <label class="switch"><input type="checkbox" name="editor_review" checked><span>编辑质检（大纲自动审阅修正）</span></label>
-              <label class="switch"><input type="checkbox" name="de_ai" checked><span>去 AI 味</span></label>
-              <label class="switch"><input type="checkbox" name="anti_similarity" checked><span>防同质化</span></label>
-            </div>
+              <div class="form-grid">
+                <div class="field span-2">
+                  <label>小说名称 <span class="req">*</span></label>
+                  <input name="title" required placeholder="例如：洪荒：我为混沌证道">
+                </div>
+                <div class="field">
+                  <label>题材</label>
+                  <select name="genre" id="genre-select"></select>
+                </div>
+                <div class="field">
+                  <label>目标总字数 <span class="req">*</span></label>
+                  <input name="total_words" type="number" value="100000" min="1">
+                  <small>字数由你决定，创建时按档位扣费</small>
+                </div>
+                <div class="field">
+                  <label>单章字数</label>
+                  <input name="chapter_words" type="number" value="2500" min="200">
+                </div>
+                <div class="field span-2">
+                  <label>文风要求</label>
+                  <input name="style" placeholder="例如：冷峻写实、克制冷冽（可留空）">
+                </div>
+                <div class="field span-2" data-expand-hide>
+                  <label>核心创意 / 一句话简介</label>
+                  <textarea name="premise" rows="2" placeholder="一句话说明这本书要写什么（可留空）"></textarea>
+                </div>
+                <div class="field span-2">
+                  <label>故事背景 / 世界观（强约束）</label>
+                  <textarea name="background" rows="3" placeholder="时代、世界格局、力量体系、核心矛盾…"></textarea>
+                </div>
+                <div class="field span-2" data-expand-hide>
+                  <label>主角设定（强约束）</label>
+                  <textarea name="hero" rows="2" placeholder="姓名、身份、性格、目标、口头禅…"></textarea>
+                </div>
+                <div class="field span-2" data-expand-hide>
+                  <label>配角 / 反派预设（强约束，每行一个）</label>
+                  <textarea name="characters" rows="3" placeholder="例：&#10;玄清：先天清气所化，与主角亦敌亦友&#10;后土：巫族之母，主角挚爱"></textarea>
+                </div>
+                <div class="field span-2" data-expand-hide>
+                  <label>剧情走向 / 关键情节（参考方向）</label>
+                  <textarea name="plot_direction" rows="3" placeholder="希望发生的故事脉络、关键桥段…"></textarea>
+                </div>
+                <div class="field span-2">
+                  <label>避雷 / 不想要的内容（每行一个）</label>
+                  <textarea name="forbidden" rows="2" placeholder="例：&#10;无脑打脸&#10;主角开挂"></textarea>
+                </div>
+              </div>
 
-            <div class="form-actions">
-              <button type="submit" class="btn primary">创建项目（将扣费）</button>
-              <button type="button" class="btn ghost" id="btn-create-cancel">取消</button>
+              <div class="switch-row">
+                <label class="switch"><input type="checkbox" name="editor_review" checked><span>编辑质检</span></label>
+                <label class="switch"><input type="checkbox" name="de_ai" checked><span>去 AI 味</span></label>
+                <label class="switch"><input type="checkbox" name="anti_similarity" checked><span>防同质化</span></label>
+                <label class="switch"><input type="checkbox" name="character_depth" checked><span>人物立体化</span></label>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="btn primary">创建项目（将扣费）</button>
+                <button type="button" class="btn ghost" id="btn-create-cancel">取消</button>
+              </div>
+              <div id="create-error" class="error-box hidden"></div>
+            </form>
+          </div>
+
+          <!-- 费用明细悬浮栏 -->
+          <aside class="fee-panel">
+            <div class="fee-card">
+              <h4>费用明细</h4>
+              <div id="fee-detail"></div>
             </div>
-            <div id="create-error" class="error-box hidden"></div>
-          </form>
+          </aside>
         </div>
       </section>
 
       <!-- 视图：项目详情 -->
       <section id="view-detail" class="view">
         <div class="view-head">
-          <button class="btn ghost" id="btn-back">← 返回列表</button>
+          <button class="btn ghost" id="btn-back">← 返回书案</button>
           <h2 id="detail-title"></h2>
         </div>
 
@@ -196,10 +276,24 @@
             </div>
             <div class="detail-main">
               <div class="detail-meta" id="detail-meta"></div>
-              <div class="progress-wrap">
-                <div class="progress-label"><span id="progress-text">0 / 0 章</span><span id="progress-pct">0%</span></div>
-                <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+
+              <!-- 六阶段墨迹进度条 -->
+              <div class="pipeline">
+                <div class="pipe-head">
+                  <span class="pipe-text" id="progress-text">0 / 0 章</span>
+                  <span class="pipe-pct" id="progress-pct">0%</span>
+                </div>
+                <div class="pipe-track"><div class="pipe-fill" id="pipe-fill"></div></div>
+                <div class="pipe-steps" id="pipe-steps">
+                  <div class="pipe-step" data-s="0"><span class="dot"></span><span>调研</span></div>
+                  <div class="pipe-step" data-s="1"><span class="dot"></span><span>大纲</span></div>
+                  <div class="pipe-step" data-s="2"><span class="dot"></span><span>人物</span></div>
+                  <div class="pipe-step" data-s="3"><span class="dot"></span><span>正文</span></div>
+                  <div class="pipe-step" data-s="4"><span class="dot"></span><span>质检</span></div>
+                  <div class="pipe-step" data-s="5"><span class="dot"></span><span>导出</span></div>
+                </div>
               </div>
+
               <div class="detail-actions">
                 <button class="btn primary" id="btn-start">▶ 开始生成</button>
                 <button class="btn danger" id="btn-stop" disabled>⏹ 停止</button>
@@ -238,12 +332,22 @@
         <!-- 章节阅读弹层 -->
         <div id="reader-modal" class="modal hidden">
           <div class="modal-content">
-            <div class="modal-head">
-              <h3 id="reader-title"></h3>
-              <div class="modal-head-actions">
-                <button class="btn small" id="btn-edit-chapter">✎ 编辑本章</button>
-                <button class="btn ghost" id="btn-close-reader">✕ 关闭</button>
+            <div class="reader-toolbar">
+              <select id="reader-toc" title="目录"><option value="">目录…</option></select>
+              <div class="font-ctl">
+                <button id="btn-font-down" title="减小字号">A−</button>
+                <span id="reader-fontsize-label">17</span>
+                <button id="btn-font-up" title="增大字号">A＋</button>
               </div>
+              <div class="theme-ctl" id="reader-themes">
+                <button class="theme-btn active" data-theme="paper">纸白</button>
+                <button class="theme-btn" data-theme="sepia">护眼</button>
+                <button class="theme-btn" data-theme="night">暗夜</button>
+              </div>
+              <div style="flex:1"></div>
+              <span class="muted" id="reader-title"></span>
+              <button class="btn small" id="btn-edit-chapter">✎ 编辑本章</button>
+              <button class="btn ghost" id="btn-close-reader">✕ 关闭</button>
             </div>
             <div class="reader-body" id="reader-body"></div>
             <div class="reader-nav">
@@ -285,7 +389,7 @@
   <div id="referral-modal" class="modal hidden">
     <div class="modal-content referral-modal">
       <div class="modal-head">
-        <h3>🔗 代理中心</h3>
+        <h3>代理中心</h3>
         <button class="btn ghost" id="btn-close-referral">✕ 关闭</button>
       </div>
       <div class="referral-body" id="referral-body">加载中…</div>
@@ -296,19 +400,20 @@
   <div id="recharge-modal" class="modal hidden">
     <div class="modal-content narrow">
       <div class="modal-head">
-        <h3>充值说明</h3>
+        <h3>充值</h3>
         <button class="btn ghost" id="btn-close-recharge">✕ 关闭</button>
       </div>
-      <div class="recharge-body">
+      <div class="modal-body">
         <div class="recharge-steps">
-          <p><strong>1.</strong> 扫描下方收款码（微信 / 支付宝均可）完成转账。</p>
+          <p><strong>1.</strong> 扫描下方收款码（当前仅支持支付宝）完成转账。</p>
           <p><strong>2.</strong> 转账时备注你的用户名：<span class="hl" id="recharge-username"></span></p>
           <p><strong>3.</strong> 付款后联系管理员（站长）确认到账，确认后余额自动到账。</p>
         </div>
-        <div class="qr-placeholder">
-          收款码图片（由站长自行替换为真实收款码）
+        <div class="recharge-tiers" id="recharge-tiers"></div>
+        <div class="qr-box">
+          <img src="payment_qr.png" alt="支付宝收款码" class="qr-img">
         </div>
-        <p class="recharge-note">定价：极短篇（≤5000 字）0.99 元 <span class="price-original">原价 2.99</span> / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元</p>
+        <p class="recharge-note" id="recharge-note"></p>
         <div class="recharge-footer">
           <button class="btn small ghost" id="btn-open-refund">💰 申请退款（充值余额可退）</button>
         </div>
@@ -329,11 +434,11 @@
           <label>退款金额（元）</label>
           <input id="refund-amount" type="number" min="0.01" step="0.01" placeholder="0.99">
         </div>
-        <div class="field">
+        <div class="field" style="margin-top:12px">
           <label>退款原因（选填）</label>
           <textarea id="refund-reason" rows="3" placeholder="例如：充值多了用不完，想退回余额"></textarea>
         </div>
-        <button class="btn primary block" id="btn-submit-refund">提交申请</button>
+        <button class="btn primary block" id="btn-submit-refund" style="margin-top:14px">提交申请</button>
         <div id="refund-error" class="error-box hidden"></div>
         <div id="refund-history" class="refund-history"></div>
       </div>

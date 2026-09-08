@@ -41,13 +41,18 @@ WIDTH, HEIGHT = 600, 900
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
-    """加载中文字体（Windows 常见中文字体），找不到则用默认字体。"""
+    """加载中文字体（Windows 常见中文字体 + Linux 常见中文字体），找不到则用默认字体。"""
     candidates = [
         r"C:\Windows\Fonts\msyh.ttc",        # 微软雅黑
         r"C:\Windows\Fonts\msyhbd.ttc",
         r"C:\Windows\Fonts\simhei.ttf",      # 黑体
         r"C:\Windows\Fonts\simsun.ttc",      # 宋体
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux 兜底
+        r"C:\Windows\Fonts\simkai.ttf",      # 楷体
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   # Linux: Noto CJK
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",             # Linux: 文泉驿
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",     # 最终兜底（无中文）
     ]
     for path in candidates:
         if Path(path).exists():

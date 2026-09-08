@@ -1,24 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-封面生成：程序化生成小说封面（PNG）。
+封面生成：优先调用硅基流动（SiliconFlow）ERNIE-Image-Turbo 生成 AI 封面，
+失败或未配置 Key 时回退到程序化绘制（Pillow，零成本）。
 
-当前实现用 Pillow 纯代码绘制（零外部 API / 零额外成本）：
-- 按题材选择配色与装饰元素
-- 竖版 2:3 封面（600x900），标题大字 + 题材角标 + 装饰纹理
-- 输出到 output/<书名>.png，并在项目目录留一份副本
+AI 封面策略：
+- AI 只生成竖版背景插画（prompt 明确禁止出现文字，避免 AI 画错书名）
+- 书名/题材/作者/副标题由本模块用 Pillow 精确叠加，保证文字 100% 正确
+- 输出统一为 2:3 竖版（600x900）PNG
 
-扩展性：后续接入 AI 生图（如即梦/Stable Diffusion API）时，
-只需新增一个同样返回 Path 的生成器，并在调用方按开关替换。
+配置（.env 或环境变量，服务启动时加载）：
+    SILICONFLOW_API_KEY=sk-xxx      # 硅基流动 API Key（必填才启用 AI 封面）
+    AI_COVER_ENABLED=1              # 默认开启；设 0 强制只用程序化封面
 """
 from __future__ import annotations
 
+import logging
+import os
 import random
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# 题材 → (主色, 辅色, 装饰风格)。装饰风格决定背景纹理走向。
+logger = logging.getLogger("novel.cover")
+
+# 硅基流动文生图 API（国内站 .cn 优先；.com 为国际站，部分 Key 不通用）
+SILICONFLOW_API_URLS = [
+    "https://api.siliconflow.cn/v1/images/generations",
+    "https://api.siliconflow.com/v1/images/generations",
+]
+AI_MODEL = "baidu/ERNIE-Image-Turbo"  # 硅基流动上 ERNIE-Image-Turbo 的模型 ID
+
+# 题材 → (主色, 辅色, 装饰风格)。装饰风格决定背景纹理走向（程序化兜底用）。
 _STYLE = {
     "玄幻": ((32, 24, 74), (172, 122, 255), "mystic"),
     "仙侠": ((18, 42, 66), (140, 200, 230), "mystic"),
@@ -124,31 +138,8 @@ def _draw_background(draw: ImageDraw.ImageDraw, style: str, w: int, h: int,
     draw._image.paste(overlay, (0, 0), overlay)
 
 
-def generate_cover(
-    title: str,
-    genre: str = "其他",
-    author: str = "AI 自动生成",
-    subtitle: str = "",
-    out_path: Optional[Path] = None,
-) -> Path:
-    """程序化生成封面 PNG 并返回路径。
-
-    :param title: 书名（过长自动换行）
-    :param genre: 题材，用于配色与装饰
-    :param author: 作者署名
-    :param subtitle: 副标题（可选，展示在书名下方）
-    :param out_path: 输出路径（必填）
-    """
-    primary, accent, style = _STYLE.get(genre, _STYLE["其他"])
-
-    img = Image.new("RGB", (WIDTH, HEIGHT), primary)
-    draw = ImageDraw.Draw(img)
-    _draw_background(draw, style, WIDTH, HEIGHT, primary, accent)
-
-    # 标题：按宽度自动换行
-    size = 66 if len(title) <= 6 else (56 if len(title) <= 10 else 46)
-    font = _font(size)
-    max_width = WIDTH - 120
+def _wrap_title(title: str, font, max_width: int, size: int) -> list[str]:
+    """按像素宽度把书名换行（去书名号），最多 3 行。"""
     lines: list[str] = []
     cur = ""
     for ch in title:
@@ -163,16 +154,29 @@ def generate_cover(
         lines.append(cur.rstrip("《》"))
     if not lines:
         lines = [title[:6]]
-    lines = lines[:3]
+    return lines[:3]
+
+
+def _draw_text_overlay(img: Image.Image, title: str, genre: str,
+                       author: str, subtitle: str) -> None:
+    """在任意封面底图上叠加书名/副标题/作者/题材角标（文字 100% 精确）。"""
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+
+    # 标题：按宽度自动换行
+    size = 66 if len(title) <= 6 else (56 if len(title) <= 10 else 46)
+    font = _font(size)
+    max_width = w - 120
+    lines = _wrap_title(title, font, max_width, size)
 
     line_h = size + 14
     total_h = line_h * len(lines)
-    y = HEIGHT // 2 - total_h // 2 - 40
+    y = h // 2 - total_h // 2 - 40
 
     for line in lines:
         text = line.strip() or "无题"
         total_w = sum(draw.textlength(ch, font=font) for ch in text)
-        x = (WIDTH - total_w) / 2
+        x = (w - total_w) / 2
         for ch in text:
             tw = draw.textlength(ch, font=font)
             draw.text((x + 2, y + 2), ch, font=font, fill=(0, 0, 0, 200))
@@ -183,12 +187,12 @@ def generate_cover(
     # 副标题
     if subtitle:
         sub_font = _font(22)
-        draw.text((WIDTH / 2, y + 10), subtitle, font=sub_font,
+        draw.text((w / 2, y + 10), subtitle, font=sub_font,
                   fill=(235, 235, 235), anchor="mm")
 
     # 作者署名（底部）
     author_font = _font(20)
-    draw.text((WIDTH / 2, HEIGHT - 52), f"— {author} —", font=author_font,
+    draw.text((w / 2, h - 52), f"— {author} —", font=author_font,
               fill=(220, 220, 220), anchor="mm")
 
     # 题材角标（左上）
@@ -196,13 +200,138 @@ def generate_cover(
     tag_text = genre or "其他"
     tag_w = draw.textlength(tag_text, font=tag_font) + 28
     tag_box = (30, 30, 30 + int(tag_w), 62)
-    draw.rounded_rectangle(tag_box, radius=16, fill=accent + (220,))
+    draw.rounded_rectangle(tag_box, radius=16, fill=(0, 0, 0, 120))
+    draw.rounded_rectangle(tag_box, radius=16, outline=(255, 255, 255, 160), width=1)
     draw.text(((tag_box[0] + tag_box[2]) / 2, (tag_box[1] + tag_box[3]) / 2),
               tag_text, font=tag_font, fill=(255, 255, 255), anchor="mm")
 
     # 底部分隔线
-    draw.line([(WIDTH * 0.2, HEIGHT - 78), (WIDTH * 0.8, HEIGHT - 78)],
-              fill=accent, width=2)
+    draw.line([(w * 0.2, h - 78), (w * 0.8, h - 78)], fill=(255, 255, 255, 140), width=2)
+
+
+def _build_cover_prompt(title: str, genre: str, subtitle: str) -> str:
+    """构造 AI 封面 prompt：只描述题材氛围插画，文字一律由程序叠加，
+    因此 prompt 不注入书名/副标题（否则 AI 会渲染成画面文字）。"""
+    desc = {
+        "玄幻": "东方玄幻史诗感，仙山云海与星辰交汇，玄奥符文光带缭绕，神秘磅礴",
+        "仙侠": "水墨意境与仙光结合，青峰流云、飞剑灵鹤，清冷出尘的仙侠氛围",
+        "都市": "现代都市夜景，霓虹光影与摩天楼群，冷暖色调对比，时尚锐利",
+        "科幻": "未来科幻场景，宇宙星云、机械结构、能量光流，冷冽科技感",
+        "悬疑": "阴暗诡谲氛围，迷雾中的轮廓、冷色光线、若隐若现的线索，张力十足",
+        "灵异": "幽冥诡秘氛围，幽暗烛光、古旧物什、雾气缭绕，阴冷神秘",
+        "言情": "唯美浪漫氛围，柔光、花影、暖色调，细腻温柔的情绪感",
+        "历史": "厚重历史质感，古建筑剪影、泛黄色调、史诗般的苍茫",
+        "军事": "冷硬军事风格，钢铁与硝烟、战术光影、力量感",
+        "游戏": "游戏 CG 质感，奇幻世界场景、冒险氛围、华丽光影",
+        "体育": "热血动感，赛场光影、速度线条、迸发的力量与激情",
+        "二次元": "二次元动漫风格，明快色彩、精致插画质感、青春活力",
+        "短篇": "文艺电影质感，氛围光影、留白构图、故事感",
+        "其他": "大气文学质感，抽象光影层次、高级色调、留白构图",
+    }.get(genre, "大气文学质感，抽象光影层次、高级色调、留白构图")
+
+    return (
+        f"竖版小说封面背景插画。"
+        f"画面氛围：{desc}。"
+        f"构图：中央与上部留出大片干净暗部区域用于摆放标题文字，"
+        f"主体景物偏下三分之一。"
+        f"风格：高端网文封面质感，光影层次丰富，色彩协调，细节精致。"
+        f"画面中绝对不要出现任何文字、字母、数字、符号、logo、水印。"
+    )
+
+
+def _fit_cover(img: Image.Image) -> Image.Image:
+    """把任意尺寸图片适配为 2:3 竖版封面（覆盖式缩放 + 居中裁剪）。"""
+    scale = max(WIDTH / img.width, HEIGHT / img.height)
+    new_w, new_h = round(img.width * scale), round(img.height * scale)
+    img = img.convert("RGB").resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - WIDTH) // 2
+    top = (new_h - HEIGHT) // 2
+    return img.crop((left, top, left + WIDTH, top + HEIGHT))
+
+
+def generate_ai_cover(
+    title: str,
+    genre: str = "其他",
+    author: str = "AI 自动生成",
+    subtitle: str = "",
+    out_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """调用硅基流动 ERNIE-Image-Turbo 生成 AI 封面。
+
+    任一步失败（未配 Key/开关关闭/网络/接口异常）都返回 None，由调用方回退。
+    """
+    if out_path is None:
+        raise ValueError("out_path 不能为空")
+    if os.getenv("AI_COVER_ENABLED", "1") == "0":
+        logger.info("AI 封面已通过 AI_COVER_ENABLED=0 关闭，跳过")
+        return None
+    api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
+    if not api_key:
+        logger.info("未配置 SILICONFLOW_API_KEY，跳过 AI 封面")
+        return None
+
+    prompt = _build_cover_prompt(title, genre, subtitle)
+    seed = random.randint(0, 999999999)
+    payload = {
+        "model": AI_MODEL,
+        "prompt": prompt,
+        "image_size": "768x1024",   # 3:4 竖版，最接近 2:3 封面
+        "seed": seed,
+        "output_format": "png",
+    }
+    try:
+        with httpx.Client(timeout=90) as client:
+            last_exc: Optional[Exception] = None
+            for api_url in SILICONFLOW_API_URLS:
+                try:
+                    resp = client.post(
+                        api_url,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    images = (data or {}).get("images") or []
+                    if not images or not images[0].get("url"):
+                        logger.warning("%s 返回无图片: %s", api_url, str(data)[:300])
+                        return None
+                    img_url = images[0]["url"]
+                    img_resp = client.get(img_url, timeout=90)
+                    img_resp.raise_for_status()
+                    raw = Image.open(__import__("io").BytesIO(img_resp.content))
+                    break  # 成功
+                except Exception as exc:  # noqa: BLE001 - 尝试下一个域名
+                    last_exc = exc
+                    logger.warning("AI 封面请求失败(%s)：%s", api_url, exc)
+            else:
+                raise last_exc or RuntimeError("所有 API 域名均失败")
+    except Exception as exc:  # noqa: BLE001 - 封面失败不应影响主流程
+        logger.warning("AI 封面生成失败(%s)：%s", AI_MODEL, exc)
+        return None
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cover = _fit_cover(raw)
+    _draw_text_overlay(cover, title, genre, author, subtitle)
+    cover.save(str(out_path), format="PNG")
+    logger.info("AI 封面已生成: %s (seed=%d)", out_path, seed)
+    return out_path
+
+
+def generate_cover(
+    title: str,
+    genre: str = "其他",
+    author: str = "AI 自动生成",
+    subtitle: str = "",
+    out_path: Optional[Path] = None,
+) -> Path:
+    """程序化生成封面 PNG 并返回路径（零外部依赖，作为兜底）。"""
+    primary, accent, style = _STYLE.get(genre, _STYLE["其他"])
+
+    img = Image.new("RGB", (WIDTH, HEIGHT), primary)
+    draw = ImageDraw.Draw(img)
+    _draw_background(draw, style, WIDTH, HEIGHT, primary, accent)
+    _draw_text_overlay(img, title, genre, author, subtitle)
 
     if out_path is None:
         raise ValueError("out_path 不能为空")
@@ -210,3 +339,17 @@ def generate_cover(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out_path), format="PNG")
     return out_path
+
+
+def generate_best_cover(
+    title: str,
+    genre: str = "其他",
+    author: str = "AI 自动生成",
+    subtitle: str = "",
+    out_path: Optional[Path] = None,
+) -> Path:
+    """AI 封面优先（配了 Key 且开关开启），失败自动回退程序化封面。"""
+    ai = generate_ai_cover(title, genre, author, subtitle, out_path)
+    if ai is not None:
+        return ai
+    return generate_cover(title, genre, author, subtitle, out_path)

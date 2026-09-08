@@ -34,7 +34,7 @@ from novel_gen.config import (
     SearchConfig,
     validate_config,
 )
-from novel_gen.export.cover import generate_cover
+from novel_gen.export.cover import generate_best_cover
 from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
@@ -1041,7 +1041,8 @@ def gen_cover(project_id: str, user: dict = Depends(_require_user)):
     outline = store.load_outline()
     subtitle = (outline.intro[:18] + "…") if outline and len(outline.intro) > 18 else (outline.intro if outline else "")
     out_path, proj_path = _cover_files(store)
-    generate_cover(
+    # AI 封面优先（硅基流动 ERNIE-Image-Turbo），失败自动回退程序化封面
+    generate_best_cover(
         title=cfg.effective_title(),
         genre=cfg.genre,
         subtitle=subtitle,

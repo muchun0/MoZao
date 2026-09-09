@@ -1,0 +1,14 @@
+# Caddy 配置：mozao.click HTTPS 反代到墨造服务（备案通过后启用）
+# 用法：caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+# 说明：Caddy 自动申请/续签 Let's Encrypt 证书，80 端口自动 301 跳转到 https
+
+mozao.click {
+    # 反代到 Docker 容器映射的服务端口
+    reverse_proxy 127.0.0.1:8000
+    encode gzip
+}
+
+# 备案期间可用 IP 直连保持内测（可选，暂不启用）：
+# :80 {
+#     reverse_proxy 127.0.0.1:8000
+# }

@@ -21,8 +21,7 @@ services:
     container_name: novel-gen
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"   # 仅本机回环：对外 80/443 由 Caddy 反代（https 上线后）
-      # - "80:8000"             # 纯 IP 直连内测时用这个（与 Caddy 二选一）
+      - "80:8000"   # 80 对外直连（回滚 HTTPS 后；HTTPS 上线时改为 127.0.0.1:8000 并启用 Caddy）
     env_file:
       - .env
     environment:

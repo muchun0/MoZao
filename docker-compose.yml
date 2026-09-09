@@ -12,6 +12,7 @@
 #     不写入镜像；.env 缺失时服务也能启动，只是 Key 为空。
 #   - 四个命名卷持久化：projects 中间产物 / output 成品 / logs 日志 / data 数据库。
 #   - 首次注册的用户自动成为站长。
+#   - HTTPS 上线后端口只绑定本机回环 127.0.0.1:8000，对外 80/443 由 Caddy 反代。
 # ============================================================
 services:
   novel-gen:
@@ -20,7 +21,8 @@ services:
     container_name: novel-gen
     restart: unless-stopped
     ports:
-      - "80:8000"           # 80 对外访问；如需改端口，如 8080:8000
+      - "127.0.0.1:8000:8000"   # 仅本机回环：对外 80/443 由 Caddy 反代（https 上线后）
+      # - "80:8000"             # 纯 IP 直连内测时用这个（与 Caddy 二选一）
     env_file:
       - .env
     environment:

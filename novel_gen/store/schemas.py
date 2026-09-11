@@ -98,9 +98,10 @@ class Chapter:
     title: str = ""
     content: str = ""
     summary: str = ""  # 本章摘要，用于后续章节的记忆回填
+    goal: str = ""     # 生成时的大纲目标快照（用于大纲变更检测；旧数据为空不误报）
 
     def to_dict(self) -> dict:
-        return {"no": self.no, "title": self.title, "content": self.content, "summary": self.summary}
+        return {"no": self.no, "title": self.title, "content": self.content, "summary": self.summary, "goal": self.goal}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Chapter":
@@ -109,6 +110,7 @@ class Chapter:
             title=d.get("title", ""),
             content=d.get("content", ""),
             summary=d.get("summary", ""),
+            goal=d.get("goal", ""),
         )
 
 

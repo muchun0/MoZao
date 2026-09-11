@@ -946,6 +946,15 @@
       ob.innerHTML += o.chapters.map((c) =>
         '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》<span class="goal">——' + esc(c.goal) + "</span></div>"
       ).join("");
+      // 大纲与已生成章节差异提示（改动章节 + 废弃章节）
+      try {
+        const d = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
+        window._outlineDiff = d;
+        const warns = [];
+        if (d.changed && d.changed.length) warns.push("有 " + d.changed.length + " 章内容与新大纲不一致，可在章节列表重写");
+        if (d.removed && d.removed.length) warns.push(d.removed.length + " 章已从大纲移除（正文文件保留，标记已废弃）");
+        if (warns.length) ob.innerHTML = '<div class="ol-warn">' + warns.map((w) => "<div>⚠ " + esc(w) + "</div>").join("") + "</div>" + ob.innerHTML;
+      } catch (e) { /* diff 不可用时忽略 */ }
 
       const w = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/world");
       const wb = $("#world-box");
@@ -969,6 +978,12 @@
         chaptersCache = chs.chapters;
       }
     } catch (e) { return; }
+    // 大纲差异：changed 章节加"大纲已改"标记
+    let diff = { changed: [], removed: [] };
+    try {
+      diff = window._outlineDiff || await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
+      window._outlineDiff = diff;
+    } catch (e) { /* ignore */ }
     const total = detailCache ? detailCache.chapters_total : 0;
     const list = $("#chapter-list");
     const items = [];
@@ -978,7 +993,9 @@
         items.push(
           '<div class="ch-item" data-no="' + i + '">' +
             '<div class="ch-no">第 ' + i + " 章</div>" +
-            '<div class="ch-title">' + esc(c.title) + "</div>" +
+            '<div class="ch-title">' + esc(c.title) +
+            (diff.changed.indexOf(i) >= 0 ? ' <span class="ch-badge">⚡ 大纲已改</span>' : "") +
+            (diff.removed.indexOf(i) >= 0 ? ' <span class="ch-badge danger">已废弃</span>' : "") + "</div>" +
             '<div class="ch-words">' + c.words + " 字 · " + (c.summary ? esc(c.summary.slice(0, 36)) + "…" : "") + "</div>" +
           "</div>"
         );
@@ -1170,6 +1187,104 @@
       await refreshDetail();
     } catch (e) {
       toast("操作失败：" + e.message);
+    }
+  });
+
+  // ---------- 大纲编辑 ----------
+  let outlineDraft = []; // [{title, goal}]
+
+  function renderOutlineEdit() {
+    const list = $("#outline-edit-list");
+    if (!list) return;
+    list.innerHTML = outlineDraft.map((c, i) =>
+      '<div class="ol-edit-row" data-i="' + i + '">' +
+        '<div class="ol-edit-no">第 ' + (i + 1) + " 章</div>" +
+        '<div class="ol-edit-fields">' +
+          '<input class="ol-edit-title" value="' + esc(c.title) + '" placeholder="章节标题">' +
+          '<textarea class="ol-edit-goal" rows="2" placeholder="本章剧情目标（一句话）">' + esc(c.goal) + "</textarea>" +
+        "</div>" +
+        '<button class="btn danger small ol-edit-del" title="删除本章">✕</button>' +
+      "</div>"
+    ).join("");
+    list.querySelectorAll(".ol-edit-row").forEach((row) => {
+      const i = parseInt(row.dataset.i, 10);
+      row.querySelector(".ol-edit-title").addEventListener("input", (e) => { outlineDraft[i].title = e.target.value; });
+      row.querySelector(".ol-edit-goal").addEventListener("input", (e) => { outlineDraft[i].goal = e.target.value; });
+      row.querySelector(".ol-edit-del").addEventListener("click", () => {
+        if (!confirm("删除第 " + (i + 1) + " 章？已生成的该章正文会保留并标记废弃。")) return;
+        outlineDraft.splice(i, 1);
+        renderOutlineEdit();
+      });
+    });
+  }
+
+  $("#btn-edit-outline").addEventListener("click", async () => {
+    if (!currentProjectId) return;
+    try {
+      const o = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline");
+      outlineDraft = (o.chapters || []).map((c) => ({ title: c.title, goal: c.goal }));
+      renderOutlineEdit();
+      $("#outline-hint").textContent = "";
+      $("#outline-modal").classList.remove("hidden");
+    } catch (e) {
+      toast("打开大纲编辑失败：" + e.message);
+    }
+  });
+  $("#btn-close-outline-modal").addEventListener("click", () => $("#outline-modal").classList.add("hidden"));
+  $("#btn-outline-add-ch").addEventListener("click", () => { outlineDraft.push({ title: "", goal: "" }); renderOutlineEdit(); });
+
+  $("#btn-save-outline").addEventListener("click", async () => {
+    const btn = $("#btn-save-outline");
+    btn.disabled = true;
+    try {
+      const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chapters: outlineDraft.map((c) => ({ title: c.title.trim(), goal: c.goal.trim() })) }),
+      });
+      $("#outline-modal").classList.add("hidden");
+      const warns = [];
+      if (res.changed_chapters && res.changed_chapters.length) {
+        warns.push(res.changed_chapters.map((n) => "第" + n + "章").join("、") + "内容与新大纲不一致，可重写");
+      }
+      if (res.removed_chapters && res.removed_chapters.length) {
+        warns.push(res.removed_chapters.length + " 章已从大纲移除（正文文件保留）");
+      }
+      toast("大纲已保存（共 " + res.total_chapters + " 章）" + (warns.length ? "；" + warns.join("；") : ""));
+      window._outlineDiff = null;
+      chaptersCache = [];
+      await refreshDetail();
+      await loadOutlineAndWorld();
+      await renderChapters();
+    } catch (e) {
+      toast("保存失败：" + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- 单章重写（仅本章，后续不动） ----------
+  $("#btn-rewrite-ch").addEventListener("click", async () => {
+    if (!currentChapterNo) return;
+    const no = currentChapterNo;
+    if (!confirm("将按当前大纲目标重新生成第 " + no + " 章正文（仅本章，后续章节保持不变）。\n\n注意：若本章情节有重大变化，后续章节可能衔接不上，此时建议用「从此章重新生成」。确认继续？")) return;
+    const btn = $("#btn-rewrite-ch");
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "重写中…（约 1-2 分钟）";
+    try {
+      const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/chapters/" + no + "/rewrite", { method: "POST" });
+      toast("第 " + no + " 章已重写（" + res.words + " 字）");
+      window._outlineDiff = null;
+      chaptersCache = [];
+      await refreshDetail();
+      await renderChapters();
+      await openReader(no);
+    } catch (e) {
+      toast("重写失败：" + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
     }
   });
 

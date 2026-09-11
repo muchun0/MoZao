@@ -203,7 +203,7 @@ class ChapterWriter:
             # 模型漏输出【摘要】时兜底：单独调用一次生成摘要，保证记忆库完整
             summary = self._gen_summary(chapter_no, plan_title, content)
 
-        chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary)
+        chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
         if summary:
             self.store.append_summary(chapter_no, summary)

@@ -322,6 +322,10 @@
             <div id="chapter-list" class="chapter-list"></div>
           </div>
           <div id="tab-outline" class="tab-panel">
+            <div class="panel-toolbar">
+              <span class="muted">生成前可调整章节目标/增删章节，保存后按需重新生成对应章节</span>
+              <button class="btn small" id="btn-edit-outline">✎ 编辑大纲</button>
+            </div>
             <div id="outline-box" class="outline-box"></div>
           </div>
           <div id="tab-world" class="tab-panel">
@@ -347,6 +351,7 @@
               <div style="flex:1"></div>
               <span class="muted" id="reader-title"></span>
               <button class="btn small" id="btn-edit-chapter">✎ 编辑本章</button>
+              <button class="btn small" id="btn-rewrite-ch">↻ 重写本章</button>
               <button class="btn ghost" id="btn-close-reader">✕ 关闭</button>
             </div>
             <div class="reader-body" id="reader-body"></div>
@@ -378,6 +383,25 @@
             <div class="reader-nav">
               <button class="btn primary" id="btn-save-edit">💾 保存修改</button>
               <span class="edit-hint" id="edit-hint"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 大纲编辑弹层 -->
+        <div id="outline-modal" class="modal hidden">
+          <div class="modal-content outline-modal-content">
+            <div class="modal-head">
+              <h3>编辑大纲</h3>
+              <button class="btn ghost" id="btn-close-outline-modal">✕ 关闭</button>
+            </div>
+            <div class="outline-edit-body">
+              <p class="muted small">修改章节标题/目标后保存：已生成且内容与新大纲不一致的章节会提示，可单章重写或从该章向后重写。</p>
+              <div id="outline-edit-list"></div>
+              <button class="btn small" id="btn-outline-add-ch">＋ 添加章节</button>
+            </div>
+            <div class="reader-nav">
+              <button class="btn primary" id="btn-save-outline">💾 保存大纲</button>
+              <span class="edit-hint" id="outline-hint"></span>
             </div>
           </div>
         </div>

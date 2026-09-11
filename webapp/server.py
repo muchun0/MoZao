@@ -11,9 +11,11 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +40,7 @@ from novel_gen.export.cover import generate_best_cover
 from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
+from novel_gen.store.schemas import ChapterPlan, Outline
 from novel_gen.store.project import ProjectStore, _safe_name
 
 from . import db
@@ -932,6 +935,147 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
     }
 
 
+# ---------- 大纲编辑 / 章节重写 / 差异（需求分析: 大纲编辑与章节重新生成 v1.0） ----------
+# 决策：① 只做章节级大纲编辑 ② 双入口（仅本章重写 + 从本章重写后续） ③ 重生成免费+每项目每日 10 次
+#       ④ 大纲删章后已生成正文保留（标"已废弃"） ⑤ 生成中禁止编辑（409）
+REGEN_DAILY_LIMIT = 10
+
+
+class OutlineChapterReq(BaseModel):
+    title: str = ""
+    goal: str = ""
+
+
+class OutlineSaveReq(BaseModel):
+    title: str = ""
+    intro: str = ""
+    chapters: list[OutlineChapterReq] = []
+
+
+def _regen_limit_path(store: ProjectStore) -> Path:
+    return store.dir / "regen_count.json"
+
+
+def _check_regen_limit(store: ProjectStore, project_id: str) -> None:
+    """重生成免费，但每项目每日限 10 次（防滥用）。超限返回 429。"""
+    p = _regen_limit_path(store)
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {}
+    try:
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    cnt = int(data.get(today, 0))
+    if cnt >= REGEN_DAILY_LIMIT:
+        raise HTTPException(status_code=429,
+                            detail=f"今日该项目重生成次数已达上限（{REGEN_DAILY_LIMIT} 次/日），请明天再试")
+    data[today] = cnt + 1
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        logger.warning("重生成计数写入失败: project=%s", project_id)
+
+
+def _outline_diff(outline, store: ProjectStore) -> tuple[list[int], list[int]]:
+    """返回 (changed, removed)：
+    changed = 已生成章节中，标题/目标与当前大纲不一致的章节号（大纲编辑后需要重生成的候选）
+    removed = 已生成正文存在但已不在大纲中的章节号（大纲删章，文件保留标"已废弃"）
+    """
+    changed: list[int] = []
+    removed: list[int] = []
+    for ch in store.list_chapters():
+        if ch.no > len(outline.chapters):
+            removed.append(ch.no)
+            continue
+        plan = outline.chapters[ch.no - 1]
+        if ch.title != plan.title or (ch.goal and ch.goal != plan.goal):
+            changed.append(ch.no)
+    return changed, removed
+
+
+@app.put("/api/projects/{project_id}/outline")
+def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_require_user)):
+    """保存大纲（章节级编辑：改标题/目标、增删章）。
+    不自动触发重生成；返回与已生成章节的差异，由用户显式选择重写动作。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中，请先停止再编辑大纲")
+    if not req.chapters:
+        raise HTTPException(status_code=400, detail="大纲至少需要 1 个章节")
+
+    # 规范化：重排 no、空 title/goal 补默认（与生成端 OutlineGenerator._normalize 一致）
+    chapters = []
+    for i, c in enumerate(req.chapters, start=1):
+        title = (c.title or "").strip() or f"第{i}章"
+        goal = (c.goal or "").strip() or "推进主线剧情，制造冲突并留下悬念。"
+        chapters.append(ChapterPlan(no=i, title=title, goal=goal))
+
+    old = store.load_outline()
+    new_outline = Outline(
+        title=(req.title or "").strip() or (old.title if old else ""),
+        intro=(req.intro or "").strip() or (old.intro if old else ""),
+        chapters=chapters,
+    )
+    store.save_outline(new_outline)
+
+    changed, removed = _outline_diff(new_outline, store)
+    logger.info("大纲编辑: uid=%d project=%s chapters=%d→%d changed=%s removed=%s",
+                user["id"], project_id, len(old.chapters) if old else 0, len(chapters), changed, removed)
+    return {"saved": True, "total_chapters": len(chapters),
+            "changed_chapters": changed, "removed_chapters": removed}
+
+
+@app.get("/api/projects/{project_id}/outline/diff")
+def outline_diff(project_id: str, user: dict = Depends(_require_user)):
+    """大纲与已生成章节的差异（前端章节列表标记"与新大纲不一致"）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline:
+        return {"changed": [], "removed": []}
+    changed, removed = _outline_diff(outline, store)
+    return {"changed": changed, "removed": removed}
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/rewrite")
+def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """单章重写：按当前大纲该章 goal/title 重新生成正文与摘要，后续章节不动。
+    重写后该章摘要自动覆盖（append_summary 幂等）；前文记忆上下文不含本章旧摘要（memory < no）。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline or no < 1 or no > len(outline.chapters):
+        raise HTTPException(status_code=400,
+                            detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=400, detail=f"章节 {no} 尚未生成，无法重写")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    _check_regen_limit(store, project_id)
+
+    plan = outline.chapters[no - 1]
+    try:
+        pipeline = _open_pipeline(store)
+        research = store.load_research()
+        chapter = pipeline.chapter_writer.write(
+            no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+    except Exception as e:
+        logger.exception("单章重写失败: project=%s no=%d", project_id, no)
+        raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+
+    logger.info("章节重写: uid=%d project=%s no=%d words=%d",
+                user["id"], project_id, no, len(chapter.content))
+    return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
+            "summary": chapter.summary, "words": len(chapter.content)}
+
+
+
 @app.get("/api/projects/{project_id}/chapters")
 def project_chapters(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
@@ -1020,6 +1164,7 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
             raise HTTPException(status_code=409, detail="该项目正在生成中")
         handle = _RunHandle()
         _RUNS[project_id] = handle
+    _check_regen_limit(store, project_id)
 
     # 删除 no 及之后章节 + 对应记忆
     for ch in store.list_chapters():

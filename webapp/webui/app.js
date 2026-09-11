@@ -721,7 +721,10 @@
           try {
             const resp = await fetch("/api/parse-content", {
               method: "POST",
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": "Bearer " + getToken(),
+              },
               body: "text=" + encodeURIComponent(userContentTa.value),
             });
             const r = await resp.json();
@@ -751,7 +754,11 @@
         // 2) 上传解析出切分预览
         const fd = new FormData();
         fd.append("file", file);
-        const resp = await fetch("/api/parse-content", { method: "POST", body: fd });
+        const resp = await fetch("/api/parse-content", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + getToken() },
+          body: fd,
+        });
         const r = await resp.json();
         if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
         renderContentPreview(r);
@@ -776,7 +783,7 @@
         fd.append("file", file);
         const resp = await fetch("/api/parse-outline", {
           method: "POST",
-          headers: { "Authorization": "Bearer " + localStorage.getItem("token") },
+          headers: { "Authorization": "Bearer " + getToken() },
           body: fd,
         });
         const data = await resp.json().catch(() => ({}));

@@ -18,6 +18,7 @@ webapp/*.db*
 docs/
 
 # ===== 收款码等运营私有素材（不入库） =====
+webapp/webui/payment_qr2.png
 webapp/webui/payment_qr.png
 
 # ===== 临时脚本/工具 =====

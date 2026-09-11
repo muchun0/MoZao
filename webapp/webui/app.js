@@ -75,7 +75,7 @@
 
   function fmtPrice(v) {
     const n = Number(v);
-    return (Math.round(n * 100) % 10 === 0) ? n.toFixed(1) : n.toFixed(2);
+    return n.toFixed(2);
   }
 
   // ---------- 登录 / 用户 ----------
@@ -108,7 +108,7 @@
 
   function renderUserBar() {
     if (!me) return;
-    $("#balance-label").textContent = "余额 " + me.balance.toFixed(1) + " 元";
+    $("#balance-label").textContent = "余额 " + me.balance.toFixed(2) + " 元";
     $("#username-label").textContent = me.username + (me.is_admin ? "（站长）" : "") + (me.is_agent ? "（代理）" : "");
     $("#btn-admin-panel").style.display = me.is_admin ? "" : "none";
   }
@@ -269,7 +269,6 @@
 
   // 充值弹层
   $("#btn-recharge").addEventListener("click", () => {
-    if (me) $("#recharge-username").textContent = me.username;
     renderRechargeTiers();
     $("#recharge-modal").classList.remove("hidden");
   });
@@ -394,7 +393,7 @@
 
     html += '<div class="rf-note">返佣规则：下级每笔消费，你获得 ' +
       Math.round((r.commission_rate || 0) * 100) + "% 返佣" +
-      (r.referral_bonus > 0 ? "；每个新用户通过你的链接注册，你获得 " + r.referral_bonus.toFixed(1) + " 元奖励" : "") +
+      (r.referral_bonus > 0 ? "；每个新用户通过你的链接注册，你获得 " + r.referral_bonus.toFixed(2) + " 元奖励" : "") +
       "。返佣自动进入余额，可直接用于创作。</div>";
 
     $("#referral-body").innerHTML = html;
@@ -428,38 +427,17 @@
     } catch (e) { /* ignore */ }
   }
 
-  // 充值弹层：按定价档位展示常用充值金额
+  // 充值弹层：不再展示金额档位，统一引导联系站长人工充值
   function renderRechargeTiers() {
     const box = $("#recharge-tiers");
     const note = $("#recharge-note");
     if (!box) return;
-    if (!pricingCache || !pricingCache.tiers || !pricingCache.tiers.length) {
-      box.innerHTML = "";
-      note.textContent = "按字数计费：每万字 " + (pricingCache && pricingCache.price_per_10k != null ? pricingCache.price_per_10k : 2) + " 元";
-      return;
-    }
-    box.innerHTML = pricingCache.tiers.map((t, i) =>
-      '<button type="button" class="tier-btn" data-i="' + i + '">' +
-        "<b>" + (t.price != null ? fmtPrice(t.price) + " 元" : "按字数") + "</b>" +
-        (t.original_price != null && t.price != null && t.original_price > t.price ? '<small><s>' + fmtPrice(t.original_price) + "</s> 优惠</small>" : "") +
-        "<small>" + esc(t.name) + (t.max_words ? " ≤" + (t.max_words >= 10000 ? (t.max_words / 10000) + "万" : t.max_words) + "字" : " 不限") + "</small>" +
-      "</button>"
-    ).join("");
-    box.querySelectorAll(".tier-btn").forEach((b) => {
-      b.addEventListener("click", () => {
-        box.querySelectorAll(".tier-btn").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
-        const t = pricingCache.tiers[parseInt(b.dataset.i, 10)];
-        if (t) {
-          note.innerHTML = "按「" + esc(t.name) + "」档位参考充值 <b>" +
-            (t.price != null ? fmtPrice(t.price) + " 元" : "（按实际字数计算）") +
-            "</b>，约可创作 1 部" + (t.max_words ? "（≤ " + t.max_words.toLocaleString() + " 字）" : "（不限字数）") +
-            "。转账后联系站长确认到账。";
-        }
-      });
-    });
-    // 默认说明
-    note.textContent = "按字数计费：每万字 " + (pricingCache.price_per_10k != null ? pricingCache.price_per_10k : 2) + " 元，多写多算，创建时按目标字数一次性扣费";
+    const per10k = (pricingCache && pricingCache.price_per_10k != null) ? pricingCache.price_per_10k : 2;
+    box.innerHTML =
+      '<div class="recharge-contact">' +
+        "<b>充值请联系站长</b>" +
+      "</div>";
+    note.textContent = "按字数计费：每万字 " + per10k + " 元，多写多算，生成完成后按实际生成字数结算。";
   }
 
   // ---------- 视图切换 ----------
@@ -590,6 +568,12 @@
       wordsInput.dataset.bound = "1";
       wordsInput.addEventListener("input", updateFee);
     }
+    // 已有内容 textarea 字数变化时同步刷新费用（AI 生成字数 = 目标 - 已有）
+    const userTaBind = document.querySelector('#create-form textarea[name="user_content"]');
+    if (userTaBind && !userTaBind.dataset.bound) {
+      userTaBind.dataset.bound = "1";
+      userTaBind.addEventListener("input", updateFee);
+    }
     updateFee();
     // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写（含续写/扩写已有内容）
     const modeRadios = $$('#create-form input[name="mode"]');
@@ -623,45 +607,37 @@
       } catch (e) { return; }
     }
     const wordsInput = document.querySelector('#create-form input[name="total_words"]');
-    const words = parseInt(wordsInput && wordsInput.value, 10) || 100000;
+    const totalWords = parseInt(wordsInput && wordsInput.value, 10) || 100000;
+    // 已有内容字数（续写/扩写模式下用户粘贴或上传的正文），这部分不计费
+    const userTa = document.querySelector('#create-form textarea[name="user_content"]');
+    const userWords = userTa ? (userTa.value || "").length : 0;
+    const aiWords = Math.max(0, totalWords - userWords);
+    const billWords = Math.max(1, aiWords);
     const per10k = (pricingCache && pricingCache.price_per_10k != null) ? pricingCache.price_per_10k : 2;
-    const price = Math.round(words / 10000 * per10k * 100) / 100;
+    const price = Math.round(billWords / 10000 * per10k * 100) / 100;
     const tiers = pricingCache.tiers || [];
     let tier = tiers[tiers.length - 1];
     for (const t of tiers) {
-      if (t.max_words == null || words <= t.max_words) { tier = t; break; }
+      if (t.max_words == null || billWords <= t.max_words) { tier = t; break; }
     }
     if (!tier) return;
     const hasSale = tier.original_price != null && tier.original_price > price;
-    // 顶部简提示
+    // 顶部简提示：已按用户要求去掉，费用信息统一在右侧面板展示
     const tip = $("#price-tip");
-    if (tip) {
-      let h = "本书为<strong>" + esc(tier.name) + "</strong>（" + fmtWords(words) + "），";
-      if (hasSale) {
-        h += '<span class="price-original">原价 ' + fmtPrice(tier.original_price) + " 元</span>，现价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong> <span class=\"price-tag\">限时优惠</span>。";
-      } else {
-        h += "定价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong>（每万字 " + per10k + " 元）。";
-      }
-      h += "创建时不扣费，生成完成后按 AI 实际生成字数结算。";
-      tip.innerHTML = h;
-    }
+    if (tip) { tip.innerHTML = ""; tip.classList.add("hidden"); }
     // 右侧费用明细
     const fee = $("#fee-detail");
     if (fee) {
-      const maxWords = tier.max_words != null ? (tier.max_words >= 10000 ? (tier.max_words / 10000) + " 万字" : tier.max_words + " 字") : "不限";
       let rows =
-        '<div class="fee-row"><span>当前字数</span><b>' + fmtWords(words) + "</b></div>" +
-        '<div class="fee-row"><span>计费方式</span><b>每万字 ' + per10k + " 元</b></div>" +
-        '<div class="fee-row"><span>适用档位</span><b>' + esc(tier.name) + "</b></div>" +
-        '<div class="fee-row"><span>字数范围</span><b>' + (tier.max_words != null ? "≤ " + maxWords : "不限") + "</b></div>";
-      if (hasSale) {
-        rows += '<div class="fee-row"><span>原价</span><span class="price-original">' + fmtPrice(tier.original_price) + " 元</span></div>" +
-          '<div class="fee-row"><span>优惠价</span><b class="gold">' + fmtPrice(price) + " 元</b> <span class='fee-tag'>限时优惠</span></div>";
-      } else {
-        rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
-      }
+        '<div class="fee-row"><span>目标总字数</span><b>' + fmtWords(totalWords) + "</b></div>" +
+        (userWords > 0
+          ? '<div class="fee-row"><span>已有内容</span><b>' + fmtWords(userWords) + "</b></div>" +
+            '<div class="fee-row"><span>AI 需生成</span><b>' + fmtWords(aiWords) + "</b></div>"
+          : '<div class="fee-row"><span>AI 需生成</span><b>' + fmtWords(aiWords) + "</b></div>") +
+        '<div class="fee-row"><span>计费方式</span><b>每万字 ' + per10k + " 元</b></div>";
+      rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
       rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(price) + "</b></div>" +
-        '<div class="fee-hint">按 AI 实际生成字数计费（每万字 ' + per10k + " 元）；创建时不扣费，真正生成文字后按实际字数结算。未生成的项目可随时删除，不产生费用。</div>";
+        '<div class="fee-hint">按 AI 实际生成字数计费（每万字 ' + per10k + " 元），已有内容不重复计费；创建时不扣费，真正生成文字后按实际字数结算。未生成的项目可随时删除，不产生费用。</div>";
       fee.innerHTML = rows;
     }
   }
@@ -756,6 +732,7 @@
         // 2) 用服务端解析出的完整文本填入"已有内容"（创建时以 JSON 提交全文）
         if (userContentTa && r.full_text) userContentTa.value = r.full_text;
         renderContentPreview(r);
+        updateFee();
         setContentStatus("解析完成：识别到 " + r.chapters.length + " 个章节", false);
       } catch (e) {
         setContentStatus("解析失败：" + e.message, true);
@@ -1020,6 +997,20 @@
     } else {
       coverImg.classList.add("hidden");
       coverEmpty.classList.remove("hidden");
+    }
+    // 封面生成按钮：显示剩余次数
+    const coverBtn = $("#btn-gen-cover");
+    if (coverBtn) {
+      const used = d.cover_used || 0;
+      const max = d.cover_max || 5;
+      const left = max - used;
+      if (left > 0) {
+        coverBtn.disabled = false;
+        coverBtn.textContent = `🖼 生成封面（剩 ${left}/${max} 次）`;
+      } else {
+        coverBtn.disabled = true;
+        coverBtn.textContent = `🖼 封面次数已用完（${used}/${max}）`;
+      }
     }
 
     // 六阶段进度条
@@ -1488,10 +1479,10 @@
     }
   });
 
-  // 生成封面
+  // 生成封面（每本书最多 5 次，剩余次数直接显示在按钮上）
   $("#btn-gen-cover").addEventListener("click", async () => {
     try {
-      await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/cover", { method: "POST" });
+      const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/cover", { method: "POST" });
       // 生成成功后立即刷新封面（fetch 带鉴权转 objectURL）
       const coverImg = $("#cover-img");
       const coverEmpty = $("#cover-empty");
@@ -1500,10 +1491,9 @@
         coverImg.classList.remove("hidden");
         await loadCover(currentProjectId, coverImg);
       }
-      toast("封面已生成");
-      await refreshDetail();
+      await refreshDetail();  // 刷新后按钮文字自动更新剩余次数
     } catch (e) {
-      toast("生成封面失败：" + e.message);
+      toast(e.message || "生成封面失败");
     }
   });
 

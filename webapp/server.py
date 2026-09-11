@@ -238,6 +238,15 @@ def _cover_files(store: ProjectStore) -> tuple:
     return OUTPUT_DIR / filename, store.dir / filename
 
 
+def _cover_used_count(store: ProjectStore) -> int:
+    """读取该项目已生成封面次数（_cover_count.txt）。"""
+    p = store.dir / "_cover_count.txt"
+    try:
+        return int(p.read_text(encoding="utf-8-sig").strip()) if p.exists() else 0
+    except Exception:
+        return 0
+
+
 def _open_pipeline(store: ProjectStore) -> NovelPipeline:
     cfg = store.load_config()
     # 若 config.json 未落盘 key（设计如此），从服务端环境变量补齐
@@ -1044,6 +1053,8 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
         "generated_words": sum(len(c.content) for c in chapters),
         "has_txt": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.txt").exists(),
         "has_cover": _cover_files(store)[0].exists(),
+        "cover_used": _cover_used_count(store),
+        "cover_max": 5,
         "has_epub": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.epub").exists(),
         "has_docx": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.docx").exists(),
     }
@@ -1320,25 +1331,49 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
 
 @app.post("/api/projects/{project_id}/cover")
 def gen_cover(project_id: str, user: dict = Depends(_require_user)):
-    """生成/重新生成程序化封面（PNG）。"""
+    """生成/重新生成程序化封面（PNG）。每本书最多生成 5 次。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     cfg = store.load_config()
     outline = store.load_outline()
     subtitle = (outline.intro[:18] + "…") if outline and len(outline.intro) > 18 else (outline.intro if outline else "")
     out_path, proj_path = _cover_files(store)
+    # 封面次数限制：每本书最多 5 次
+    COVER_MAX = 5
+    count_file = proj_path.parent / "_cover_count.txt"
+    used = int(count_file.read_text(encoding="utf-8").strip()) if count_file.exists() else 0
+    if used >= COVER_MAX:
+        raise HTTPException(400, detail=f"封面最多生成 {COVER_MAX} 次，已用完。当前封面已保留，如需调整请联系站长。")
+    # 拼封面用的"书籍内容摘要"：文风 + 简介 + 世界观，传给 AI 让画面贴合小说
+    cover_parts = []
+    if getattr(cfg, "style", "").strip():
+        cover_parts.append("文风：" + cfg.style.strip()[:80])
+    if getattr(cfg, "premise", "").strip():
+        cover_parts.append("故事核心：" + cfg.premise.strip()[:120])
+    if getattr(cfg, "background", "").strip():
+        cover_parts.append("世界观：" + cfg.background.strip()[:120])
+    cover_extra = "；".join(cover_parts)
     # AI 封面优先（硅基流动 ERNIE-Image-Turbo），失败自动回退程序化封面
     generate_best_cover(
         title=cfg.effective_title(),
         genre=cfg.genre,
         subtitle=subtitle,
-        out_path=proj_path,  # 先生成到项目目录
+        out_path=proj_path,
+        extra=cover_extra,
     )
     # 复制到 output/ 主输出
     proj_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(proj_path.read_bytes())
-    return {"ok": True, "cover_url": f"/api/projects/{project_id}/cover"}
+    # 计数 +1
+    count_file.write_text(str(used + 1), encoding="utf-8")
+    return {
+        "ok": True,
+        "cover_url": f"/api/projects/{project_id}/cover",
+        "cover_used": used + 1,
+        "cover_max": COVER_MAX,
+        "cover_remaining": COVER_MAX - used - 1,
+    }
 
 
 @app.get("/api/projects/{project_id}/cover")

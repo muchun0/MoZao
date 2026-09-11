@@ -199,21 +199,13 @@ def _draw_text_overlay(img: Image.Image, title: str, genre: str,
     draw.text((w / 2, h - 52), f"— {author} —", font=author_font,
               fill=(220, 220, 220), anchor="mm")
 
-    # 题材角标（左上）
-    tag_font = _font(20)
-    tag_text = genre or "其他"
-    tag_w = draw.textlength(tag_text, font=tag_font) + 28
-    tag_box = (30, 30, 30 + int(tag_w), 62)
-    draw.rounded_rectangle(tag_box, radius=16, fill=(0, 0, 0, 120))
-    draw.rounded_rectangle(tag_box, radius=16, outline=(255, 255, 255, 160), width=1)
-    draw.text(((tag_box[0] + tag_box[2]) / 2, (tag_box[1] + tag_box[3]) / 2),
-              tag_text, font=tag_font, fill=(255, 255, 255), anchor="mm")
+    # 题材角标（左上）：按用户要求不画，避免封面出现标签字
 
     # 底部分隔线
     draw.line([(w * 0.2, h - 78), (w * 0.8, h - 78)], fill=(255, 255, 255, 140), width=2)
 
 
-def _build_cover_prompt(title: str, genre: str, subtitle: str) -> str:
+def _build_cover_prompt(title: str, genre: str, subtitle: str, extra: str = "") -> str:
     """构造 AI 封面 prompt：只描述题材氛围插画，文字一律由程序叠加，
     因此 prompt 不注入书名/副标题（否则 AI 会渲染成画面文字）。"""
     desc = {
@@ -234,12 +226,16 @@ def _build_cover_prompt(title: str, genre: str, subtitle: str) -> str:
     }.get(genre, "大气文学质感，抽象光影层次、高级色调、留白构图")
 
     return (
-        f"竖版小说封面背景插画。"
+        f"一张完整的竖版网文小说封面成品图。"
+        f"封面上必须用大号、清晰、正确的中文艺术字写出书名：{title}。"
+        f"书名要和画面风格融为一体，字号大、居中偏上、视觉醒目，"
+        f"字体要有设计感（毛笔/书法/衬线艺术字均可），字色与背景强对比，"
+        f"保证清晰可读，不能写错别字、不能缺笔画。"
         f"画面氛围：{desc}。"
-        f"构图：中央与上部留出大片干净暗部区域用于摆放标题文字，"
-        f"主体景物偏下三分之一。"
+        + (f"本书核心内容：{extra}。" if extra else "") +
+        f"构图：书名居中偏上，主体景物偏下三分之一。"
         f"风格：高端网文封面质感，光影层次丰富，色彩协调，细节精致。"
-        f"画面中绝对不要出现任何文字、字母、数字、符号、logo、水印。"
+        f"除书名「{title}」外，不要出现其他任何文字、字母、数字、符号、logo、水印、AI生成标记、签名。"
     )
 
 
@@ -259,6 +255,7 @@ def generate_ai_cover(
     author: str = "AI 自动生成",
     subtitle: str = "",
     out_path: Optional[Path] = None,
+    extra: str = "",
 ) -> Optional[Path]:
     """调用硅基流动 ERNIE-Image-Turbo 生成 AI 封面。
 
@@ -274,14 +271,16 @@ def generate_ai_cover(
         logger.info("未配置 SILICONFLOW_API_KEY，跳过 AI 封面")
         return None
 
-    prompt = _build_cover_prompt(title, genre, subtitle)
+    prompt = _build_cover_prompt(title, genre, subtitle, extra)
     seed = random.randint(0, 999999999)
     payload = {
         "model": AI_MODEL,
         "prompt": prompt,
-        "image_size": "768x1024",   # 3:4 竖版，最接近 2:3 封面
+        "image_size": "768x1024",
         "seed": seed,
         "output_format": "png",
+        "watermark": False,
+        "negative_prompt": "其他文字, 字母, 数字, 符号, logo, 水印, AI生成标记, 签名, 边框",
     }
     try:
         with httpx.Client(timeout=90) as client:
@@ -316,7 +315,7 @@ def generate_ai_cover(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cover = _fit_cover(raw)
-    _draw_text_overlay(cover, title, genre, author, subtitle)
+    # 书名已由 AI 直接画入画面，不再 Pillow 后期叠加（避免贴纸感）
     cover.save(str(out_path), format="PNG")
     logger.info("AI 封面已生成: %s (seed=%d)", out_path, seed)
     return out_path
@@ -351,13 +350,14 @@ def generate_best_cover(
     author: str = "AI 自动生成",
     subtitle: str = "",
     out_path: Optional[Path] = None,
+    extra: str = "",
 ) -> Path:
     """AI 封面优先（配了 Key 且开关开启）。
 
     默认失败回退程序化封面（测试环境友好）；
     COVER_AI_STRICT=1（生产）时失败直接抛异常，确保生产封面一定走配置模型生成。
     """
-    ai = generate_ai_cover(title, genre, author, subtitle, out_path)
+    ai = generate_ai_cover(title, genre, author, subtitle, out_path, extra=extra)
     if ai is not None:
         return ai
     if COVER_AI_STRICT:

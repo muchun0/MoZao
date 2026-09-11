@@ -555,7 +555,7 @@ input:focus, select:focus, textarea:focus {
 .recharge-body { padding: 8px 0; }
 .recharge-steps p { margin-bottom: 9px; font-size: 14.5px; }
 .recharge-steps .hl { color: var(--gold); font-weight: 700; }
-.recharge-tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
+.recharge-tiers { margin: 8px 0 4px; }
 .tier-btn {
   padding: 9px 4px; border: 1px solid var(--card-line); border-radius: 10px;
   background: var(--card); cursor: pointer; font-family: inherit; transition: all .15s;
@@ -563,7 +563,7 @@ input:focus, select:focus, textarea:focus {
 .tier-btn:hover { border-color: var(--gold-line); background: var(--gold-soft); }
 .tier-btn b { display: block; font-size: 15px; color: var(--indigo-deep); }
 .tier-btn small { color: var(--muted); font-size: 11px; }
-.qr-box { display: flex; justify-content: center; margin: 16px 0; }
+.qr-box { display: flex; justify-content: center; margin: 14px 0 10px; }
 .qr-img { width: 210px; height: auto; border-radius: 12px; box-shadow: 0 6px 18px rgba(28,34,51,.2); border: 1px solid var(--card-line); }
 .recharge-note { color: var(--muted); font-size: 12.5px; text-align: center; }
 .recharge-footer { margin-top: 14px; text-align: center; }
@@ -588,3 +588,11 @@ input:focus, select:focus, textarea:focus {
   .user-box { flex-wrap: wrap; }
   .reader-body { padding: 18px 20px; }
 }
+
+/* 去掉数字输入框上下箭头（防鼠标滚轮误改） */
+#create-form input[type=number]::-webkit-inner-spin-button,
+#create-form input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#create-form input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+
+.recharge-contact { display:block; padding:14px 12px 6px; text-align:center; }
+.recharge-contact b { font-size:22px; font-weight:700; letter-spacing:1px; color:var(--indigo-deep); }

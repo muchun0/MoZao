@@ -1500,8 +1500,18 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
 
 
 # ---------- 静态前端（同源部署时） ----------
+class _NoCacheStaticFiles(StaticFiles):
+    """前端静态资源禁用浏览器缓存：html/js/css 返回 no-cache，避免旧 JS 长期缓存导致前端改动不生效。"""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        if resp.path.endswith((".html", ".js", ".css")):
+            resp.headers["Cache-Control"] = "no-cache, max-age=0"
+        return resp
+
+
 if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="webui")
+    app.mount("/", _NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="webui")
 
 
 if __name__ == "__main__":

@@ -1453,14 +1453,38 @@
     }
   });
 
-  $("#btn-download").addEventListener("click", () => {
+  $("#btn-download").addEventListener("click", async () => {
     const fmt = $("#dl-format").value || "txt";
-    const a = document.createElement("a");
-    a.href = API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/download?format=" + encodeURIComponent(fmt);
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    try {
+      // /download 接口需 Bearer 鉴权，<a href> 直链会 401 返回 JSON，故用 fetch 拉 blob 触发下载
+      const resp = await fetch(API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/download?format=" + encodeURIComponent(fmt), {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (!resp.ok) {
+        let msg = "HTTP " + resp.status;
+        try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (e) { /* ignore */ }
+        throw new Error(msg);
+      }
+      const blob = await resp.blob();
+      // 从 Content-Disposition 解析服务端文件名，取不到则回退书名.格式
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename\*?=(?:UTF-8''|utf-8'')?["']?([^"';]+)/i);
+      let fname = m ? decodeURIComponent(m[1].trim()) : "";
+      if (!fname) {
+        const title = (detailCache && detailCache.config && detailCache.config.title) || "novel";
+        fname = title + "." + fmt;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      toast("下载失败：" + e.message);
+    }
   });
 
   // 生成封面

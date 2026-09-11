@@ -435,13 +435,13 @@
     if (!box) return;
     if (!pricingCache || !pricingCache.tiers || !pricingCache.tiers.length) {
       box.innerHTML = "";
-      note.textContent = "定价：极短篇（≤5000 字）0.99 元 / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元";
+      note.textContent = "按字数计费：每万字 " + (pricingCache && pricingCache.price_per_10k != null ? pricingCache.price_per_10k : 2) + " 元";
       return;
     }
     box.innerHTML = pricingCache.tiers.map((t, i) =>
       '<button type="button" class="tier-btn" data-i="' + i + '">' +
-        "<b>" + fmtPrice(t.price) + " 元</b>" +
-        (t.original_price != null && t.original_price > t.price ? '<small><s>' + fmtPrice(t.original_price) + "</s> 优惠</small>" : "") +
+        "<b>" + (t.price != null ? fmtPrice(t.price) + " 元" : "按字数") + "</b>" +
+        (t.original_price != null && t.price != null && t.original_price > t.price ? '<small><s>' + fmtPrice(t.original_price) + "</s> 优惠</small>" : "") +
         "<small>" + esc(t.name) + (t.max_words ? " ≤" + (t.max_words >= 10000 ? (t.max_words / 10000) + "万" : t.max_words) + "字" : " 不限") + "</small>" +
       "</button>"
     ).join("");
@@ -451,14 +451,15 @@
         b.classList.add("active");
         const t = pricingCache.tiers[parseInt(b.dataset.i, 10)];
         if (t) {
-          note.innerHTML = "按「" + esc(t.name) + "」档位充值 <b>" + fmtPrice(t.price) +
-            " 元</b>，约可创作 1 部" + (t.max_words ? "（≤ " + t.max_words.toLocaleString() + " 字）" : "（不限字数）") +
+          note.innerHTML = "按「" + esc(t.name) + "」档位参考充值 <b>" +
+            (t.price != null ? fmtPrice(t.price) + " 元" : "（按实际字数计算）") +
+            "</b>，约可创作 1 部" + (t.max_words ? "（≤ " + t.max_words.toLocaleString() + " 字）" : "（不限字数）") +
             "。转账后联系站长确认到账。";
         }
       });
     });
     // 默认说明
-    note.textContent = "定价：极短篇（≤5000 字）0.99 元 / 短篇 9.9 元 / 中篇 19.9 元 / 长篇 39.9 元 / 超长篇 69.9 元";
+    note.textContent = "按字数计费：每万字 " + (pricingCache.price_per_10k != null ? pricingCache.price_per_10k : 2) + " 元，多写多算，创建时按目标字数一次性扣费";
   }
 
   // ---------- 视图切换 ----------
@@ -606,7 +607,7 @@
     applyMode();
   }
 
-  // 费用明细：右侧面板 + 顶部简提示
+  // 费用明细：右侧面板 + 顶部简提示（按字数实时计费：每万字 price_per_10k 元）
   async function updateFee() {
     if (!pricingCache) {
       try {
@@ -616,20 +617,23 @@
     }
     const wordsInput = document.querySelector('#create-form input[name="total_words"]');
     const words = parseInt(wordsInput && wordsInput.value, 10) || 100000;
+    const per10k = (pricingCache && pricingCache.price_per_10k != null) ? pricingCache.price_per_10k : 2;
+    const price = Math.round(words / 10000 * per10k * 100) / 100;
     const tiers = pricingCache.tiers || [];
     let tier = tiers[tiers.length - 1];
     for (const t of tiers) {
       if (t.max_words == null || words <= t.max_words) { tier = t; break; }
     }
     if (!tier) return;
+    const hasSale = tier.original_price != null && tier.original_price > price;
     // 顶部简提示
     const tip = $("#price-tip");
     if (tip) {
-      let h = "本书为<strong>" + esc(tier.name) + "</strong>，";
-      if (tier.original_price != null && tier.original_price > tier.price) {
-        h += '<span class="price-original">原价 ' + fmtPrice(tier.original_price) + " 元</span>，现价 <strong class=\"price-now\">" + fmtPrice(tier.price) + " 元</strong> <span class=\"price-tag\">限时优惠</span>。";
+      let h = "本书为<strong>" + esc(tier.name) + "</strong>（" + fmtWords(words) + "），";
+      if (hasSale) {
+        h += '<span class="price-original">原价 ' + fmtPrice(tier.original_price) + " 元</span>，现价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong> <span class=\"price-tag\">限时优惠</span>。";
       } else {
-        h += "定价 <strong class=\"price-now\">" + fmtPrice(tier.price) + " 元</strong>。";
+        h += "定价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong>（每万字 " + per10k + " 元）。";
       }
       h += "创建项目时将从余额扣费。";
       tip.innerHTML = h;
@@ -640,16 +644,17 @@
       const maxWords = tier.max_words != null ? (tier.max_words >= 10000 ? (tier.max_words / 10000) + " 万字" : tier.max_words + " 字") : "不限";
       let rows =
         '<div class="fee-row"><span>当前字数</span><b>' + fmtWords(words) + "</b></div>" +
+        '<div class="fee-row"><span>计费方式</span><b>每万字 ' + per10k + " 元</b></div>" +
         '<div class="fee-row"><span>适用档位</span><b>' + esc(tier.name) + "</b></div>" +
         '<div class="fee-row"><span>字数范围</span><b>' + (tier.max_words != null ? "≤ " + maxWords : "不限") + "</b></div>";
-      if (tier.original_price != null && tier.original_price > tier.price) {
+      if (hasSale) {
         rows += '<div class="fee-row"><span>原价</span><span class="price-original">' + fmtPrice(tier.original_price) + " 元</span></div>" +
-          '<div class="fee-row"><span>优惠价</span><b class="gold">' + fmtPrice(tier.price) + " 元</b> <span class='fee-tag'>限时优惠</span></div>";
+          '<div class="fee-row"><span>优惠价</span><b class="gold">' + fmtPrice(price) + " 元</b> <span class='fee-tag'>限时优惠</span></div>";
       } else {
-        rows += '<div class="fee-row"><span>单价</span><b class="gold">' + fmtPrice(tier.price) + " 元</b></div>";
+        rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
       }
-      rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(tier.price) + "</b></div>" +
-        '<div class="fee-hint">创建项目时立即从余额扣费；未开始生成的项目可在「我的书案」中申请退费删除。</div>';
+      rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(price) + "</b></div>" +
+        '<div class="fee-hint">按目标字数计费（每万字 ' + per10k + " 元），创建项目时立即从余额扣费；未开始生成的项目可在「我的书案」中申请退费删除。</div>";
       fee.innerHTML = rows;
     }
   }

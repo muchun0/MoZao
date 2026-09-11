@@ -1,21 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-定价策略（按单本卖）：按目标字数分档定价，创建项目时从余额扣费。
+定价策略（按字数计费）：每万字 2 元，线性计算，创建项目时从余额扣费。
 
-档位顺序：按 max_words 升序；total_words <= max_words 命中该档。
-最后一个档位 max_words 用 None 表示"不设上限"。
-每档可带 original_price（原价），用于前端展示"原价 X 现价 Y"优惠标识。
-价格可随时改，重启服务后生效。
+- 现价 = total_words / 10000 × PRICE_PER_10K（精确到分）
+- 档位（PRICE_TIERS）仅用于：档位名称展示、原价（优惠标识）参考、字数范围提示；
+  档位不再决定价格，价格完全由字数决定。
+- 原价只在 PRICE_TIERS 中配置了 original 的档位展示（如极短篇 2.99）；
+  未配置原价的档位不显示"原价/现价"优惠标识。
+- 价格可随时改，重启服务后生效。
 """
 from __future__ import annotations
 
-# (档位名, 字数上限, 现价元, 原价元或None)。None 表示不设上限。
-PRICE_TIERS: list[tuple[str, int | None, float, float | None]] = [
-    ("极短篇", 5_000, 0.99, 2.99),
-    ("短篇", 25_000, 9.9, None),
-    ("中篇", 100_000, 19.9, None),
-    ("长篇", 300_000, 39.9, None),
-    ("超长篇", None, 69.9, None),
+# 每万字单价（元），线性计费
+PRICE_PER_10K = 2.0
+
+# 展示档位：(档位名, 字数上限或None(不限), 原价元或None)。仅用于名称/原价/范围展示。
+PRICE_TIERS: list[tuple[str, int | None, float | None]] = [
+    ("极短篇", 5_000, 2.99),
+    ("短篇", 25_000, None),
+    ("中篇", 100_000, None),
+    ("长篇", 300_000, None),
+    ("超长篇", None, None),
 ]
 
 # 免费体验：每用户注册赠金（元）。内测引流用，可设 0 关闭。
@@ -23,28 +28,33 @@ FREE_REGISTER_BONUS = 10.0
 
 
 def price_for(total_words: int) -> float:
-    """按字数返回现价。"""
-    for name, cap, price, _orig in PRICE_TIERS:
-        if cap is None or total_words <= cap:
-            return price
-    return PRICE_TIERS[-1][2]
+    """按字数线性计费：每万字 PRICE_PER_10K 元，精确到分。"""
+    return round(total_words / 10_000 * PRICE_PER_10K, 2)
 
 
 def original_price_for(total_words: int) -> float | None:
-    """按字数返回原价（无优惠时返回 None）。"""
-    for name, cap, _price, orig in PRICE_TIERS:
+    """按字数返回该档位的原价（无优惠配置时返回 None）。"""
+    for name, cap, orig in PRICE_TIERS:
         if cap is None or total_words <= cap:
             return orig
-    return PRICE_TIERS[-1][3]
+    return PRICE_TIERS[-1][2]
 
 
 def tier_name_for(total_words: int) -> str:
-    for name, cap, _price, _orig in PRICE_TIERS:
+    for name, cap, _orig in PRICE_TIERS:
         if cap is None or total_words <= cap:
             return name
     return PRICE_TIERS[-1][0]
 
 
 def tiers() -> list[dict]:
-    return [{"name": n, "max_words": c, "price": p, "original_price": o}
-            for n, c, p, o in PRICE_TIERS]
+    """返回展示用档位；price 为按该档字数上限计算的参考现价（不限档为 None）。"""
+    return [
+        {
+            "name": n,
+            "max_words": c,
+            "price": price_for(c) if c is not None else None,
+            "original_price": o,
+        }
+        for n, c, o in PRICE_TIERS
+    ]

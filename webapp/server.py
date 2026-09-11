@@ -45,7 +45,7 @@ from . import mailer
 from . import verify_code
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
-from .pricing import FREE_REGISTER_BONUS, price_for, tier_name_for, tiers
+from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, price_for, tier_name_for, tiers
 from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
                        REFERRAL_BONUS, agent_price, round_money)
 
@@ -395,7 +395,12 @@ def genres():
 
 @app.get("/api/pricing")
 def pricing():
-    return {"tiers": tiers(), "register_bonus": FREE_REGISTER_BONUS}
+    return {
+        "tiers": tiers(),
+        "register_bonus": FREE_REGISTER_BONUS,
+        "billing_mode": "by_words",   # 按字数计费
+        "price_per_10k": PRICE_PER_10K,
+    }
 
 
 @app.post("/api/parse-outline")

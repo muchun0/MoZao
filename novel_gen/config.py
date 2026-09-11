@@ -100,6 +100,7 @@ class NovelConfig:
     de_ai: bool = True               # 正文生成时注入去AI味写作约束
     anti_similarity: bool = True     # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
     character_depth: bool = True     # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
+    fanqie_style: bool = True        # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系
     confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
     memory_window: int = 5          # 生成当前章时回填最近 N 章摘要，控制上下文成本
     # ---- 模式选择 ----
@@ -178,6 +179,7 @@ def load_config(path: str | Path) -> NovelConfig:
         de_ai=bool(raw.get("de_ai", True)),
         anti_similarity=bool(raw.get("anti_similarity", True)),
         character_depth=bool(raw.get("character_depth", True)),
+        fanqie_style=bool(raw.get("fanqie_style", True)),
         confirm=bool(raw.get("confirm", False)),
         memory_window=int(raw.get("memory_window", 5)),
         mode=raw.get("mode", "auto"),

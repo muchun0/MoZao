@@ -232,6 +232,58 @@ def _character_depth_rules(stage: str = "chapter") -> str:
 
 
 
+# ---------- 番茄平台写作纪律（基于《番茄小说平台专属写作技巧指南》提炼） ----------
+
+def _fanqie_rules(stage: str = "chapter") -> str:
+    """番茄平台写作纪律：黄金三章开篇 / 防崩文大纲 / 轻量世界观力量体系 / 节奏爽点断章 / 移动端排版。
+
+    基于番茄官方作家课堂与头部作者经验提炼，stage 决定注入深度：
+    outline 侧重黄金三章设计 + 三幕式/卷纲 + 节奏规划；world 侧重人物三层逻辑 + 轻量世界观力量体系；
+    chapter 侧重开篇纪律 + 爽点闭环 + 章末断章 + 语言排版。
+    """
+    if stage == "outline":
+        return (
+            "【番茄平台·开篇与结构纪律】\n"
+            "1. 黄金三章设计（前三章是留存筛选器，零铺垫、快切入、强钩子）：\n"
+            "   - 第1章：300字内爆发核心冲突并引出主角与金手指/核心卖点；开篇第一句直接进入动作或对抗场景，"
+            "禁止环境铺垫/背景介绍/世界观说明/回忆杀；场景聚焦单一现场，出场人物不超过2个\n"
+            "   - 第2章：700字内通过主角应对冲突的行为/选择/对话立住人设，禁止直白旁白介绍性格；推进小半步剧情，给出第一个小型反馈验证能力\n"
+            "   - 第3章：放大矛盾强度，制造新阻碍迫使主角做出不可逆选择；结尾留「小反转+大疑问」双重钩子；明确短期行动目标\n"
+            "2. 防崩文结构：全书主线必须能用一句话概括；三幕式（开端抛矛盾立目标→发展层层受阻起伏→结局合理收束）；"
+            "长书按卷规划：每卷一个核心冲突+一个阶段性大高潮，卷末完成一次身份/实力跃迁，提前规划关键节点防中期散架\n"
+            "3. 节奏规划：快2慢1交替（2章冲突/打斗/反转配1章日常/情感/设定），战斗章不连续超2章，日常章不连续超3章；"
+            "压抑期不超过3章，压抑后必须给出情绪释放；爽点按四环节规划（压抑→铺垫→爆发→余韵），每章 goal 尽量落到某个情绪环节"
+        )
+    if stage == "world":
+        return (
+            "【番茄平台·人设与世界观纪律】\n"
+            "1. 人物三层逻辑：表层（外在形象/习惯动作/口头禅，建立第一印象）+ 中层（身世背景/成长经历，解释性格成因）"
+            "+ 深层（核心价值观/最深的渴望，驱动行为决策），三层都要落到人物卡\n"
+            "2. 塑造四技巧：给人物填过往（言行有逻辑支撑，不无缘无故善恶）；明确目标与动机（主角贯穿始终的核心目标，"
+            "反派配角也有自己的动机，不为推动剧情强行行动）；加反差特质（核心标签配一个反差属性，如杀伐果断的魔尊怕老婆）；"
+            "拒绝工具人配角（配角有独立人设与利益诉求）\n"
+            "3. 世界观轻量化：禁止大段堆砌设定，遵循「写到哪铺到哪」，设定随剧情自然抛出；新增设定先问能否制造冲突/推动情节，"
+            "没用的直接砍掉；先搭核心框架，历史地理人文细节等需要时再补，避免「上课感」\n"
+            "4. 力量体系标准：等级层级清晰可量化（晋级标准明确）；战力差距具象化（用参照物：一个武师能打五十个士兵）；"
+            "提前定死力量天花板，防后期战力崩坏"
+        )
+    return (
+        "【番茄平台·正文写作纪律】\n"
+        "1. 开篇纪律：每章第一句尽量直接进入动作或对抗（尤其全书首章），禁止环境铺垫/世界观说明/回忆杀开场；"
+        "场景聚焦，单场戏出场人物不宜过多\n"
+        "2. 节奏：快2慢1交替——冲突/打斗/反转连续不超过2章，日常/情感/设定连续不超过3章；拒绝注水，每段都推进情绪或剧情\n"
+        "3. 爽点闭环：压抑（制造憋屈感，不超3章）→铺垫（暗中准备积蓄）→爆发（高光集中释放，桥段避开全网套路黑名单）"
+        "→余韵（围观者反应/态度转变放大爽感）；禁止只有爆发没有铺垫的空中楼阁\n"
+        "4. 章末断章：每章结尾留明确悬念，让读者带着焦虑感合上书；有效类型：冲突一触即发/真相即将揭晓/危险悄然降临/反转前夕；"
+        "禁止流水账结尾（主角吃饭睡觉就断章）\n"
+        "5. 语言与排版（移动端阅读标准）：每段控制在3-5行，多用短句少用长难句；对话单独成段，清晰区分说话人；"
+        "精准描写——所有描写必须服务剧情或人物，删除无关环境描写/冗余对话/无效修饰；拒绝过度华丽文笔拖慢节奏；"
+        "少用生僻字与专业术语\n"
+        "6. 雷区红线：禁止节奏注水（强行水字数）、人设崩塌（行为违背前期设定）、强行降智（为剧情让角色智商掉线）、"
+        "巧合过多（凡事靠巧合推动）、反派全程送经验"
+    )
+
+
 def expand_outline_prompt(
     cfg: NovelConfig,
     user_input: str,
@@ -249,6 +301,8 @@ def expand_outline_prompt(
     )
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("outline")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("outline")
     hard = _hard_constraints(cfg)
     soft = _soft_direction(cfg)
     user = (
@@ -292,6 +346,8 @@ def outline_prompt(
     )
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("outline")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("outline")
     hard = _hard_constraints(cfg)
     soft = _soft_direction(cfg)
 
@@ -358,6 +414,8 @@ def world_prompt(
         system += "\n\n" + _anti_similarity_system("world")
     if cfg.character_depth:
         system += "\n\n" + _character_depth_rules("world")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("world")
     hard = _hard_constraints(cfg)
     outline_text = "\n".join(
         f"第{c.no}章《{c.title}》：{c.goal}" for c in outline.chapters[:20]
@@ -404,6 +462,8 @@ def chapter_prompt(
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.character_depth:
         system += "\n\n" + _character_depth_rules("chapter")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("chapter")
     constraints = _chapter_constraints(cfg)
     de_ai_block = _de_ai_rules() if cfg.de_ai else ""
     ending_block = _ending_requirements() if is_final else ""

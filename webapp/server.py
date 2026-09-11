@@ -334,51 +334,78 @@ def _list_projects(user: dict) -> list[dict]:
     return items
 
 
-def _settle_price(store: ProjectStore) -> None:
-    """生成完成后按 AI 实际生成字数结算（多退少补，仅续写/扩写项目有 user_words）。
+def _grant_consume_commission(buyer_uid: int, project_id: str, amount: float, title: str) -> None:
+    """消费返佣：下级实际消费（生成结算全额扣费）时，按实付金额给上级代理返佣。
 
-    ai_words = 全书当前总字数 - 用户手写原字数（创建时记录）。
-    普通项目（user_words=0）直接标记跳过；已结算项目幂等跳过。
-    结算差额只调整余额，返佣按创建时实付金额计算（v1 简化，不追补）。
+    创建时不扣费，因此返佣随结算发放；余额不足未足额扣费的项目不返佣（v1 简化，日志可查）。
+    """
+    if COMMISSION_BASE != "consume":
+        return
+    buyer = db.get_user(buyer_uid)
+    if not buyer or not buyer.get("referrer_id"):
+        return
+    ref = db.get_user(buyer["referrer_id"])
+    if ref and ref.get("is_agent"):
+        commission = round_money(amount * COMMISSION_RATE)
+        db.pay_commission(
+            ref["id"], buyer_uid, commission, "consume",
+            project_id=project_id,
+            note=f"下级 {buyer['username']} 消费《{title}》",
+        )
+        logger.info("消费返佣(结算): agent_uid=%d buyer_uid=%d amount=%.2f project=%s",
+                    ref["id"], buyer_uid, commission, project_id)
+
+
+def _settle_price(store: ProjectStore) -> None:
+    """生成完成后按 AI 实际生成字数结算扣费（创建时不扣费，真正生成文字才扣）。
+
+    ai_words = 全书当前总字数 - 用户手写原字数（创建时记录；user_words=0 时即全书总字数）。
+    所有项目统一：未产生任何 AI 文字（ai_words<=0）不收费；已结算项目幂等跳过。
+    余额不足时扣到 0 并记录欠费（debt.json），不阻塞交付。
+    消费返佣在结算足额扣费时发放（按下级实际消费金额）。
+
     """
     try:
         project_id = store.dir.name
         sp = store.dir / "settle.json"
         if sp.exists():
             return
-        user_words = store.user_words()
-        if user_words <= 0:
-            sp.write_text(json.dumps({"mode": "skip"}), encoding="utf-8")
-            return
         uid = db.project_owner(project_id)
         if uid is None:
             sp.write_text(json.dumps({"mode": "skip"}), encoding="utf-8")
             return
-        paid = db.project_price(project_id)
+        title = store.load_config().effective_title()
+        user_words = store.user_words()
         chapters = store.list_chapters()
         total_words = sum(len(c.content) for c in chapters)
         ai_words = max(0, total_words - user_words)
-        final_price = round_money(price_for(max(1, ai_words)))
-        diff = round_money(final_price - paid)
-        title = store.load_config().effective_title()
-        if abs(diff) < 0.01:
-            sp.write_text(json.dumps({"ai_words": ai_words, "final_price": final_price, "diff": 0}),
-                          encoding="utf-8")
+        if ai_words <= 0:
+            # 未真正生成任何 AI 文字：不收费
+            db.update_project_price(project_id, 0.0)
+            sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
             return
-        if diff > 0:
-            bal = db.get_user(uid)["balance"]
-            if bal >= diff:
-                db.change_balance(uid, -diff, f"《{title}》生成结算：AI 实际 {ai_words} 字（含手写 {user_words} 字），补扣 {diff:.2f} 元")
-            else:
-                logger.warning("结算补扣失败(余额不足): uid=%d project=%s diff=%.2f bal=%.2f",
-                               uid, project_id, diff, bal)
+        discount = db.project_discount(project_id)  # 创建时折扣快照
+        final_price = round_money(agent_price(price_for(ai_words), discount))
+        bal = db.get_user(uid)["balance"]
+        if bal >= final_price:
+            db.change_balance(uid, -final_price,
+                              f"《{title}》生成结算：AI 生成 {ai_words} 字，扣费 {final_price:.2f} 元")
+            _grant_consume_commission(uid, project_id, final_price, title)
         else:
-            db.change_balance(uid, -diff, f"《{title}》生成结算：AI 实际 {ai_words} 字（含手写 {user_words} 字），退还 {-diff:.2f} 元")
+            short = round_money(final_price - bal)
+            if bal > 0:
+                db.change_balance(uid, -bal,
+                                  f"《{title}》生成结算：AI 生成 {ai_words} 字，余额不足仅扣 {bal:.2f} 元")
+            store.dir.joinpath("debt.json").write_text(
+                json.dumps({"owe": short, "ai_words": ai_words, "final_price": final_price}),
+                encoding="utf-8")
+            logger.warning("结算扣费余额不足: uid=%d project=%s final=%.2f bal=%.2f 欠费=%.2f",
+                           uid, project_id, final_price, bal, short)
         db.update_project_price(project_id, final_price)
-        sp.write_text(json.dumps({"ai_words": ai_words, "final_price": final_price, "diff": diff}),
+        sp.write_text(json.dumps({"ai_words": ai_words, "final_price": final_price}),
                       encoding="utf-8")
-        logger.info("结算完成: project=%s ai_words=%d paid=%.2f final=%.2f diff=%.2f",
-                    project_id, ai_words, paid, final_price, diff)
+        logger.info("结算完成: project=%s ai_words=%d final=%.2f balance=%.2f",
+                    project_id, ai_words, final_price, db.get_user(uid)["balance"])
     except Exception:
         logger.exception("结算异常: project=%s", store.dir.name)
 
@@ -952,19 +979,20 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
                        f"请调高目标字数或减少已有内容",
             )
 
-    # 按 AI 实际生成字数预估收费：创建项目即扣预估费，生成完成后多退少补
+    # 按 AI 实际生成字数预估费用：创建时【不扣费】，仅做余额校验（防生成后付不起），
+    # 生成完成后按实际 AI 字数结算扣费（见 _settle_price）
     ai_words = max(1, cfg.total_words - user_words)
     base_price = price_for(ai_words)
     discount = float(user.get("agent_discount", 1.0)) if user.get("is_agent") else 1.0
-    price = agent_price(base_price, discount)
+    price = agent_price(base_price, discount)  # 预估费用（展示用）
     if user["balance"] < price:
         logger.warning("创建项目失败(余额不足): uid=%d title=%s price=%.2f balance=%.2f",
                        user["id"], cfg.effective_title(), price, user["balance"])
         raise HTTPException(
             status_code=400,
-            detail=f"余额不足：预估定价 {price:.1f} 元（按 AI 生成 {ai_words} 字"
-                   f"{'，代理价' + str(int(discount * 100)) + ' 折' if discount < 1 else ''}），"
-                   f"当前余额 {user['balance']:.1f} 元。请先充值。",
+            detail=f"余额不足：预估费用 {price:.1f} 元（按 AI 生成 {ai_words} 字"
+                   f"{'，代理价' + str(int(discount * 100)) + ' 折' if discount < 1 else ''}，"
+                   f"生成完成后扣费），当前余额 {user['balance']:.1f} 元。请先充值。",
         )
 
     store = ProjectStore.create(PROJECTS_DIR, cfg)
@@ -975,29 +1003,16 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
             store.save_chapter(Chapter(no=i, title=c["title"] or f"第{i}章",
                                        content=c["content"], source="user"))
         store.set_user_words(user_words)
-    db.claim_project(store.dir.name, user["id"], price)
-    db.change_balance(user["id"], -price, f"创建《{cfg.effective_title()}》（{tier_name_for(ai_words)}）")
-    logger.info("创建项目: uid=%d project=%s title=%s mode=%s content_type=%s price=%.2f(原价%.2f) "
-                "total_words=%d user_words=%d ai_words=%d",
+    # 创建仅登记归属：price=0（未扣费），折扣快照留待结算
+    db.claim_project(store.dir.name, user["id"], 0.0, discount)
+    logger.info("创建项目(未扣费): uid=%d project=%s title=%s mode=%s content_type=%s "
+                "预估=%.2f(原价%.2f) total_words=%d user_words=%d ai_words=%d",
                 user["id"], store.dir.name, cfg.effective_title(), cfg.mode, cfg.content_type,
                 price, base_price, cfg.total_words, user_words, ai_words)
-
-    # 消费返佣：上级是代理时按实付金额给上级返佣（默认开启）
-    if COMMISSION_BASE == "consume" and user.get("referrer_id"):
-        ref = db.get_user(user["referrer_id"])
-        if ref and ref.get("is_agent"):
-            commission = round_money(price * COMMISSION_RATE)
-            db.pay_commission(
-                ref["id"], user["id"], commission, "consume",
-                project_id=store.dir.name,
-                note=f"下级 {user['username']} 消费《{cfg.effective_title()}》",
-            )
-            logger.info("消费返佣: agent_uid=%d buyer_uid=%d amount=%.2f project=%s",
-                        ref["id"], user["id"], commission, store.dir.name)
     return {
         "id": store.dir.name,
         "title": cfg.effective_title(),
-        "price": price,
+        "price": price,          # 预估费用（生成完成后按实际结算）
         "base_price": base_price,
         "balance": db.get_user(user["id"])["balance"],
         "config": _cfg_to_dict(cfg),
@@ -1400,10 +1415,7 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
     if store.list_chapters():
         raise HTTPException(status_code=400, detail="该项目已开始生成正文，无法退费删除")
 
-    price = db.project_price(project_id)
-    if price <= 0:
-        raise HTTPException(status_code=400, detail="该项目无可退金额（可能为历史项目或已退过）")
-
+    price = db.project_price(project_id)  # 新项目创建不扣费 price=0：未生成直接删除，无需退费
     # 若正在生成（调研/大纲/设定阶段，尚未产出章节）：先请求停止并等待线程结束
     handle = _RUNS.get(project_id)
     if handle:
@@ -1411,15 +1423,16 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
         if handle.thread and handle.thread.is_alive():
             handle.thread.join(timeout=30)
 
-    # 退费
-    db.change_balance(user["id"], price, f"项目退费：《{title}》（未开始生成）")
-    # 返佣冲正：该项目触发的消费返佣扣回上级
-    comm = db.find_commission_by_project(project_id)
-    if comm:
-        db.change_balance(comm["agent_id"], -comm["amount"],
-                          f"返佣冲正：《{title}》项目退费")
-        logger.info("返佣冲正: agent_uid=%d amount=%.2f project=%s", 
-                    comm["agent_id"], comm["amount"], project_id)
+    # 退费（历史项目创建时已扣费才退；新项目 price=0 直接删除）
+    if price > 0:
+        db.change_balance(user["id"], price, f"项目退费：《{title}》（未开始生成）")
+        # 返佣冲正：该项目触发的消费返佣扣回上级
+        comm = db.find_commission_by_project(project_id)
+        if comm:
+            db.change_balance(comm["agent_id"], -comm["amount"],
+                              f"返佣冲正：《{title}》项目退费")
+            logger.info("返佣冲正: agent_uid=%d amount=%.2f project=%s",
+                        comm["agent_id"], comm["amount"], project_id)
 
     # 删除作品：归属记录 + 项目目录 + 已导出的成品文件
     db.delete_project_owner(project_id)

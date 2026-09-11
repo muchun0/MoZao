@@ -642,7 +642,7 @@
       } else {
         h += "定价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong>（每万字 " + per10k + " 元）。";
       }
-      h += "创建项目时将从余额扣费。";
+      h += "创建时不扣费，生成完成后按 AI 实际生成字数结算。";
       tip.innerHTML = h;
     }
     // 右侧费用明细
@@ -661,7 +661,7 @@
         rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
       }
       rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(price) + "</b></div>" +
-        '<div class="fee-hint">按目标字数计费（每万字 ' + per10k + " 元），创建项目时立即从余额扣费；未开始生成的项目可在「我的书案」中申请退费删除。</div>";
+        '<div class="fee-hint">按 AI 实际生成字数计费（每万字 ' + per10k + " 元）；创建时不扣费，真正生成文字后按实际字数结算。未生成的项目可随时删除，不产生费用。</div>";
       fee.innerHTML = rows;
     }
   }
@@ -900,7 +900,7 @@
       // 更新余额
       me.balance = res.balance;
       renderUserBar();
-      toast("项目「" + res.title + "」创建成功，已扣费 " + fmtPrice(res.price) + " 元");
+      toast("项目「" + res.title + "」创建成功（预估费用 " + fmtPrice(res.price) + " 元，生成完成后按实际字数扣费）");
       currentProjectId = res.id;
       switchView("detail");
     } catch (err) {

@@ -66,7 +66,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS project_owner (
                 project_id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
-                price REAL NOT NULL DEFAULT 0,   -- 创建时实扣金额（代理按折扣价），用于项目退费
+                price REAL NOT NULL DEFAULT 0,   -- 结算后实扣金额（代理按折扣价），用于项目退费
+                discount REAL NOT NULL DEFAULT 1.0,  -- 创建时代理折扣快照（结算用）
                 created_at REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS recharges (
@@ -116,6 +117,8 @@ def init_db() -> None:
         pcols = _column_names(conn, "project_owner")
         if "price" not in pcols:
             conn.execute("ALTER TABLE project_owner ADD COLUMN price REAL NOT NULL DEFAULT 0")
+        if "discount" not in pcols:
+            conn.execute("ALTER TABLE project_owner ADD COLUMN discount REAL NOT NULL DEFAULT 1.0")
         # 老用户补邀请码（无码则按 id 生成 INV+id）
         rows = conn.execute("SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
         for r in rows:
@@ -426,11 +429,19 @@ def delete_session(token: str) -> None:
 
 
 # ---------- 项目归属 ----------
-def claim_project(project_id: str, user_id: int, price: float = 0.0) -> None:
+def claim_project(project_id: str, user_id: int, price: float = 0.0, discount: float = 1.0) -> None:
+    """登记项目归属。price=创建时预估/结算后实扣；discount=创建时代理折扣快照（结算用）。"""
     with _connect() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO project_owner (project_id, user_id, price, created_at) VALUES (?,?,?,?)",
-            (project_id, user_id, price, time.time()))
+            "INSERT OR IGNORE INTO project_owner (project_id, user_id, price, discount, created_at) VALUES (?,?,?,?,?)",
+            (project_id, user_id, price, discount, time.time()))
+
+
+def project_discount(project_id: str) -> float:
+    """项目创建时的代理折扣快照（老项目/无记录返回 1.0）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT discount FROM project_owner WHERE project_id=?", (project_id,)).fetchone()
+    return float(row["discount"]) if row and row["discount"] is not None else 1.0
 
 
 def project_price(project_id: str) -> float:

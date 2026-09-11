@@ -82,6 +82,9 @@ class ProjectStore:
             "memory_window": cfg.memory_window,
             "mode": cfg.mode,
             "expand_input": cfg.expand_input,
+            "content_type": cfg.content_type,
+            "expand_targets": list(cfg.expand_targets),
+            "user_words": getattr(cfg, "_user_words", 0),
             "llm": {
                 "provider": cfg.llm.provider,
                 "model": cfg.llm.model,
@@ -115,6 +118,8 @@ class ProjectStore:
             memory_window=int(d.get("memory_window", 5)),
             mode=d.get("mode", "auto"),
             expand_input=d.get("expand_input", ""),
+            content_type=d.get("content_type", ""),
+            expand_targets=[int(x) for x in (d.get("expand_targets") or [])],
             llm=LLMConfig(
                 provider=llm_d.get("provider", "deepseek"),
                 model=llm_d.get("model", ""),
@@ -125,6 +130,27 @@ class ProjectStore:
                 max_tokens=int(llm_d.get("max_tokens", 4096)),
             ),
         )
+
+    # ---------- 用户手写内容 ----------
+    def user_content_path(self) -> Path:
+        return self.dir / "user_content.txt"
+
+    def save_user_content(self, text: str) -> None:
+        self.user_content_path().write_text(text or "", encoding="utf-8")
+
+    def load_user_content(self) -> str:
+        p = self.user_content_path()
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def set_user_words(self, words: int) -> None:
+        """记录用户手写内容原字数（创建时统计），用于按 AI 实际生成字数结算。"""
+        cfg = self.load_config()
+        cfg._user_words = int(words)
+        self.save_config(cfg)
+
+    def user_words(self) -> int:
+        d = self._read_json(self.config_path(), {})
+        return int(d.get("user_words", 0) or 0)
 
     # ---------- 调研报告 ----------
     def research_path(self) -> Path:

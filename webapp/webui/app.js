@@ -591,7 +591,7 @@
       wordsInput.addEventListener("input", updateFee);
     }
     updateFee();
-    // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写
+    // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写（含续写/扩写已有内容）
     const modeRadios = $$('#create-form input[name="mode"]');
     const expandWrap = $("#expand-input-wrap");
     const expandHideEls = $$('#create-form [data-expand-hide]');
@@ -599,10 +599,17 @@
       const expand = (document.querySelector('#create-form input[name="mode"]:checked') || {}).value === "expand";
       expandWrap.classList.toggle("hidden", !expand);
       expandHideEls.forEach((el) => el.classList.toggle("hidden", expand));
-      const lbl = expand ? "AI 扩写模式（提供大纲/简要内容，直接扩写成文）" : "智能生成模式（联网调研 → 自动大纲 → 逐章）";
+      const lbl = expand ? "AI 扩写模式（大纲扩写 / 续写已有内容 / 扩写已有章节）" : "智能生成模式（联网调研 → 自动大纲 → 逐章）";
       const meta = $("#create-form .mode-label");
       if (meta) meta.textContent = lbl;
+      applyContentType();
     };
+    // 内容类型切换：outline=大纲扩写；chapters=续写；chapters_expand=扩写已有章节
+    const applyContentType = () => {
+      const ct = (document.querySelector('#create-form input[name="content_type"]:checked') || {}).value || "outline";
+      $$('#create-form [data-ct]').forEach((el) => el.classList.toggle("hidden", el.dataset.ct !== ct));
+    };
+    $$('#create-form input[name="content_type"]').forEach((r) => r.addEventListener("change", applyContentType));
     modeRadios.forEach((r) => r.addEventListener("change", applyMode));
     applyMode();
   }
@@ -675,6 +682,88 @@
       if (name === "total_words") el.dispatchEvent(new Event("input"));
     }
   };
+  // ---------- 上传/粘贴已有内容 → 切分预览（续写/扩写模式） ----------
+  const contentFile = $("#content-file");
+  const contentParseBtn = $("#btn-parse-content");
+  const contentParseStatus = $("#content-parse-status");
+  const contentPreview = $("#content-preview");
+  const userContentTa = document.querySelector('#create-form textarea[name="user_content"]');
+  const setContentStatus = (msg, isErr) => {
+    if (!contentParseStatus) return;
+    contentParseStatus.textContent = msg;
+    contentParseStatus.className = "parse-status" + (isErr ? " parse-error" : "");
+  };
+  const renderContentPreview = (r) => {
+    if (!contentPreview) return;
+    if (!r || !r.chapters || !r.chapters.length) {
+      contentPreview.classList.add("hidden");
+      return;
+    }
+    const totalChars = (r.total_chars || 0);
+    let html = '<div class="content-preview-head">识别到 <b>' + r.chapters.length +
+      "</b> 个章节，共 " + (totalChars >= 10000 ? (totalChars / 10000).toFixed(1) + " 万字" : totalChars + " 字") + "</div>";
+    html += r.chapters.map((c) =>
+      '<div class="cp-row"><span class="cp-no">' + c.no + '.</span>' +
+      '<span class="cp-title">' + esc(c.title) + "</span>" +
+      '<span class="cp-chars">' + c.chars + " 字</span>" +
+      '<div class="cp-preview">' + esc(c.preview || "") + "…</div></div>"
+    ).join("");
+    html += '<div class="cp-tip">识别结果仅供参考，实际以服务端切分为准；粘贴/上传后可直接创建。</div>';
+    contentPreview.innerHTML = html;
+    contentPreview.classList.remove("hidden");
+  };
+  if (contentParseBtn && contentFile) {
+    contentParseBtn.addEventListener("click", async () => {
+      const file = contentFile.files[0];
+      if (!file) {
+        if (userContentTa && userContentTa.value.trim()) {
+          setContentStatus("解析粘贴内容中…", false);
+          try {
+            const resp = await fetch("/api/parse-content", {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: "text=" + encodeURIComponent(userContentTa.value),
+            });
+            const r = await resp.json();
+            if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
+            renderContentPreview(r);
+            setContentStatus("已解析粘贴内容", false);
+          } catch (e) {
+            setContentStatus("解析失败：" + e.message, true);
+          }
+          return;
+        }
+        setContentStatus("请先粘贴内容或选择文件", true);
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) { setContentStatus("文件超过 5MB 限制", true); return; }
+      contentParseBtn.disabled = true;
+      setContentStatus("解析中…", false);
+      try {
+        // 1) 读文件文本填入粘贴框（创建时以 JSON 提交全文）
+        const text = await new Promise((resolve, reject) => {
+          const rd = new FileReader();
+          rd.onload = () => resolve(String(rd.result || ""));
+          rd.onerror = () => reject(new Error("读取文件失败"));
+          rd.readAsText(file, "utf-8");
+        });
+        if (userContentTa) userContentTa.value = text;
+        // 2) 上传解析出切分预览
+        const fd = new FormData();
+        fd.append("file", file);
+        const resp = await fetch("/api/parse-content", { method: "POST", body: fd });
+        const r = await resp.json();
+        if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
+        renderContentPreview(r);
+        setContentStatus("解析完成：识别到 " + r.chapters.length + " 个章节", false);
+      } catch (e) {
+        setContentStatus("解析失败：" + e.message, true);
+      } finally {
+        contentParseBtn.disabled = false;
+      }
+    });
+  }
+
   if (parseBtn && outlineFile) {
     parseBtn.addEventListener("click", async () => {
       const file = outlineFile.files[0];
@@ -748,11 +837,22 @@
     const forbidden = f.forbidden.value.split("\n").map((s) => s.trim()).filter(Boolean);
     const mode = (f.querySelector('input[name="mode"]:checked') || {}).value || "auto";
     const expandInput = f.expand_input ? f.expand_input.value.trim() : "";
+    const content_type = mode === "expand"
+      ? ((f.querySelector('input[name="content_type"]:checked') || {}).value || "outline") : "";
+    const userContent = f.user_content ? f.user_content.value.trim() : "";
 
-    if (mode === "expand" && !expandInput) {
-      errBox.textContent = "创建失败：AI 扩写模式必须填写『大纲或简要内容』";
-      errBox.classList.remove("hidden");
-      return;
+    if (mode === "expand") {
+      if (content_type === "chapters" || content_type === "chapters_expand") {
+        if (!userContent) {
+          errBox.textContent = "创建失败：续写/扩写模式必须粘贴已有内容或上传文件";
+          errBox.classList.remove("hidden");
+          return;
+        }
+      } else if (!expandInput) {
+        errBox.textContent = "创建失败：AI 扩写模式必须填写『大纲或简要内容』";
+        errBox.classList.remove("hidden");
+        return;
+      }
     }
 
     const payload = {
@@ -775,6 +875,9 @@
       memory_window: 5,
       mode,
       expand_input: expandInput,
+      user_content: content_type === "chapters" || content_type === "chapters_expand" ? userContent : "",
+      content_type: content_type,
+      expand_targets: [],
       llm: {
         provider: "deepseek",  // Key 由服务端统一管理
         model: "",

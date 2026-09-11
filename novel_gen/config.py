@@ -106,6 +106,8 @@ class NovelConfig:
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
+    content_type: str = ""          # expand 模式下的输入类型：""=大纲/梗概（纯扩写）；"chapters"=已有分章正文（续写）；"chapters_expand"=扩写已有章节
+    expand_targets: list = field(default_factory=list)  # 扩写范围：章节号列表，空=全部已有章节
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
 
@@ -184,6 +186,8 @@ def load_config(path: str | Path) -> NovelConfig:
         memory_window=int(raw.get("memory_window", 5)),
         mode=raw.get("mode", "auto"),
         expand_input=raw.get("expand_input", ""),
+        content_type=raw.get("content_type", ""),
+        expand_targets=[int(x) for x in (raw.get("expand_targets") or [])],
         llm=llm,
         search=search,
     )

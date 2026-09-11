@@ -489,3 +489,113 @@ def chapter_prompt(
         f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
     )
     return system, user
+
+
+# ============================================================
+# 已有内容续写 / 扩写（需求分析-已有内容续写与扩写 v1.0）
+# ============================================================
+
+def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[str, str]:
+    """续写模式：基于用户手写正文提炼世界观/人物卡/伏笔（保证设定与用户内容一致）。"""
+    system = (
+        "你是一位严谨的小说设定分析师。用户给你「已有正文」，"
+        "你要从正文中提炼出可支撑续写的世界观、人物卡与伏笔清单，"
+        "作为后续章节生成的全书记忆库。"
+        "只提炼正文中确实存在或明确暗示的信息，不得凭空添加与正文矛盾的人设与设定；"
+        "正文未提到但续写必需的背景可作合理推断并标注为推断。"
+    )
+    if cfg.anti_similarity:
+        system += "\n\n" + _anti_similarity_system("world")
+    if cfg.character_depth:
+        system += "\n\n" + _character_depth_rules("world")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("world")
+    hard = _hard_constraints(cfg)
+    user = (
+        f"【题材】{cfg.genre}\n"
+        f"【书名/简介】{cfg.effective_title()}｜{cfg.premise or '（未提供）'}\n"
+        f"{hard}\n\n"
+        f"【用户已有正文（节选，可能截断）】\n{chapters_block}\n\n"
+        f"请输出 JSON：\n"
+        f"- world_view：从正文提炼的世界观设定（2-4 句：时代背景/世界格局/力量体系/核心矛盾）\n"
+        f"- characters：3-8 个人物对象数组，每项 {{\"name\":姓名,\"role\":定位,\"desc\":性格与背景}}；"
+        f"主角与已出场人物必须包含，描述要与正文言行一致\n"
+        f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念（每条一句；正文没有悬念时提炼潜在冲突）\n"
+        f"要求：与用户正文严格一致，人物动机有据可查，避免凭空新增与正文矛盾的世界观。"
+    )
+    return system, user
+
+
+def continue_outline_prompt(
+    cfg: NovelConfig,
+    user_chapters_block: str,
+    remain_chapters: int,
+) -> tuple[str, str]:
+    """续写模式：基于用户已有章节（标题+剧情脉络），规划后续章节大纲。
+
+    输出的 chapters 仅指「需要 AI 续写」的后续章节（第 N+1 章起），
+    由上层拼接到用户章节之后形成完整大纲。
+    """
+    system = (
+        "你是一位擅长续写的小说主编。用户已写了一部分章节，你需要规划接下来的章节大纲，"
+        "让故事自然延续。续写必须：承接前文人物状态与剧情脉络，不推翻已写事实，"
+        "主线清晰、每章有推进与钩子，最后一章是完整结局。"
+    )
+    if cfg.anti_similarity:
+        system += "\n\n" + _anti_similarity_system("outline")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("outline")
+    hard = _hard_constraints(cfg)
+    soft = _soft_direction(cfg)
+    user = (
+        f"【目标】为一部 {cfg.genre} 题材小说规划【后续 {remain_chapters} 章】的章节大纲"
+        f"（全书目标约 {cfg.total_words} 字，续写单章约 {cfg.chapter_words} 字）\n"
+        f"【书名】{cfg.effective_title()}\n"
+        f"{hard}\n\n{soft}\n\n"
+        f"【用户已写章节（标题+剧情脉络）】\n{user_chapters_block}\n\n"
+        f"请输出 JSON（只输出后续章节）：\n"
+        f"- chapters：恰好 {remain_chapters} 个章节对象的数组，每项 {{\"no\":从1开始的相对序号,\"title\":章名,\"goal\":本章剧情目标}}\n"
+        f"要求：\n"
+        f"1. 第 1 章要自然承接用户最后章节的结尾，人物状态/情节无缝衔接\n"
+        f"2. 每章 goal 一句话说清「本章发生什么、达成什么情绪/爽点、留下什么钩子」\n"
+        f"3. 主线紧扣用户已写内容的核心冲突并推向高潮；最后一章必须是完整结局章（收束主线、伏笔与人物命运，结尾升维收尾）\n"
+        f"4. 用户预设人物必须持续出现且符合设定；避雷元素绝对不得出现\n"
+    )
+    return system, user
+
+
+def expand_chapter_prompt(
+    cfg: NovelConfig,
+    chapter_no: int,
+    chapter_title: str,
+    content: str,
+    target_words: int,
+) -> tuple[str, str]:
+    """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。"""
+    system = (
+        "你是资深小说扩写编辑。用户给出「已有章节正文」，你要在【不改变情节走向、"
+        "不删减已有内容、不改变人物性格与对话原意】的前提下，把正文扩写到目标字数。"
+        "扩写手段：增加场景细节、环境氛围、动作过程、对话交锋、心理挣扎、"
+        "过往回忆（不揭穿未来伏笔）与人物生活体感。"
+        "禁止注水重复、禁止大段空泛景物堆砌、禁止改变剧情结论。"
+    )
+    if cfg.de_ai:
+        system += (
+            "扩写文字要有真人作者的质感：细节具体、对话有潜台词，"
+            "避免AI腔（连接词堆砌、强行升华、句式整齐）。"
+        )
+    if cfg.anti_similarity:
+        system += "\n\n" + _anti_similarity_system("chapter")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("chapter")
+    user = (
+        f"【本章】第{chapter_no}章《{chapter_title}》\n"
+        f"【目标字数】扩写后正文（不含任何标记）应达到约 {target_words} 字\n"
+        f"【当前正文（{len(content)} 字）】\n{content}\n\n"
+        f"请输出扩写后的完整正文：\n"
+        f"1. 必须完整保留原有情节、人物言行与对话（可润色但不得改变原意）\n"
+        f"2. 在原文基础上扩充：场景细节、对话交锋、动作过程、心理挣扎、氛围铺垫\n"
+        f"3. 不改变情节走向、不提前揭穿后续伏笔、不引入与上下文矛盾的新设定\n"
+        f"4. 只输出正文本身，不要输出摘要、不要输出任何前后缀说明\n"
+    )
+    return system, user

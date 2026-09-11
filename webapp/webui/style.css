@@ -453,6 +453,17 @@ input:focus, select:focus, textarea:focus {
 .ol-edit-fields { flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .ol-edit-fields input, .ol-edit-fields textarea { width: 100%; box-sizing: border-box; }
 .ol-edit-del { flex-shrink: 0; margin-top: 4px; }
+.ct-options { flex-wrap: wrap; gap: 8px; }
+.ct-options .mode-option { flex: 1 1 180px; }
+.ct-options .mode-card { padding: 9px 12px; }
+.content-preview { margin-top: 8px; padding: 10px 12px; background: var(--paper); border: 1px dashed var(--gold-line); border-radius: 10px; max-height: 220px; overflow-y: auto; font-size: 12.5px; }
+.content-preview-head { font-weight: 700; margin-bottom: 6px; color: var(--ink); }
+.cp-row { padding: 5px 0; border-bottom: 1px dashed var(--card-line); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.cp-no { color: var(--muted); font-weight: 700; }
+.cp-title { font-weight: 600; }
+.cp-chars { color: var(--gold); font-size: 11.5px; }
+.cp-preview { width: 100%; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.cp-tip { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
 
 /* 世界观 */
 .world-box { font-size: 14px; }

@@ -17,7 +17,9 @@ from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, ProjectState, World
 from .memory import Memory
-from .stages import ChapterWriter, OutlineGenerator, WorldGenerator
+from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
+from .templates import (continue_outline_prompt, expand_chapter_prompt,
+                        expand_outline_prompt, world_from_content_prompt)
 from .editor import EditorReviewer
 from .templates import expand_outline_prompt
 from webapp.logger import get_logger
@@ -178,12 +180,26 @@ class NovelPipeline:
         self.store.save_state(state)
 
     # ---------- 全流程 / 续跑 ----------
+    def is_continue_mode(self) -> bool:
+        """续写模式：用户已有分章正文，AI 从断点续写（content_type=chapters）。"""
+        return self.cfg.content_type == "chapters"
+
+    def is_expand_existing_mode(self) -> bool:
+        """扩写已有章节模式：把用户已有章节扩写到目标字数（content_type=chapters_expand）。"""
+        return self.cfg.content_type == "chapters_expand"
+
     def resume(self, silent: bool = False) -> None:
         """从当前进度继续：缺失产物即生成，已生成章节自动跳过。"""
         if not silent:
             self._print_plan()
-        logger.info("流水线开始: 《%s》mode=%s total_words=%d",
-                    self.cfg.effective_title(), self.cfg.mode, self.cfg.total_words)
+        logger.info("流水线开始: 《%s》mode=%s content_type=%s total_words=%d",
+                    self.cfg.effective_title(), self.cfg.mode, self.cfg.content_type, self.cfg.total_words)
+        if self.is_continue_mode():
+            self._resume_continue(silent=silent)
+            return
+        if self.is_expand_existing_mode():
+            self.run_expand_existing(silent=silent)
+            return
 
         research = self.run_research(silent=silent)
         self._mark_state("outline")
@@ -203,6 +219,143 @@ class NovelPipeline:
         if not silent:
             print(f"\n全部 {total} 章生成完毕。")
         logger.info("流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
+
+    # ---------- 续写 / 扩写已有内容 ----------
+    def _user_chapters(self) -> list[Chapter]:
+        """已入库的用户手写章节（source=user）。"""
+        return [c for c in self.store.list_chapters() if c.source == "user"]
+
+    def _prepare_user_chapters(self, silent: bool = False) -> None:
+        """为用户章节生成摘要并写入记忆库（续写衔接用）。幂等：已有摘要跳过。"""
+        for ch in self._user_chapters():
+            if ch.summary:
+                continue
+            summary = self.chapter_writer._gen_summary(ch.no, ch.title, ch.content)
+            if summary:
+                ch.summary = summary
+                self.store.save_chapter(ch)
+                self.store.append_summary(ch.no, summary)
+        if not silent:
+            print(f"[续写准备] 用户章节摘要：{len(self._user_chapters())} 章已就绪")
+
+    def _world_from_content(self, silent: bool = False) -> World:
+        """续写模式：基于用户正文提炼世界观/人物卡/伏笔（幂等：world.json 存在则复用）。"""
+        existing = self.store.load_world()
+        if existing is not None:
+            if not silent:
+                print(f"[设定提炼] 已存在，复用：{len(existing.characters)} 个人物")
+            return existing
+        block = "\n\n".join(
+            f"第{c.no}章《{c.title}》\n{c.content[:1500]}" for c in self._user_chapters()
+        )
+        logger.info("阶段开始: 设定提炼 world_from_content")
+        system, user = world_from_content_prompt(self.cfg, block)
+        data = self.llm.chat_json(system, user, temperature=0.7)
+        world = World.from_dict(data)
+        if not world.world_view:
+            world.world_view = f"{self.cfg.genre}题材原创世界观"
+        self.store.save_world(world)
+        if not silent:
+            print(f"[设定提炼完成] {len(world.characters)} 个人物，{len(world.foreshadowing)} 条伏笔")
+        logger.info("阶段完成: 设定提炼 world_from_content")
+        return world
+
+    def _continue_outline(self, silent: bool = False) -> Outline:
+        """续写模式大纲：用户章（标题取自文件）+ AI 规划的后续章。幂等：大纲含续写规划则复用。"""
+        existing = self.store.load_outline()
+        if existing is not None and len(existing.chapters) > len(self._user_chapters()):
+            if not silent:
+                print(f"[续写大纲] 已存在，复用：{len(existing.chapters)} 章")
+            return existing
+        user_chs = self._user_chapters()
+        user_block = "\n".join(
+            f"第{c.no}章《{c.title}》：{c.content[:200]}" for c in user_chs
+        )
+        remain = max(1, self.cfg.num_chapters - len(user_chs))
+        logger.info("阶段开始: 续写大纲 continue_outline（剩余 %d 章）", remain)
+        system, user = continue_outline_prompt(self.cfg, user_block, remain)
+        data = self.llm.chat_json(system, user, temperature=0.7)
+        plans = []
+        for i, c in enumerate(data.get("chapters", []), start=1):
+            title = (c.get("title") or "").strip() or f"第{len(user_chs) + i}章"
+            goal = (c.get("goal") or "").strip() or "推进主线剧情，制造冲突并留下悬念。"
+            plans.append(ChapterPlan(no=len(user_chs) + i, title=title, goal=goal))
+        if not plans:
+            raise RuntimeError("续写大纲未生成任何后续章节")
+        # 用户章：标题取自文件，goal 留空（diff 不误报）
+        for i, c in enumerate(user_chs, start=1):
+            plans.insert(0, ChapterPlan(no=i, title=c.title or f"第{i}章", goal=""))
+        outline = Outline(title=existing.title if existing else self.cfg.effective_title(),
+                          intro=existing.intro if existing else "",
+                          chapters=plans)
+        outline = self.outline_gen._normalize(outline)
+        self.store.save_outline(outline)
+        if not silent:
+            print(f"[续写大纲完成] 共 {len(outline.chapters)} 章（用户 {len(user_chs)} 章 + 续写 {remain} 章）")
+        logger.info("阶段完成: 续写大纲（共 %d 章）", len(outline.chapters))
+        return outline
+
+    def _resume_continue(self, silent: bool = False) -> None:
+        """续写流程：用户章摘要 → 设定提炼 → 续写大纲 → 从断点逐章续写。"""
+        self._mark_state("outline")
+        self._prepare_user_chapters(silent=silent)
+        self._mark_state("world")
+        self._world_from_content(silent=silent)
+        self._mark_state("writing")
+        outline = self._continue_outline(silent=silent)
+        done, total = self.progress()
+        for no in range(done + 1, total + 1):
+            self.write_chapter(no, silent=silent)
+            self._mark_state("writing", last_chapter=no)
+        self._mark_state("done", last_chapter=total)
+        if not silent:
+            print(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
+        logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
+
+    def run_expand_existing(self, silent: bool = False) -> None:
+        """扩写已有章节：对用户章节（或 expand_targets 指定章节）扩写到单章目标字数。
+        保留原剧情/对话/人设，只扩充细节；扩写后覆盖正文并重生成摘要。"""
+        self._prepare_user_chapters(silent=silent)
+        self._world_from_content(silent=silent)
+        targets = [int(x) for x in (self.cfg.expand_targets or [])]
+        user_chs = self._user_chapters()
+        if not user_chs:
+            raise RuntimeError("扩写模式需要用户已有章节（未在创建时写入）")
+        if targets:
+            chapters = [c for c in user_chs if c.no in targets]
+        else:
+            chapters = user_chs
+        if not chapters:
+            logger.warning("扩写范围为空: targets=%s", targets)
+            return
+        target_words = max(self.cfg.chapter_words, 500)
+        for ch in chapters:
+            if len(ch.content) >= target_words:
+                if not silent:
+                    print(f"  第{ch.no}章《{ch.title}》已达标（{len(ch.content)} 字），跳过")
+                continue
+            if not silent:
+                print(f"  扩写第{ch.no}章《{ch.title}》（{len(ch.content)} 字 → {target_words} 字）...")
+            logger.info("扩写章节: no=%d from=%d to=%d", ch.no, len(ch.content), target_words)
+            try:
+                system, user = expand_chapter_prompt(self.cfg, ch.no, ch.title, ch.content, target_words)
+                text = self.llm.chat(system, user, temperature=0.8)
+                text = _strip_html_tags(text)
+                if len(text) > len(ch.content) + 50:
+                    ch.content = text
+                    new_summary = self.chapter_writer._gen_summary(ch.no, ch.title, ch.content)
+                    if new_summary:
+                        ch.summary = new_summary
+                        self.store.append_summary(ch.no, new_summary)
+                    self.store.save_chapter(ch)
+                    if not silent:
+                        print(f"  第{ch.no}章扩写完成（{len(ch.content)} 字）")
+            except Exception:
+                logger.exception("扩写失败: no=%d", ch.no)
+        self._mark_state("done", last_chapter=len(self.store.list_chapters()))
+        if not silent:
+            print(f"\n扩写完成：共处理 {len(chapters)} 章。")
+        logger.info("扩写完成: chapters=%d targets=%s", len(chapters), targets)
 
     def run_all(self, silent: bool = False) -> Path | None:
         """一键全流程（等价于从零 resume），结束后导出 txt。返回导出文件路径。"""

@@ -440,6 +440,12 @@ def project_price(project_id: str) -> float:
     return float(row["price"]) if row and row["price"] is not None else 0.0
 
 
+def update_project_price(project_id: str, price: float) -> None:
+    """更新项目实付金额（生成完成后按实际 AI 字数结算时调用）。"""
+    with _connect() as conn:
+        conn.execute("UPDATE project_owner SET price=? WHERE project_id=?", (price, project_id))
+
+
 def find_commission_by_project(project_id: str) -> Optional[dict]:
     """查触发该项目的消费返佣记录（用于退费冲正）。"""
     with _connect() as conn:

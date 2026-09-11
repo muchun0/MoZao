@@ -40,6 +40,7 @@ from novel_gen.export.cover import generate_best_cover
 from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
+from novel_gen.pipeline.stages import unique_chapter_titles
 from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.store.project import ProjectStore, _safe_name
@@ -1124,6 +1125,7 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
         title = (c.title or "").strip() or f"第{i}章"
         goal = (c.goal or "").strip() or "推进主线剧情，制造冲突并留下悬念。"
         chapters.append(ChapterPlan(no=i, title=title, goal=goal))
+    unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
 
     old = store.load_outline()
     new_outline = Outline(

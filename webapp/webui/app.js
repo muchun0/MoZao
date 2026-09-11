@@ -743,15 +743,7 @@
       contentParseBtn.disabled = true;
       setContentStatus("解析中…", false);
       try {
-        // 1) 读文件文本填入粘贴框（创建时以 JSON 提交全文）
-        const text = await new Promise((resolve, reject) => {
-          const rd = new FileReader();
-          rd.onload = () => resolve(String(rd.result || ""));
-          rd.onerror = () => reject(new Error("读取文件失败"));
-          rd.readAsText(file, "utf-8");
-        });
-        if (userContentTa) userContentTa.value = text;
-        // 2) 上传解析出切分预览
+        // 1) 上传解析（docx/txt/md 由服务端统一提取文本，避免前端按 UTF-8 读二进制导致乱码）
         const fd = new FormData();
         fd.append("file", file);
         const resp = await fetch("/api/parse-content", {
@@ -761,6 +753,8 @@
         });
         const r = await resp.json();
         if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
+        // 2) 用服务端解析出的完整文本填入"已有内容"（创建时以 JSON 提交全文）
+        if (userContentTa && r.full_text) userContentTa.value = r.full_text;
         renderContentPreview(r);
         setContentStatus("解析完成：识别到 " + r.chapters.length + " 个章节", false);
       } catch (e) {

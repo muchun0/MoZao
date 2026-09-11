@@ -510,6 +510,7 @@ async def parse_content(file: UploadFile | None = File(None), text: str = Form("
         "ok": True,
         "content_type": "chapters" if many else "outline",
         "total_chars": len(raw),
+        "full_text": raw,          # 服务端统一提取的完整文本（docx/txt/md 均已转码），前端填回"已有内容"
         "chapters": summarize_preview(chs),
     }
 
@@ -1505,7 +1506,10 @@ class _NoCacheStaticFiles(StaticFiles):
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
-        if resp.path.endswith((".html", ".js", ".css")):
+        # 304 NotModifiedResponse 无 path 属性（条件请求命中时返回），需跳过；
+        # 只有普通文件响应才按扩展名加 no-cache，避免 AttributeError 导致前端资源 500
+        path = getattr(resp, "path", None)
+        if path and path.endswith((".html", ".js", ".css")):
             resp.headers["Cache-Control"] = "no-cache, max-age=0"
         return resp
 

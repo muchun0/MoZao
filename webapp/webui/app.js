@@ -591,7 +591,7 @@
       wordsInput.addEventListener("input", updateFee);
     }
     updateFee();
-    // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写
+    // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写（含续写/扩写已有内容）
     const modeRadios = $$('#create-form input[name="mode"]');
     const expandWrap = $("#expand-input-wrap");
     const expandHideEls = $$('#create-form [data-expand-hide]');
@@ -599,10 +599,17 @@
       const expand = (document.querySelector('#create-form input[name="mode"]:checked') || {}).value === "expand";
       expandWrap.classList.toggle("hidden", !expand);
       expandHideEls.forEach((el) => el.classList.toggle("hidden", expand));
-      const lbl = expand ? "AI 扩写模式（提供大纲/简要内容，直接扩写成文）" : "智能生成模式（联网调研 → 自动大纲 → 逐章）";
+      const lbl = expand ? "AI 扩写模式（大纲扩写 / 续写已有内容 / 扩写已有章节）" : "智能生成模式（联网调研 → 自动大纲 → 逐章）";
       const meta = $("#create-form .mode-label");
       if (meta) meta.textContent = lbl;
+      applyContentType();
     };
+    // 内容类型切换：outline=大纲扩写；chapters=续写；chapters_expand=扩写已有章节
+    const applyContentType = () => {
+      const ct = (document.querySelector('#create-form input[name="content_type"]:checked') || {}).value || "outline";
+      $$('#create-form [data-ct]').forEach((el) => el.classList.toggle("hidden", el.dataset.ct !== ct));
+    };
+    $$('#create-form input[name="content_type"]').forEach((r) => r.addEventListener("change", applyContentType));
     modeRadios.forEach((r) => r.addEventListener("change", applyMode));
     applyMode();
   }
@@ -635,7 +642,7 @@
       } else {
         h += "定价 <strong class=\"price-now\">" + fmtPrice(price) + " 元</strong>（每万字 " + per10k + " 元）。";
       }
-      h += "创建项目时将从余额扣费。";
+      h += "创建时不扣费，生成完成后按 AI 实际生成字数结算。";
       tip.innerHTML = h;
     }
     // 右侧费用明细
@@ -654,7 +661,7 @@
         rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
       }
       rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(price) + "</b></div>" +
-        '<div class="fee-hint">按目标字数计费（每万字 ' + per10k + " 元），创建项目时立即从余额扣费；未开始生成的项目可在「我的书案」中申请退费删除。</div>";
+        '<div class="fee-hint">按 AI 实际生成字数计费（每万字 ' + per10k + " 元）；创建时不扣费，真正生成文字后按实际字数结算。未生成的项目可随时删除，不产生费用。</div>";
       fee.innerHTML = rows;
     }
   }
@@ -675,6 +682,88 @@
       if (name === "total_words") el.dispatchEvent(new Event("input"));
     }
   };
+  // ---------- 上传/粘贴已有内容 → 切分预览（续写/扩写模式） ----------
+  const contentFile = $("#content-file");
+  const contentParseBtn = $("#btn-parse-content");
+  const contentParseStatus = $("#content-parse-status");
+  const contentPreview = $("#content-preview");
+  const userContentTa = document.querySelector('#create-form textarea[name="user_content"]');
+  const setContentStatus = (msg, isErr) => {
+    if (!contentParseStatus) return;
+    contentParseStatus.textContent = msg;
+    contentParseStatus.className = "parse-status" + (isErr ? " parse-error" : "");
+  };
+  const renderContentPreview = (r) => {
+    if (!contentPreview) return;
+    if (!r || !r.chapters || !r.chapters.length) {
+      contentPreview.classList.add("hidden");
+      return;
+    }
+    const totalChars = (r.total_chars || 0);
+    let html = '<div class="content-preview-head">识别到 <b>' + r.chapters.length +
+      "</b> 个章节，共 " + (totalChars >= 10000 ? (totalChars / 10000).toFixed(1) + " 万字" : totalChars + " 字") + "</div>";
+    html += r.chapters.map((c) =>
+      '<div class="cp-row"><span class="cp-no">' + c.no + '.</span>' +
+      '<span class="cp-title">' + esc(c.title) + "</span>" +
+      '<span class="cp-chars">' + c.chars + " 字</span>" +
+      '<div class="cp-preview">' + esc(c.preview || "") + "…</div></div>"
+    ).join("");
+    html += '<div class="cp-tip">识别结果仅供参考，实际以服务端切分为准；粘贴/上传后可直接创建。</div>';
+    contentPreview.innerHTML = html;
+    contentPreview.classList.remove("hidden");
+  };
+  if (contentParseBtn && contentFile) {
+    contentParseBtn.addEventListener("click", async () => {
+      const file = contentFile.files[0];
+      if (!file) {
+        if (userContentTa && userContentTa.value.trim()) {
+          setContentStatus("解析粘贴内容中…", false);
+          try {
+            const resp = await fetch("/api/parse-content", {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: "text=" + encodeURIComponent(userContentTa.value),
+            });
+            const r = await resp.json();
+            if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
+            renderContentPreview(r);
+            setContentStatus("已解析粘贴内容", false);
+          } catch (e) {
+            setContentStatus("解析失败：" + e.message, true);
+          }
+          return;
+        }
+        setContentStatus("请先粘贴内容或选择文件", true);
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) { setContentStatus("文件超过 5MB 限制", true); return; }
+      contentParseBtn.disabled = true;
+      setContentStatus("解析中…", false);
+      try {
+        // 1) 读文件文本填入粘贴框（创建时以 JSON 提交全文）
+        const text = await new Promise((resolve, reject) => {
+          const rd = new FileReader();
+          rd.onload = () => resolve(String(rd.result || ""));
+          rd.onerror = () => reject(new Error("读取文件失败"));
+          rd.readAsText(file, "utf-8");
+        });
+        if (userContentTa) userContentTa.value = text;
+        // 2) 上传解析出切分预览
+        const fd = new FormData();
+        fd.append("file", file);
+        const resp = await fetch("/api/parse-content", { method: "POST", body: fd });
+        const r = await resp.json();
+        if (!resp.ok || !r.ok) throw new Error(r.detail || "解析失败");
+        renderContentPreview(r);
+        setContentStatus("解析完成：识别到 " + r.chapters.length + " 个章节", false);
+      } catch (e) {
+        setContentStatus("解析失败：" + e.message, true);
+      } finally {
+        contentParseBtn.disabled = false;
+      }
+    });
+  }
+
   if (parseBtn && outlineFile) {
     parseBtn.addEventListener("click", async () => {
       const file = outlineFile.files[0];
@@ -748,11 +837,22 @@
     const forbidden = f.forbidden.value.split("\n").map((s) => s.trim()).filter(Boolean);
     const mode = (f.querySelector('input[name="mode"]:checked') || {}).value || "auto";
     const expandInput = f.expand_input ? f.expand_input.value.trim() : "";
+    const content_type = mode === "expand"
+      ? ((f.querySelector('input[name="content_type"]:checked') || {}).value || "outline") : "";
+    const userContent = f.user_content ? f.user_content.value.trim() : "";
 
-    if (mode === "expand" && !expandInput) {
-      errBox.textContent = "创建失败：AI 扩写模式必须填写『大纲或简要内容』";
-      errBox.classList.remove("hidden");
-      return;
+    if (mode === "expand") {
+      if (content_type === "chapters" || content_type === "chapters_expand") {
+        if (!userContent) {
+          errBox.textContent = "创建失败：续写/扩写模式必须粘贴已有内容或上传文件";
+          errBox.classList.remove("hidden");
+          return;
+        }
+      } else if (!expandInput) {
+        errBox.textContent = "创建失败：AI 扩写模式必须填写『大纲或简要内容』";
+        errBox.classList.remove("hidden");
+        return;
+      }
     }
 
     const payload = {
@@ -775,6 +875,9 @@
       memory_window: 5,
       mode,
       expand_input: expandInput,
+      user_content: content_type === "chapters" || content_type === "chapters_expand" ? userContent : "",
+      content_type: content_type,
+      expand_targets: [],
       llm: {
         provider: "deepseek",  // Key 由服务端统一管理
         model: "",
@@ -797,7 +900,7 @@
       // 更新余额
       me.balance = res.balance;
       renderUserBar();
-      toast("项目「" + res.title + "」创建成功，已扣费 " + fmtPrice(res.price) + " 元");
+      toast("项目「" + res.title + "」创建成功（预估费用 " + fmtPrice(res.price) + " 元，生成完成后按实际字数扣费）");
       currentProjectId = res.id;
       switchView("detail");
     } catch (err) {
@@ -826,6 +929,25 @@
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  // 封面图片加载：/cover 接口需 Bearer 鉴权，<img src> 无法携带 Header，
+  // 故用 fetch 拉取图片转 objectURL 后赋给 img（带时间戳防缓存、自动 revoke 旧 URL）。
+  async function loadCover(projectId, imgEl) {
+    try {
+      const resp = await fetch(API + "/api/projects/" + encodeURIComponent(projectId) + "/cover?t=" + Date.now(), {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const blob = await resp.blob();
+      if (imgEl.dataset.coverUrl) URL.revokeObjectURL(imgEl.dataset.coverUrl);
+      const url = URL.createObjectURL(blob);
+      imgEl.dataset.coverUrl = url;
+      imgEl.src = url;
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function refreshDetail() {
@@ -893,7 +1015,7 @@
     if (d.has_cover) {
       coverEmpty.classList.add("hidden");
       coverImg.classList.remove("hidden");
-      coverImg.src = API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/cover?t=" + Date.now();
+      loadCover(currentProjectId, coverImg);
     } else {
       coverImg.classList.add("hidden");
       coverEmpty.classList.remove("hidden");
@@ -946,6 +1068,15 @@
       ob.innerHTML += o.chapters.map((c) =>
         '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》<span class="goal">——' + esc(c.goal) + "</span></div>"
       ).join("");
+      // 大纲与已生成章节差异提示（改动章节 + 废弃章节）
+      try {
+        const d = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
+        window._outlineDiff = d;
+        const warns = [];
+        if (d.changed && d.changed.length) warns.push("有 " + d.changed.length + " 章内容与新大纲不一致，可在章节列表重写");
+        if (d.removed && d.removed.length) warns.push(d.removed.length + " 章已从大纲移除（正文文件保留，标记已废弃）");
+        if (warns.length) ob.innerHTML = '<div class="ol-warn">' + warns.map((w) => "<div>⚠ " + esc(w) + "</div>").join("") + "</div>" + ob.innerHTML;
+      } catch (e) { /* diff 不可用时忽略 */ }
 
       const w = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/world");
       const wb = $("#world-box");
@@ -969,6 +1100,12 @@
         chaptersCache = chs.chapters;
       }
     } catch (e) { return; }
+    // 大纲差异：changed 章节加"大纲已改"标记
+    let diff = { changed: [], removed: [] };
+    try {
+      diff = window._outlineDiff || await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
+      window._outlineDiff = diff;
+    } catch (e) { /* ignore */ }
     const total = detailCache ? detailCache.chapters_total : 0;
     const list = $("#chapter-list");
     const items = [];
@@ -978,7 +1115,9 @@
         items.push(
           '<div class="ch-item" data-no="' + i + '">' +
             '<div class="ch-no">第 ' + i + " 章</div>" +
-            '<div class="ch-title">' + esc(c.title) + "</div>" +
+            '<div class="ch-title">' + esc(c.title) +
+            (diff.changed.indexOf(i) >= 0 ? ' <span class="ch-badge">⚡ 大纲已改</span>' : "") +
+            (diff.removed.indexOf(i) >= 0 ? ' <span class="ch-badge danger">已废弃</span>' : "") + "</div>" +
             '<div class="ch-words">' + c.words + " 字 · " + (c.summary ? esc(c.summary.slice(0, 36)) + "…" : "") + "</div>" +
           "</div>"
         );
@@ -1173,6 +1312,104 @@
     }
   });
 
+  // ---------- 大纲编辑 ----------
+  let outlineDraft = []; // [{title, goal}]
+
+  function renderOutlineEdit() {
+    const list = $("#outline-edit-list");
+    if (!list) return;
+    list.innerHTML = outlineDraft.map((c, i) =>
+      '<div class="ol-edit-row" data-i="' + i + '">' +
+        '<div class="ol-edit-no">第 ' + (i + 1) + " 章</div>" +
+        '<div class="ol-edit-fields">' +
+          '<input class="ol-edit-title" value="' + esc(c.title) + '" placeholder="章节标题">' +
+          '<textarea class="ol-edit-goal" rows="2" placeholder="本章剧情目标（一句话）">' + esc(c.goal) + "</textarea>" +
+        "</div>" +
+        '<button class="btn danger small ol-edit-del" title="删除本章">✕</button>' +
+      "</div>"
+    ).join("");
+    list.querySelectorAll(".ol-edit-row").forEach((row) => {
+      const i = parseInt(row.dataset.i, 10);
+      row.querySelector(".ol-edit-title").addEventListener("input", (e) => { outlineDraft[i].title = e.target.value; });
+      row.querySelector(".ol-edit-goal").addEventListener("input", (e) => { outlineDraft[i].goal = e.target.value; });
+      row.querySelector(".ol-edit-del").addEventListener("click", () => {
+        if (!confirm("删除第 " + (i + 1) + " 章？已生成的该章正文会保留并标记废弃。")) return;
+        outlineDraft.splice(i, 1);
+        renderOutlineEdit();
+      });
+    });
+  }
+
+  $("#btn-edit-outline").addEventListener("click", async () => {
+    if (!currentProjectId) return;
+    try {
+      const o = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline");
+      outlineDraft = (o.chapters || []).map((c) => ({ title: c.title, goal: c.goal }));
+      renderOutlineEdit();
+      $("#outline-hint").textContent = "";
+      $("#outline-modal").classList.remove("hidden");
+    } catch (e) {
+      toast("打开大纲编辑失败：" + e.message);
+    }
+  });
+  $("#btn-close-outline-modal").addEventListener("click", () => $("#outline-modal").classList.add("hidden"));
+  $("#btn-outline-add-ch").addEventListener("click", () => { outlineDraft.push({ title: "", goal: "" }); renderOutlineEdit(); });
+
+  $("#btn-save-outline").addEventListener("click", async () => {
+    const btn = $("#btn-save-outline");
+    btn.disabled = true;
+    try {
+      const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chapters: outlineDraft.map((c) => ({ title: c.title.trim(), goal: c.goal.trim() })) }),
+      });
+      $("#outline-modal").classList.add("hidden");
+      const warns = [];
+      if (res.changed_chapters && res.changed_chapters.length) {
+        warns.push(res.changed_chapters.map((n) => "第" + n + "章").join("、") + "内容与新大纲不一致，可重写");
+      }
+      if (res.removed_chapters && res.removed_chapters.length) {
+        warns.push(res.removed_chapters.length + " 章已从大纲移除（正文文件保留）");
+      }
+      toast("大纲已保存（共 " + res.total_chapters + " 章）" + (warns.length ? "；" + warns.join("；") : ""));
+      window._outlineDiff = null;
+      chaptersCache = [];
+      await refreshDetail();
+      await loadOutlineAndWorld();
+      await renderChapters();
+    } catch (e) {
+      toast("保存失败：" + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- 单章重写（仅本章，后续不动） ----------
+  $("#btn-rewrite-ch").addEventListener("click", async () => {
+    if (!currentChapterNo) return;
+    const no = currentChapterNo;
+    if (!confirm("将按当前大纲目标重新生成第 " + no + " 章正文（仅本章，后续章节保持不变）。\n\n注意：若本章情节有重大变化，后续章节可能衔接不上，此时建议用「从此章重新生成」。确认继续？")) return;
+    const btn = $("#btn-rewrite-ch");
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "重写中…（约 1-2 分钟）";
+    try {
+      const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/chapters/" + no + "/rewrite", { method: "POST" });
+      toast("第 " + no + " 章已重写（" + res.words + " 字）");
+      window._outlineDiff = null;
+      chaptersCache = [];
+      await refreshDetail();
+      await renderChapters();
+      await openReader(no);
+    } catch (e) {
+      toast("重写失败：" + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  });
+
   // ---------- 标签页 ----------
   $$(".tab").forEach((tab) => {
     if (tab.dataset.ltab) return; // 登录 tab 已单独绑定
@@ -1216,20 +1453,52 @@
     }
   });
 
-  $("#btn-download").addEventListener("click", () => {
+  $("#btn-download").addEventListener("click", async () => {
     const fmt = $("#dl-format").value || "txt";
-    const a = document.createElement("a");
-    a.href = API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/download?format=" + encodeURIComponent(fmt);
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    try {
+      // /download 接口需 Bearer 鉴权，<a href> 直链会 401 返回 JSON，故用 fetch 拉 blob 触发下载
+      const resp = await fetch(API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/download?format=" + encodeURIComponent(fmt), {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (!resp.ok) {
+        let msg = "HTTP " + resp.status;
+        try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (e) { /* ignore */ }
+        throw new Error(msg);
+      }
+      const blob = await resp.blob();
+      // 从 Content-Disposition 解析服务端文件名，取不到则回退书名.格式
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename\*?=(?:UTF-8''|utf-8'')?["']?([^"';]+)/i);
+      let fname = m ? decodeURIComponent(m[1].trim()) : "";
+      if (!fname) {
+        const title = (detailCache && detailCache.config && detailCache.config.title) || "novel";
+        fname = title + "." + fmt;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      toast("下载失败：" + e.message);
+    }
   });
 
   // 生成封面
   $("#btn-gen-cover").addEventListener("click", async () => {
     try {
       await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/cover", { method: "POST" });
+      // 生成成功后立即刷新封面（fetch 带鉴权转 objectURL）
+      const coverImg = $("#cover-img");
+      const coverEmpty = $("#cover-empty");
+      if (coverImg && coverEmpty) {
+        coverEmpty.classList.add("hidden");
+        coverImg.classList.remove("hidden");
+        await loadCover(currentProjectId, coverImg);
+      }
       toast("封面已生成");
       await refreshDetail();
     } catch (e) {

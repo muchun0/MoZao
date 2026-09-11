@@ -13,8 +13,9 @@ venv/
 logs/
 projects/
 output/
-webapp/novel_web.db*
 webapp/*.db*
+# ===== 需求分析文档 =====
+docs/
 
 # ===== 收款码等运营私有素材（不入库） =====
 webapp/webui/payment_qr.png
@@ -27,3 +28,4 @@ _*.sh
 # ===== IDE =====
 .idea/
 .vscode/
+.workbuddy/

@@ -171,9 +171,48 @@
 
               <div id="expand-input-wrap" class="hidden">
                 <div class="field span-2">
+                  <div class="mode-label">内容类型</div>
+                  <div class="mode-options ct-options">
+                    <label class="mode-option">
+                      <input type="radio" name="content_type" value="outline" checked>
+                      <span class="mode-card">
+                        <strong>大纲 / 梗概扩写</strong>
+                        <small>提供大纲或简要故事，AI 扩写成完整小说</small>
+                      </span>
+                    </label>
+                    <label class="mode-option">
+                      <input type="radio" name="content_type" value="chapters">
+                      <span class="mode-card">
+                        <strong>续写已有内容</strong>
+                        <small>已有部分章节，AI 从断点继续往下写</small>
+                      </span>
+                    </label>
+                    <label class="mode-option">
+                      <input type="radio" name="content_type" value="chapters_expand">
+                      <span class="mode-card">
+                        <strong>扩写已有章节</strong>
+                        <small>已有完整章节，AI 把每章写长、加细节</small>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field span-2" data-ct="outline">
                   <label>大纲 / 简要内容 <span class="req">*</span></label>
-                  <textarea name="expand_input" rows="8" placeholder="粘贴你已有的大纲、章节脉络或简要故事内容。支持两种形式：&#10;1. 已分章的大纲（每章写清发生了什么）&#10;2. 一段完整的故事梗概 / 简要内容（AI 会按字数自动拆分章节）"></textarea>
+                  <textarea name="expand_input" rows="6" placeholder="粘贴你已有的大纲、章节脉络或简要故事内容。支持两种形式：&#10;1. 已分章的大纲（每章写清发生了什么）&#10;2. 一段完整的故事梗概 / 简要内容（AI 会按字数自动拆分章节）"></textarea>
                   <small>扩写模式会严格遵循你的内容脉络，只做细化与合理延展</small>
+                </div>
+
+                <div class="field span-2 hidden" data-ct="chapters">
+                  <label>已有内容（粘贴或上传）<span class="req">*</span></label>
+                  <div class="outline-upload-row">
+                    <input type="file" id="content-file" accept=".txt,.md,.docx">
+                    <button type="button" class="btn small gold" id="btn-parse-content">解析并预览</button>
+                    <span id="content-parse-status" class="parse-status"></span>
+                  </div>
+                  <textarea name="user_content" rows="8" placeholder="粘贴你已写好的正文（自动识别 第一章/Chapter N/数字序号 等章节标题）；或上传 .txt/.md/.docx 文件（5MB 内）"></textarea>
+                  <div id="content-preview" class="content-preview hidden"></div>
+                  <small>续写：你已写的内容原样保留，AI 从断点续写；扩写：AI 将每章扩写到单章目标字数。已有内容不重复计费，按 AI 实际生成字数结算（多退少补）。</small>
                 </div>
               </div>
 
@@ -243,7 +282,7 @@
               </div>
 
               <div class="form-actions">
-                <button type="submit" class="btn primary">创建项目（将扣费）</button>
+                <button type="submit" class="btn primary">创建项目</button>
                 <button type="button" class="btn ghost" id="btn-create-cancel">取消</button>
               </div>
               <div id="create-error" class="error-box hidden"></div>
@@ -322,6 +361,10 @@
             <div id="chapter-list" class="chapter-list"></div>
           </div>
           <div id="tab-outline" class="tab-panel">
+            <div class="panel-toolbar">
+              <span class="muted">生成前可调整章节目标/增删章节，保存后按需重新生成对应章节</span>
+              <button class="btn small" id="btn-edit-outline">✎ 编辑大纲</button>
+            </div>
             <div id="outline-box" class="outline-box"></div>
           </div>
           <div id="tab-world" class="tab-panel">
@@ -347,6 +390,7 @@
               <div style="flex:1"></div>
               <span class="muted" id="reader-title"></span>
               <button class="btn small" id="btn-edit-chapter">✎ 编辑本章</button>
+              <button class="btn small" id="btn-rewrite-ch">↻ 重写本章</button>
               <button class="btn ghost" id="btn-close-reader">✕ 关闭</button>
             </div>
             <div class="reader-body" id="reader-body"></div>
@@ -378,6 +422,25 @@
             <div class="reader-nav">
               <button class="btn primary" id="btn-save-edit">💾 保存修改</button>
               <span class="edit-hint" id="edit-hint"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 大纲编辑弹层 -->
+        <div id="outline-modal" class="modal hidden">
+          <div class="modal-content outline-modal-content">
+            <div class="modal-head">
+              <h3>编辑大纲</h3>
+              <button class="btn ghost" id="btn-close-outline-modal">✕ 关闭</button>
+            </div>
+            <div class="outline-edit-body">
+              <p class="muted small">修改章节标题/目标后保存：已生成且内容与新大纲不一致的章节会提示，可单章重写或从该章向后重写。</p>
+              <div id="outline-edit-list"></div>
+              <button class="btn small" id="btn-outline-add-ch">＋ 添加章节</button>
+            </div>
+            <div class="reader-nav">
+              <button class="btn primary" id="btn-save-outline">💾 保存大纲</button>
+              <span class="edit-hint" id="outline-hint"></span>
             </div>
           </div>
         </div>

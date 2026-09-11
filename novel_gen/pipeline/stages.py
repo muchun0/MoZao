@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from ..config import NovelConfig
 from ..llm.base import LLMClient
 from ..research.schemas import ResearchReport
@@ -13,6 +15,30 @@ from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, World
 from .memory import Memory
 from .templates import chapter_prompt, outline_prompt, world_prompt
+
+_CN_NUM = "一二三四五六七八九十"
+
+
+def unique_chapter_titles(chapters: list) -> list:
+    """章节标题唯一化（原地修改并返回）。
+
+    - 空标题 / 占位式"第X章"（纯编号无内容）→ 直接用章节序号重命名（天然唯一）
+    - 重名标题 → 后续同名追加（二）（三）…（超 10 次改用阿拉伯数字）
+    """
+    seen: dict[str, int] = {}
+    for i, c in enumerate(chapters, start=1):
+        t = (c.title or "").strip()
+        if not t or re.fullmatch(r"第\s*[0-9一-龥]+\s*章", t):
+            t = f"第{i}章"
+        if t in seen:
+            seen[t] += 1
+            n = seen[t]
+            suffix = f"（{_CN_NUM[n - 1]}）" if n <= 10 else f"（{n}）"
+            t = f"{t}{suffix}"
+        else:
+            seen[t] = 1
+        c.title = t
+    return chapters
 
 
 class OutlineGenerator:
@@ -131,6 +157,7 @@ class OutlineGenerator:
             if not c.goal:
                 c.goal = f"推进主线剧情，制造冲突并留下悬念。"
             normalized.append(c)
+        unique_chapter_titles(normalized)  # 章节名全书唯一（重名自动加后缀）
         outline.chapters = normalized
         return outline
 
@@ -203,7 +230,7 @@ class ChapterWriter:
             # 模型漏输出【摘要】时兜底：单独调用一次生成摘要，保证记忆库完整
             summary = self._gen_summary(chapter_no, plan_title, content)
 
-        chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary)
+        chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
         if summary:
             self.store.append_summary(chapter_no, summary)

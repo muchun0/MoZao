@@ -441,6 +441,29 @@ input:focus, select:focus, textarea:focus {
 .outline-box .ol-intro { margin-bottom: 14px; color: var(--ink); padding: 12px 14px; background: var(--paper); border-radius: 10px; border-left: 3px solid var(--gold); }
 .outline-box .ol-ch { padding: 7px 0; border-bottom: 1px dashed var(--card-line); }
 .outline-box .ol-ch .goal { color: var(--muted); font-size: 12.5px; }
+.panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.panel-toolbar .muted { font-size: 12px; }
+.ol-warn { margin-bottom: 12px; padding: 9px 12px; background: rgba(201,162,39,.08); border: 1px solid var(--gold-line); border-radius: 8px; color: #8a6d1a; font-size: 12.5px; line-height: 1.7; }
+.ch-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; background: rgba(201,162,39,.14); color: #8a6d1a; vertical-align: middle; }
+.ch-badge.danger { background: rgba(190,60,60,.12); color: #b03a3a; }
+.outline-modal-content { width: min(760px, 94vw); height: auto; max-height: 92vh; }
+.outline-edit-body { padding: 14px 18px; overflow-y: auto; flex: 1; }
+.ol-edit-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--card-line); border-radius: 10px; margin-bottom: 10px; background: var(--paper); }
+.ol-edit-no { width: 58px; padding-top: 8px; font-weight: 700; color: var(--muted); font-size: 12.5px; flex-shrink: 0; }
+.ol-edit-fields { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.ol-edit-fields input, .ol-edit-fields textarea { width: 100%; box-sizing: border-box; }
+.ol-edit-del { flex-shrink: 0; margin-top: 4px; }
+.ct-options { flex-wrap: wrap; gap: 8px; }
+.ct-options .mode-option { flex: 1 1 180px; }
+.ct-options .mode-card { padding: 9px 12px; }
+.content-preview { margin-top: 8px; padding: 10px 12px; background: var(--paper); border: 1px dashed var(--gold-line); border-radius: 10px; max-height: 220px; overflow-y: auto; font-size: 12.5px; }
+.content-preview-head { font-weight: 700; margin-bottom: 6px; color: var(--ink); }
+.cp-row { padding: 5px 0; border-bottom: 1px dashed var(--card-line); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.cp-no { color: var(--muted); font-weight: 700; }
+.cp-title { font-weight: 600; }
+.cp-chars { color: var(--gold); font-size: 11.5px; }
+.cp-preview { width: 100%; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.cp-tip { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
 
 /* 世界观 */
 .world-box { font-size: 14px; }

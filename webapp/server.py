@@ -11,13 +11,15 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +40,9 @@ from novel_gen.export.cover import generate_best_cover
 from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
+from novel_gen.pipeline.stages import unique_chapter_titles
+from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
+from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.store.project import ProjectStore, _safe_name
 
 from . import db
@@ -115,6 +120,9 @@ class ProjectCreateReq(BaseModel):
     memory_window: int = 5
     mode: str = "auto"              # auto=现有工作流；expand=AI扩写（提供大纲/简要内容）
     expand_input: str = ""          # 扩写模式必填：用户提供的大纲或简要内容
+    user_content: str = ""          # 续写/扩写已有章节：用户手写正文（粘贴）；上传走 /api/parse-content 预览后由前端带回
+    content_type: str = ""          # expand 模式输入类型：""=大纲/梗概；"chapters"=已有分章正文（续写）；"chapters_expand"=扩写已有章节
+    expand_targets: list[int] = []  # 扩写范围：章节号列表，空=全部
     llm: LLMReq = Field(default_factory=LLMReq)
     search: SearchReq = Field(default_factory=SearchReq)
 
@@ -326,6 +334,82 @@ def _list_projects(user: dict) -> list[dict]:
     return items
 
 
+def _grant_consume_commission(buyer_uid: int, project_id: str, amount: float, title: str) -> None:
+    """消费返佣：下级实际消费（生成结算全额扣费）时，按实付金额给上级代理返佣。
+
+    创建时不扣费，因此返佣随结算发放；余额不足未足额扣费的项目不返佣（v1 简化，日志可查）。
+    """
+    if COMMISSION_BASE != "consume":
+        return
+    buyer = db.get_user(buyer_uid)
+    if not buyer or not buyer.get("referrer_id"):
+        return
+    ref = db.get_user(buyer["referrer_id"])
+    if ref and ref.get("is_agent"):
+        commission = round_money(amount * COMMISSION_RATE)
+        db.pay_commission(
+            ref["id"], buyer_uid, commission, "consume",
+            project_id=project_id,
+            note=f"下级 {buyer['username']} 消费《{title}》",
+        )
+        logger.info("消费返佣(结算): agent_uid=%d buyer_uid=%d amount=%.2f project=%s",
+                    ref["id"], buyer_uid, commission, project_id)
+
+
+def _settle_price(store: ProjectStore) -> None:
+    """生成完成后按 AI 实际生成字数结算扣费（创建时不扣费，真正生成文字才扣）。
+
+    ai_words = 全书当前总字数 - 用户手写原字数（创建时记录；user_words=0 时即全书总字数）。
+    所有项目统一：未产生任何 AI 文字（ai_words<=0）不收费；已结算项目幂等跳过。
+    余额不足时扣到 0 并记录欠费（debt.json），不阻塞交付。
+    消费返佣在结算足额扣费时发放（按下级实际消费金额）。
+
+    """
+    try:
+        project_id = store.dir.name
+        sp = store.dir / "settle.json"
+        if sp.exists():
+            return
+        uid = db.project_owner(project_id)
+        if uid is None:
+            sp.write_text(json.dumps({"mode": "skip"}), encoding="utf-8")
+            return
+        title = store.load_config().effective_title()
+        user_words = store.user_words()
+        chapters = store.list_chapters()
+        total_words = sum(len(c.content) for c in chapters)
+        ai_words = max(0, total_words - user_words)
+        if ai_words <= 0:
+            # 未真正生成任何 AI 文字：不收费
+            db.update_project_price(project_id, 0.0)
+            sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
+            return
+        discount = db.project_discount(project_id)  # 创建时折扣快照
+        final_price = round_money(agent_price(price_for(ai_words), discount))
+        bal = db.get_user(uid)["balance"]
+        if bal >= final_price:
+            db.change_balance(uid, -final_price,
+                              f"《{title}》生成结算：AI 生成 {ai_words} 字，扣费 {final_price:.2f} 元")
+            _grant_consume_commission(uid, project_id, final_price, title)
+        else:
+            short = round_money(final_price - bal)
+            if bal > 0:
+                db.change_balance(uid, -bal,
+                                  f"《{title}》生成结算：AI 生成 {ai_words} 字，余额不足仅扣 {bal:.2f} 元")
+            store.dir.joinpath("debt.json").write_text(
+                json.dumps({"owe": short, "ai_words": ai_words, "final_price": final_price}),
+                encoding="utf-8")
+            logger.warning("结算扣费余额不足: uid=%d project=%s final=%.2f bal=%.2f 欠费=%.2f",
+                           uid, project_id, final_price, bal, short)
+        db.update_project_price(project_id, final_price)
+        sp.write_text(json.dumps({"ai_words": ai_words, "final_price": final_price}),
+                      encoding="utf-8")
+        logger.info("结算完成: project=%s ai_words=%d final=%.2f balance=%.2f",
+                    project_id, ai_words, final_price, db.get_user(uid)["balance"])
+    except Exception:
+        logger.exception("结算异常: project=%s", store.dir.name)
+
+
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
     """后台线程：从断点续跑整条流水线，结束后自动导出。
 
@@ -377,6 +461,7 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         logger.exception("生成失败: project=%s title=%s error=%s",
                          store.dir.name, cfg.effective_title(), exc)
     finally:
+        _settle_price(store)
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
         logger.info("生成线程结束: project=%s", store.dir.name)
@@ -400,6 +485,32 @@ def pricing():
         "register_bonus": FREE_REGISTER_BONUS,
         "billing_mode": "by_words",   # 按字数计费
         "price_per_10k": PRICE_PER_10K,
+    }
+
+
+@app.post("/api/parse-content")
+async def parse_content(file: UploadFile | None = File(None), text: str = Form(""),
+                        user: dict = Depends(_require_user)):
+    """解析用户手写内容（上传文件或粘贴文本）：提取文本 + 章节切分预览。"""
+    try:
+        if file is not None:
+            data = await file.read()
+            text = extract_text(file.filename or "", data)
+        raw = text or ""
+    except ValueError as e:
+        logger.info("解析内容失败（文件读取/格式）：%s，user=%s", e, user["username"])
+        raise HTTPException(status_code=400, detail=str(e))
+    if not raw.strip():
+        raise HTTPException(status_code=400, detail="内容为空，请粘贴文本或上传文件")
+    chs = split_chapters(raw)
+    if not chs:
+        raise HTTPException(status_code=400, detail="无法识别内容，请检查文本格式")
+    many = len(chs) > 1 or bool(chs[0]["title"])
+    return {
+        "ok": True,
+        "content_type": "chapters" if many else "outline",
+        "total_chars": len(raw),
+        "chapters": summarize_preview(chs),
     }
 
 
@@ -828,6 +939,8 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         memory_window=req.memory_window,
         mode=req.mode,
         expand_input=req.expand_input,
+        content_type=req.content_type,
+        expand_targets=list(req.expand_targets),
         llm=_resolve_llm(req.llm.provider, req.llm.model, req.llm.base_url,
                          req.llm.temperature, req.llm.top_p, req.llm.max_tokens),
         search=SearchConfig(
@@ -842,47 +955,64 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     issues = validate_config(cfg)
     real_issues = [i for i in issues if "硬约束" not in i]
 
-    # 扩写模式校验：必须提供大纲/简要内容
-    if req.mode == "expand" and not req.expand_input.strip():
-        raise HTTPException(status_code=400, detail="AI 扩写模式必须填写『大纲或简要内容』")
+    # 扩写模式校验：纯扩写需大纲/简要内容；续写/扩写已有章节需已有正文
+    user_content = (req.user_content or "").strip()
+    if req.mode == "expand":
+        if req.content_type in ("chapters", "chapters_expand"):
+            if not user_content:
+                raise HTTPException(status_code=400, detail="续写/扩写模式必须提供已有内容（粘贴或上传）")
+        elif not req.expand_input.strip():
+            raise HTTPException(status_code=400, detail="AI 扩写模式必须填写『大纲或简要内容』")
 
-    # 按单本收费：创建项目即扣费（代理按折扣价）
-    base_price = price_for(cfg.total_words)
+    # 续写/扩写已有章节：先切分用户内容，确定 AI 需生成的字数（已有内容不收费）
+    user_chapters = []
+    user_words = 0
+    if req.mode == "expand" and req.content_type in ("chapters", "chapters_expand"):
+        user_chapters = split_chapters(user_content)
+        if not user_chapters:
+            raise HTTPException(status_code=400, detail="无法从提供的内容中识别出章节，请检查文本格式")
+        user_words = sum(len(c["content"]) for c in user_chapters)
+        if req.total_words <= user_words:
+            raise HTTPException(
+                status_code=400,
+                detail=f"目标字数（{req.total_words}）需大于已有内容字数（{user_words}），"
+                       f"请调高目标字数或减少已有内容",
+            )
+
+    # 按 AI 实际生成字数预估费用：创建时【不扣费】，仅做余额校验（防生成后付不起），
+    # 生成完成后按实际 AI 字数结算扣费（见 _settle_price）
+    ai_words = max(1, cfg.total_words - user_words)
+    base_price = price_for(ai_words)
     discount = float(user.get("agent_discount", 1.0)) if user.get("is_agent") else 1.0
-    price = agent_price(base_price, discount)
+    price = agent_price(base_price, discount)  # 预估费用（展示用）
     if user["balance"] < price:
         logger.warning("创建项目失败(余额不足): uid=%d title=%s price=%.2f balance=%.2f",
                        user["id"], cfg.effective_title(), price, user["balance"])
         raise HTTPException(
             status_code=400,
-            detail=f"余额不足：本书定价 {price:.1f} 元（{tier_name_for(cfg.total_words)}"
-                   f"{'，代理价' + str(int(discount * 100)) + ' 折' if discount < 1 else ''}），"
-                   f"当前余额 {user['balance']:.1f} 元。请先充值。",
+            detail=f"余额不足：预估费用 {price:.1f} 元（按 AI 生成 {ai_words} 字"
+                   f"{'，代理价' + str(int(discount * 100)) + ' 折' if discount < 1 else ''}，"
+                   f"生成完成后扣费），当前余额 {user['balance']:.1f} 元。请先充值。",
         )
 
     store = ProjectStore.create(PROJECTS_DIR, cfg)
-    db.claim_project(store.dir.name, user["id"], price)
-    db.change_balance(user["id"], -price, f"创建《{cfg.effective_title()}》（{tier_name_for(cfg.total_words)}）")
-    logger.info("创建项目: uid=%d project=%s title=%s mode=%s price=%.2f(原价%.2f) words=%d",
-                user["id"], store.dir.name, cfg.effective_title(), cfg.mode,
-                price, base_price, cfg.total_words)
-
-    # 消费返佣：上级是代理时按实付金额给上级返佣（默认开启）
-    if COMMISSION_BASE == "consume" and user.get("referrer_id"):
-        ref = db.get_user(user["referrer_id"])
-        if ref and ref.get("is_agent"):
-            commission = round_money(price * COMMISSION_RATE)
-            db.pay_commission(
-                ref["id"], user["id"], commission, "consume",
-                project_id=store.dir.name,
-                note=f"下级 {user['username']} 消费《{cfg.effective_title()}》",
-            )
-            logger.info("消费返佣: agent_uid=%d buyer_uid=%d amount=%.2f project=%s",
-                        ref["id"], user["id"], commission, store.dir.name)
+    # 写入用户手写章节（source=user，AI 流程不覆盖）
+    if user_chapters:
+        store.save_user_content(user_content)
+        for i, c in enumerate(user_chapters, start=1):
+            store.save_chapter(Chapter(no=i, title=c["title"] or f"第{i}章",
+                                       content=c["content"], source="user"))
+        store.set_user_words(user_words)
+    # 创建仅登记归属：price=0（未扣费），折扣快照留待结算
+    db.claim_project(store.dir.name, user["id"], 0.0, discount)
+    logger.info("创建项目(未扣费): uid=%d project=%s title=%s mode=%s content_type=%s "
+                "预估=%.2f(原价%.2f) total_words=%d user_words=%d ai_words=%d",
+                user["id"], store.dir.name, cfg.effective_title(), cfg.mode, cfg.content_type,
+                price, base_price, cfg.total_words, user_words, ai_words)
     return {
         "id": store.dir.name,
         "title": cfg.effective_title(),
-        "price": price,
+        "price": price,          # 预估费用（生成完成后按实际结算）
         "base_price": base_price,
         "balance": db.get_user(user["id"])["balance"],
         "config": _cfg_to_dict(cfg),
@@ -930,6 +1060,150 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
         "intro": outline.intro,
         "chapters": [{"no": c.no, "title": c.title, "goal": c.goal} for c in outline.chapters],
     }
+
+
+# ---------- 大纲编辑 / 章节重写 / 差异（需求分析: 大纲编辑与章节重新生成 v1.0） ----------
+# 决策：① 只做章节级大纲编辑 ② 双入口（仅本章重写 + 从本章重写后续） ③ 重生成免费+每项目每日 10 次
+#       ④ 大纲删章后已生成正文保留（标"已废弃"） ⑤ 生成中禁止编辑（409）
+REGEN_DAILY_LIMIT = 10
+
+
+class OutlineChapterReq(BaseModel):
+    title: str = ""
+    goal: str = ""
+
+
+class OutlineSaveReq(BaseModel):
+    title: str = ""
+    intro: str = ""
+    chapters: list[OutlineChapterReq] = []
+
+
+def _regen_limit_path(store: ProjectStore) -> Path:
+    return store.dir / "regen_count.json"
+
+
+def _check_regen_limit(store: ProjectStore, project_id: str) -> None:
+    """重生成免费，但每项目每日限 10 次（防滥用）。超限返回 429。"""
+    p = _regen_limit_path(store)
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {}
+    try:
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    cnt = int(data.get(today, 0))
+    if cnt >= REGEN_DAILY_LIMIT:
+        raise HTTPException(status_code=429,
+                            detail=f"今日该项目重生成次数已达上限（{REGEN_DAILY_LIMIT} 次/日），请明天再试")
+    data[today] = cnt + 1
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        logger.warning("重生成计数写入失败: project=%s", project_id)
+
+
+def _outline_diff(outline, store: ProjectStore) -> tuple[list[int], list[int]]:
+    """返回 (changed, removed)：
+    changed = 已生成章节中，标题/目标与当前大纲不一致的章节号（大纲编辑后需要重生成的候选）
+    removed = 已生成正文存在但已不在大纲中的章节号（大纲删章，文件保留标"已废弃"）
+    """
+    changed: list[int] = []
+    removed: list[int] = []
+    for ch in store.list_chapters():
+        if ch.no > len(outline.chapters):
+            removed.append(ch.no)
+            continue
+        plan = outline.chapters[ch.no - 1]
+        if ch.title != plan.title or (ch.goal and ch.goal != plan.goal):
+            changed.append(ch.no)
+    return changed, removed
+
+
+@app.put("/api/projects/{project_id}/outline")
+def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_require_user)):
+    """保存大纲（章节级编辑：改标题/目标、增删章）。
+    不自动触发重生成；返回与已生成章节的差异，由用户显式选择重写动作。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中，请先停止再编辑大纲")
+    if not req.chapters:
+        raise HTTPException(status_code=400, detail="大纲至少需要 1 个章节")
+
+    # 规范化：重排 no、空 title/goal 补默认（与生成端 OutlineGenerator._normalize 一致）
+    chapters = []
+    for i, c in enumerate(req.chapters, start=1):
+        title = (c.title or "").strip() or f"第{i}章"
+        goal = (c.goal or "").strip() or "推进主线剧情，制造冲突并留下悬念。"
+        chapters.append(ChapterPlan(no=i, title=title, goal=goal))
+    unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
+
+    old = store.load_outline()
+    new_outline = Outline(
+        title=(req.title or "").strip() or (old.title if old else ""),
+        intro=(req.intro or "").strip() or (old.intro if old else ""),
+        chapters=chapters,
+    )
+    store.save_outline(new_outline)
+
+    changed, removed = _outline_diff(new_outline, store)
+    logger.info("大纲编辑: uid=%d project=%s chapters=%d→%d changed=%s removed=%s",
+                user["id"], project_id, len(old.chapters) if old else 0, len(chapters), changed, removed)
+    return {"saved": True, "total_chapters": len(chapters),
+            "changed_chapters": changed, "removed_chapters": removed}
+
+
+@app.get("/api/projects/{project_id}/outline/diff")
+def outline_diff(project_id: str, user: dict = Depends(_require_user)):
+    """大纲与已生成章节的差异（前端章节列表标记"与新大纲不一致"）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline:
+        return {"changed": [], "removed": []}
+    changed, removed = _outline_diff(outline, store)
+    return {"changed": changed, "removed": removed}
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/rewrite")
+def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """单章重写：按当前大纲该章 goal/title 重新生成正文与摘要，后续章节不动。
+    重写后该章摘要自动覆盖（append_summary 幂等）；前文记忆上下文不含本章旧摘要（memory < no）。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline or no < 1 or no > len(outline.chapters):
+        raise HTTPException(status_code=400,
+                            detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=400, detail=f"章节 {no} 尚未生成，无法重写")
+    if store.load_chapter(no).source == "user":
+        raise HTTPException(status_code=400, detail="该章为用户手写内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    _check_regen_limit(store, project_id)
+
+    plan = outline.chapters[no - 1]
+    try:
+        pipeline = _open_pipeline(store)
+        research = store.load_research()
+        chapter = pipeline.chapter_writer.write(
+            no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+    except Exception as e:
+        logger.exception("单章重写失败: project=%s no=%d", project_id, no)
+        raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+
+    logger.info("章节重写: uid=%d project=%s no=%d words=%d",
+                user["id"], project_id, no, len(chapter.content))
+    return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
+            "summary": chapter.summary, "words": len(chapter.content)}
+
 
 
 @app.get("/api/projects/{project_id}/chapters")
@@ -1015,11 +1289,17 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
     outline = store.load_outline()
     if not outline or no < 1 or no > len(outline.chapters):
         raise HTTPException(status_code=400, detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
+    user_max = max((c.no for c in store.list_chapters() if c.source == "user"), default=0)
+    if user_max and no <= user_max:
+        raise HTTPException(status_code=400,
+                            detail=f"第 {no} 章为用户手写内容（到第 {user_max} 章），重新生成会覆盖手写内容，已禁止；"
+                                   f"请从第 {user_max + 1} 章开始")
     with _LOCK:
         if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
             raise HTTPException(status_code=409, detail="该项目正在生成中")
         handle = _RunHandle()
         _RUNS[project_id] = handle
+    _check_regen_limit(store, project_id)
 
     # 删除 no 及之后章节 + 对应记忆
     for ch in store.list_chapters():
@@ -1135,10 +1415,7 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
     if store.list_chapters():
         raise HTTPException(status_code=400, detail="该项目已开始生成正文，无法退费删除")
 
-    price = db.project_price(project_id)
-    if price <= 0:
-        raise HTTPException(status_code=400, detail="该项目无可退金额（可能为历史项目或已退过）")
-
+    price = db.project_price(project_id)  # 新项目创建不扣费 price=0：未生成直接删除，无需退费
     # 若正在生成（调研/大纲/设定阶段，尚未产出章节）：先请求停止并等待线程结束
     handle = _RUNS.get(project_id)
     if handle:
@@ -1146,15 +1423,16 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
         if handle.thread and handle.thread.is_alive():
             handle.thread.join(timeout=30)
 
-    # 退费
-    db.change_balance(user["id"], price, f"项目退费：《{title}》（未开始生成）")
-    # 返佣冲正：该项目触发的消费返佣扣回上级
-    comm = db.find_commission_by_project(project_id)
-    if comm:
-        db.change_balance(comm["agent_id"], -comm["amount"],
-                          f"返佣冲正：《{title}》项目退费")
-        logger.info("返佣冲正: agent_uid=%d amount=%.2f project=%s", 
-                    comm["agent_id"], comm["amount"], project_id)
+    # 退费（历史项目创建时已扣费才退；新项目 price=0 直接删除）
+    if price > 0:
+        db.change_balance(user["id"], price, f"项目退费：《{title}》（未开始生成）")
+        # 返佣冲正：该项目触发的消费返佣扣回上级
+        comm = db.find_commission_by_project(project_id)
+        if comm:
+            db.change_balance(comm["agent_id"], -comm["amount"],
+                              f"返佣冲正：《{title}》项目退费")
+            logger.info("返佣冲正: agent_uid=%d amount=%.2f project=%s",
+                        comm["agent_id"], comm["amount"], project_id)
 
     # 删除作品：归属记录 + 项目目录 + 已导出的成品文件
     db.delete_project_owner(project_id)
@@ -1222,8 +1500,18 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
 
 
 # ---------- 静态前端（同源部署时） ----------
+class _NoCacheStaticFiles(StaticFiles):
+    """前端静态资源禁用浏览器缓存：html/js/css 返回 no-cache，避免旧 JS 长期缓存导致前端改动不生效。"""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        if resp.path.endswith((".html", ".js", ".css")):
+            resp.headers["Cache-Control"] = "no-cache, max-age=0"
+        return resp
+
+
 if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="webui")
+    app.mount("/", _NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="webui")
 
 
 if __name__ == "__main__":

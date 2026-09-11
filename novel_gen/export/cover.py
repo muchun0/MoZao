@@ -30,7 +30,11 @@ SILICONFLOW_API_URLS = [
     "https://api.siliconflow.cn/v1/images/generations",
     "https://api.siliconflow.com/v1/images/generations",
 ]
-AI_MODEL = "baidu/ERNIE-Image-Turbo"  # 硅基流动上 ERNIE-Image-Turbo 的模型 ID
+# 封面模型 ID（生产可经 COVER_MODEL 环境变量指定；默认硅基流动 ERNIE-Image-Turbo）
+AI_MODEL = os.getenv("COVER_MODEL", "baidu/ERNIE-Image-Turbo")
+
+# 生产严格模式：=1 时 AI 封面失败直接抛异常（不回退程序化封面），便于暴露生成问题
+COVER_AI_STRICT = os.getenv("COVER_AI_STRICT", "0") == "1"
 
 # 题材 → (主色, 辅色, 装饰风格)。装饰风格决定背景纹理走向（程序化兜底用）。
 _STYLE = {
@@ -348,8 +352,17 @@ def generate_best_cover(
     subtitle: str = "",
     out_path: Optional[Path] = None,
 ) -> Path:
-    """AI 封面优先（配了 Key 且开关开启），失败自动回退程序化封面。"""
+    """AI 封面优先（配了 Key 且开关开启）。
+
+    默认失败回退程序化封面（测试环境友好）；
+    COVER_AI_STRICT=1（生产）时失败直接抛异常，确保生产封面一定走配置模型生成。
+    """
     ai = generate_ai_cover(title, genre, author, subtitle, out_path)
     if ai is not None:
         return ai
+    if COVER_AI_STRICT:
+        raise RuntimeError(
+            "AI 封面生成失败（COVER_AI_STRICT=1 不回退程序化）："
+            f"model={AI_MODEL}，请检查 COVER_MODEL/SILICONFLOW_API_KEY 配置"
+        )
     return generate_cover(title, genre, author, subtitle, out_path)

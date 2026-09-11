@@ -8,27 +8,47 @@
 #   docker compose down -v           # 停止并清空数据（慎用！）
 #
 # 说明：
-#   - .env 文件（API Key / SMTP 等）在宿主机项目根目录，通过 env_file 注入，
+#   - .env 文件（API Key / SMTP / MySQL 等）在宿主机项目根目录，通过 env_file 注入，
 #     不写入镜像；.env 缺失时服务也能启动，只是 Key 为空。
-#   - 四个命名卷持久化：projects 中间产物 / output 成品 / logs 日志 / data 数据库。
+#   - 命名卷持久化：projects 中间产物 / output 成品 / logs 日志 / data 数据 / mysql_data 数据库。
+#   - 数据层为 MySQL（mysql-mozao 容器），应用通过服务名 mysql-mozao 连接；
+#     MySQL 不映射对外端口，仅 Docker 内网可达（应用与库同在 compose 网络）。
+#   - MYSQL_ROOT_PASSWORD 由 .env 提供（compose 插值），应用连接用同库同账号。
 #   - 首次注册的用户自动成为站长。
-#   - HTTPS 上线后端口只绑定本机回环 127.0.0.1:8000，对外 80/443 由 Caddy 反代。
 # ============================================================
 services:
+  mysql-mozao:
+    image: mysql:8.0
+    container_name: mysql-mozao
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=mozao
+      - TZ=Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   novel-gen:
     build: .
     image: novel-gen:latest
     container_name: novel-gen
     restart: unless-stopped
+    depends_on:
+      mysql-mozao:
+        condition: service_healthy
     ports:
       - "80:8000"   # 80 对外直连（回滚 HTTPS 后；HTTPS 上线时改为 127.0.0.1:8000 并启用 Caddy）
     env_file:
       - .env
     environment:
-      - NOVEL_DB_PATH=/data/novel_web.db
       - TZ=Asia/Shanghai
     volumes:
-      - novel_projects:/app/projects
       - novel_output:/app/output
       - novel_logs:/app/logs
       - novel_data:/data
@@ -38,3 +58,4 @@ volumes:
   novel_output:
   novel_logs:
   novel_data:
+  mysql_data:

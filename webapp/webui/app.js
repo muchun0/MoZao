@@ -931,6 +931,25 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
+  // 封面图片加载：/cover 接口需 Bearer 鉴权，<img src> 无法携带 Header，
+  // 故用 fetch 拉取图片转 objectURL 后赋给 img（带时间戳防缓存、自动 revoke 旧 URL）。
+  async function loadCover(projectId, imgEl) {
+    try {
+      const resp = await fetch(API + "/api/projects/" + encodeURIComponent(projectId) + "/cover?t=" + Date.now(), {
+        headers: { Authorization: "Bearer " + getToken() },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const blob = await resp.blob();
+      if (imgEl.dataset.coverUrl) URL.revokeObjectURL(imgEl.dataset.coverUrl);
+      const url = URL.createObjectURL(blob);
+      imgEl.dataset.coverUrl = url;
+      imgEl.src = url;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function refreshDetail() {
     try {
       const d = await api("/api/projects/" + encodeURIComponent(currentProjectId));
@@ -996,7 +1015,7 @@
     if (d.has_cover) {
       coverEmpty.classList.add("hidden");
       coverImg.classList.remove("hidden");
-      coverImg.src = API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/cover?t=" + Date.now();
+      loadCover(currentProjectId, coverImg);
     } else {
       coverImg.classList.add("hidden");
       coverEmpty.classList.remove("hidden");
@@ -1448,6 +1467,14 @@
   $("#btn-gen-cover").addEventListener("click", async () => {
     try {
       await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/cover", { method: "POST" });
+      // 生成成功后立即刷新封面（fetch 带鉴权转 objectURL）
+      const coverImg = $("#cover-img");
+      const coverEmpty = $("#cover-empty");
+      if (coverImg && coverEmpty) {
+        coverEmpty.classList.add("hidden");
+        coverImg.classList.remove("hidden");
+        await loadCover(currentProjectId, coverImg);
+      }
       toast("封面已生成");
       await refreshDetail();
     } catch (e) {

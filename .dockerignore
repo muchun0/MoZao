@@ -14,9 +14,7 @@ venv/
 projects/
 output/
 logs/
-webapp/novel_web.db
-webapp/novel_web.db-wal
-webapp/novel_web.db-shm
+
 
 # 根目录临时脚本
 _*.py

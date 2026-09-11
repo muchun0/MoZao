@@ -25,10 +25,8 @@ services:
     env_file:
       - .env
     environment:
-      - NOVEL_DB_PATH=/data/novel_web.db
       - TZ=Asia/Shanghai
     volumes:
-      - novel_projects:/app/projects
       - novel_output:/app/output
       - novel_logs:/app/logs
       - novel_data:/data

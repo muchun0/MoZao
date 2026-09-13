@@ -52,6 +52,7 @@
         <button class="side-btn" data-view="refunds">💰 退款管理</button>
         <button class="side-btn" data-view="recharges">💳 余额流水</button>
         <button class="side-btn" data-view="logs">📜 系统日志</button>
+        <button class="side-btn" data-view="skills">✍ 写作风格</button>
         <button class="side-btn" data-view="settings">⚙ 系统参数</button>
       </aside>
 
@@ -168,6 +169,16 @@
           <pre class="log-viewer" id="log-viewer">加载中…</pre>
         </div>
 
+        <!-- 写作风格 Skill -->
+        <div id="view-skills" class="panel">
+          <h2>写作风格 Skill</h2>
+          <p class="muted">配置不同风格的写作模板，用户创建小说时可选择。追加内容会注入到 System Prompt 末尾。</p>
+          <div style="margin:12px 0">
+            <button class="btn primary" id="btn-add-skill">+ 新建风格</button>
+          </div>
+          <div id="skills-list" class="skill-list">加载中…</div>
+        </div>
+
         <!-- 系统参数 -->
         <div id="view-settings" class="panel">
           <h2>系统参数</h2>
@@ -234,6 +245,46 @@
         <button class="btn primary block" id="btn-rhm-approve">✅ 确认已转账并退款</button>
       </div>
       <div id="rhm-error" class="error-box hidden"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 写作风格编辑弹层 -->
+<div id="skill-modal" class="modal hidden">
+  <div class="modal-content wide">
+    <div class="modal-head">
+      <h3 id="sm-title">新建写作风格</h3>
+      <button class="btn ghost" id="btn-close-sm">✕ 关闭</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="sm-id">
+      <div class="field">
+        <label>风格名称</label>
+        <input id="sm-name" placeholder="例如：番茄爽文风">
+      </div>
+      <div class="field">
+        <label>简短描述（用户创建小说时看到）</label>
+        <input id="sm-desc" placeholder="例如：快节奏强爽点，黄金三章开篇">
+      </div>
+      <div class="field">
+        <label>Prompt 追加内容（注入 System Prompt 末尾）</label>
+        <textarea id="sm-prompt" rows="8" placeholder="写一段该风格的写作指令，例如：&#10;- 节奏快，每 2 章必有小爽点&#10;- 语言直白，短句为主&#10;- 章末必须留钩子"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>排序（小在前）</label>
+          <input id="sm-sort" type="number" value="0">
+        </div>
+        <div class="field">
+          <label>状态</label>
+          <select id="sm-active">
+            <option value="1">启用</option>
+            <option value="0">停用</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn primary block" id="btn-save-skill">保存</button>
+      <div id="sm-error" class="error-box hidden"></div>
     </div>
   </div>
 </div>

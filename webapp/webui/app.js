@@ -562,6 +562,16 @@
         sel.dataset.loaded = "1";
       } catch (e) { /* ignore */ }
     }
+    // 写作风格下拉
+    const skillSel = $("#skill-select");
+    if (skillSel && !skillSel.dataset.loaded) {
+      try {
+        const { skills } = await api("/api/skills");
+        skillSel.innerHTML = '<option value="0">默认（防同质化通用）</option>' +
+          (skills || []).map((s) => '<option value="' + s.id + '">' + esc(s.name) + (s.description ? " · " + esc(s.description) : "") + "</option>").join("");
+        skillSel.dataset.loaded = "1";
+      } catch (e) { /* ignore */ }
+    }
     // 价格/费用联动（随字数变化）
     const wordsInput = document.querySelector('#create-form input[name="total_words"]');
     if (wordsInput && !wordsInput.dataset.bound) {
@@ -856,6 +866,7 @@
       user_content: content_type === "chapters" || content_type === "chapters_expand" ? userContent : "",
       content_type: content_type,
       expand_targets: [],
+      skill_id: f.skill_id ? parseInt(f.skill_id.value, 10) || 0 : 0,
       llm: {
         provider: "deepseek",  // Key 由服务端统一管理
         model: "",

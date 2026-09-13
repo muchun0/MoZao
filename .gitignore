@@ -30,3 +30,6 @@ _*.sh
 .idea/
 .vscode/
 .workbuddy/
+
+# AI agent rules (local only)
+AGENTS.md

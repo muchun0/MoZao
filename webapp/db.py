@@ -191,9 +191,21 @@ CREATE TABLE IF NOT EXISTS refund_requests (
 """
 
 
+_SKILLS = """CREATE TABLE IF NOT EXISTS writing_skills (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(255) DEFAULT '',
+    prompt_append TEXT,
+    is_active INT NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+
 def init_db() -> None:
     with _connect() as conn:
-        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS):
+        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS):
             conn.execute(ddl)
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
@@ -439,13 +451,16 @@ def delete_user_sessions(user_id: int) -> None:
 
 
 def change_balance(user_id: int, delta: float, note: str = "") -> float:
-    """给用户加/扣余额（delta 可为负），返回新余额。"""
+    """给用户加/扣余额（delta 可为负），返回新余额。
+    轧差：先读旧余额，用 Python 精确算新余额（round 到分），再写回，避免 MySQL 浮点误差。"""
     with _connect() as conn:
-        conn.execute("UPDATE users SET balance = balance + %s WHERE id=%s", (delta, user_id))
+        row = conn.execute("SELECT balance FROM users WHERE id=%s", (user_id,)).fetchone()
+        old = float(row["balance"]) if row else 0.0
+        new_bal = round(old + delta + 1e-9, 2)
+        conn.execute("UPDATE users SET balance = %s WHERE id=%s", (new_bal, user_id))
         conn.execute("INSERT INTO recharges (user_id, amount, note, created_at) VALUES (%s,%s,%s,%s)",
                      (user_id, delta, note, time.time()))
-        row = conn.execute("SELECT balance FROM users WHERE id=%s", (user_id,)).fetchone()
-    return float(row["balance"]) if row else 0.0
+    return new_bal
 
 
 def list_recharges(user_id: Optional[int] = None, limit: int = 50) -> list[dict]:
@@ -677,3 +692,55 @@ def handle_refund(request_id: int, action: str, admin_note: str = "") -> tuple[b
 
 # 模块加载时初始化（建表 + 老数据补全）
 init_db()
+
+
+# ---------- 写作风格 Skill ----------
+
+def list_skills(only_active: bool = False) -> list[dict]:
+    sql = "SELECT * FROM writing_skills"
+    if only_active:
+        sql += " WHERE is_active=1"
+    sql += " ORDER BY sort_order ASC, id ASC"
+    with _connect() as conn:
+        rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_skill(skill_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM writing_skills WHERE id=%s", (skill_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_skill(name: str, description: str, prompt_append: str,
+                 is_active: int = 1, sort_order: int = 0) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO writing_skills (name, description, prompt_append, is_active, sort_order, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (name, description, prompt_append, is_active, sort_order, time.time()))
+        return cur.lastrowid
+
+
+def update_skill(skill_id: int, **fields) -> bool:
+    if not fields:
+        return False
+    allowed = {"name", "description", "prompt_append", "is_active", "sort_order"}
+    sets = []
+    vals = []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=%s")
+            vals.append(v)
+    if not sets:
+        return False
+    vals.append(skill_id)
+    with _connect() as conn:
+        conn.execute(f"UPDATE writing_skills SET {','.join(sets)} WHERE id=%s", vals)
+    return True
+
+
+def delete_skill(skill_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM writing_skills WHERE id=%s", (skill_id,))
+

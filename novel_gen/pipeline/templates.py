@@ -189,6 +189,14 @@ def _anti_similarity_system(stage: str = "chapter") -> str:
     return core + "\n\n" + blacklist + "\n\n" + extra
 
 
+def _skill_append(cfg) -> str:
+    """管理员配置的写作风格 skill 追加内容，注入到 system prompt 末尾。"""
+    txt = getattr(cfg, "skill_prompt_append", "") or ""
+    if not txt.strip():
+        return ""
+    return "\n\n【写作风格 Skill（必须严格遵循）】\n" + txt.strip()
+
+
 # ---------- 人物立体化（基于番茄课程《告别千人一面：带你写出有血有肉的人物》提炼） ----------
 
 def _character_depth_rules(stage: str = "chapter") -> str:
@@ -325,6 +333,7 @@ def expand_outline_prompt(
         f"6. 全书最后一章必须是完整结局章：收束主线、伏笔与人物命运，并以「结尾升维」（技术→哲学/产品→人性/事件→时代）收尾；"
         f"除非用户内容明确要求开放或系列化结尾，否则禁止烂尾/未完待续\n"
     )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -399,6 +408,7 @@ def outline_prompt(
             f"并以「结尾升维」（技术→哲学/产品→人性/事件→时代）收尾\n"
             f"{'7. 防同质化：剧情分叉避开Top1热门套路，优先次优解/有遗憾/两难抉择；结局允许不完美但必须完整（禁止烂尾/未完待续）；每章目标要体现代价与人物抉择' if cfg.anti_similarity else ''}"
         )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -434,6 +444,7 @@ def world_prompt(
         f"设定要求：与大纲严格一致，人物动机清晰，伏笔在后期能回收，避雷元素不得出现。"
         f"{('每个重要人物的 desc 必须按「人物立体化·角色卡要求」写全：身份标签/经历背景/性格核心/欲望软肋/行为范式/压力反应，保证人物有辨识度、行为有依据。' if cfg.character_depth else '')}"
     )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -488,6 +499,7 @@ def chapter_prompt(
         f"{'6' if cfg.anti_similarity else '5'}. 输出格式（必须严格遵循，不要省略）：先输出正文，正文结束后【必须】另起一行"
         f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
     )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -523,6 +535,7 @@ def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[st
         f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念（每条一句；正文没有悬念时提炼潜在冲突）\n"
         f"要求：与用户正文严格一致，人物动机有据可查，避免凭空新增与正文矛盾的世界观。"
     )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -561,6 +574,7 @@ def continue_outline_prompt(
         f"3. 主线紧扣用户已写内容的核心冲突并推向高潮；最后一章必须是完整结局章（收束主线、伏笔与人物命运，结尾升维收尾）\n"
         f"4. 用户预设人物必须持续出现且符合设定；避雷元素绝对不得出现\n"
     )
+    system += _skill_append(cfg)
     return system, user
 
 
@@ -598,4 +612,5 @@ def expand_chapter_prompt(
         f"3. 不改变情节走向、不提前揭穿后续伏笔、不引入与上下文矛盾的新设定\n"
         f"4. 只输出正文本身，不要输出摘要、不要输出任何前后缀说明\n"
     )
+    system += _skill_append(cfg)
     return system, user

@@ -110,6 +110,7 @@ class NovelConfig:
     expand_targets: list = field(default_factory=list)  # 扩写范围：章节号列表，空=全部已有章节
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容
 
     @property
     def num_chapters(self) -> int:

@@ -75,6 +75,7 @@
     if (view === "recharges") loadRecharges();
     if (view === "logs") loadLogs();
     if (view === "settings") loadSettings();
+    if (view === "skills") loadSkills();
   }
 
   document.querySelectorAll(".side-btn").forEach((b) =>
@@ -478,6 +479,86 @@
     } catch (e) {
       $("#settings-box").textContent = "加载失败：" + e.message;
     }
+  }
+
+  // ---------- 写作风格 Skill ----------
+  async function loadSkills() {
+    try {
+      const r = await api("/api/admin/skills");
+      const list = r.skills || [];
+      if (!list.length) {
+        $("#skills-list").innerHTML = '<p class="muted">还没有风格，点上方「新建风格」添加。</p>';
+        return;
+      }
+      $("#skills-list").innerHTML = list.map((s) =>
+        '<div class="skill-card' + (s.is_active ? "" : " off") + '">' +
+          '<div class="skill-head"><strong>' + esc(s.name) + '</strong>' +
+            (s.is_active ? '<span class="badge on">启用</span>' : '<span class="badge off">停用</span>') +
+          '</div>' +
+          '<div class="skill-desc">' + esc(s.description || "（无描述）") + '</div>' +
+          '<div class="skill-prompt">' + esc((s.prompt_append || "").slice(0, 120)) + ((s.prompt_append || "").length > 120 ? "…" : "") + '</div>' +
+          '<div class="skill-actions">' +
+            '<button class="btn small" data-act="edit" data-id="' + s.id + '">编辑</button>' +
+            '<button class="btn small danger" data-act="del" data-id="' + s.id + '">删除</button>' +
+          '</div>' +
+        '</div>'
+      ).join("");
+      $("#skills-list").querySelectorAll("button").forEach((b) =>
+        b.addEventListener("click", () => {
+          const id = +b.dataset.id;
+          if (b.dataset.act === "edit") openSkillModal(list.find((x) => x.id === id));
+          if (b.dataset.act === "del") deleteSkill(id);
+        }));
+    } catch (e) {
+      $("#skills-list").textContent = "加载失败：" + e.message;
+    }
+  }
+
+  function openSkillModal(sk) {
+    $("#sm-error").classList.add("hidden");
+    $("#sm-title").textContent = sk ? "编辑风格" : "新建风格";
+    $("#sm-id").value = sk ? sk.id : "";
+    $("#sm-name").value = sk ? sk.name : "";
+    $("#sm-desc").value = sk ? sk.description : "";
+    $("#sm-prompt").value = sk ? sk.prompt_append : "";
+    $("#sm-sort").value = sk ? sk.sort_order : 0;
+    $("#sm-active").value = sk ? String(sk.is_active) : "1";
+    $("#skill-modal").classList.remove("hidden");
+  }
+
+  $("#btn-add-skill").addEventListener("click", () => openSkillModal(null));
+  $("#btn-close-sm").addEventListener("click", () => $("#skill-modal").classList.add("hidden"));
+
+  $("#btn-save-skill").addEventListener("click", async () => {
+    const errBox = $("#sm-error");
+    errBox.classList.add("hidden");
+    const body = {
+      name: $("#sm-name").value.trim(),
+      description: $("#sm-desc").value.trim(),
+      prompt_append: $("#sm-prompt").value,
+      sort_order: +$("#sm-sort").value || 0,
+      is_active: +$("#sm-active").value,
+    };
+    if (!body.name) { errBox.textContent = "名称不能为空"; errBox.classList.remove("hidden"); return; }
+    try {
+      const id = $("#sm-id").value;
+      if (id) await api("/api/admin/skills/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      else await api("/api/admin/skills", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("#skill-modal").classList.add("hidden");
+      toast("已保存");
+      loadSkills();
+    } catch (e) {
+      errBox.textContent = e.message; errBox.classList.remove("hidden");
+    }
+  });
+
+  async function deleteSkill(id) {
+    if (!confirm("确认删除这个写作风格？")) return;
+    try {
+      await api("/api/admin/skills/" + id, { method: "DELETE" });
+      toast("已删除");
+      loadSkills();
+    } catch (e) { alert(e.message); }
   }
 
   // ---------- 启动 ----------

@@ -125,6 +125,7 @@ class ProjectCreateReq(BaseModel):
     expand_targets: list[int] = []  # 扩写范围：章节号列表，空=全部
     llm: LLMReq = Field(default_factory=LLMReq)
     search: SearchReq = Field(default_factory=SearchReq)
+    skill_id: int = 0               # 写作风格 skill id，0=不选
 
 
 class RegisterReq(BaseModel):
@@ -693,6 +694,57 @@ def admin_stats(user: dict = Depends(_require_admin)):
     return {"stats": db.admin_stats()}
 
 
+# ---------- 写作风格 Skill（仅站长管理；前台只读启用列表） ----------
+
+class SkillReq(BaseModel):
+    name: str
+    description: str = ""
+    prompt_append: str = ""
+    is_active: int = 1
+    sort_order: int = 0
+
+
+@app.get("/api/skills")
+def public_skills():
+    """前台创建小说时用：只返回启用中的 skill。"""
+    return {"skills": db.list_skills(only_active=True)}
+
+
+@app.get("/api/admin/skills")
+def admin_list_skills(user: dict = Depends(_require_admin)):
+    return {"skills": db.list_skills()}
+
+
+@app.post("/api/admin/skills")
+def admin_create_skill(req: SkillReq, user: dict = Depends(_require_admin)):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    sid = db.create_skill(req.name.strip(), req.description, req.prompt_append,
+                          req.is_active, req.sort_order)
+    logger.info("新建写作风格: id=%d name=%s by=%s", sid, req.name, user["username"])
+    return {"ok": True, "id": sid}
+
+
+@app.put("/api/admin/skills/{skill_id}")
+def admin_update_skill(skill_id: int, req: SkillReq, user: dict = Depends(_require_admin)):
+    if not db.get_skill(skill_id):
+        raise HTTPException(status_code=404, detail="Skill 不存在")
+    db.update_skill(skill_id, name=req.name.strip(), description=req.description,
+                     prompt_append=req.prompt_append, is_active=req.is_active,
+                     sort_order=req.sort_order)
+    logger.info("更新写作风格: id=%d by=%s", skill_id, user["username"])
+    return {"ok": True}
+
+
+@app.delete("/api/admin/skills/{skill_id}")
+def admin_delete_skill(skill_id: int, user: dict = Depends(_require_admin)):
+    if not db.get_skill(skill_id):
+        raise HTTPException(status_code=404, detail="Skill 不存在")
+    db.delete_skill(skill_id)
+    logger.info("删除写作风格: id=%d by=%s", skill_id, user["username"])
+    return {"ok": True}
+
+
 @app.get("/api/admin/users")
 def admin_users(user: dict = Depends(_require_admin)):
     return {"users": db.list_users_admin()}
@@ -960,6 +1012,12 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
             count=5,
         ),
     )
+
+    # 注入写作风格 skill
+    if req.skill_id:
+        _sk = db.get_skill(req.skill_id)
+        if _sk and _sk["is_active"]:
+            cfg.skill_prompt_append = _sk["prompt_append"] or ""
 
     # 配置校验（非硬约束问题仅警告）
     issues = validate_config(cfg)

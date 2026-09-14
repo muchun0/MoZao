@@ -1,0 +1,42 @@
+services:
+  mysql-mozao:
+    image: mysql:8.0
+    container_name: mysql-mozao
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=mozao
+      - TZ=Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  novel-gen:
+    build: .
+    image: novel-gen:latest
+    container_name: novel-gen
+    restart: unless-stopped
+    depends_on:
+      mysql-mozao:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - novel_output:/app/output
+      - novel_logs:/app/logs
+      - novel_data:/data
+
+volumes:
+  novel_output:
+  novel_logs:
+  novel_data:
+  mysql_data:

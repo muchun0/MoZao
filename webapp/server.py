@@ -395,11 +395,15 @@ def _settle_price(store: ProjectStore) -> None:
             sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
             return
         discount = db.project_discount(project_id)  # 创建时折扣快照
-        final_price = round_money(agent_price(price_for(ai_words), discount))
+        # 计费封顶：按用户创建时填的目标 AI 字数收，AI 多写的部分平台承担
+        target_total = store.load_config().total_words or 0
+        target_ai_words = max(0, target_total - user_words)
+        billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
+        final_price = round_money(agent_price(price_for(billable_words), discount))
         bal = db.get_user(uid)["balance"]
         if bal >= final_price:
             db.change_balance(uid, -final_price,
-                              f"《{title}》生成结算：AI 生成 {ai_words} 字，扣费 {final_price:.2f} 元")
+                              f"《{title}》生成结算：AI 生成 {ai_words} 字（计费 {billable_words} 字），扣费 {final_price:.2f} 元")
             _grant_consume_commission(uid, project_id, final_price, title)
         else:
             short = round_money(final_price - bal)
@@ -412,10 +416,12 @@ def _settle_price(store: ProjectStore) -> None:
             logger.warning("结算扣费余额不足: uid=%d project=%s final=%.2f bal=%.2f 欠费=%.2f",
                            uid, project_id, final_price, bal, short)
         db.update_project_price(project_id, final_price)
-        sp.write_text(json.dumps({"ai_words": ai_words, "final_price": final_price}),
+        sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
+                                  "target_ai_words": target_ai_words, "final_price": final_price}),
                       encoding="utf-8")
-        logger.info("结算完成: project=%s ai_words=%d final=%.2f balance=%.2f",
-                    project_id, ai_words, final_price, db.get_user(uid)["balance"])
+        logger.info("结算完成: project=%s ai_words=%d billable=%d target=%d final=%.2f balance=%.2f",
+                    project_id, ai_words, billable_words, target_ai_words, final_price,
+                    db.get_user(uid)["balance"])
     except Exception:
         logger.exception("结算异常: project=%s", store.dir.name)
 

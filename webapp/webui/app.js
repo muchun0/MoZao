@@ -437,7 +437,7 @@
       '<div class="recharge-contact">' +
         "<b>充值请联系站长</b>" +
       "</div>";
-    note.textContent = "按字数计费：每万字 " + per10k + " 元，多写多算，生成完成后按实际生成字数结算。";
+    note.textContent = "按字数计费：每万字 " + per10k + " 元，按目标 AI 字数封顶，多写不多收。";
   }
 
   // ---------- 视图切换 ----------
@@ -647,7 +647,7 @@
         '<div class="fee-row"><span>计费方式</span><b>每万字 ' + per10k + " 元</b></div>";
       rows += '<div class="fee-row"><span>本次费用</span><b class="gold">' + fmtPrice(price) + " 元</b></div>";
       rows += '<div class="fee-total"><span>本次扣费</span><b>' + fmtPrice(price) + "</b></div>" +
-        '<div class="fee-hint">按 AI 实际生成字数计费（每万字 ' + per10k + " 元），已有内容不重复计费；创建时不扣费，真正生成文字后按实际字数结算。未生成的项目可随时删除，不产生费用。</div>";
+        '<div class="fee-hint">按目标 AI 字数封顶计费（每万字 ' + per10k + " 元），已有内容不重复计费；创建时不扣费，生成完成后按目标 AI 字数结算，AI 多写部分不另收费。未生成的项目可随时删除，不产生费用。</div>";
       fee.innerHTML = rows;
     }
   }

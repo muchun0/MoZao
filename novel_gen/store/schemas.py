@@ -7,6 +7,34 @@ from typing import Any, Optional
 
 
 @dataclass
+class Volume:
+    """分卷大纲（二级大纲）。"""
+    no: int = 0
+    name: str = ""
+    intro: str = ""          # 本卷核心主题/主线进展
+    main_conflict: str = ""  # 本卷主要矛盾
+    character_growth: str = "" # 本卷人物成长弧光
+    climax: str = ""          # 本卷高潮节点
+    start_ch: int = 0         # 起始章
+    end_ch: int = 0           # 结束章
+
+    def to_dict(self) -> dict:
+        return {
+            "no": self.no, "name": self.name, "intro": self.intro,
+            "main_conflict": self.main_conflict, "character_growth": self.character_growth,
+            "climax": self.climax, "start_ch": self.start_ch, "end_ch": self.end_ch,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Volume":
+        return cls(
+            no=int(d.get("no", 0)), name=d.get("name", ""), intro=d.get("intro", ""),
+            main_conflict=d.get("main_conflict", ""), character_growth=d.get("character_growth", ""),
+            climax=d.get("climax", ""), start_ch=int(d.get("start_ch", 0)), end_ch=int(d.get("end_ch", 0)),
+        )
+
+
+@dataclass
 class Timeline:
     """时间线结构。"""
     name: str = ""
@@ -108,9 +136,12 @@ class StoryUnit:
 
 @dataclass
 class Outline:
-    """整本书的大纲。"""
+    """整本书的大纲（三级：总纲intro → 分卷volumes → 章节chapters）。"""
     title: str = ""
     intro: str = ""
+    core_conflict: str = ""     # 总纲：核心冲突（L1总纲层）
+    main_line: str = ""         # 总纲：主线脉络
+    volumes: list[Volume] = field(default_factory=list)
     chapters: list[ChapterPlan] = field(default_factory=list)
     timelines: list[Timeline] = field(default_factory=list)
     units: list[StoryUnit] = field(default_factory=list)
@@ -119,6 +150,9 @@ class Outline:
         return {
             "title": self.title,
             "intro": self.intro,
+            "core_conflict": self.core_conflict,
+            "main_line": self.main_line,
+            "volumes": [v.to_dict() for v in self.volumes],
             "chapters": [c.to_dict() for c in self.chapters],
             "timelines": [t.to_dict() for t in self.timelines],
             "units": [u.to_dict() for u in self.units],
@@ -129,6 +163,9 @@ class Outline:
         return cls(
             title=d.get("title", ""),
             intro=d.get("intro", ""),
+            core_conflict=d.get("core_conflict", ""),
+            main_line=d.get("main_line", ""),
+            volumes=[Volume.from_dict(v) for v in d.get("volumes", [])],
             chapters=[ChapterPlan.from_dict(c) for c in d.get("chapters", [])],
             timelines=[Timeline.from_dict(t) for t in d.get("timelines", [])],
             units=[StoryUnit.from_dict(u) for u in d.get("units", [])],

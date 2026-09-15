@@ -477,7 +477,13 @@
     const kw = ($("#project-search").value || "").trim().toLowerCase();
     const f = (document.querySelector("#project-filters button.active") || {}).dataset?.filter || "all";
     let list = projectsCache.slice();
-    if (f !== "all") list = list.filter((p) => projectState(p) === f);
+    if (f === "archived") {
+      list = list.filter((p) => p.archived);
+    } else if (f !== "all") {
+      list = list.filter((p) => projectState(p) === f);
+    } else {
+      list = list.filter((p) => !p.archived);
+    }
     const sort = window._projectSort || "created";
     if (sort === "name") list.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
     else if (sort === "updated") list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
@@ -584,8 +590,7 @@
   async function loadProjects() {
     try {
       const sort = window._projectSort || "created";
-      const showArchived = window._showArchived || false;
-      const url = "/api/projects?sort=" + sort + "&show_archived=" + showArchived;
+      const url = "/api/projects?sort=" + sort + "&show_archived=true";
       const { projects } = await api(url);
       projectsCache = projects;
       applyProjectFilter();
@@ -603,18 +608,11 @@
       applyProjectFilter();
     });
   });
-  // 排序 & 归档显示
+  // 排序
   const sortSel = $("#project-sort");
   if (sortSel) {
     sortSel.addEventListener("change", () => {
       window._projectSort = sortSel.value;
-      loadProjects();
-    });
-  }
-  const archChk = $("#show-archived");
-  if (archChk) {
-    archChk.addEventListener("change", () => {
-      window._showArchived = archChk.checked;
       loadProjects();
     });
   }

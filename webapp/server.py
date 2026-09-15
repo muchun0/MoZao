@@ -1653,29 +1653,34 @@ def archive_project(project_id: str, user: dict = Depends(_require_user)):
 @app.post("/api/projects/{project_id}/clone")
 def clone_project(project_id: str, user: dict = Depends(_require_user)):
     """克隆项目（复制配置+大纲，不复制正文）。"""
-    import shutil, datetime
+    import datetime, json, re
     _check_project_access(project_id, user)
     src_store = _find_project(project_id)
     cfg = src_store.load_config()
-    new_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + cfg.title
+    # 用时间戳+安全文件名，避免中文/特殊字符导致路径问题
+    safe_title = re.sub(r'[^\w\u4e00-\u9fa5-]', '_', cfg.title)[:30]
+    new_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_title
     new_dir = PROJECTS_DIR / new_id
     new_dir.mkdir(parents=True, exist_ok=True)
-    # 复制config和outline（直接读原config.json，避免__dict__里的LLMConfig不可序列化）
-    import json
-    src_cfg_file = src_store.dir / "config.json"
-    if src_cfg_file.exists():
-        cfg_data = json.loads(src_cfg_file.read_text(encoding="utf-8"))
-        cfg_data["title"] = cfg.title + "（副本）"
-        (new_dir / "config.json").write_text(json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    outline = src_store.load_outline()
-    if outline:
-        (new_dir / "outline.json").write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    world = src_store.load_world()
-    if world:
-        (new_dir / "world.json").write_text(json.dumps(world.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    # 注册归属
-    db.assign_project(user["id"], new_id)
-    return {"ok": True, "project_id": new_id}
+    try:
+        src_cfg_file = src_store.dir / "config.json"
+        if src_cfg_file.exists():
+            cfg_data = json.loads(src_cfg_file.read_text(encoding="utf-8"))
+            cfg_data["title"] = cfg.title + "（副本）"
+            (new_dir / "config.json").write_text(json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        outline = src_store.load_outline()
+        if outline:
+            (new_dir / "outline.json").write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        world = src_store.load_world()
+        if world:
+            (new_dir / "world.json").write_text(json.dumps(world.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        db.claim_project(new_id, user["id"], price=0.0)
+        return {"ok": True, "project_id": new_id}
+    except Exception as e:
+        logger.exception("克隆项目失败: src=%s err=%s", project_id, e)
+        import shutil
+        shutil.rmtree(new_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"克隆失败: {str(e)}")
 
 
 @app.delete("/api/projects/{project_id}")

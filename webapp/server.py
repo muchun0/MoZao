@@ -1786,6 +1786,24 @@ def restore_outline_snapshot(project_id: str, snap_name: str, user: dict = Depen
     return {"ok": True, "chapters": len(outline.chapters)}
 
 
+@app.get("/api/projects/{project_id}/outline/snapshots")
+def list_outline_snapshots(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    snaps = store.list_outline_snapshots()
+    return {"snapshots": snaps}
+
+
+@app.get("/api/projects/{project_id}/outline/snapshots/{file_name}")
+def get_outline_snapshot(project_id: str, file_name: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    data = store.load_outline_snapshot(file_name)
+    if data is None:
+        raise HTTPException(status_code=404, detail="快照不存在")
+    return {"outline": data}
+
+
 @app.get("/api/projects/{project_id}/download")
 def download(project_id: str, format: str = "txt", user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)

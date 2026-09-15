@@ -171,6 +171,37 @@ class ProjectStore:
 
     def save_outline(self, outline: Outline) -> None:
         self._write_json(self.outline_path(), outline.to_dict())
+        # 自动快照：每次保存备份到 snapshots/，保留最近20个版本
+        try:
+            import time, json, glob, os
+            snap_dir = self.dir / "outline_snapshots"
+            snap_dir.mkdir(exist_ok=True)
+            snap_file = snap_dir / f"snap_{int(time.time())}.json"
+            snap_file.write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            snaps = sorted(glob.glob(str(snap_dir / "snap_*.json")))
+            for old_f in snaps[:-20]:
+                os.remove(old_f)
+        except Exception:
+            pass
+
+    def list_outline_snapshots(self) -> list:
+        """列出所有大纲快照（时间戳列表）。"""
+        try:
+            import glob
+            snap_dir = self.dir / "outline_snapshots"
+            files = sorted(glob.glob(str(snap_dir / "snap_*.json")))
+            return [{"file": f, "ts": int(f.split("snap_")[-1].replace(".json", ""))} for f in files]
+        except Exception:
+            return []
+
+    def load_outline_snapshot(self, file_name: str) -> dict | None:
+        """读取指定快照。"""
+        try:
+            import json
+            f = self.dir / "outline_snapshots" / file_name
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return None
 
     def load_outline(self) -> Optional[Outline]:
         d = self._read_json(self.outline_path(), None)

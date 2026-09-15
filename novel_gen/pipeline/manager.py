@@ -19,7 +19,8 @@ from ..store.schemas import Chapter, ChapterPlan, Outline, ProjectState, World
 from .memory import Memory
 from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
 from .templates import (continue_outline_prompt, expand_chapter_prompt,
-                        expand_outline_prompt, world_from_content_prompt)
+                        expand_outline_prompt, world_from_content_prompt,
+                        verify_prompt)
 from .editor import EditorReviewer
 from .templates import expand_outline_prompt
 from webapp.logger import get_logger
@@ -161,7 +162,41 @@ class NovelPipeline:
             raise
         logger.info("章节完成: 第 %d 章「%s」（%d 字）", no, plan.title,
                     len(chapter.content) if chapter else 0)
+
         return chapter
+
+    def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
+        """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
+        try:
+            summaries = self.store.load_summaries()
+            recent = [s for s in summaries if int(s.get("no", 0)) <= chapter_no][-3:]
+            world = self.store.load_world()
+            world_text = ""
+            if world is not None:
+                world_text = (world.world_view or "") + "\n" + "; ".join(
+                    f"{c.name}({c.role})" for c in (world.characters or []) if c.name
+                )
+            sys_v, user_v = verify_prompt(self.cfg, [s["summary"] for s in recent], world_text)
+            raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=800)
+            # 解析 JSON
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            issues = data.get("issues", [])
+            if issues:
+                self.store.append_verify_issues(chapter_no, issues)
+                if not silent:
+                    print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
+        except Exception as e:
+            logger.warning("一致性校验失败（不阻塞生成）: %s", e)
 
     # ---------- 进度查询 ----------
     def progress(self) -> tuple[int, int]:
@@ -214,6 +249,9 @@ class NovelPipeline:
         for no in range(done + 1, total + 1):
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
+            # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
+            if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
+                self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)
         if not silent:

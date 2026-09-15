@@ -1669,6 +1669,7 @@
       tab.classList.add("active");
       $("#tab-" + tab.dataset.tab).classList.add("active");
       if (tab.dataset.tab === "chapters") renderChapters();
+      if (tab.dataset.tab === "world") loadWorldOnly();
     });
   });
 

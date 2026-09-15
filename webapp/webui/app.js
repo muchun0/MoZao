@@ -964,6 +964,11 @@
         chaptersCache = chs.chapters;
         renderChapters();
       }
+      // 大纲从无到有时，重新加载大纲/世界观tab
+      if (d.has_outline && !window._outlineLoadedOnce) {
+        window._outlineLoadedOnce = true;
+        loadOutlineAndWorld();
+      }
       if (!d.running && d.chapters_total > 0 && d.chapters_done >= d.chapters_total) {
         stopPolling();
       }
@@ -1074,9 +1079,9 @@
     if (d.error) { errBox.textContent = "生成出错：" + d.error; errBox.classList.remove("hidden"); }
     else errBox.classList.add("hidden");
 
-    // 加载大纲/世界观一次
-    if (!window._detailLoaded) {
-      window._detailLoaded = true;
+    // 加载大纲/世界观（首次或大纲就绪后）
+    if (!window._outlineLoadedOnce && d.has_outline) {
+      window._outlineLoadedOnce = true;
       loadOutlineAndWorld();
     }
   }

@@ -1167,7 +1167,7 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
     return {
         "title": outline.title,
         "intro": outline.intro,
-        "chapters": [{"no": c.no, "title": c.title, "goal": c.goal} for c in outline.chapters],
+        "chapters": [c.to_dict() for c in outline.chapters],
     }
 
 

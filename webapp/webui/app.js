@@ -945,6 +945,7 @@
       skill_id: f.skill_id ? parseInt(f.skill_id.value, 10) || 0 : 0,
       pacing_density: f.pacing_density ? f.pacing_density.value : "medium",
       plot_speed: f.plot_speed ? f.plot_speed.value : "medium",
+      custom_prompt: f.custom_prompt ? f.custom_prompt.value : "",
       llm: {
         provider: "deepseek",  // Key 由服务端统一管理
         model: "",
@@ -1216,7 +1217,9 @@
       const wb = $("#world-box");
       let html = "<h4>世界观</h4><p>" + esc(w.world_view) + "</p>";
       if (w.characters && w.characters.length) {
-        html += "<h4>人物</h4>" + w.characters.map((c) =>
+        html += "<h4>人物关系图谱</h4>";
+        html += renderCharGraph(w.characters);
+        html += "<h4>人物档案</h4>" + w.characters.map((c) =>
           '<div class="char"><span class="name">' + esc(c.name) + '</span><span class="role">' + esc(c.role) + '</span><div>' + esc(c.desc) + "</div></div>"
         ).join("");
       }

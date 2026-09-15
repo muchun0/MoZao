@@ -226,6 +226,12 @@ class ChapterWriter:
                 tl_hint = timeline_hint_for_chapter(outline.timelines, plan_tl)
                 if tl_hint:
                     memory_context = memory_context + "\n\n" + tl_hint if memory_context else tl_hint
+            # 注入副本上下文
+            if outline and outline.units:
+                from .templates import unit_hint_for_chapter
+                unit_hint = unit_hint_for_chapter(outline.units, chapter_no)
+                if unit_hint:
+                    memory_context = memory_context + "\n\n" + unit_hint if memory_context else unit_hint
         except Exception:
             pass
 

@@ -964,10 +964,15 @@
         chaptersCache = chs.chapters;
         renderChapters();
       }
-      // 大纲从无到有时，重新加载大纲/世界观tab
+      // 大纲从无到有时，先加载大纲内容
       if (d.has_outline && !window._outlineLoadedOnce) {
         window._outlineLoadedOnce = true;
-        loadOutlineAndWorld();
+        loadOutlineOnly();
+      }
+      // 大纲生成全部完成（不再运行中）后，加载世界观
+      if (!d.running && d.has_outline && !window._worldLoadedOnce) {
+        window._worldLoadedOnce = true;
+        loadWorldOnly();
       }
       if (!d.running && d.chapters_total > 0 && d.chapters_done >= d.chapters_total) {
         stopPolling();
@@ -1079,14 +1084,19 @@
     if (d.error) { errBox.textContent = "生成出错：" + d.error; errBox.classList.remove("hidden"); }
     else errBox.classList.add("hidden");
 
-    // 加载大纲/世界观（首次或大纲就绪后）
+    // 加载大纲内容（首次进入且已有大纲）
     if (!window._outlineLoadedOnce && d.has_outline) {
       window._outlineLoadedOnce = true;
-      loadOutlineAndWorld();
+      loadOutlineOnly();
+    }
+    // 加载世界观（首次进入且已有大纲且不在运行中）
+    if (!window._worldLoadedOnce && d.has_outline && !d.running) {
+      window._worldLoadedOnce = true;
+      loadWorldOnly();
     }
   }
 
-  async function loadOutlineAndWorld() {
+  async function loadOutlineOnly() {
     try {
       const o = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline");
       const ob = $("#outline-box");
@@ -1097,7 +1107,7 @@
       ob.innerHTML += o.chapters.map((c) =>
         '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》<span class="goal">——' + esc(c.goal) + "</span></div>"
       ).join("");
-      // 大纲与已生成章节差异提示（改动章节 + 废弃章节）
+      // 大纲与已生成章节差异提示
       try {
         const d = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
         window._outlineDiff = d;
@@ -1106,7 +1116,11 @@
         if (d.removed && d.removed.length) warns.push(d.removed.length + " 章已从大纲移除（正文文件保留，标记已废弃）");
         if (warns.length) ob.innerHTML = '<div class="ol-warn">' + warns.map((w) => "<div>⚠ " + esc(w) + "</div>").join("") + "</div>" + ob.innerHTML;
       } catch (e) { /* diff 不可用时忽略 */ }
+    } catch (e) { /* ignore */ }
+  }
 
+  async function loadWorldOnly() {
+    try {
       const w = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/world");
       const wb = $("#world-box");
       let html = "<h4>世界观</h4><p>" + esc(w.world_view) + "</p>";

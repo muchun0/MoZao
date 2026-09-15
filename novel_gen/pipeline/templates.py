@@ -424,6 +424,54 @@ def timeline_hint_for_chapter(timelines: list, chapter_timeline: str) -> str:
     )
 
 
+def unit_design_prompt(cfg: NovelConfig, genre: str, title: str, intro: str,
+                       total_chapters: int, timelines: list) -> tuple[str, str]:
+    """时间线设计后，按3章一个副本拆分叙事单元。低温 0.4。"""
+    timelines_text = "\n".join(
+        f"- {t.name}（{t.type}）：{t.description}" for t in timelines
+    ) if timelines else "- 主线（顺叙）"
+    system = (
+        "你是一位资深网文结构编辑。用户给你一本小说的时间线结构，"
+        "请把全书按每3章一个副本单元拆分。每个副本是一个完整的小事件，"
+        "有起因→经过→结果三段式。输出 JSON。"
+    )
+    user = (
+        f"【书名】{title}\n"
+        f"【题材】{genre}\n"
+        f"【简介】{intro[:600]}\n"
+        f"【总章节数】{total_chapters}\n"
+        f"【时间线结构】\n{timelines_text}\n\n"
+        "请按每3章一个副本拆分，输出 JSON：\n"
+        '{"units": [\n'
+        '  {"no": 1, "name": "副本名", "type": "梦境/现实/暗线", "chapters": [1,2,3],\n'
+        '   "core_payoff": "这个副本的核心结局/记忆点",\n'
+        '   "key_nodes": ["节点1", "节点2", "节点3"],\n'
+        '   "harvest": "主角收获（残留/线索/认知/关系）",\n'
+        '   "next_hook": "埋下一副本的钩子"}\n'
+        ']}'
+    )
+    return system, user
+
+
+def unit_hint_for_chapter(units: list, chapter_no: int) -> str:
+    """给单章生成注入副本上下文。"""
+    if not units:
+        return ""
+    unit = next((u for u in units if chapter_no in u.chapters), None)
+    if not unit:
+        return ""
+    # 判断本章在副本中的位置
+    idx = unit.chapters.index(chapter_no)
+    position = ["起因段", "经过段", "结果段"][idx] if idx < 3 else "经过段"
+    return (
+        f"【当前副本】{unit.name}（第{unit.no}个副本，{unit.type}）\n"
+        f"【副本核心落点】{unit.core_payoff}\n"
+        f"【本章位置】{position}\n"
+        f"【本副本收获】{unit.harvest}\n"
+    )
+
+
+
 
 def outline_prompt(
     cfg: NovelConfig,

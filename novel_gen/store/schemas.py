@@ -44,12 +44,51 @@ class ChapterPlan:
 
 
 @dataclass
+class StoryUnit:
+    """副本单元（3章一个完整事件）。"""
+    no: int = 0
+    name: str = ""
+    type: str = ""  # 梦境副本/现实副本/暗线副本
+    chapters: list[int] = field(default_factory=list)
+    core_payoff: str = ""
+    key_nodes: list[str] = field(default_factory=list)
+    harvest: str = ""
+    next_hook: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "no": self.no,
+            "name": self.name,
+            "type": self.type,
+            "chapters": self.chapters,
+            "core_payoff": self.core_payoff,
+            "key_nodes": self.key_nodes,
+            "harvest": self.harvest,
+            "next_hook": self.next_hook,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StoryUnit":
+        return cls(
+            no=int(d.get("no", 0)),
+            name=d.get("name", ""),
+            type=d.get("type", ""),
+            chapters=[int(x) for x in d.get("chapters", [])],
+            core_payoff=d.get("core_payoff", ""),
+            key_nodes=list(d.get("key_nodes", [])),
+            harvest=d.get("harvest", ""),
+            next_hook=d.get("next_hook", ""),
+        )
+
+
+@dataclass
 class Outline:
     """整本书的大纲。"""
     title: str = ""
     intro: str = ""
     chapters: list[ChapterPlan] = field(default_factory=list)
     timelines: list[Timeline] = field(default_factory=list)
+    units: list[StoryUnit] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +96,7 @@ class Outline:
             "intro": self.intro,
             "chapters": [c.to_dict() for c in self.chapters],
             "timelines": [t.to_dict() for t in self.timelines],
+            "units": [u.to_dict() for u in self.units],
         }
 
     @classmethod
@@ -66,6 +106,7 @@ class Outline:
             intro=d.get("intro", ""),
             chapters=[ChapterPlan.from_dict(c) for c in d.get("chapters", [])],
             timelines=[Timeline.from_dict(t) for t in d.get("timelines", [])],
+            units=[StoryUnit.from_dict(u) for u in d.get("units", [])],
         )
 
 

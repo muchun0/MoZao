@@ -134,6 +134,41 @@ class NovelPipeline:
         except Exception as e:
             logger.warning("时间线设计失败（不阻塞）: %s", e)
 
+    def run_units(self, silent: bool = False) -> None:
+        """时间线设计后，按3章一个副本拆分叙事单元。幂等：已有则跳过。"""
+        outline = self.store.load_outline()
+        if outline is None:
+            return
+        if outline.units:
+            if not silent:
+                print(f"[副本结构] 已存在，复用：{len(outline.units)} 个")
+            return
+        try:
+            from .templates import unit_design_prompt
+            from ..store.schemas import StoryUnit
+            sys_u, user_u = unit_design_prompt(
+                self.cfg, self.cfg.genre, outline.title, outline.intro,
+                len(outline.chapters), outline.timelines
+            )
+            raw = self.llm.chat(sys_u, user_u, temperature=0.4, max_tokens=2000)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            outline.units = [StoryUnit.from_dict(x) for x in data.get("units", [])]
+            self.store.save_outline(outline)
+            if not silent:
+                print(f"[副本结构] 设计完成：{len(outline.units)} 个副本")
+            logger.info("副本结构设计完成：%d 个", len(outline.units))
+        except Exception as e:
+            logger.warning("副本结构设计失败（不阻塞）: %s", e)
+
     def run_world(self, silent: bool = False) -> World:
         existing = self.store.load_world()
         if existing is not None:
@@ -142,6 +177,7 @@ class NovelPipeline:
             return existing
         outline = self.run_outline(silent=True)
         self.run_timeline(silent=silent)
+        self.run_units(silent=silent)
         research = self.store.load_research() or self.run_research(silent=True)
         logger.info("阶段开始: 人物/世界观 world")
         result = self.world_gen.run(outline, research, silent=silent)

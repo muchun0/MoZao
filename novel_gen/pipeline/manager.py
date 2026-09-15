@@ -22,7 +22,7 @@ from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         expand_outline_prompt, world_from_content_prompt,
                         verify_prompt)
 from .editor import EditorReviewer
-from .templates import expand_outline_prompt
+from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent
 from webapp.logger import get_logger
 
 logger = get_logger("pipeline")
@@ -34,6 +34,12 @@ class NovelPipeline:
         self.store = store
         self.llm = llm
         self.memory = Memory(store, cfg.memory_window)
+        # 多智能体角色（v2 架构）
+        self.researcher = ResearcherAgent(cfg, llm, store)
+        self.architect = ArchitectAgent(cfg, llm, store)
+        self.writer = WriterAgent(cfg, llm, store, self.memory)
+        self.reviewer = ReviewerAgent(cfg, llm, store)
+        # 兼容旧引用（现有方法继续用）
         self.outline_gen = OutlineGenerator(cfg, llm, store)
         self.world_gen = WorldGenerator(cfg, llm, store)
         self.chapter_writer = ChapterWriter(cfg, llm, store, self.memory)

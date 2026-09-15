@@ -174,16 +174,40 @@ class Outline:
 
 @dataclass
 class Character:
+    """结构化人物档案。"""
     name: str = ""
-    role: str = ""   # 主角/配角/反派...
+    role: str = ""           # 主角/配角/反派...
     desc: str = ""
+    appearance: str = ""     # 外貌
+    personality: str = ""    # 性格特质
+    desire: str = ""         # 核心欲望/目标
+    wound: str = ""          # 心理创伤/软肋
+    arc: str = ""            # 人物弧光（开篇→结尾的变化）
+    speech_style: str = ""   # 说话方式/口头禅
+    relations: str = ""      # 人物关系（与其他角色）
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "role": self.role, "desc": self.desc}
+        return {
+            "name": self.name, "role": self.role, "desc": self.desc,
+            "appearance": self.appearance, "personality": self.personality,
+            "desire": self.desire, "wound": self.wound, "arc": self.arc,
+            "speech_style": self.speech_style, "relations": self.relations,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Character":
-        return cls(name=d.get("name", ""), role=d.get("role", ""), desc=d.get("desc", ""))
+        def _s(v):
+            if isinstance(v, dict):
+                return " ".join(f"{k}:{_s(val)}" for k, val in v.items())
+            if isinstance(v, list):
+                return "；".join(_s(x) for x in v)
+            return str(v) if v is not None else ""
+        return cls(
+            name=_s(d.get("name", "")), role=_s(d.get("role", "")), desc=_s(d.get("desc", "")),
+            appearance=_s(d.get("appearance", "")), personality=_s(d.get("personality", "")),
+            desire=_s(d.get("desire", "")), wound=_s(d.get("wound", "")), arc=_s(d.get("arc", "")),
+            speech_style=_s(d.get("speech_style", "")), relations=_s(d.get("relations", "")),
+        )
 
 
 @dataclass

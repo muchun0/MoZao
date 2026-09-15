@@ -1168,9 +1168,10 @@
       if (o.title) {
         ob.innerHTML = '<div class="ol-intro"><strong>《' + esc(o.title) + '》</strong><br>' + esc(o.intro) + "</div>";
       }
-      ob.innerHTML += o.chapters.map((c) =>
-        '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》<span class="goal">——' + esc(c.goal) + "</span></div>"
-      ).join("");
+      ob.innerHTML += o.chapters.map((c) => {
+        const tag = c.tag ? '<span class="ol-tag-badge">' + esc(c.tag) + '</span>' : '';
+        return '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》' + tag + '<span class="goal">——' + esc(c.goal) + '</span></div>';
+      }).join("");
       // 大纲与已生成章节差异提示
       try {
         const d = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");
@@ -1446,8 +1447,14 @@
         fieldsHtml += '</div>';
       }
       fieldsHtml += '</div>';
-      return '<div class="ol-card" data-i="' + i + '">' +
-        '<div class="ol-card-head"><span class="ol-card-no">第' + (i + 1) + '章</span><button class="btn danger small ol-edit-del" title="删除本章">✕</button></div>' +
+      const upBtn = i > 0 ? '<button class="btn small ol-move" data-dir="up" title="上移">↑</button>' : '<button class="btn small ol-move" disabled>↑</button>';
+      const downBtn = i < outlineDraft.length - 1 ? '<button class="btn small ol-move" data-dir="down" title="下移">↓</button>' : '<button class="btn small ol-move" disabled>↓</button>';
+      const tagBadge = c.tag ? '<span class="ol-tag-badge">' + esc(c.tag) + '</span>' : '';
+      return '<div class="ol-card" data-i="' + i + '" draggable="true">' +
+        '<div class="ol-card-head"><span class="ol-drag-handle" title="拖拽排序">\u22ee\u22ee</span>' +
+        '<span class="ol-card-no">第' + (i + 1) + '章</span>' + tagBadge +
+        upBtn + downBtn +
+        '<button class="btn danger small ol-edit-del" title="删除本章">\u2715</button></div>' +
         fieldsHtml +
       '</div>';
     }).join("");
@@ -1459,6 +1466,29 @@
       row.querySelector(".ol-edit-del").addEventListener("click", () => {
         if (!confirm("删除第 " + (i + 1) + " 章？已生成的该章正文会保留并标记废弃。")) return;
         outlineDraft.splice(i, 1);
+        renderOutlineEdit();
+      });
+      row.querySelectorAll(".ol-move").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const dir = btn.dataset.dir;
+          const j = dir === "up" ? i - 1 : i + 1;
+          if (j < 0 || j >= outlineDraft.length) return;
+          const tmp = outlineDraft[i]; outlineDraft[i] = outlineDraft[j]; outlineDraft[j] = tmp;
+          renderOutlineEdit();
+        });
+      });
+      row.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", String(i));
+        row.classList.add("dragging");
+      });
+      row.addEventListener("dragend", () => row.classList.remove("dragging"));
+      row.addEventListener("dragover", (e) => e.preventDefault());
+      row.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
+        if (isNaN(from) || from === i) return;
+        const moved = outlineDraft.splice(from, 1)[0];
+        outlineDraft.splice(i, 0, moved);
         renderOutlineEdit();
       });
     });

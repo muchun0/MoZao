@@ -1345,6 +1345,30 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
             "summary": chapter.summary, "words": len(chapter.content)}
 
 
+@app.post("/api/projects/{project_id}/expand-selection")
+def expand_selection(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """选中内容扩写/续写：基于用户选中的文本，AI扩写或续写一段。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    selected = (req.get("text") or "").strip()
+    mode = req.get("mode") or "expand"  # expand=扩写 / continue=续写
+    if not selected:
+        raise HTTPException(status_code=400, detail="未提供选中文本")
+    cfg = store.load_config()
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        if mode == "continue":
+            sys = "你是一位网络小说写手。基于以下文字，自然续写一段，保持文风和情节连贯，100-300字。不要重复原文。"
+        else:
+            sys = "你是一位网络小说写手。将以下文字扩写得更细腻生动，增加感官细节和情绪，保持原意和文风，扩写后200-500字。"
+        user_msg = f"【原文】\n{selected}\n\n【请输出】"
+        result = llm.chat(sys, user_msg, temperature=0.7, max_tokens=600)
+    except Exception as e:
+        logger.exception("选中扩写失败: project=%s", project_id)
+        raise HTTPException(status_code=500, detail=f"扩写失败：{e}")
+    return {"result": result, "mode": mode}
+
 
 @app.get("/api/projects/{project_id}/chapters")
 def project_chapters(project_id: str, user: dict = Depends(_require_user)):

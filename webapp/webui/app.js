@@ -1333,7 +1333,57 @@
     $("#btn-next-ch").disabled = !chaptersCache.some((x) => x.no === no + 1);
   }
 
-  $("#btn-close-reader").addEventListener("click", () => $("#reader-modal").classList.add("hidden"));
+  // 选中段落扩写/续写
+  const readerBody = $("#reader-body");
+  if (readerBody) {
+    readerBody.addEventListener("mouseup", async () => {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : "";
+      if (!text || text.length < 5) {
+        const fb = $("#sel-float");
+        if (fb) fb.style.display = "none";
+        return;
+      }
+      let fb = $("#sel-float");
+      if (!fb) {
+        fb = document.createElement("div");
+        fb.id = "sel-float";
+        fb.style.cssText = "position:absolute;z-index:9999;background:#5a4a3a;color:#f5f1e2;padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer;display:none;gap:6px;";
+        fb.innerHTML = '<span data-act="expand" style="cursor:pointer">扩写</span><span style="opacity:.4">|</span><span data-act="continue" style="cursor:pointer">续写</span>';
+        document.body.appendChild(fb);
+        fb.addEventListener("click", async (e) => {
+          const act = e.target.dataset.act;
+          if (!act) return;
+          fb.style.display = "none";
+          try {
+            const resp = await fetch(API + "/api/projects/" + encodeURIComponent(currentProjectId) + "/expand-selection", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + getToken() },
+              body: JSON.stringify({ text: text, mode: act }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || "失败");
+            const action = act === "continue" ? "续写" : "扩写";
+            if (confirm(action + "结果：\n\n" + data.result + "\n\n点击「确定」将结果插入到选中文本之后")) {
+              const editArea = $("#edit-ch-content");
+              if (editArea) {
+                const cur = editArea.value;
+                const pos = editArea.selectionStart || cur.length;
+                editArea.value = cur.slice(0, pos) + "\n" + data.result + cur.slice(pos);
+              }
+            }
+          } catch (e2) { toast(e2.message); }
+        });
+      }
+      fb.style.display = "flex";
+      fb.style.left = (e.pageX || 100) + "px";
+      fb.style.top = ((e.pageY || 100) - 40) + "px";
+    });
+  }
+  $("#btn-close-reader").addEventListener("click", () => {
+    $("#reader-modal").classList.add("hidden");
+    const fb = $("#sel-float"); if (fb) fb.style.display = "none";
+  });
   $("#btn-prev-ch").addEventListener("click", async () => {
     if (currentChapterNo > 1 && chaptersCache.some((x) => x.no === currentChapterNo - 1)) {
       currentChapterNo -= 1;

@@ -608,3 +608,9 @@ input:focus, select:focus, textarea:focus {
 
 .recharge-contact { display:block; padding:14px 12px 6px; text-align:center; }
 .recharge-contact b { font-size:22px; font-weight:700; letter-spacing:1px; color:var(--indigo-deep); }
+
+.ol-drag-handle { cursor: grab; color: var(--muted); margin-right: 6px; user-select: none; }
+.ol-card.dragging { opacity: 0.5; border: 2px dashed var(--indigo); }
+.ol-move { padding: 2px 8px; font-size: 12px; }
+.ol-tag-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--indigo); color: #f5f1e2; font-size: 11px; margin: 0 4px; }
+.ol-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

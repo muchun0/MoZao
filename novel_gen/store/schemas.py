@@ -212,16 +212,18 @@ class Character:
 
 @dataclass
 class World:
-    """世界观 + 人物卡 + 伏笔清单（记忆系统的「设定库」）。"""
+    """世界观 + 人物卡 + 伏笔清单 + 锁定设定（记忆系统的「设定库」）。"""
     world_view: str = ""
     characters: list[Character] = field(default_factory=list)
     foreshadowing: list[str] = field(default_factory=list)
+    locked_settings: list[str] = field(default_factory=list)  # 核心设定锁定，AI不得违背
 
     def to_dict(self) -> dict:
         return {
             "world_view": self.world_view,
             "characters": [c.to_dict() for c in self.characters],
             "foreshadowing": list(self.foreshadowing),
+            "locked_settings": list(self.locked_settings),
         }
 
     @classmethod
@@ -236,10 +238,13 @@ class World:
 
         raw_foreshadow = d.get("foreshadowing", []) or []
         foreshadowing = [_norm_str(x) for x in raw_foreshadow]
+        locked_raw = d.get("locked_settings", []) or []
+        locked = [_norm_str(x) for x in locked_raw]
         return cls(
             world_view=_norm_str(d.get("world_view", "")),
             characters=[Character.from_dict(c) for c in (d.get("characters", []) or [])],
             foreshadowing=foreshadowing,
+            locked_settings=locked,
         )
 
 

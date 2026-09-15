@@ -1211,6 +1211,53 @@
     } catch (e) { /* ignore */ }
   }
 
+  // 人物关系图谱：简单圆形布局 + SVG 连线
+  function renderCharGraph(chars) {
+    if (!chars || chars.length < 2) return "";
+    var W = 560, H = Math.max(280, chars.length * 90);
+    var cx = W / 2;
+    var nodes = chars.map(function(c, i) {
+      var angle = (i / chars.length) * 2 * Math.PI - Math.PI / 2;
+      var r = Math.min(180, 60 + chars.length * 15);
+      return {
+        name: c.name || ("角色" + (i+1)),
+        role: c.role || "",
+        relations: c.relations || "",
+        x: cx + r * Math.cos(angle),
+        y: H / 2 + r * Math.sin(angle)
+      };
+    });
+    var edges = [];
+    var names = nodes.map(function(n) { return n.name; });
+    nodes.forEach(function(n, i) {
+      if (!n.relations) return;
+      names.forEach(function(other, j) {
+        if (i === j) return;
+        if (n.relations.indexOf(other) >= 0) {
+          var key = i < j ? i + "-" + j : j + "-" + i;
+          if (!edges.some(function(e) { return e.key === key; })) {
+            edges.push({ key: key, from: i, to: j, label: n.relations.slice(0, 20) });
+          }
+        }
+      });
+    });
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:640px;background:#fafbfc;border:1px solid #e5e7eb;border-radius:8px;">';
+    edges.forEach(function(e) {
+      var a = nodes[e.from], b = nodes[e.to];
+      svg += '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '" stroke="#c7d2fe" stroke-width="1.5"/>';
+      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      svg += '<text x="' + mx + '" y="' + my + '" font-size="10" fill="#8b5cf6" text-anchor="middle">' + esc(e.label) + '</text>';
+    });
+    nodes.forEach(function(n) {
+      var isMain = (n.role && n.role.indexOf("主角") >= 0);
+      svg += '<circle cx="' + n.x + '" cy="' + n.y + '" r="22" fill="' + (isMain ? "#6366f1" : "#fff") + '" stroke="#6366f1" stroke-width="2"/>';
+      svg += '<text x="' + n.x + '" y="' + (n.y + 4) + '" font-size="11" fill="' + (isMain ? "#fff" : "#333") + '" text-anchor="middle" font-weight="bold">' + esc(n.name.slice(0, 4)) + '</text>';
+      svg += '<text x="' + n.x + '" y="' + (n.y + 38) + '" font-size="10" fill="#666" text-anchor="middle">' + esc(n.role) + '</text>';
+    });
+    svg += "</svg>";
+    return svg;
+  }
+
   async function loadWorldOnly() {
     try {
       const w = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/world");

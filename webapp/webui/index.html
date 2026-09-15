@@ -136,6 +136,14 @@
             <button data-filter="done">已完成</button>
             <button data-filter="error">出错</button>
           </div>
+          <select id="project-sort" style="margin-left:auto;padding:6px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;font-size:13px;">
+            <option value="created">按创建时间</option>
+            <option value="updated">按更新时间</option>
+            <option value="name">按名称</option>
+          </select>
+          <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="checkbox" id="show-archived"> 显示已归档
+          </label>
         </div>
         <div id="project-list" class="project-grid"></div>
       </section>
@@ -277,6 +285,22 @@
                 <div class="field span-2">
                   <label>避雷 / 不想要的内容（每行一个）</label>
                   <textarea name="forbidden" rows="2" placeholder="例：&#10;无脑打脸&#10;主角开挂"></textarea>
+                </div>
+                <div class="field">
+                  <label>爽点密度</label>
+                  <select name="pacing_density">
+                    <option value="medium" selected>适中</option>
+                    <option value="high">密集（每章都有爽点）</option>
+                    <option value="low">慢热（重氛围铺垫）</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>剧情推进速度</label>
+                  <select name="plot_speed">
+                    <option value="medium" selected>适中</option>
+                    <option value="fast">快节奏（信息密度高）</option>
+                    <option value="slow">细腻（重细节情绪）</option>
+                  </select>
                 </div>
               </div>
 

@@ -476,8 +476,12 @@
   function applyProjectFilter() {
     const kw = ($("#project-search").value || "").trim().toLowerCase();
     const f = (document.querySelector("#project-filters button.active") || {}).dataset?.filter || "all";
-    let list = projectsCache;
+    let list = projectsCache.slice();
     if (f !== "all") list = list.filter((p) => projectState(p) === f);
+    const sort = window._projectSort || "created";
+    if (sort === "name") list.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+    else if (sort === "updated") list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    else list.sort((a, b) => (b.created || 0) - (a.created || 0));
     if (kw) {
       list = list.filter((p) =>
         (p.title || "").toLowerCase().includes(kw) ||
@@ -493,17 +497,24 @@
     }
     grid.innerHTML = list.map((p) => {
       const pct = p.chapters_total ? Math.round((p.chapters_done / p.chapters_total) * 100) : 0;
+      let actions = "";
+      if (p.price > 0 && p.chapters_done === 0) {
+        actions += '<button class="btn small p-refund" data-id="' + esc(p.id) + '" data-title="' + esc(p.title) + '" data-price="' + esc(String(p.price)) + '">退费删除</button>';
+      }
+      actions += ' <button class="btn small p-archive" data-id="' + esc(p.id) + '">' + (p.archived ? "取消归档" : "归档") + '</button>';
+      actions += ' <button class="btn small p-clone" data-id="' + esc(p.id) + '">克隆</button>';
+      if (p.chapters_done === 0) {
+        actions += ' <button class="btn small p-del" data-id="' + esc(p.id) + '" data-title="' + esc(p.title) + '">删除</button>';
+      }
       return (
         '<div class="project-card" data-id="' + esc(p.id) + '">' +
-          '<h3>' + esc(p.title) + '</h3>' +
+          '<h3>' + esc(p.title) + (p.archived ? ' <span class="badge">已归档</span>' : '') + '</h3>' +
           '<div class="genre">' + esc(p.genre) + ' · ' + fmtWords(p.total_words) + " · " + fmtTime(p.created) + '</div>' +
           '<div class="p-meta"><span>' + p.chapters_done + '/' + p.chapters_total + ' 章（' + pct + '%）</span>' + stateBadge(p) + '</div>' +
           (p.price > 0
             ? '<div class="p-price">创作扣费 <b>' + fmtPrice(p.price) + " 元</b></div>"
             : "") +
-          (p.price > 0 && p.chapters_done === 0
-            ? '<button class="btn small p-refund" data-id="' + esc(p.id) + '" data-title="' + esc(p.title) + '" data-price="' + esc(String(p.price)) + '">退费删除</button>'
-            : '') +
+          '<div class="p-actions" style="margin-top:6px;">' + actions + '</div>' +
         '</div>'
       );
     }).join("");
@@ -533,11 +544,49 @@
         }
       });
     });
+    // 归档
+    grid.querySelectorAll(".p-archive").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await api("/api/projects/" + btn.dataset.id + "/archive", { method: "POST" });
+          toast("已更新");
+          loadProjects();
+        } catch (e) { toast("操作失败：" + e.message); }
+      });
+    });
+    // 克隆
+    grid.querySelectorAll(".p-clone").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm("确认克隆此项目？将复制配置和大纲，不复制正文。")) return;
+        try {
+          await api("/api/projects/" + btn.dataset.id + "/clone", { method: "POST" });
+          toast("克隆成功");
+          loadProjects();
+        } catch (e) { toast("克隆失败：" + e.message); }
+      });
+    });
+    // 删除
+    grid.querySelectorAll(".p-del").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm("确认删除《" + btn.dataset.title + "》？此操作不可恢复。")) return;
+        try {
+          await api("/api/projects/" + btn.dataset.id, { method: "DELETE" });
+          toast("已删除");
+          loadProjects();
+        } catch (e) { toast("删除失败：" + e.message); }
+      });
+    });
   }
 
   async function loadProjects() {
     try {
-      const { projects } = await api("/api/projects");
+      const sort = window._projectSort || "created";
+      const showArchived = window._showArchived || false;
+      const url = "/api/projects?sort=" + sort + "&show_archived=" + showArchived;
+      const { projects } = await api(url);
       projectsCache = projects;
       applyProjectFilter();
     } catch (e) {
@@ -554,6 +603,21 @@
       applyProjectFilter();
     });
   });
+  // 排序 & 归档显示
+  const sortSel = $("#project-sort");
+  if (sortSel) {
+    sortSel.addEventListener("change", () => {
+      window._projectSort = sortSel.value;
+      loadProjects();
+    });
+  }
+  const archChk = $("#show-archived");
+  if (archChk) {
+    archChk.addEventListener("change", () => {
+      window._showArchived = archChk.checked;
+      loadProjects();
+    });
+  }
 
   // ---------- 新建 ----------
   async function initCreateForm() {
@@ -881,6 +945,8 @@
       content_type: content_type,
       expand_targets: [],
       skill_id: f.skill_id ? parseInt(f.skill_id.value, 10) || 0 : 0,
+      pacing_density: f.pacing_density ? f.pacing_density.value : "medium",
+      plot_speed: f.plot_speed ? f.plot_speed.value : "medium",
       llm: {
         provider: "deepseek",  // Key 由服务端统一管理
         model: "",

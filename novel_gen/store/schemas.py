@@ -214,12 +214,14 @@ class ProjectState:
     phase: str = "outline"   # outline -> world -> writing -> done
     last_chapter: int = 0    # 已写到的章节号（writing 阶段用）
     total_chapters: int = 0
+    archived: bool = False   # 用户归档标记
 
     def to_dict(self) -> dict:
         return {
             "phase": self.phase,
             "last_chapter": self.last_chapter,
             "total_chapters": self.total_chapters,
+            "archived": self.archived,
         }
 
     @classmethod
@@ -228,4 +230,5 @@ class ProjectState:
             phase=d.get("phase", "outline"),
             last_chapter=int(d.get("last_chapter", 0)),
             total_chapters=int(d.get("total_chapters", 0)),
+            archived=bool(d.get("archived", False)),
         )

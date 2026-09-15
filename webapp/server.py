@@ -309,12 +309,12 @@ def _assign_legacy_projects() -> None:
 
 
 # ---------- 项目列表（按用户过滤） ----------
-def _list_projects(user: dict) -> list[dict]:
+def _list_projects(user: dict, sort: str = "created", show_archived: bool = False) -> list[dict]:
     if not PROJECTS_DIR.exists():
         return []
     allowed = None if user["is_admin"] else db.list_user_projects(user["id"])
     items = []
-    for d in sorted(PROJECTS_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+    for d in PROJECTS_DIR.iterdir():
         if not d.is_dir():
             continue
         if allowed is not None and d.name not in allowed:
@@ -326,13 +326,18 @@ def _list_projects(user: dict) -> list[dict]:
             outline = store.load_outline()
             chapters = store.list_chapters()
             total = len(outline.chapters) if outline else cfg.num_chapters
+            archived = getattr(state, "archived", False)
+            if archived and not show_archived:
+                continue
             items.append({
                 "id": d.name,
                 "title": cfg.effective_title(),
                 "genre": cfg.genre,
                 "total_words": cfg.total_words,
                 "created": d.stat().st_mtime,
+                "updated": d.stat().st_mtime,
                 "phase": state.phase,
+                "archived": archived,
                 "chapters_done": len(chapters),
                 "chapters_total": total,
                 "running": d.name in _RUNS,
@@ -341,6 +346,13 @@ def _list_projects(user: dict) -> list[dict]:
             })
         except Exception:
             continue
+    # 排序
+    if sort == "name":
+        items.sort(key=lambda x: x["title"])
+    elif sort == "updated":
+        items.sort(key=lambda x: x["updated"], reverse=True)
+    else:  # created
+        items.sort(key=lambda x: x["created"], reverse=True)
     return items
 
 
@@ -1013,8 +1025,8 @@ def me_refund_requests(user: dict = Depends(_require_user)):
 
 # ---------- 项目 ----------
 @app.get("/api/projects")
-def projects(user: dict = Depends(_require_user)):
-    return {"projects": _list_projects(user)}
+def projects(user: dict = Depends(_require_user), sort: str = "created", show_archived: bool = False):
+    return {"projects": _list_projects(user, sort=sort, show_archived=show_archived)}
 
 
 @app.post("/api/projects", status_code=201)
@@ -1049,6 +1061,8 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
             if req.search.provider else "",
             count=5,
         ),
+        pacing_density=req.pacing_density,
+        plot_speed=req.plot_speed,
     )
 
     # 注入写作风格 skill
@@ -1621,6 +1635,124 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
     logger.info("项目退费删除: uid=%d project=%s title=%s price=%.2f new_balance=%.2f",
                 user["id"], project_id, title, price, balance)
     return {"ok": True, "refunded": price, "balance": balance, "project_id": project_id}
+
+
+# ========== P0: 项目管理增强 ==========
+
+@app.post("/api/projects/{project_id}/archive")
+def archive_project(project_id: str, user: dict = Depends(_require_user)):
+    """归档/取消归档项目。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    state = store.load_state()
+    state.archived = not getattr(state, "archived", False)
+    store.save_state(state)
+    return {"ok": True, "archived": state.archived}
+
+
+@app.post("/api/projects/{project_id}/clone")
+def clone_project(project_id: str, user: dict = Depends(_require_user)):
+    """克隆项目（复制配置+大纲，不复制正文）。"""
+    import shutil, datetime
+    _check_project_access(project_id, user)
+    src_store = _find_project(project_id)
+    cfg = src_store.load_config()
+    new_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + cfg.title
+    new_dir = PROJECTS_DIR / new_id
+    new_dir.mkdir(parents=True, exist_ok=True)
+    # 复制config和outline
+    import json
+    cfg_dict = cfg.__dict__
+    cfg_dict["title"] = cfg.title + "（副本）"
+    (new_dir / "config.json").write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+    outline = src_store.load_outline()
+    if outline:
+        (new_dir / "outline.json").write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    world = src_store.load_world()
+    if world:
+        (new_dir / "world.json").write_text(json.dumps(world.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    # 注册归属
+    db.assign_project(user["id"], new_id)
+    return {"ok": True, "project_id": new_id}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str, user: dict = Depends(_require_user)):
+    """删除项目（仅站长或项目所有者，且未开始生成时可删）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    chapters = store.list_chapters()
+    if chapters and not user.get("is_admin"):
+        raise HTTPException(status_code=400, detail="项目已开始生成，无法删除")
+    # 停止正在运行的线程
+    handle = _RUNS.get(project_id)
+    if handle:
+        handle.stop_event.set()
+        if handle.thread and handle.thread.is_alive():
+            handle.thread.join(timeout=30)
+    # 删除项目文件
+    db.delete_project_owner(project_id)
+    import shutil
+    shutil.rmtree(store.dir, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/api/projects/{project_id}/outline/snapshots")
+def list_outline_snapshots(project_id: str, user: dict = Depends(_require_user)):
+    """列出大纲快照。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    snap_dir = store.dir / "outline_snapshots"
+    if not snap_dir.exists():
+        return {"snapshots": []}
+    snaps = []
+    for f in sorted(snap_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        import json
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            snaps.append({
+                "name": f.stem,
+                "created": f.stat().st_mtime,
+                "chapters": len(data.get("chapters", [])),
+                "title": data.get("title", ""),
+            })
+        except Exception:
+            continue
+    return {"snapshots": snaps}
+
+
+@app.post("/api/projects/{project_id}/outline/snapshots")
+def save_outline_snapshot(project_id: str, name: str = "", user: dict = Depends(_require_user)):
+    """保存当前大纲为快照。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline:
+        raise HTTPException(status_code=400, detail="还没有大纲可保存")
+    import json, datetime
+    snap_dir = store.dir / "outline_snapshots"
+    snap_dir.mkdir(exist_ok=True)
+    if not name:
+        name = datetime.datetime.now().strftime("%m%d_%H%M")
+    fname = f"{name}.json"
+    (snap_dir / fname).write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/projects/{project_id}/outline/snapshots/{snap_name}/restore")
+def restore_outline_snapshot(project_id: str, snap_name: str, user: dict = Depends(_require_user)):
+    """从快照恢复大纲。"""
+    import json
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    snap_file = store.dir / "outline_snapshots" / f"{snap_name}.json"
+    if not snap_file.exists():
+        raise HTTPException(status_code=404, detail="快照不存在")
+    data = json.loads(snap_file.read_text(encoding="utf-8"))
+    from novel_gen.store.schemas import Outline
+    outline = Outline.from_dict(data)
+    store.save_outline(outline)
+    return {"ok": True, "chapters": len(outline.chapters)}
 
 
 @app.get("/api/projects/{project_id}/download")

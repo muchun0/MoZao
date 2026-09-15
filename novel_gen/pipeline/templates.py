@@ -32,11 +32,37 @@ def _hard_constraints(cfg: NovelConfig) -> str:
     return "【用户设定·强约束（必须严格遵循，不得违背）】\n" + "\n".join(lines)
 
 
+def _pacing_guide(cfg: NovelConfig) -> str:
+    """节奏控制引导：根据用户选择的爽点密度和剧情速度，注入对应节奏建议。"""
+    parts = []
+    density = getattr(cfg, "pacing_density", "medium")
+    speed = getattr(cfg, "plot_speed", "medium")
+    if density == "high":
+        parts.append("爽点密度高：每章至少1个小爽点/小反转，压抑期不超过2章，节奏紧凑")
+    elif density == "low":
+        parts.append("爽点密度低：慢热型，重氛围铺垫和人物关系，前10章不急着给爽点，靠悬念和生活感吸引")
+    else:
+        parts.append("爽点密度适中：快2慢1交替，每2-3章一个小爽点")
+    if speed == "fast":
+        parts.append("剧情推进快：信息密度高，每章推进多个情节点，减少日常描写")
+    elif speed == "slow":
+        parts.append("剧情推进慢：细腻型，重细节和情绪，允许日常铺垫，不急于推进主线")
+    else:
+        parts.append("剧情推进适中：按标准网文节奏推进")
+    return "【节奏控制】\n" + "；".join(parts)
+
+
 def _soft_direction(cfg: NovelConfig) -> str:
     """参考方向区块：剧情走向，AI 可在此基础上细化。"""
-    if not cfg.plot_direction:
+    lines = []
+    if cfg.plot_direction:
+        lines.append(f"- 剧情走向：{cfg.plot_direction}")
+    pacing = _pacing_guide(cfg)
+    if pacing:
+        lines.append(pacing)
+    if not lines:
         return ""
-    return f"【用户设定·参考方向（可在此基础上细化发挥）】\n- 剧情走向：{cfg.plot_direction}"
+    return "【用户设定·参考方向（可在此基础上细化发挥）】\n" + "\n".join(lines)
 
 
 def _chapter_constraints(cfg: NovelConfig) -> str:

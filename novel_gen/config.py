@@ -112,6 +112,9 @@ class NovelConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容
     high_quality_mode: bool = False   # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
+    # ---- 节奏控制参数 ----
+    pacing_density: str = "medium"    # 爽点密度：low(慢热)/medium(适中)/high(密集)
+    plot_speed: str = "medium"        # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
 
     @property
     def num_chapters(self) -> int:

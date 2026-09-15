@@ -46,6 +46,8 @@ class Memory:
                         return " ".join(str(v) for v in x.values())
                     return str(x)
                 w_lines.append("已埋伏笔：" + "；".join(_fs(x) for x in world.foreshadowing))
+            if getattr(world, "locked_settings", None):
+                w_lines.append("【核心设定锁定·绝对不可违背】：" + "；".join(world.locked_settings))
             if w_lines:
                 parts.append("[L1·全局设定·全书记忆]\n" + "\n".join(w_lines))
 

@@ -427,6 +427,36 @@ def _settle_price(store: ProjectStore) -> None:
         logger.exception("结算异常: project=%s", store.dir.name)
 
 
+def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
+    """只跑 research → outline → editor_review → world，不写正文。
+    完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
+    cfg = store.load_config()
+    logger.info("大纲生成线程启动: project=%s title=%s", store.dir.name, cfg.effective_title())
+    try:
+        pipeline = _open_pipeline(store)
+        pipeline.run_research()
+        if handle.stop_event.is_set():
+            return
+        pipeline.run_outline()
+        if handle.stop_event.is_set():
+            return
+        pipeline.run_editor_review()
+        if handle.stop_event.is_set():
+            return
+        pipeline.run_world()
+        if handle.stop_event.is_set():
+            return
+        # 标记阶段完成
+        pipeline._mark_state("outline_done")
+        logger.info("大纲生成完成: project=%s chapters=%d", store.dir.name, len(pipeline.store.load_outline().chapters))
+    except Exception as exc:
+        handle.error = f"{type(exc).__name__}: {exc}"
+        logger.exception("大纲生成失败: project=%s error=%s", store.dir.name, exc)
+    finally:
+        with _LOCK:
+            _RUNS.pop(store.dir.name, None)
+
+
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
     """后台线程：从断点续跑整条流水线，结束后自动导出。
 
@@ -1111,6 +1141,7 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
         "config": _cfg_to_dict(cfg),
         "state": state.to_dict(),
         "outline_title": outline.title if outline else "",
+        "has_outline": bool(outline and outline.chapters),
         "outline_intro": outline.intro if outline else "",
         "chapters_done": len(chapters),
         "chapters_total": total,
@@ -1495,6 +1526,23 @@ def project_research(project_id: str, user: dict = Depends(_require_user)):
 
 
 # ---------- 生成控制 ----------
+@app.post("/api/projects/{project_id}/generate-outline")
+def generate_outline_only(project_id: str, user: dict = Depends(_require_user)):
+    """只跑 research → outline → editor_review → world，不写正文。
+    生成完后用户可以编辑大纲，再调 /start 开始写正文。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
+    handle.thread = t
+    t.start()
+    return {"started": True, "project_id": project_id, "stage": "outline"}
+
+
 @app.post("/api/projects/{project_id}/start")
 def start_generation(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)

@@ -1042,7 +1042,12 @@
     renderPipeline(d);
 
     const running = d.running;
-    $("#btn-start").disabled = running;
+    const hasOutline = d.has_outline;
+    const hasChapters = d.chapters_done > 0;
+    // 生成大纲按钮：没在跑且没大纲时可用
+    $("#btn-gen-outline").disabled = running || hasOutline;
+    // 开始生成正文按钮：没在跑且有大纲时可用（没有大纲时先引导生成大纲）
+    $("#btn-start").disabled = running || !hasOutline;
     $("#btn-stop").disabled = !running;
     // 下载：有任一格式即可用；未生成的格式现场导出
     $("#btn-download").disabled = !(d.has_txt || d.has_epub || d.has_docx || d.chapters_done > 0);
@@ -1059,8 +1064,10 @@
       statusEl.classList.add("ok");
     } else if (d.chapters_done > 0) {
       statusEl.textContent = "⏸ 已暂停（进度已保存，可继续）";
+    } else if (!hasOutline) {
+      statusEl.textContent = "📋 请先生成大纲，确认后再开始写正文";
     } else {
-      statusEl.textContent = "未开始";
+      statusEl.textContent = "✅ 大纲已就绪，可编辑后开始生成正文";
     }
 
     const errBox = $("#detail-error");
@@ -1480,6 +1487,18 @@
     chaptersCache = [];
     currentProjectId = null;
     switchView("projects");
+  });
+
+  $("#btn-gen-outline").addEventListener("click", async () => {
+    try {
+      await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/generate-outline", { method: "POST" });
+      toast("开始生成大纲（调研→大纲→世界观设计）…");
+      $("#btn-gen-outline").disabled = true;
+      $("#btn-start").disabled = true;
+      startPolling();
+    } catch (e) {
+      toast("启动大纲生成失败：" + e.message);
+    }
   });
 
   $("#btn-start").addEventListener("click", async () => {

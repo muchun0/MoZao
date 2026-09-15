@@ -126,6 +126,9 @@ class ProjectCreateReq(BaseModel):
     llm: LLMReq = Field(default_factory=LLMReq)
     search: SearchReq = Field(default_factory=SearchReq)
     skill_id: int = 0               # 写作风格 skill id，0=不选
+    pacing_density: str = "medium"  # 爽点密度
+    plot_speed: str = "medium"      # 剧情速度
+    custom_prompt: str = ""         # 用户自定义提示词
 
 
 class RegisterReq(BaseModel):
@@ -1063,6 +1066,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         ),
         pacing_density=req.pacing_density,
         plot_speed=req.plot_speed,
+        custom_prompt=req.custom_prompt,
     )
 
     # 注入写作风格 skill

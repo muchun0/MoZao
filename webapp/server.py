@@ -1660,11 +1660,13 @@ def clone_project(project_id: str, user: dict = Depends(_require_user)):
     new_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + cfg.title
     new_dir = PROJECTS_DIR / new_id
     new_dir.mkdir(parents=True, exist_ok=True)
-    # 复制config和outline
+    # 复制config和outline（直接读原config.json，避免__dict__里的LLMConfig不可序列化）
     import json
-    cfg_dict = cfg.__dict__
-    cfg_dict["title"] = cfg.title + "（副本）"
-    (new_dir / "config.json").write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+    src_cfg_file = src_store.dir / "config.json"
+    if src_cfg_file.exists():
+        cfg_data = json.loads(src_cfg_file.read_text(encoding="utf-8"))
+        cfg_data["title"] = cfg.title + "（副本）"
+        (new_dir / "config.json").write_text(json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
     outline = src_store.load_outline()
     if outline:
         (new_dir / "outline.json").write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")

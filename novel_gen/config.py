@@ -111,6 +111,7 @@ class NovelConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容
+    high_quality_mode: bool = False   # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
 
     @property
     def num_chapters(self) -> int:
@@ -191,6 +192,8 @@ def load_config(path: str | Path) -> NovelConfig:
         expand_targets=[int(x) for x in (raw.get("expand_targets") or [])],
         llm=llm,
         search=search,
+        skill_prompt_append=str(raw.get('skill_prompt_append', '')),
+        high_quality_mode=bool(raw.get('high_quality_mode', False)),
     )
     return cfg
 

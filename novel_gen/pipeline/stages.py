@@ -14,7 +14,16 @@ from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, World
 from .memory import Memory
-from .templates import chapter_prompt, outline_prompt, world_prompt
+from .templates import (
+    chapter_prompt,
+    outline_prompt,
+    world_prompt,
+    split_scenes_prompt,
+    scene_prompt,
+    polish_chapter_prompt,
+    verify_prompt,
+    _pick_dynamic_module,
+)
 
 _CN_NUM = "一二三四五六七八九十"
 
@@ -206,23 +215,31 @@ class ChapterWriter:
         memory_context = self.memory.build_context(world, up_to_chapter=chapter_no)
         prev_tail = self._prev_tail(chapter_no)
 
-        system, user = chapter_prompt(
-            self.cfg,
-            chapter_no=chapter_no,
-            chapter_title=plan_title,
-            chapter_goal=plan_goal,
-            research_block=research.to_prompt_block() if research else "",
-            memory_context=memory_context,
-            prev_tail=prev_tail,
-            is_final=is_final,
-        )
-        text = self.llm.chat(system, user, temperature=0.85)
+        if getattr(self.cfg, "high_quality_mode", False):
+            text = self._generate_chapter_hq(
+                chapter_no, plan_title, plan_goal,
+                memory_context, prev_tail, is_final,
+            )
+            system = ""
+        else:
+            system, user = chapter_prompt(
+                self.cfg,
+                chapter_no=chapter_no,
+                chapter_title=plan_title,
+                chapter_goal=plan_goal,
+                research_block=research.to_prompt_block() if research else "",
+                memory_context=memory_context,
+                prev_tail=prev_tail,
+                is_final=is_final,
+            )
+            text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
         content, summary = _split_summary(text)
 
         # 字数兜底：正文明显不足目标时，让模型扩写一次（防止整本低于目标字数）
-        content = self._ensure_length(content, plan_title, plan_goal, system)
+        if not getattr(self.cfg, "high_quality_mode", False):
+            content = self._ensure_length(content, plan_title, plan_goal, system)
         content = _strip_html_tags(content)  # 扩写结果同样可能夹带标签
         summary = _strip_html_tags(summary)
 
@@ -238,6 +255,90 @@ class ChapterWriter:
             tail = f"｜摘要：{summary}" if summary else "｜（未生成摘要）"
             print(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
         return chapter
+
+
+    def _generate_chapter_hq(self, chapter_no, plan_title, plan_goal,
+                             memory_context, prev_tail, is_final):
+        """高质量模式：场景级生成 + 动态模块 + 参数分层。"""
+        import json
+        from .templates import (
+            split_scenes_prompt, scene_prompt, polish_chapter_prompt,
+            _pick_dynamic_module,
+        )
+
+        # 1. 拆场景（低温 0.4）
+        try:
+            sys_s, user_s = split_scenes_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal
+            )
+            raw = self.llm.chat(sys_s, user_s, temperature=0.4)
+            scenes = json.loads(_strip_json_block(raw)).get("scenes", [])
+        except Exception:
+            scenes = []
+
+        if not scenes:
+            # 拆场景失败，回退到普通整章生成
+            from .templates import chapter_prompt
+            system, user = chapter_prompt(
+                self.cfg, chapter_no=chapter_no,
+                chapter_title=plan_title, chapter_goal=plan_goal,
+                research_block="", memory_context=memory_context,
+                prev_tail=prev_tail, is_final=is_final,
+            )
+            return self.llm.chat(system, user, temperature=0.85,
+                                 frequency_penalty=0.3, presence_penalty=0.15)
+
+        # 2. 逐场景生成（中温 0.7 + penalty）
+        genre = getattr(self.cfg, "genre", "") or "default"
+        dynamic = _pick_dynamic_module(chapter_no, genre)
+        scene_texts = []
+        running_tail = prev_tail
+        for idx, sc in enumerate(scenes, start=1):
+            sys_c, user_c = scene_prompt(
+                self.cfg, chapter_no, plan_title, idx, sc,
+                memory_context, running_tail, dynamic,
+            )
+            try:
+                piece = self.llm.chat(
+                    sys_c, user_c,
+                    temperature=0.7,
+                    max_tokens=2000,
+                    frequency_penalty=0.3,
+                    presence_penalty=0.15,
+                )
+                piece = _strip_html_tags(piece)
+                scene_texts.append(piece)
+                # 下一场景的衔接用本场景结尾
+                running_tail = piece[-120:] if piece else running_tail
+            except Exception as e:
+                print(f"    [HQ] 场景 {idx} 生成失败: {e}")
+                scene_texts.append("")
+
+        chapter_text = "\n\n".join(t for t in scene_texts if t)
+
+        # 3. 润色通读（中温 0.7）
+        try:
+            sys_p, user_p = polish_chapter_prompt(
+                self.cfg, chapter_no, plan_title, chapter_text
+            )
+            polished = self.llm.chat(
+                sys_p, user_p,
+                temperature=0.7,
+                max_tokens=4000,
+                frequency_penalty=0.2,
+                presence_penalty=0.1,
+            )
+            if polished and len(polished) > len(chapter_text) * 0.5:
+                chapter_text = polished
+        except Exception:
+            pass
+
+        # 4. 追加摘要（复用普通模式的摘要生成）
+        summary = self._gen_summary(chapter_no, plan_title, chapter_text)
+        if summary:
+            chapter_text = chapter_text + "\n\n【摘要】" + summary
+
+        return chapter_text
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
         """字数兜底：正文不足目标 90% 时，让模型扩写一次到目标字数。
@@ -320,3 +421,17 @@ def _strip_html_tags(text: str) -> str:
     # 压缩多余空行
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+def _strip_json_block(text: str) -> str:
+    """从模型输出中提取 JSON 对象（容忍 ```json 包裹）。"""
+    import json
+    t = text.strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        t = "\n".join(lines).strip()
+    return t

@@ -50,7 +50,7 @@ from . import mailer
 from . import verify_code
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
-from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, price_for, tier_name_for, tiers
+from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tier_name_for, tiers
 from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
                        REFERRAL_BONUS, agent_price, round_money)
 
@@ -399,7 +399,8 @@ def _settle_price(store: ProjectStore) -> None:
         target_total = store.load_config().total_words or 0
         target_ai_words = max(0, target_total - user_words)
         billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
-        final_price = round_money(agent_price(price_for(billable_words), discount))
+        hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
+        final_price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
         bal = db.get_user(uid)["balance"]
         if bal >= final_price:
             db.change_balance(uid, -final_price,
@@ -501,6 +502,7 @@ def pricing():
         "register_bonus": FREE_REGISTER_BONUS,
         "billing_mode": "by_words",   # 按字数计费
         "price_per_10k": PRICE_PER_10K,
+        "price_per_10k_hq": PRICE_PER_10K_HQ,
     }
 
 
@@ -1056,7 +1058,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     # 按 AI 实际生成字数预估费用：创建时【不扣费】，仅做余额校验（防生成后付不起），
     # 生成完成后按实际 AI 字数结算扣费（见 _settle_price）
     ai_words = max(1, cfg.total_words - user_words)
-    base_price = price_for(ai_words)
+    base_price = price_for(ai_words, high_quality=bool(cfg.__dict__.get('high_quality_mode', False)))
     discount = float(user.get("agent_discount", 1.0)) if user.get("is_agent") else 1.0
     price = agent_price(base_price, discount)  # 预估费用（展示用）
     if user["balance"] < price:

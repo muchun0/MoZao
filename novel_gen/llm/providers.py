@@ -52,11 +52,17 @@ class OpenAICompatibleClient(LLMClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> str:
         try:
             kwargs: dict = {}
             if self._top_p:
                 kwargs["top_p"] = self._top_p
+            if frequency_penalty is not None:
+                kwargs["frequency_penalty"] = frequency_penalty
+            if presence_penalty is not None:
+                kwargs["presence_penalty"] = presence_penalty
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -99,6 +105,8 @@ class MockClient(LLMClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> str:
         if self._delay:
             time.sleep(self._delay)

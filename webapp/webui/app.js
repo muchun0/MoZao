@@ -432,7 +432,11 @@
     const box = $("#recharge-tiers");
     const note = $("#recharge-note");
     if (!box) return;
-    const per10k = (pricingCache && pricingCache.price_per_10k != null) ? pricingCache.price_per_10k : 2;
+    const hqEl = document.querySelector('#create-form input[name="high_quality_mode"]');
+    const hqOn = hqEl && hqEl.checked;
+    const per10k = hqOn
+      ? ((pricingCache && pricingCache.price_per_10k_hq != null) ? pricingCache.price_per_10k_hq : 3)
+      : ((pricingCache && pricingCache.price_per_10k != null) ? pricingCache.price_per_10k : 2);
     box.innerHTML =
       '<div class="recharge-contact">' +
         "<b>充值请联系站长</b>" +
@@ -585,6 +589,15 @@
       userTaBind.addEventListener("input", updateFee);
     }
     updateFee();
+    const hqSwitch = document.querySelector('#create-form input[name="high_quality_mode"]');
+    if (hqSwitch && !hqSwitch.dataset.bound) {
+      hqSwitch.dataset.bound = '1';
+      hqSwitch.addEventListener('change', () => {
+        const hint = $('#hq-hint');
+        if (hint) hint.classList.toggle('hidden', !hqSwitch.checked);
+        updateFee();
+      });
+    }
     // 模式切换：auto=智能生成（现有工作流），expand=AI 扩写（含续写/扩写已有内容）
     const modeRadios = $$('#create-form input[name="mode"]');
     const expandWrap = $("#expand-input-wrap");
@@ -859,6 +872,7 @@
       de_ai: f.de_ai.checked,
       anti_similarity: f.anti_similarity.checked,
       character_depth: f.character_depth.checked,
+      high_quality_mode: f.high_quality_mode ? f.high_quality_mode.checked : false,
       confirm: false,
       memory_window: 5,
       mode,

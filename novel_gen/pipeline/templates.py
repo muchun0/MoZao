@@ -473,6 +473,60 @@ def unit_hint_for_chapter(units: list, chapter_no: int) -> str:
 
 
 
+def anti_cliche_prompt(cfg: NovelConfig, genre: str, title: str, intro: str,
+                       research_block: str) -> tuple[str, str]:
+    """调研后，反套路改造+元素叠加+人设标签设计。低温 0.4。"""
+    system = (
+        "你是一位爆款网文策划编辑。用户给你题材和调研数据，"
+        "请做三件事：1.反套路改造核心冲突和人物关系 2.推荐2-3个跨维度加成元素 "
+        "3.设计主角身份标签和反差特质、主CP关系。输出 JSON。"
+    )
+    user = (
+        f"【书名】{title}\n"
+        f"【题材】{genre}\n"
+        f"【简介】{intro[:500]}\n"
+        f"【调研数据】{research_block[:2000]}\n\n"
+        "请输出 JSON：\n"
+        '{"anti_cliche": {\n'
+        '  "conflict_rewrite": "核心冲突改造（从被动改主动）",\n'
+        '  "relationship_rewrite": "关系改造（从内斗改抱团）",\n'
+        '  "value_rewrite": "价值改造（从单赢改双向救赎）"\n'
+        '},\n'
+        '"elements": ["元素1", "元素2", "元素3"],\n'
+        '"protagonist": {"label": "身份标签", "contrast": "反差特质", "arc": "成长弧光"},\n'
+        '"main_cp": {"name": "CP名", "contrast": "反差互补点", "dynamic": "关系张力"}\n'
+        '}'
+    )
+    return system, user
+
+
+def anti_cliche_hint(anti_cliche: dict) -> str:
+    """注入正文生成的反套路约束。"""
+    if not anti_cliche:
+        return ""
+    lines = []
+    ac = anti_cliche.get("anti_cliche", {})
+    if ac:
+        lines.append("【反套路约束】")
+        if ac.get("conflict_rewrite"):
+            lines.append(f"- 冲突：{ac['conflict_rewrite']}")
+        if ac.get("relationship_rewrite"):
+            lines.append(f"- 关系：{ac['relationship_rewrite']}")
+        if ac.get("value_rewrite"):
+            lines.append(f"- 价值：{ac['value_rewrite']}")
+    p = anti_cliche.get("protagonist", {})
+    if p:
+        lines.append(f"【主角标签】{p.get('label','')}（反差：{p.get('contrast','')}）")
+    cp = anti_cliche.get("main_cp", {})
+    if cp:
+        lines.append(f"【主CP】{cp.get('name','')}：{cp.get('dynamic','')}")
+    elements = anti_cliche.get("elements", [])
+    if elements:
+        lines.append(f"【叠加元素】{'、'.join(elements)}")
+    return "\n".join(lines)
+
+
+
 def outline_prompt(
     cfg: NovelConfig,
     research_block: str,

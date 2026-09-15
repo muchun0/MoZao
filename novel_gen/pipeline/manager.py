@@ -56,7 +56,41 @@ class NovelPipeline:
         logger.info("阶段开始: 调研 research")
         result = ResearchEngine(self.cfg, self.llm, self.store).run(silent=silent)
         logger.info("阶段完成: 调研 research（摘要 %s）", (result.summary or "")[:50] if result else "None")
+        self.run_anti_cliche(silent=silent)
         return result
+
+    def run_anti_cliche(self, silent: bool = False) -> None:
+        """调研后，反套路改造+元素叠加+人设标签。幂等：已有则跳过。"""
+        path = self.store.dir / "anti_cliche.json"
+        if path.exists():
+            if not silent:
+                print("[反套路设计] 已存在，复用")
+            return
+        try:
+            research = self.store.load_research()
+            research_block = research.to_prompt_block() if research else ""
+            from .templates import anti_cliche_prompt
+            sys_a, user_a = anti_cliche_prompt(
+                self.cfg, self.cfg.genre, self.cfg.effective_title(),
+                self.cfg.premise, research_block
+            )
+            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=1500)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not silent:
+                print(f"[反套路设计] 完成：{len(data.get('elements', []))} 个叠加元素")
+            logger.info("反套路设计完成")
+        except Exception as e:
+            logger.warning("反套路设计失败（不阻塞）: %s", e)
 
     def run_outline(self, silent: bool = False) -> Outline:
         existing = self.store.load_outline()

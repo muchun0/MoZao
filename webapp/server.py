@@ -1370,6 +1370,115 @@ def expand_selection(project_id: str, req: dict, user: dict = Depends(_require_u
     return {"result": result, "mode": mode}
 
 
+@app.get("/api/projects/{project_id}/stats/rhythm")
+def rhythm_stats(project_id: str, user: dict = Depends(_require_user)):
+    """节奏分析：每章字数分布+总进度。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    chapters = store.list_chapters()
+    data = [{"no": c.no, "title": c.title, "words": len(c.content)} for c in chapters]
+    total = sum(d["words"] for d in data)
+    return {"chapters": data, "total_words": total, "chapter_count": len(data)}
+
+
+@app.post("/api/projects/{project_id}/verify/consistency")
+def verify_consistency(project_id: str, user: dict = Depends(_require_user)):
+    """设定一致性校验：用LLM检查最近章节是否与世界设定矛盾。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    world = store.load_world()
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        # 读最近3章内容摘要
+        summaries = store.load_summaries()[-3:]
+        recent = "\n".join(f"第{s['no']}章: {s['summary']}" for s in summaries)
+        world_txt = ""
+        if world:
+            if world.world_view:
+                world_txt += f"世界观: {world.world_view}\n"
+            if world.characters:
+                world_txt += "人物: " + "; ".join(f"{c.name}({c.role})" for c in world.characters) + "\n"
+        sys = "你是小说一致性审查员。检查以下最近章节摘要是否与世界设定矛盾，列出矛盾点（如有），JSON数组返回[{problem, suggestion}]，无矛盾返回空数组。"
+        result = llm.chat(sys, f"【设定】\n{world_txt}\n【最近章节】\n{recent}", temperature=0.3, max_tokens=800)
+        import json
+        try:
+            issues = json.loads(result)
+        except Exception:
+            issues = []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"校验失败：{e}")
+    return {"issues": issues}
+
+
+@app.post("/api/projects/{project_id}/verify/logic")
+def verify_logic(project_id: str, user: dict = Depends(_require_user)):
+    """剧情逻辑审查：检查因果链是否断裂。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        summaries = store.load_summaries()[-5:]
+        recent = "\n".join(f"第{s['no']}章: {s['summary']}" for s in summaries)
+        sys = "你是小说逻辑审查员。检查以下章节摘要的剧情因果是否合理，列出逻辑漏洞（如有），JSON数组返回[{problem, suggestion}]，无问题返回空数组。"
+        result = llm.chat(sys, f"【章节摘要】\n{recent}", temperature=0.3, max_tokens=800)
+        import json
+        try:
+            issues = json.loads(result)
+        except Exception:
+            issues = []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"审查失败：{e}")
+    return {"issues": issues}
+
+
+@app.post("/api/projects/{project_id}/verify/compliance")
+def verify_compliance(project_id: str, user: dict = Depends(_require_user)):
+    """网文合规检测：检查敏感/违规内容。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        summaries = store.load_summaries()[-3:]
+        recent = "\n".join(f"第{s['no']}章: {s['summary']}" for s in summaries)
+        sys = "你是网文合规审核员。检查以下内容是否涉及政治敏感、色情低俗、暴力血腥、违法犯罪描写，列出风险点JSON数组[{issue, level}]，无风险返回空数组。"
+        result = llm.chat(sys, f"【章节摘要】\n{recent}", temperature=0.2, max_tokens=600)
+        import json
+        try:
+            issues = json.loads(result)
+        except Exception:
+            issues = []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"检测失败：{e}")
+    return {"issues": issues}
+
+
+@app.post("/api/projects/{project_id}/generate/alternatives")
+def generate_alternatives(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """多方案生成：给定章节目标，生成2-3个不同剧情走向方案。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    goal = (req.get("goal") or "").strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="缺少章节目标")
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        sys = "你是小说剧情策划。针对给定章节目标，提供3个不同的剧情走向方案（不同选择/冲突/转折），每个方案2-3句话。JSON数组返回[{title, description}]。"
+        result = llm.chat(sys, f"【章节目标】{goal}", temperature=0.8, max_tokens=800)
+        import json
+        try:
+            alts = json.loads(result)
+        except Exception:
+            alts = []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败：{e}")
+    return {"alternatives": alts}
+
+
 @app.get("/api/projects/{project_id}/chapters")
 def project_chapters(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)

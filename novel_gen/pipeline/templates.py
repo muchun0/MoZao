@@ -461,6 +461,170 @@ def world_prompt(
     return system, user
 
 
+
+# ============================================================
+# 高质量模式：动态模块 + 场景级生成
+# ============================================================
+
+_VIEWPOINT_MODULES = [
+    "限知视角：只写主角所见所感，他不知道的事情不要写",
+    "限知视角：本章聚焦配角视角，主角的内心活动通过外部行为推测",
+    "对话体为主：本章用大量对话推进，对话带潜台词，人物不说心里话",
+    "日记/独白体：本章穿插主角的内心独白或记录，冷静克制",
+]
+
+_SENSE_MODULES = [
+    "本章侧重视觉与空间感：光影、距离、物体轮廓、环境布局",
+    "本章侧重听觉：脚步、风声、对话回声、沉默中的微响",
+    "本章侧重触觉与身体感：温度、疼痛、疲惫、衣物摩擦",
+    "本章侧重时间感：节奏变慢或变快，用细节体现时间流逝",
+]
+
+_RHYTHM_MODULES = [
+    "短句为主：每句不超过15字，节奏快，动作密集",
+    "长短句交替：用长句铺陈情绪，短句制造冲击",
+    "对话占比70%：本章以对话推动，描写压缩到最少",
+    "慢节奏过渡：本章允许日常感，用细节和对话铺垫，不追求强冲突",
+]
+
+_RANDOM_VARS_BY_GENRE = {
+    "default": [
+        "本章出现一个与主线无关但有生活感的小细节",
+        "本章主角说错一句话，事后才意识到不妥",
+        "本章有一次长时间沉默，用动作填充，不写心理",
+        "本章出现一个反高潮：预期的爽点被一件小事打断",
+    ],
+    "玄幻": [
+        "本章出现一枚不起眼的灵石/丹药细节，后续可能成为伏笔",
+        "本章主角遇到一个修为远低于他但态度嚣张的路人",
+        "本章穿插一段宗门规矩/修炼常识，自然融入不硬讲",
+        "本章有一次灵力运转不畅的身体反应",
+    ],
+    "都市": [
+        "本章出现一个微信聊天记录片段",
+        "本章有一个加班/通勤/外卖的生活细节",
+        "本章主角说错一句话，事后才意识到",
+        "本章出现一个职场/商场上的客套话，话里有话",
+    ],
+    "悬疑": [
+        "本章出现一个看似无关的物证/线索",
+        "本章主角注意到一个不合常理的细节，但暂时不解释",
+        "本章有一段对话，其中一人明显在隐瞒",
+        "本章环境描写中出现一个微妙的异常",
+    ],
+}
+
+
+def _pick_dynamic_module(chapter_no: int, genre: str) -> str:
+    vp = _VIEWPOINT_MODULES[chapter_no % len(_VIEWPOINT_MODULES)]
+    sense = _SENSE_MODULES[chapter_no % len(_SENSE_MODULES)]
+    rhythm = _RHYTHM_MODULES[chapter_no % len(_RHYTHM_MODULES)]
+    pool = _RANDOM_VARS_BY_GENRE.get(genre, _RANDOM_VARS_BY_GENRE["default"])
+    var = pool[chapter_no % len(pool)]
+    lines = [
+        "【本章动态模块】",
+        f"- 视角：{vp}",
+        f"- 感官：{sense}",
+        f"- 节奏：{rhythm}",
+        f"- 随机小变量：{var}",
+        "注意：动态模块只做微调，不颠覆整体叙事底色；不要在正文中提及这些指令。",
+    ]
+    return "\n".join(lines)
+
+
+def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal):
+    system = (
+        "你是一位小说结构编辑。用户会给你一章的梗概，"
+        "你的任务是把它拆成 3-5 个连续场景，每个场景 1000-1500 字。"
+        "严格按 JSON 格式输出，不要额外解释。"
+    )
+    user = (
+        f"【本章】第{chapter_no}章《{chapter_title}》\n"
+        f"【本章目标】{chapter_goal}\n"
+        f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
+        "请拆成 3-5 个场景，每个场景包含：\n"
+        "- location: 地点\n"
+        "- event: 发生什么\n"
+        "- emotion: 这个场景的情绪目标\n"
+        "- anchors: 必须保留的细节\n"
+        f"- target_words: 该场景目标字数（总和应接近 {cfg.chapter_words}）\n\n"
+        '输出 JSON：{"scenes": [...]}'
+    )
+    return system, user
+
+
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module):
+    system = (
+        "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
+        "严格遵守世界设定与人物性格，不推翻前文既定事实。"
+        "只写这个场景，不要提前写后续场景的内容。"
+    )
+    if cfg.de_ai:
+        system += "你的文字要有真人质感：对白有潜台词、叙事有详略、人物有犹豫。"
+    if cfg.anti_similarity:
+        system += "\n\n" + _anti_similarity_system("chapter")
+    if cfg.character_depth:
+        system += "\n\n" + _character_depth_rules("chapter")
+    if cfg.fanqie_style:
+        system += "\n\n" + _fanqie_rules("chapter")
+    system += "\n\n" + dynamic_module
+    system += _skill_append(cfg)
+    anchors = scene.get("anchors", [])
+    anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
+    user = (
+        f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
+        f"【地点】{scene.get('location', '')}\n"
+        f"【事件】{scene.get('event', '')}\n"
+        f"【情绪目标】{scene.get('emotion', '')}\n"
+        f"【必须保留的细节】{anchors_str}\n"
+        f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
+        f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
+        f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
+        "写作要求：\n"
+        "1. 只写这个场景的内容，不要写场景之间的过渡总结\n"
+        "2. 对话占比≥60%，描写段≤3行\n"
+        "3. 对话单独成段，一句对话一段\n"
+        "4. 禁止'他很愤怒/他很震惊'式抽象情绪词，用动作+微表情替代\n"
+        "5. 字数达到目标即可，不要拖长\n"
+        "6. 不要输出【摘要】，不要输出场景编号，直接输出正文"
+    )
+    return system, user
+
+
+def polish_chapter_prompt(cfg, chapter_no, chapter_title, chapter_text):
+    system = (
+        "你是一位小说润色编辑。用户给你一章正文，"
+        "你的任务是通读后微调文风：统一语感、修正重复句式、让段落衔接更自然。"
+        "绝对不要改变情节、不要增删剧情、不要改人物对话含义。"
+        "只输出润色后的完整正文。"
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}》】\n"
+        f"{chapter_text}\n\n"
+        "请润色：统一语感、修正重复用词和句式、段落衔接更自然。"
+        "不要改情节，不要增删内容。输出润色后的完整正文。"
+    )
+    return system, user
+
+
+def verify_prompt(cfg, recent_summaries, world):
+    system = "你是小说 continuity 编辑。请核对以下内容是否前后一致，输出 JSON。"
+    summaries_block = "\n".join(
+        f"第{i+1}章：{s}" for i, s in enumerate(recent_summaries)
+    )
+    user = (
+        f"【世界观/设定】\n{world[:2000]}\n\n"
+        f"【最近3章摘要】\n{summaries_block}\n\n"
+        "请检查：\n"
+        "1. 主角人设是否一致\n"
+        "2. 已埋伏笔是否合理\n"
+        "3. 时间线是否矛盾\n"
+        "4. 人物关系是否正确\n\n"
+        '输出 JSON：{"issues": [{"problem": "...", "suggestion": "..."}], "ok": true/false}'
+    )
+    return system, user
+
+
 def chapter_prompt(
     cfg: NovelConfig,
     chapter_no: int,

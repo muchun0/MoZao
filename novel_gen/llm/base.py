@@ -29,6 +29,8 @@ class LLMClient(ABC):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> str:
         """单轮对话，返回纯文本。temperature/max_tokens 不传时用配置默认值。"""
 
@@ -39,6 +41,8 @@ class LLMClient(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         retries: int = 2,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> dict:
         """让模型输出 JSON，并解析为 dict。解析失败时自动重试（模型偶发输出残缺 JSON）。
 
@@ -56,6 +60,8 @@ class LLMClient(ABC):
                     user=user,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    frequency_penalty=frequency_penalty,
+                    presence_penalty=presence_penalty,
                 )
                 return _parse_json_strict(text)
             except (json.JSONDecodeError, LLMError) as exc:

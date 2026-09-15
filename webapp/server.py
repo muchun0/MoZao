@@ -1913,6 +1913,76 @@ def get_outline_snapshot(project_id: str, file_name: str, user: dict = Depends(_
     return {"outline": data}
 
 
+@app.get("/api/projects/{project_id}/foreshadowing")
+def list_foreshadowing(project_id: str, user: dict = Depends(_require_user)):
+    """伏笔管理：列出世界设定中的伏笔清单。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    world = store.load_world()
+    return {"foreshadowing": [str(x) for x in (world.foreshadowing if world else [])]}
+
+
+@app.post("/api/projects/{project_id}/foreshadowing")
+def add_foreshadowing(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """添加一条伏笔。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    world = store.load_world()
+    if world is None:
+        raise HTTPException(status_code=400, detail="尚无世界观设定")
+    item = (req.get("item") or "").strip()
+    if not item:
+        raise HTTPException(status_code=400, detail="伏笔内容为空")
+    world.foreshadowing.append(item)
+    store.save_world(world)
+    return {"foreshadowing": [str(x) for x in world.foreshadowing]}
+
+
+@app.delete("/api/projects/{project_id}/foreshadowing/{index}")
+def delete_foreshadowing(project_id: str, index: int, user: dict = Depends(_require_user)):
+    """删除一条伏笔。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    world = store.load_world()
+    if world is None or index < 0 or index >= len(world.foreshadowing):
+        raise HTTPException(status_code=404, detail="伏笔不存在")
+    world.foreshadowing.pop(index)
+    store.save_world(world)
+    return {"foreshadowing": [str(x) for x in world.foreshadowing]}
+
+
+@app.post("/api/projects/{project_id}/chapters/batch")
+def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """批量生成章节：指定起始章和结束章，后台逐章生成。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    start = int(req.get("start", 1))
+    end = int(req.get("end", start))
+    if start < 1 or end < start:
+        raise HTTPException(status_code=400, detail="章节范围非法")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    # 复用现有后台生成逻辑（从start到end逐章）
+    def _batch():
+        try:
+            pipeline = _open_pipeline(store)
+            outline = store.load_outline()
+            research = store.load_research()
+            for no in range(start, end + 1):
+                if no > len(outline.chapters):
+                    break
+                plan = outline.chapters[no - 1]
+                pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+        except Exception as e:
+            logger.exception("批量生成失败: %s", project_id)
+    import threading
+    t = threading.Thread(target=_batch, daemon=True)
+    t.start()
+    _RUNS[project_id] = type("R", (), {"thread": t, "stop_flag": False})()
+    return {"msg": f"批量生成已启动：第{start}-{end}章"}
+
+
 @app.get("/api/projects/{project_id}/download")
 def download(project_id: str, format: str = "txt", user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)

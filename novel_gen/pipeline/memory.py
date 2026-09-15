@@ -69,6 +69,19 @@ class Memory:
         except Exception:
             pass
 
+        # 反套路约束（常驻）
+        try:
+            ac_path = self.store.dir / "anti_cliche.json"
+            if ac_path.exists():
+                import json
+                ac_data = json.loads(ac_path.read_text(encoding="utf-8"))
+                from .templates import anti_cliche_hint
+                ac_hint = anti_cliche_hint(ac_data)
+                if ac_hint:
+                    parts.append(ac_hint)
+        except Exception:
+            pass
+
         # 重复度检测：最近章节高频词/句式
         try:
             from .repetition import RepetitionDetector

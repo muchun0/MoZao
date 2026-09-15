@@ -1796,6 +1796,28 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
                 out = export_docx(store)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"导出 docx 失败：{exc}")
+    elif fmt == "md":
+        out = OUTPUT_DIR / f"{name}.md"
+        media = "text/markdown; charset=utf-8"
+        if not out.exists():
+            try:
+                pipeline = _open_pipeline(store)
+                chapters_dir = pipeline.store.dir / "chapters"
+                lines = [f"# {cfg.effective_title()}", ""]
+                if cfg.premise:
+                    lines += [f"> {cfg.premise}", ""]
+                for ch_file in sorted(chapters_dir.glob("ch*.txt")):
+                    try:
+                        text = ch_file.read_text(encoding="utf-8")
+                        first_nl = text.find("\n")
+                        title = text[:first_nl].strip() if first_nl > 0 else ch_file.stem
+                        body = text[first_nl+1:].strip() if first_nl > 0 else ""
+                        lines += [f"## {title}", "", body, ""]
+                    except Exception:
+                        continue
+                out.write_text("\n".join(lines), encoding="utf-8")
+            except Exception as exc:
+                raise HTTPException(status_code=404, detail=f"导出 Markdown 失败：{exc}")
     else:
         raise HTTPException(status_code=400, detail=f"不支持的导出格式：{format}")
 

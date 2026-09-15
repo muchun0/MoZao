@@ -1166,12 +1166,38 @@
       const ob = $("#outline-box");
       ob.innerHTML = "";
       if (o.title) {
-        ob.innerHTML = '<div class="ol-intro"><strong>《' + esc(o.title) + '》</strong><br>' + esc(o.intro) + "</div>";
+        let introHtml = '<div class="ol-intro"><strong>《' + esc(o.title) + '》</strong><br>' + esc(o.intro) + "</div>";
+        if (o.core_conflict) introHtml += '<div class="ol-core"><span class="ol-core-label">核心冲突</span>' + esc(o.core_conflict) + "</div>";
+        if (o.main_line) introHtml += '<div class="ol-core"><span class="ol-core-label">主线脉络</span>' + esc(o.main_line) + "</div>";
+        ob.innerHTML = introHtml;
       }
-      ob.innerHTML += o.chapters.map((c) => {
-        const tag = c.tag ? '<span class="ol-tag-badge">' + esc(c.tag) + '</span>' : '';
-        return '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》' + tag + '<span class="goal">——' + esc(c.goal) + '</span></div>';
-      }).join("");
+      // 三级：分卷分组展示
+      let chaptersHtml = "";
+      if (o.volumes && o.volumes.length) {
+        const volMap = {};
+        o.volumes.forEach((v) => {
+          for (let cn = v.start_ch; cn <= v.end_ch; cn++) volMap[cn] = v;
+        });
+        let curVol = null;
+        o.chapters.forEach((c) => {
+          const v = volMap[c.no];
+          if (v && v !== curVol) {
+            curVol = v;
+            chaptersHtml += '<div class="ol-volume"><div class="ol-volume-name">第' + v.no + '卷《' + esc(v.name) + '》</div>';
+            if (v.intro) chaptersHtml += '<div class="ol-volume-intro">' + esc(v.intro) + '</div>';
+            if (v.climax) chaptersHtml += '<div class="ol-volume-climax">高潮：' + esc(v.climax) + '</div>';
+            chaptersHtml += '</div>';
+          }
+          const tag = c.tag ? '<span class="ol-tag-badge">' + esc(c.tag) + '</span>' : '';
+          chaptersHtml += '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》' + tag + '<span class="goal">——' + esc(c.goal) + '</span></div>';
+        });
+      } else {
+        chaptersHtml = o.chapters.map((c) => {
+          const tag = c.tag ? '<span class="ol-tag-badge">' + esc(c.tag) + '</span>' : '';
+          return '<div class="ol-ch">第' + c.no + '章《' + esc(c.title) + '》' + tag + '<span class="goal">——' + esc(c.goal) + '</span></div>';
+        }).join("");
+      }
+      ob.innerHTML += chaptersHtml;
       // 大纲与已生成章节差异提示
       try {
         const d = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/diff");

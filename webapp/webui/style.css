@@ -614,3 +614,10 @@ input:focus, select:focus, textarea:focus {
 .ol-move { padding: 2px 8px; font-size: 12px; }
 .ol-tag-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--indigo); color: #f5f1e2; font-size: 11px; margin: 0 4px; }
 .ol-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.ol-core { margin: 6px 0; padding: 6px 10px; background: #f5f1e2; border-left: 3px solid #5a4a3a; border-radius: 4px; font-size: 13px; }
+.ol-core-label { display: inline-block; font-weight: 600; margin-right: 8px; color: #8b6914; }
+.ol-volume { margin: 12px 0 4px; padding: 8px 10px; background: #ede8d8; border-radius: 6px; }
+.ol-volume-name { font-weight: 700; color: #5a4a3a; }
+.ol-volume-intro { font-size: 13px; margin-top: 4px; color: #6b5b4a; }
+.ol-volume-climax { font-size: 12px; margin-top: 2px; color: #b04a3a; }

@@ -89,6 +89,51 @@ class NovelPipeline:
         logger.info("阶段完成: 扩写大纲（%s，%d 章）", outline.title, len(outline.chapters))
         return outline
 
+    def run_timeline(self, silent: bool = False) -> None:
+        """大纲生成后，自动设计时间线结构。幂等：已有则跳过。"""
+        outline = self.store.load_outline()
+        if outline is None:
+            return
+        if outline.timelines:
+            if not silent:
+                print(f"[时间线] 已存在，复用：{len(outline.timelines)} 条")
+            return
+        try:
+            from .templates import timeline_design_prompt
+            from ..store.schemas import Timeline
+            sys_t, user_t = timeline_design_prompt(
+                self.cfg, self.cfg.genre, outline.title, outline.intro, len(outline.chapters)
+            )
+            raw = self.llm.chat(sys_t, user_t, temperature=0.4, max_tokens=1000)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            outline.timelines = [Timeline.from_dict(x) for x in data.get("timelines", [])]
+            # 给每章标注时间线（简单轮询：主线占60%，支线穿插）
+            if outline.timelines:
+                main_name = outline.timelines[0].name
+                for i, ch in enumerate(outline.chapters):
+                    # 默认主线，每5章插一条支线
+                    ch.timeline = main_name
+                if len(outline.timelines) > 1:
+                    side = outline.timelines[1]
+                    for i, ch in enumerate(outline.chapters):
+                        if (i + 1) % 4 == 0:  # 每4章插一章支线
+                            ch.timeline = side.name
+            self.store.save_outline(outline)
+            if not silent:
+                print(f"[时间线] 设计完成：{len(outline.timelines)} 条")
+            logger.info("时间线设计完成：%d 条", len(outline.timelines))
+        except Exception as e:
+            logger.warning("时间线设计失败（不阻塞）: %s", e)
+
     def run_world(self, silent: bool = False) -> World:
         existing = self.store.load_world()
         if existing is not None:
@@ -96,6 +141,7 @@ class NovelPipeline:
                 print(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物")
             return existing
         outline = self.run_outline(silent=True)
+        self.run_timeline(silent=silent)
         research = self.store.load_research() or self.run_research(silent=True)
         logger.info("阶段开始: 人物/世界观 world")
         result = self.world_gen.run(outline, research, silent=silent)

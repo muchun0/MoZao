@@ -1067,6 +1067,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         pacing_density=req.pacing_density,
         plot_speed=req.plot_speed,
         custom_prompt=req.custom_prompt,
+        high_quality_mode=req.high_quality_mode,
     )
 
     # 注入写作风格 skill

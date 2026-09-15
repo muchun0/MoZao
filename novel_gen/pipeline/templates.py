@@ -214,17 +214,17 @@ def _anti_similarity_system(stage: str = "chapter") -> str:
         )
     return core + "\n\n" + blacklist + "\n\n" + extra
 
-
-def _skill_append(cfg) -> str:
-    """管理员配置的写作风格 skill 追加内容，注入到 system prompt 末尾。"""
-    txt = getattr(cfg, "skill_prompt_append", "") or ""
-    if not txt.strip():
-        return ""
-    return "\n\n【写作风格 Skill（必须严格遵循）】\n" + txt.strip()
-
+def _skill_append(cfg: NovelConfig) -> str:
+    parts = []
+    txt = (getattr(cfg, "skill_prompt_append", "") or "").strip()
+    if txt:
+        parts.append("\n\n【写作风格 Skill（必须严格遵循）】\n" + txt)
+    cp = (getattr(cfg, "custom_prompt", "") or "").strip()
+    if cp:
+        parts.append("\n\n【用户自定义提示词】\n" + cp)
+    return "".join(parts)
 
 # ---------- 人物立体化（基于番茄课程《告别千人一面：带你写出有血有肉的人物》提炼） ----------
-
 def _character_depth_rules(stage: str = "chapter") -> str:
     """人物立体化写作约束：解决人物扁平、情绪干瘪、千人一面。
 

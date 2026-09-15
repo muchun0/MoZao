@@ -69,6 +69,17 @@ class Memory:
         except Exception:
             pass
 
+        # 重复度检测：最近章节高频词/句式
+        try:
+            from .repetition import RepetitionDetector
+            cfg = self.store.load_config()
+            detector = RepetitionDetector(cfg, self.store)
+            banned_hint = detector.banned_hint(up_to_chapter)
+            if banned_hint:
+                parts.append(banned_hint)
+        except Exception:
+            pass
+
         if not parts:
             return ""
         return "\n\n".join(parts)

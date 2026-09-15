@@ -247,6 +247,15 @@ class ChapterWriter:
             # 模型漏输出【摘要】时兜底：单独调用一次生成摘要，保证记忆库完整
             summary = self._gen_summary(chapter_no, plan_title, content)
 
+        # 高质量模式：自动改稿（小改自动改，中改以上只记录）
+        if getattr(self.cfg, 'high_quality_mode', False) and content:
+            try:
+                from .reviser import ChapterReviser
+                reviser = ChapterReviser(self.cfg, self.llm, self.store)
+                content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
+            except Exception as e:
+                print(f'  [改稿] 跳过: {e}')
+
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
         if summary:

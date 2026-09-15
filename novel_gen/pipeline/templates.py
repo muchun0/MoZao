@@ -526,6 +526,37 @@ def anti_cliche_hint(anti_cliche: dict) -> str:
     return "\n".join(lines)
 
 
+def editor_review_text_prompt(cfg: NovelConfig, chapter_no: int,
+                              chapter_title: str, content: str,
+                              prev_summaries: list) -> tuple[str, str]:
+    """正文阶段编辑审稿：模拟资深网文编辑审阅刚写完的3章。低温 0.3。"""
+    summaries_text = "\n".join(
+        f"第{len(prev_summaries)-i}章：{s}" for i, s in enumerate(reversed(prev_summaries[-3:]))
+    )
+    system = (
+        "你是一位资深网文编辑，正在审阅刚写完的3章正文。"
+        "你要判断这3章能不能留住读者、有没有退稿风险。"
+        "按 JSON 格式输出审稿结果。"
+    )
+    user = (
+        f"【刚写完的3章摘要】\n{summaries_text}\n\n"
+        f"【第{chapter_no}章正文片段】\n{content[:4000]}\n\n"
+        "请从以下维度审稿，输出 JSON：\n"
+        '{\n'
+        '  "score": 1-10的商业潜力评分,\n'
+        '  "hook_strong": true/false（开篇钩子够不够强）,\n'
+        '  "protagonist_active": true/false（主角是否主动）,\n'
+        '  "emotion_payoff": true/false（情绪回报是否到位）,\n'
+        '  "chapter_hook": true/false（章末有没有留悬念）,\n'
+        '  "reader_churn_risk": "低/中/高",\n'
+        '  "issues": ["问题1", "问题2"],\n'
+        '  "suggestions": ["建议1", "建议2"]\n'
+        '}'
+    )
+    return system, user
+
+
+
 
 def outline_prompt(
     cfg: NovelConfig,
@@ -919,6 +950,8 @@ def chapter_prompt(
         "你严格遵守世界设定与人物性格，绝不推翻前文既定事实；"
         "用户的强约束（背景/主角/避雷）每章都必须遵守；"
         "每章都要有推进、有情绪起伏、结尾留钩子。"
+        "爽点设计：本章必须至少有1个小反转/小揭秘/小甜饼/小打脸，均匀分布，"
+        "不要等大高潮才释放情绪；用连续小起伏替代单个大高潮。"
     )
     if cfg.de_ai:
         system += (

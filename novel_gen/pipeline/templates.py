@@ -350,6 +350,81 @@ def expand_outline_prompt(
     return system, user
 
 
+# 题材时间线预设
+TIMELINE_PRESETS = {
+    "default": [{"name": "主线", "type": "顺叙", "time_flow": "正常"}],
+    "玄幻": [
+        {"name": "修炼主线", "type": "顺叙", "time_flow": "正常"},
+        {"name": "秘境支线", "type": "读档", "time_flow": "内部时间流速不同"},
+    ],
+    "都市": [
+        {"name": "现实主线", "type": "顺叙", "time_flow": "正常"},
+        {"name": "情感/职场支线", "type": "顺叙", "time_flow": "正常"},
+    ],
+    "悬疑": [
+        {"name": "查案主线", "type": "顺叙", "time_flow": "正常"},
+        {"name": "真相暗线", "type": "圆环", "time_flow": "过去逐步揭露"},
+    ],
+    "科幻": [
+        {"name": "现实主线", "type": "顺叙", "time_flow": "正常"},
+        {"name": "梦境/循环支线", "type": "纯循环", "time_flow": "一夜=一生"},
+        {"name": "历史暗线", "type": "圆环", "time_flow": "几十年前"},
+    ],
+    "西幻": [
+        {"name": "冒险主线", "type": "顺叙", "time_flow": "正常"},
+        {"name": "魔法/神谕支线", "type": "读档", "time_flow": "感知时间不同"},
+    ],
+}
+
+
+def _get_timeline_preset(genre: str) -> list[dict]:
+    """根据题材推荐时间线结构。"""
+    for key, presets in TIMELINE_PRESETS.items():
+        if key in genre.lower() or genre in key:
+            return presets
+    return TIMELINE_PRESETS["default"]
+
+
+def timeline_design_prompt(cfg: NovelConfig, genre: str, title: str, intro: str, total_chapters: int) -> tuple[str, str]:
+    """大纲生成后，设计时间线结构。低温 0.4。"""
+    presets = _get_timeline_preset(genre)
+    presets_text = "\n".join(
+        f"- {p['name']}（{p['type']}，{p['time_flow']}）" for p in presets
+    )
+    system = (
+        "你是一位资深网文结构编辑。用户给你一本小说的题材和简介，"
+        "请设计这本书的时间线结构。必须有1条顺叙主线，可加1-2条支线。"
+        "总时间线不超过3条。输出 JSON。"
+    )
+    user = (
+        f"【书名】{title}\n"
+        f"【题材】{genre}\n"
+        f"【简介】{intro[:800]}\n"
+        f"【总章节数】{total_chapters}\n\n"
+        f"【推荐时间线（可调整）】\n{presets_text}\n\n"
+        "请输出 JSON：\n"
+        '{"timelines": [\n'
+        '  {"name": "主线名", "type": "顺叙/圆环/读档/纯循环", "time_flow": "时间流速", "description": "这条线讲什么"}\n'
+        ']}'
+    )
+    return system, user
+
+
+def timeline_hint_for_chapter(timelines: list, chapter_timeline: str) -> str:
+    """给单章生成注入时间线提示。"""
+    if not timelines or not chapter_timeline:
+        return ""
+    tl = next((t for t in timelines if t.name == chapter_timeline), None)
+    if not tl:
+        return ""
+    return (
+        f"【本章时间线】{tl.name}（{tl.type}）\n"
+        f"【时间流速】{tl.time_flow}\n"
+        f"【这条线的定位】{tl.description}\n"
+    )
+
+
+
 def outline_prompt(
     cfg: NovelConfig,
     research_block: str,

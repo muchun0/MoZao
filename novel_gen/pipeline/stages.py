@@ -215,6 +215,20 @@ class ChapterWriter:
         memory_context = self.memory.build_context(world, up_to_chapter=chapter_no)
         prev_tail = self._prev_tail(chapter_no)
 
+        # 注入时间线提示
+        try:
+            outline = self.store.load_outline()
+            if outline and outline.timelines:
+                from .templates import timeline_hint_for_chapter
+                plan_tl = ""
+                if chapter_no - 1 < len(outline.chapters):
+                    plan_tl = outline.chapters[chapter_no - 1].timeline
+                tl_hint = timeline_hint_for_chapter(outline.timelines, plan_tl)
+                if tl_hint:
+                    memory_context = memory_context + "\n\n" + tl_hint if memory_context else tl_hint
+        except Exception:
+            pass
+
         if getattr(self.cfg, "high_quality_mode", False):
             text = self._generate_chapter_hq(
                 chapter_no, plan_title, plan_goal,

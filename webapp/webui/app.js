@@ -1329,26 +1329,43 @@
     }
   });
 
-  // ---------- 大纲编辑 ----------
-  let outlineDraft = []; // [{title, goal}]
+  // ---------- 大纲编辑（卡片式节点） ----------
+  let outlineDraft = [];
+
+  const NODE_FIELDS = [
+    { key: "goal", label: "剧情目标", rows: 2, placeholder: "一句话说清本章发生什么" },
+    { key: "core_event", label: "核心事件", rows: 2, placeholder: "本章主要发生的事件" },
+    { key: "conflict", label: "冲突设计", rows: 2, placeholder: "主要矛盾与冲突升级点" },
+    { key: "character_moves", label: "人物动线", rows: 2, placeholder: "出场人物、人物行为与成长" },
+    { key: "foreshadowing", label: "伏笔/回收", rows: 2, placeholder: "埋设或回收的伏笔" },
+    { key: "emotion", label: "情绪价值", rows: 1, placeholder: "爽点/虐点/悬念/笑点" },
+    { key: "transition", label: "转场提示", rows: 1, placeholder: "与前后章衔接方式" },
+    { key: "tag", label: "标签", rows: 1, placeholder: "高潮/过渡/爽点/反转/伏笔" },
+  ];
 
   function renderOutlineEdit() {
     const list = $("#outline-edit-list");
     if (!list) return;
-    list.innerHTML = outlineDraft.map((c, i) =>
-      '<div class="ol-edit-row" data-i="' + i + '">' +
-        '<div class="ol-edit-no">第 ' + (i + 1) + " 章</div>" +
-        '<div class="ol-edit-fields">' +
-          '<input class="ol-edit-title" value="' + esc(c.title) + '" placeholder="章节标题">' +
-          '<textarea class="ol-edit-goal" rows="2" placeholder="本章剧情目标（一句话）">' + esc(c.goal) + "</textarea>" +
-        "</div>" +
-        '<button class="btn danger small ol-edit-del" title="删除本章">✕</button>' +
-      "</div>"
-    ).join("");
-    list.querySelectorAll(".ol-edit-row").forEach((row) => {
+    list.innerHTML = outlineDraft.map((c, i) => {
+      let fieldsHtml = '<div class="ol-card-fields">';
+      fieldsHtml += '<input class="ol-card-title" value="' + esc(c.title || "") + '" placeholder="章节标题" data-i="' + i + '" data-key="title">';
+      for (const f of NODE_FIELDS) {
+        fieldsHtml += '<div class="ol-card-field">';
+        fieldsHtml += '<label class="ol-card-label">' + f.label + '</label>';
+        fieldsHtml += '<textarea rows="' + f.rows + '" placeholder="' + f.placeholder + '" data-i="' + i + '" data-key="' + f.key + '" class="ol-card-input">' + esc(c[f.key] || "") + '</textarea>';
+        fieldsHtml += '</div>';
+      }
+      fieldsHtml += '</div>';
+      return '<div class="ol-card" data-i="' + i + '">' +
+        '<div class="ol-card-head"><span class="ol-card-no">第' + (i + 1) + '章</span><button class="btn danger small ol-edit-del" title="删除本章">✕</button></div>' +
+        fieldsHtml +
+      '</div>';
+    }).join("");
+    list.querySelectorAll(".ol-card").forEach((row) => {
       const i = parseInt(row.dataset.i, 10);
-      row.querySelector(".ol-edit-title").addEventListener("input", (e) => { outlineDraft[i].title = e.target.value; });
-      row.querySelector(".ol-edit-goal").addEventListener("input", (e) => { outlineDraft[i].goal = e.target.value; });
+      row.querySelectorAll(".ol-card-title, .ol-card-input").forEach((inp) => {
+        inp.addEventListener("input", (e) => { outlineDraft[i][e.target.dataset.key] = e.target.value; });
+      });
       row.querySelector(".ol-edit-del").addEventListener("click", () => {
         if (!confirm("删除第 " + (i + 1) + " 章？已生成的该章正文会保留并标记废弃。")) return;
         outlineDraft.splice(i, 1);
@@ -1361,7 +1378,13 @@
     if (!currentProjectId) return;
     try {
       const o = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline");
-      outlineDraft = (o.chapters || []).map((c) => ({ title: c.title, goal: c.goal }));
+      outlineDraft = (o.chapters || []).map((c) => ({
+        no: c.no || 0, title: c.title || "", goal: c.goal || "",
+        timeline: c.timeline || "", core_event: c.core_event || "",
+        conflict: c.conflict || "", character_moves: c.character_moves || "",
+        foreshadowing: c.foreshadowing || "", emotion: c.emotion || "",
+        transition: c.transition || "", tag: c.tag || "",
+      }));
       renderOutlineEdit();
       $("#outline-hint").textContent = "";
       $("#outline-modal").classList.remove("hidden");
@@ -1370,16 +1393,27 @@
     }
   });
   $("#btn-close-outline-modal").addEventListener("click", () => $("#outline-modal").classList.add("hidden"));
-  $("#btn-outline-add-ch").addEventListener("click", () => { outlineDraft.push({ title: "", goal: "" }); renderOutlineEdit(); });
+  $("#btn-outline-add-ch").addEventListener("click", () => { outlineDraft.push({ title: "", goal: "", core_event: "", conflict: "", character_moves: "", foreshadowing: "", emotion: "", transition: "", tag: "" }); renderOutlineEdit(); });
 
   $("#btn-save-outline").addEventListener("click", async () => {
     const btn = $("#btn-save-outline");
     btn.disabled = true;
     try {
+      const chapters = outlineDraft.map((c) => ({
+        title: (c.title || "").trim(),
+        goal: (c.goal || "").trim(),
+        core_event: (c.core_event || "").trim(),
+        conflict: (c.conflict || "").trim(),
+        character_moves: (c.character_moves || "").trim(),
+        foreshadowing: (c.foreshadowing || "").trim(),
+        emotion: (c.emotion || "").trim(),
+        transition: (c.transition || "").trim(),
+        tag: (c.tag || "").trim(),
+      }));
       const res = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chapters: outlineDraft.map((c) => ({ title: c.title.trim(), goal: c.goal.trim() })) }),
+        body: JSON.stringify({ chapters: chapters }),
       });
       $("#outline-modal").classList.add("hidden");
       const warns = [];

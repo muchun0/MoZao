@@ -1149,6 +1149,13 @@ REGEN_DAILY_LIMIT = 10
 class OutlineChapterReq(BaseModel):
     title: str = ""
     goal: str = ""
+    core_event: str = ""
+    conflict: str = ""
+    character_moves: str = ""
+    foreshadowing: str = ""
+    emotion: str = ""
+    transition: str = ""
+    tag: str = ""
 
 
 class OutlineSaveReq(BaseModel):
@@ -1217,7 +1224,16 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
     for i, c in enumerate(req.chapters, start=1):
         title = (c.title or "").strip() or f"第{i}章"
         goal = (c.goal or "").strip() or "推进主线剧情，制造冲突并留下悬念。"
-        chapters.append(ChapterPlan(no=i, title=title, goal=goal))
+        chapters.append(ChapterPlan(
+            no=i, title=title, goal=goal,
+            core_event=(c.core_event or "").strip(),
+            conflict=(c.conflict or "").strip(),
+            character_moves=(c.character_moves or "").strip(),
+            foreshadowing=(c.foreshadowing or "").strip(),
+            emotion=(c.emotion or "").strip(),
+            transition=(c.transition or "").strip(),
+            tag=(c.tag or "").strip(),
+        ))
     unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
 
     old = store.load_outline()

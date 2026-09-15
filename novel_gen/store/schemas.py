@@ -29,18 +29,43 @@ class Timeline:
 
 @dataclass
 class ChapterPlan:
-    """大纲中的单章计划。"""
+    """大纲中的单章计划（剧情节点）。"""
     no: int
     title: str = ""
     goal: str = ""  # 本章剧情目标/一句话剧情
     timeline: str = ""  # 属于哪条时间线
+    # 结构化剧情节点字段（P0新增）
+    core_event: str = ""       # 核心事件：本章主要发生的事
+    conflict: str = ""         # 冲突设计：主要矛盾与冲突升级点
+    character_moves: str = ""  # 人物动线：出场人物、人物行为与成长
+    foreshadowing: str = ""    # 伏笔与回收：埋设的伏笔/回收前文伏笔
+    emotion: str = ""          # 情绪价值：本节点带给读者的情绪（爽点/虐点/笑点/悬念）
+    transition: str = ""        # 转场提示：与前后章节的衔接方式
+    tag: str = ""              # 节点标签：高潮/过渡/伏笔/爽点/反转/虐点等
 
     def to_dict(self) -> dict:
-        return {"no": self.no, "title": self.title, "goal": self.goal, "timeline": self.timeline}
+        return {
+            "no": self.no, "title": self.title, "goal": self.goal, "timeline": self.timeline,
+            "core_event": self.core_event, "conflict": self.conflict,
+            "character_moves": self.character_moves, "foreshadowing": self.foreshadowing,
+            "emotion": self.emotion, "transition": self.transition, "tag": self.tag,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "ChapterPlan":
-        return cls(no=int(d.get("no", 0)), title=d.get("title", ""), goal=d.get("goal", ""), timeline=d.get("timeline", ""))
+        return cls(
+            no=int(d.get("no", 0)),
+            title=d.get("title", ""),
+            goal=d.get("goal", ""),
+            timeline=d.get("timeline", ""),
+            core_event=d.get("core_event", ""),
+            conflict=d.get("conflict", ""),
+            character_moves=d.get("character_moves", ""),
+            foreshadowing=d.get("foreshadowing", ""),
+            emotion=d.get("emotion", ""),
+            transition=d.get("transition", ""),
+            tag=d.get("tag", ""),
+        )
 
 
 @dataclass

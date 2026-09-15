@@ -333,6 +333,35 @@ class NovelPipeline:
                 self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
                 if not silent:
                     print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+
+            # 编辑视角审稿（正文阶段）
+            from .templates import editor_review_text_prompt
+            ch = self.store.load_chapter(chapter_no)
+            if ch and ch.content:
+                sys_e, user_e = editor_review_text_prompt(
+                    self.cfg, chapter_no, ch.title, ch.content,
+                    [s["summary"] for s in recent],
+                )
+                raw_e = self.llm.chat(sys_e, user_e, temperature=0.3, max_tokens=800)
+                t_e = raw_e.strip()
+                if t_e.startswith("```"):
+                    lines_e = t_e.splitlines()
+                    if lines_e and lines_e[0].startswith("```"):
+                        lines_e = lines_e[1:]
+                    if lines_e and lines_e[-1].strip() == "```":
+                        lines_e = lines_e[:-1]
+                    t_e = "\n".join(lines_e).strip()
+                e_data = json.loads(t_e)
+                score = e_data.get("score", 5)
+                churn = e_data.get("reader_churn_risk", "中")
+                if not silent:
+                    print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
+                logger.info("编辑审稿: 第%d章 score=%d churn=%s", chapter_no, score, churn)
+                # 评分低于5或弃书风险高，记录问题
+                if score < 5 or churn == "高":
+                    e_issues = e_data.get("issues", [])
+                    if e_issues:
+                        self.store.append_verify_issues(chapter_no, e_issues)
         except Exception as e:
             logger.warning("一致性校验失败（不阻塞生成）: %s", e)
 

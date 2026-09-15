@@ -19,7 +19,8 @@ from ..store.schemas import Chapter, ChapterPlan, Outline, ProjectState, World
 from .memory import Memory
 from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
 from .templates import (continue_outline_prompt, expand_chapter_prompt,
-                        expand_outline_prompt, world_from_content_prompt)
+                        expand_outline_prompt, world_from_content_prompt,
+                        verify_prompt)
 from .editor import EditorReviewer
 from .templates import expand_outline_prompt
 from webapp.logger import get_logger
@@ -55,7 +56,41 @@ class NovelPipeline:
         logger.info("阶段开始: 调研 research")
         result = ResearchEngine(self.cfg, self.llm, self.store).run(silent=silent)
         logger.info("阶段完成: 调研 research（摘要 %s）", (result.summary or "")[:50] if result else "None")
+        self.run_anti_cliche(silent=silent)
         return result
+
+    def run_anti_cliche(self, silent: bool = False) -> None:
+        """调研后，反套路改造+元素叠加+人设标签。幂等：已有则跳过。"""
+        path = self.store.dir / "anti_cliche.json"
+        if path.exists():
+            if not silent:
+                print("[反套路设计] 已存在，复用")
+            return
+        try:
+            research = self.store.load_research()
+            research_block = research.to_prompt_block() if research else ""
+            from .templates import anti_cliche_prompt
+            sys_a, user_a = anti_cliche_prompt(
+                self.cfg, self.cfg.genre, self.cfg.effective_title(),
+                self.cfg.premise, research_block
+            )
+            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=1500)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not silent:
+                print(f"[反套路设计] 完成：{len(data.get('elements', []))} 个叠加元素")
+            logger.info("反套路设计完成")
+        except Exception as e:
+            logger.warning("反套路设计失败（不阻塞）: %s", e)
 
     def run_outline(self, silent: bool = False) -> Outline:
         existing = self.store.load_outline()
@@ -88,6 +123,86 @@ class NovelPipeline:
         logger.info("阶段完成: 扩写大纲（%s，%d 章）", outline.title, len(outline.chapters))
         return outline
 
+    def run_timeline(self, silent: bool = False) -> None:
+        """大纲生成后，自动设计时间线结构。幂等：已有则跳过。"""
+        outline = self.store.load_outline()
+        if outline is None:
+            return
+        if outline.timelines:
+            if not silent:
+                print(f"[时间线] 已存在，复用：{len(outline.timelines)} 条")
+            return
+        try:
+            from .templates import timeline_design_prompt
+            from ..store.schemas import Timeline
+            sys_t, user_t = timeline_design_prompt(
+                self.cfg, self.cfg.genre, outline.title, outline.intro, len(outline.chapters)
+            )
+            raw = self.llm.chat(sys_t, user_t, temperature=0.4, max_tokens=1000)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            outline.timelines = [Timeline.from_dict(x) for x in data.get("timelines", [])]
+            # 给每章标注时间线（简单轮询：主线占60%，支线穿插）
+            if outline.timelines:
+                main_name = outline.timelines[0].name
+                for i, ch in enumerate(outline.chapters):
+                    # 默认主线，每5章插一条支线
+                    ch.timeline = main_name
+                if len(outline.timelines) > 1:
+                    side = outline.timelines[1]
+                    for i, ch in enumerate(outline.chapters):
+                        if (i + 1) % 4 == 0:  # 每4章插一章支线
+                            ch.timeline = side.name
+            self.store.save_outline(outline)
+            if not silent:
+                print(f"[时间线] 设计完成：{len(outline.timelines)} 条")
+            logger.info("时间线设计完成：%d 条", len(outline.timelines))
+        except Exception as e:
+            logger.warning("时间线设计失败（不阻塞）: %s", e)
+
+    def run_units(self, silent: bool = False) -> None:
+        """时间线设计后，按3章一个副本拆分叙事单元。幂等：已有则跳过。"""
+        outline = self.store.load_outline()
+        if outline is None:
+            return
+        if outline.units:
+            if not silent:
+                print(f"[副本结构] 已存在，复用：{len(outline.units)} 个")
+            return
+        try:
+            from .templates import unit_design_prompt
+            from ..store.schemas import StoryUnit
+            sys_u, user_u = unit_design_prompt(
+                self.cfg, self.cfg.genre, outline.title, outline.intro,
+                len(outline.chapters), outline.timelines
+            )
+            raw = self.llm.chat(sys_u, user_u, temperature=0.4, max_tokens=2000)
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            outline.units = [StoryUnit.from_dict(x) for x in data.get("units", [])]
+            self.store.save_outline(outline)
+            if not silent:
+                print(f"[副本结构] 设计完成：{len(outline.units)} 个副本")
+            logger.info("副本结构设计完成：%d 个", len(outline.units))
+        except Exception as e:
+            logger.warning("副本结构设计失败（不阻塞）: %s", e)
+
     def run_world(self, silent: bool = False) -> World:
         existing = self.store.load_world()
         if existing is not None:
@@ -95,6 +210,8 @@ class NovelPipeline:
                 print(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物")
             return existing
         outline = self.run_outline(silent=True)
+        self.run_timeline(silent=silent)
+        self.run_units(silent=silent)
         research = self.store.load_research() or self.run_research(silent=True)
         logger.info("阶段开始: 人物/世界观 world")
         result = self.world_gen.run(outline, research, silent=silent)
@@ -161,7 +278,63 @@ class NovelPipeline:
             raise
         logger.info("章节完成: 第 %d 章「%s」（%d 字）", no, plan.title,
                     len(chapter.content) if chapter else 0)
+
         return chapter
+
+    def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
+        """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
+        try:
+            summaries = self.store.load_summaries()
+            recent = [s for s in summaries if int(s.get("no", 0)) <= chapter_no][-3:]
+            world = self.store.load_world()
+            world_text = ""
+            if world is not None:
+                world_text = (world.world_view or "") + "\n" + "; ".join(
+                    f"{c.name}({c.role})" for c in (world.characters or []) if c.name
+                )
+            sys_v, user_v = verify_prompt(self.cfg, [s["summary"] for s in recent], world_text)
+            raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=800)
+            # 解析 JSON
+            import json
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            data = json.loads(t)
+            issues = data.get("issues", [])
+            if issues:
+                self.store.append_verify_issues(chapter_no, issues)
+                if not silent:
+                    print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
+
+            # 读者视角自检（三问）
+            from .templates import blind_check_prompt
+            sys_b, user_b = blind_check_prompt(
+                self.cfg, chapter_no,
+                [s["summary"] for s in recent],
+                world_text,
+            )
+            raw_b = self.llm.chat(sys_b, user_b, temperature=0.3, max_tokens=500)
+            t_b = raw_b.strip()
+            if t_b.startswith("```"):
+                lines_b = t_b.splitlines()
+                if lines_b and lines_b[0].startswith("```"):
+                    lines_b = lines_b[1:]
+                if lines_b and lines_b[-1].strip() == "```":
+                    lines_b = lines_b[:-1]
+                t_b = "\n".join(lines_b).strip()
+            b_data = json.loads(t_b)
+            if b_data.get("confused") or b_data.get("issues"):
+                self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
+                if not silent:
+                    print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+        except Exception as e:
+            logger.warning("一致性校验失败（不阻塞生成）: %s", e)
 
     # ---------- 进度查询 ----------
     def progress(self) -> tuple[int, int]:
@@ -214,6 +387,9 @@ class NovelPipeline:
         for no in range(done + 1, total + 1):
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
+            # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
+            if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
+                self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)
         if not silent:

@@ -51,6 +51,48 @@ class Memory:
                 f"[近期剧情·最近 {len(recent)} 章摘要]\n" + "\n".join(lines)
             )
 
+        # 一致性校验 issues（高质量模式）：提醒后续章节注意修正
+        try:
+            v_issues = self.store.load_verify_issues()
+            # 只保留最近一次校验（按 chapter 取最新）
+            if v_issues:
+                last_ch = max(int(x.get("chapter", 0)) for x in v_issues)
+                recent_issues = [x for x in v_issues if int(x.get("chapter", 0)) == last_ch]
+                if recent_issues:
+                    v_lines = [
+                        f"- {it.get('problem', '')}（建议：{it.get('suggestion', '注意保持一致')}）"
+                        for it in recent_issues
+                    ]
+                    parts.append(
+                        "[前次一致性校验·需在后续章节注意]\n" + "\n".join(v_lines)
+                    )
+        except Exception:
+            pass
+
+        # 反套路约束（常驻）
+        try:
+            ac_path = self.store.dir / "anti_cliche.json"
+            if ac_path.exists():
+                import json
+                ac_data = json.loads(ac_path.read_text(encoding="utf-8"))
+                from .templates import anti_cliche_hint
+                ac_hint = anti_cliche_hint(ac_data)
+                if ac_hint:
+                    parts.append(ac_hint)
+        except Exception:
+            pass
+
+        # 重复度检测：最近章节高频词/句式
+        try:
+            from .repetition import RepetitionDetector
+            cfg = self.store.load_config()
+            detector = RepetitionDetector(cfg, self.store)
+            banned_hint = detector.banned_hint(up_to_chapter)
+            if banned_hint:
+                parts.append(banned_hint)
+        except Exception:
+            pass
+
         if not parts:
             return ""
         return "\n\n".join(parts)

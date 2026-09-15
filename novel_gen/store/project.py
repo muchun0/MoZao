@@ -244,6 +244,26 @@ class ProjectStore:
         summaries.append({"no": no, "summary": summary})
         self._write_json(self.memory_path(), sorted(summaries, key=lambda x: int(x.get("no", 0))))
 
+    # ---------- 一致性校验（高质量模式） ----------
+    def verify_issues_path(self) -> Path:
+        return self.dir / "verify_issues.json"
+
+    def load_verify_issues(self) -> list[dict]:
+        """返回 [{chapter, problem, suggestion}, ...]，按章节号升序。"""
+        items = self._read_json(self.verify_issues_path(), [])
+        return sorted(items, key=lambda x: int(x.get("chapter", 0)))
+
+    def save_verify_issues(self, issues: list[dict]) -> None:
+        self._write_json(self.verify_issues_path(), issues)
+
+    def append_verify_issues(self, chapter: int, new_issues: list[dict]) -> None:
+        """追加本次校验发现的问题（不覆盖历史）。"""
+        all_issues = self.load_verify_issues()
+        for it in new_issues:
+            it["chapter"] = chapter
+            all_issues.append(it)
+        self.save_verify_issues(all_issues)
+
     # ---------- 导出 TXT ----------
     def export_txt(self) -> Path:
         """把整本书拼成 UTF-8 txt 文件。

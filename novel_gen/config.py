@@ -115,6 +115,7 @@ class NovelConfig:
     # ---- 节奏控制参数 ----
     pacing_density: str = "medium"    # 爽点密度：low(慢热)/medium(适中)/high(密集)
     plot_speed: str = "medium"        # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
+    custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
 
     @property
     def num_chapters(self) -> int:
@@ -197,6 +198,7 @@ def load_config(path: str | Path) -> NovelConfig:
         search=search,
         skill_prompt_append=str(raw.get('skill_prompt_append', '')),
         high_quality_mode=bool(raw.get('high_quality_mode', False)),
+        custom_prompt=str(raw.get('custom_prompt', '')),
     )
     return cfg
 

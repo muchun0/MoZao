@@ -625,6 +625,108 @@ def verify_prompt(cfg, recent_summaries, world):
     return system, user
 
 
+def revise_locate_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
+    """步骤1：通读定位，输出问题清单 JSON。低温 0.3。"""
+    system = (
+        "你是一位资深网文编辑，正在审阅刚写完的一章。"
+        "你只做问题定位，不改写正文。按 JSON 格式输出问题清单。"
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}】】\n"
+        f"【本章目标】{chapter_goal}\n\n"
+        f"【本章正文】\n{content[:6000]}\n\n"
+        "请通读后找出以下类型的问题：\n"
+        "1. 节奏拖沓：大段描写/无意义日常/对话不推进剧情\n"
+        "2. 对话无潜台词：人物把心里话直接说出来\n"
+        "3. 情绪表达干瘪：用了抽象词\n"
+        "4. 段落过长：超过5行的大段描写\n"
+        "5. 缺少钩子：结尾没有悬念/冲突/新信息\n"
+        "6. 主角被动：主角全程被推着走\n"
+        "7. 语句重复：高频重复的词或句式\n\n"
+        '输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "问题", "level": "小改"}], "has_hook": true, "main_char_active": true}'
+    )
+    return system, user
+
+
+def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
+    """步骤3：分层修改，只改小改 issues。中温 0.7。"""
+    system = (
+        "你是一位网文润色编辑。用户给你一章正文和一份小改问题清单。"
+        "你的任务是只改清单里列出的问题，不改剧情走向、不改人物对话含义。"
+        "保持原文字数基本不变（±10%）。只输出润色后的完整正文。"
+    )
+    issues_text = chr(10).join(
+        f"- [{it.get('type','')}] {it.get('pos','')}：{it.get('detail','')}"
+        for it in small_issues
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}】】\n"
+        f"【需要修改的问题】\n{issues_text}\n\n"
+        f"【原文】\n{content}\n\n"
+        "请只改上述问题，保留剧情和人物，输出修改后的完整正文。"
+    )
+    return system, user
+
+
+def revise_verify_prompt(cfg, chapter_no, content, original_issues):
+    """步骤4：回读校验。低温 0.3。"""
+    system = (
+        "你是一位质量校验编辑。用户给你改后正文和原问题清单。"
+        "确认原问题是否解决，以及是否引入了新问题。输出 JSON。"
+    )
+    issues_text = chr(10).join(
+        f"- [{it.get('type','')}] {it.get('detail','')}"
+        for it in original_issues
+    )
+    user = (
+        f"【原问题清单】\n{issues_text}\n\n"
+        f"【改后正文】\n{content[:6000]}\n\n"
+        '输出 JSON：{"resolved_count": N, "new_issues": ["..."], "ok": true/false}'
+    )
+    return system, user
+
+
+def blind_check_prompt(cfg, chapter_no, recent_summaries, world_text):
+    """读者视角自检：三问。低温 0.3。"""
+    system = (
+        "你是一位第一次读这本小说的读者。你不知道作者是谁、不知道大纲。"
+        "请根据最近3章的摘要，回答三个问题。输出 JSON。"
+    )
+    summaries_text = chr(10).join(
+        f"第{i+1}章：{s}" for i, s in enumerate(recent_summaries)
+    )
+    user = (
+        f"【世界观】\n{world_text[:1500]}\n\n"
+        f"【最近3章摘要】\n{summaries_text}\n\n"
+        "作为读者，请回答：\n"
+        "1. 主角是谁？（一句话：身份+性格）\n"
+        "2. 他想干什么？（核心目标）\n"
+        "3. 他在做什么？（当前行动）\n\n"
+        '输出 JSON：{"who": "...", "wants": "...", "doing": "...", "confused": true/false, "issues": ["..."}'
+    )
+    return system, user
+
+
+def rewrite_guard_prompt(cfg, chapter_no, chapter_title, chapter_goal,
+                         locked_outline, anchors, persona):
+    """大改风控：重生成某章时注入硬约束。中温 0.7。"""
+    system = (
+        "你是一位网文作者。你正在重写已经写过的一章。"
+        "用户对原版不满意，但主线不能变。"
+        "你必须严格遵守以下硬约束，不能偏离主线、不能遗忘已埋伏笔、不能让人物OOC。"
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}】】\n"
+        f"【本章目标】{chapter_goal}\n\n"
+        f"【主线硬约束（不可偏离）】\n{locked_outline}\n\n"
+        f"【必须保留的信息锚点】\n{anchors}\n\n"
+        f"【主角当前人设】\n{persona}\n\n"
+        "请基于以上约束重新生成本章正文，保持主线不变，但在表达/节奏/对话上做得更好。"
+        "输出格式：先输出正文，正文结束后另起一行输出【摘要】加1-2句剧情摘要。"
+    )
+    return system, user
+
+
 def chapter_prompt(
     cfg: NovelConfig,
     chapter_no: int,

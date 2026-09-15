@@ -195,6 +195,28 @@ class NovelPipeline:
                 if not silent:
                     print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
                 logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
+
+            # 读者视角自检（三问）
+            from .templates import blind_check_prompt
+            sys_b, user_b = blind_check_prompt(
+                self.cfg, chapter_no,
+                [s["summary"] for s in recent],
+                world_text,
+            )
+            raw_b = self.llm.chat(sys_b, user_b, temperature=0.3, max_tokens=500)
+            t_b = raw_b.strip()
+            if t_b.startswith("```"):
+                lines_b = t_b.splitlines()
+                if lines_b and lines_b[0].startswith("```"):
+                    lines_b = lines_b[1:]
+                if lines_b and lines_b[-1].strip() == "```":
+                    lines_b = lines_b[:-1]
+                t_b = "\n".join(lines_b).strip()
+            b_data = json.loads(t_b)
+            if b_data.get("confused") or b_data.get("issues"):
+                self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
+                if not silent:
+                    print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
         except Exception as e:
             logger.warning("一致性校验失败（不阻塞生成）: %s", e)
 

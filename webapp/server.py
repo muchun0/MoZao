@@ -1271,6 +1271,7 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     try:
         pipeline = _open_pipeline(store)
         research = store.load_research()
+        # 大改风控：重写时自动加载 world + memory + verify_issues 作为硬约束
         chapter = pipeline.chapter_writer.write(
             no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
     except Exception as e:

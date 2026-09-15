@@ -51,52 +51,12 @@ class NovelPipeline:
         return self.cfg.mode == "expand"
 
     def run_research(self, silent: bool = False) -> ResearchReport | None:
-        # 扩写模式：跳过联网调研（用户已给出内容，无需共性调研）
-        if self.is_expand_mode():
-            return None
-        existing = self.store.load_research()
-        if existing is not None:
-            if not silent:
-                print(f"[调研] 已存在，复用：{existing.summary}")
-            return existing
-        logger.info("阶段开始: 调研 research")
-        result = ResearchEngine(self.cfg, self.llm, self.store).run(silent=silent)
-        logger.info("阶段完成: 调研 research（摘要 %s）", (result.summary or "")[:50] if result else "None")
-        self.run_anti_cliche(silent=silent)
-        return result
+        """题材调研阶段（委托 ResearcherAgent）。"""
+        return self.researcher.run(silent=silent)
 
     def run_anti_cliche(self, silent: bool = False) -> None:
-        """调研后，反套路改造+元素叠加+人设标签。幂等：已有则跳过。"""
-        path = self.store.dir / "anti_cliche.json"
-        if path.exists():
-            if not silent:
-                print("[反套路设计] 已存在，复用")
-            return
-        try:
-            research = self.store.load_research()
-            research_block = research.to_prompt_block() if research else ""
-            from .templates import anti_cliche_prompt
-            sys_a, user_a = anti_cliche_prompt(
-                self.cfg, self.cfg.genre, self.cfg.effective_title(),
-                self.cfg.premise, research_block
-            )
-            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=1500)
-            import json
-            t = raw.strip()
-            if t.startswith("```"):
-                lines = t.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                t = "\n".join(lines).strip()
-            data = json.loads(t)
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            if not silent:
-                print(f"[反套路设计] 完成：{len(data.get('elements', []))} 个叠加元素")
-            logger.info("反套路设计完成")
-        except Exception as e:
-            logger.warning("反套路设计失败（不阻塞）: %s", e)
+        """反套路改造（委托 ResearcherAgent）。"""
+        self.researcher._run_anti_cliche(silent=silent)
 
     def run_outline(self, silent: bool = False) -> Outline:
         existing = self.store.load_outline()
@@ -107,9 +67,9 @@ class NovelPipeline:
         # 扩写模式：从用户提供的大纲/简要内容生成章节大纲，跳过调研
         if self.is_expand_mode():
             return self._run_expand_outline(silent=silent)
-        logger.info("阶段开始: 大纲 outline")
+        logger.info("阶段开始: 大纲 outline（架构师）")
         research = self.run_research(silent=True)
-        result = self.outline_gen.run(research, silent=silent)
+        result = self.architect.run_outline(research, silent=silent)
         logger.info("阶段完成: 大纲 outline（%s，%d 章）", result.title, len(result.chapters))
         return result
 
@@ -219,8 +179,8 @@ class NovelPipeline:
         self.run_timeline(silent=silent)
         self.run_units(silent=silent)
         research = self.store.load_research() or self.run_research(silent=True)
-        logger.info("阶段开始: 人物/世界观 world")
-        result = self.world_gen.run(outline, research, silent=silent)
+        logger.info("阶段开始: 人物/世界观 world（架构师）")
+        result = self.architect.run_world(silent=silent)
         logger.info("阶段完成: 人物/世界观 world（%d 个人物）", len(result.characters))
         return result
 
@@ -275,9 +235,9 @@ class NovelPipeline:
         research = None
         if not self.is_expand_mode():
             research = self.store.load_research() or self.run_research(silent=True)
-        logger.info("章节开始: 第 %d 章「%s」（is_final=%s）", no, plan.title, is_final)
+        logger.info("章节开始: 第 %d 章「%s」（写手）", no, plan.title, is_final)
         try:
-            chapter = self.chapter_writer.write(no, plan.title, plan.goal, research,
+            chapter = self.writer.write_chapter(no, plan.title, plan.goal, research,
                                                 silent=silent, is_final=is_final)
         except Exception:
             logger.exception("章节失败: 第 %d 章「%s」", no, plan.title)

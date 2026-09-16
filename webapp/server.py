@@ -129,6 +129,7 @@ class ProjectCreateReq(BaseModel):
     pacing_density: str = "medium"  # 爽点密度
     plot_speed: str = "medium"      # 剧情速度
     custom_prompt: str = ""         # 用户自定义提示词
+    high_quality_mode: bool = False  # 高质量模式：场景级生成+动态模块+参数分层
 
 
 class RegisterReq(BaseModel):

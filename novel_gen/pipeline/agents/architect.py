@@ -33,6 +33,8 @@ class ArchitectAgent(BaseAgent):
         if world and (world.world_view or world.characters):
             return world
         self.logger.info("人物世界观设计开始（架构师）")
-        world = self._world_gen.run(silent=silent)
+        outline = self.store.load_outline()
+        research = self.store.load_research()
+        world = self._world_gen.run(outline, research, silent=silent)
         self.logger.info("人物世界观设计完成")
         return world

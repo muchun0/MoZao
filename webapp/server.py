@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 小说生成 Web 后端（FastAPI）：多用户 SaaS 版。
 
@@ -83,6 +83,9 @@ class _RunHandle:
 
 _RUNS: dict[str, _RunHandle] = {}
 _LOCK = threading.Lock()
+# 全局并发生成数限制：防止单用户开太多生成任务导致 LLM API 限流/数据库连接耗尽。
+# 每个生成任务开始时 acquire，结束时 release。3 路并发对当前额度和连接池是安全水位。
+_GEN_SEMAPHORE = threading.Semaphore(3)
 
 
 # ---------- 请求/响应模型 ----------
@@ -469,6 +472,7 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         handle.error = f"{type(exc).__name__}: {exc}"
         logger.exception("大纲生成失败: project=%s error=%s", store.dir.name, exc)
     finally:
+        _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
 
@@ -524,6 +528,7 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         logger.exception("生成失败: project=%s title=%s error=%s",
                          store.dir.name, cfg.effective_title(), exc)
     finally:
+        _GEN_SEMAPHORE.release()
         _settle_price(store)
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
@@ -1692,9 +1697,19 @@ def generate_outline_only(project_id: str, user: dict = Depends(_require_user)):
             raise HTTPException(status_code=409, detail="该项目正在生成中")
         handle = _RunHandle()
         _RUNS[project_id] = handle
-    t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
-    handle.thread = t
-    t.start()
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
+    try:
+        t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
     return {"started": True, "project_id": project_id, "stage": "outline"}
 
 
@@ -1707,9 +1722,19 @@ def start_generation(project_id: str, user: dict = Depends(_require_user)):
             raise HTTPException(status_code=409, detail="该项目正在生成中")
         handle = _RunHandle()
         _RUNS[project_id] = handle
-    t = threading.Thread(target=_run_generation, args=(store, handle), daemon=True)
-    handle.thread = t
-    t.start()
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
+    try:
+        t = threading.Thread(target=_run_generation, args=(store, handle), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
     return {"started": True, "project_id": project_id}
 
 
@@ -1955,6 +1980,8 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
     with _LOCK:
         if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
             raise HTTPException(status_code=409, detail="该项目正在生成中")
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
     # 复用现有后台生成逻辑（从start到end逐章）
     def _batch():
         try:
@@ -1968,6 +1995,8 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
         except Exception as e:
             logger.exception("批量生成失败: %s", project_id)
+        finally:
+            _GEN_SEMAPHORE.release()
     import threading
     t = threading.Thread(target=_batch, daemon=True)
     t.start()

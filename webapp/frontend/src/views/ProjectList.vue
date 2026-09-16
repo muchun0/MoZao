@@ -43,6 +43,18 @@
             <el-radio value="expand">AI扩写（我提供大纲）</el-radio>
           </el-radio-group>
         </el-form-item>
+        <template v-if="form.mode === 'expand'">
+          <el-form-item label="现有字数">
+            <el-input-number v-model="form.existing_words" :min="0" :step="10000" />
+            <span class="muted" style="margin-left:8px">按差值计费</span>
+          </el-form-item>
+          <el-form-item label="上传大纲">
+            <input type="file" ref="fileInput" accept=".txt,.md,.doc,.docx" @change="onFilePick" />
+          </el-form-item>
+          <el-form-item label="手写内容">
+            <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的内容，AI将在此基础上续写" />
+          </el-form-item>
+        </template>
         <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
       </el-form>
       <template #footer>
@@ -69,7 +81,17 @@ const creating = ref(false)
 const form = ref({
   title: '', genre: '', total_words: 100000, style: '', premise: '',
   mode: 'auto', high_quality_mode: false,
+  existing_words: 0, user_content: '', expand_input: '',
 })
+const fileInput = ref(null)
+
+function onFilePick(e) {
+  const f = e.target.files[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = () => { form.value.expand_input = reader.result; ElMessage.success('大纲已读取') }
+  reader.readAsText(f)
+}
 
 async function load() {
   loading.value = true

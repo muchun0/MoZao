@@ -1,4 +1,4 @@
-# AI 自动生成小说 - 依赖清单
+﻿# AI 自动生成小说 - 依赖清单
 # 安装：pip install -r requirements.txt
 
 # ===== Web 服务（多用户 SaaS 前端/后端） =====
@@ -28,3 +28,4 @@ python-docx>=1.1.0      # Word DOCX 导出
 
 pymysql==1.1.1
 cryptography>=42.0.8
+DBUtils>=3.1.0         # MySQL 连接池，高并发时避免每次新建 TCP 连接

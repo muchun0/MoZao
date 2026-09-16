@@ -28,6 +28,7 @@ from typing import Optional
 import pymysql
 from pymysql.cursors import DictCursor
 from pymysql.err import IntegrityError as MyIntegrityError
+from dbutils.pooled_db import PooledDB
 
 # ---------- .env 轻量加载（兼容 python -m uvicorn 直启，不依赖 run_web.py） ----------
 def _load_env_file() -> None:
@@ -102,18 +103,34 @@ class _TxConn:
         return cur
 
 
+# ---------- MySQL 连接池（多线程并发安全） ----------
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = PooledDB(
+            creator=pymysql,
+            maxconnections=20,
+            mincached=2,
+            maxcached=5,
+            blocking=True,
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            charset="utf8mb4",
+            cursorclass=DictCursor,
+            autocommit=False,
+            connect_timeout=5,
+        )
+    return _pool
+
+
 def _connect() -> _TxConn:
-    conn = pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        charset="utf8mb4",
-        cursorclass=DictCursor,
-        autocommit=False,
-        connect_timeout=5,
-    )
+    conn = _get_pool().connection()
     return _TxConn(conn)
 
 

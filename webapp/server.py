@@ -63,13 +63,16 @@ WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
 
-# 允许前端跨域（前端独立部署时用）
+# CORS：P2 安全修复，不再通配 "*" + credentials（高危）。
+# 生产前后端同域部署时无需跨域；如需独立域名，用环境变量 ALLOWED_ORIGINS 逗号分隔白名单。
+_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS",
+            "http://127.0.0.1:8000,http://localhost:8000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -420,6 +423,11 @@ def _settle_price(store: ProjectStore) -> None:
         billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
         hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
         final_price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
+        # P0 修复：先落盘幂等标记再扣费。进程崩溃/异常时 settle.json 已存在，重启后不再重复扣费；
+        # 宁可漏扣（站长后台补偿）也不重复扣。
+        sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
+                                  "target_ai_words": target_ai_words, "final_price": final_price,
+                                  "hq": hq, "status": "charging"}), encoding="utf-8")
         bal = db.get_user(uid)["balance"]
         if bal >= final_price:
             db.change_balance(uid, -final_price,
@@ -437,7 +445,8 @@ def _settle_price(store: ProjectStore) -> None:
                            uid, project_id, final_price, bal, short)
         db.update_project_price(project_id, final_price)
         sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": target_ai_words, "final_price": final_price}),
+                                  "target_ai_words": target_ai_words, "final_price": final_price,
+                                  "hq": hq, "status": "done"}),
                       encoding="utf-8")
         logger.info("结算完成: project=%s ai_words=%d billable=%d target=%d final=%.2f balance=%.2f",
                     project_id, ai_words, billable_words, target_ai_words, final_price,
@@ -532,6 +541,13 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         logger.info("生成完成: project=%s title=%s", store.dir.name, cfg.effective_title())
     except Exception as exc:  # noqa: BLE001
         handle.error = f"{type(exc).__name__}: {exc}"
+        # P1 修复：失败落盘标记，前端可展示 failed 状态与原因
+        try:
+            store.dir.joinpath("failed.json").write_text(
+                json.dumps({"error": handle.error, "title": cfg.effective_title()}, ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:
+            pass
         logger.exception("生成失败: project=%s title=%s error=%s",
                          store.dir.name, cfg.effective_title(), exc)
     finally:
@@ -1637,20 +1653,30 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
         handle = _RunHandle()
         _RUNS[project_id] = handle
     _check_regen_limit(store, project_id)
+    # P1 修复：原路径只 release 不 acquire，导致信号量永久泄漏。这里补 acquire。
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
+    try:
+        # 删除 no 及之后章节 + 对应记忆
+        for ch in store.list_chapters():
+            if ch.no >= no:
+                p = store.chapter_path(ch.no)
+                if p.exists():
+                    p.unlink()
+        summaries = [x for x in store.load_summaries() if int(x.get("no", 0)) < no]
+        store._write_json(store.memory_path(), summaries)
 
-    # 删除 no 及之后章节 + 对应记忆
-    for ch in store.list_chapters():
-        if ch.no >= no:
-            p = store.chapter_path(ch.no)
-            if p.exists():
-                p.unlink()
-    summaries = [s for s in store.load_summaries() if int(s.get("no", 0)) < no]
-    store._write_json(store.memory_path(), summaries)
-
-    logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
-    t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
-    handle.thread = t
-    t.start()
+        logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
+        t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
     return {"started": True, "project_id": project_id, "from_chapter": no}
 
 
@@ -2100,25 +2126,30 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
             raise HTTPException(status_code=409, detail="该项目正在生成中")
     if not _GEN_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
-    # 复用现有后台生成逻辑（从start到end逐章）
+    # P1 修复：用真 _RunHandle（含 stop_event/error），finally 清理 _RUNS，结束后结算
+    handle = _RunHandle()
     def _batch():
         try:
             pipeline = _open_pipeline(store)
             outline = store.load_outline()
             research = store.load_research()
             for no in range(start, end + 1):
-                if no > len(outline.chapters):
+                if handle.stop_event.is_set() or no > len(outline.chapters):
                     break
                 plan = outline.chapters[no - 1]
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+            _settle_price(store)
         except Exception as e:
+            handle.error = f"{type(e).__name__}: {e}"
             logger.exception("批量生成失败: %s", project_id)
         finally:
             _GEN_SEMAPHORE.release()
-    import threading
+            with _LOCK:
+                _RUNS.pop(project_id, None)
     t = threading.Thread(target=_batch, daemon=True)
+    handle.thread = t
+    _RUNS[project_id] = handle
     t.start()
-    _RUNS[project_id] = type("R", (), {"thread": t, "stop_flag": False})()
     return {"msg": f"批量生成已启动：第{start}-{end}章"}
 
 

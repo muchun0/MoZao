@@ -487,9 +487,10 @@ def delete_user_sessions(user_id: int) -> None:
 
 def change_balance(user_id: int, delta: float, note: str = "") -> float:
     """给用户加/扣余额（delta 可为负），返回新余额。
-    轧差：先读旧余额，用 Python 精确算新余额（round 到分），再写回，避免 MySQL 浮点误差。"""
+    P0 修复：SELECT ... FOR UPDATE 行锁 + 同一事务内读改写+流水，避免并发丢更新。
+    （_connect 的 context manager 在无异常时自动 commit，异常 rollback）"""
     with _connect() as conn:
-        row = conn.execute("SELECT balance FROM users WHERE id=%s", (user_id,)).fetchone()
+        row = conn.execute("SELECT balance FROM users WHERE id=%s FOR UPDATE", (user_id,)).fetchone()
         old = float(row["balance"]) if row else 0.0
         new_bal = round(old + delta + 1e-9, 2)
         conn.execute("UPDATE users SET balance = %s WHERE id=%s", (new_bal, user_id))

@@ -18,12 +18,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from ..config import LLMConfig, NovelConfig
+from ..config import LLMConfig, NovelConfig, SearchConfig
 from .schemas import Chapter, Outline, ProjectState, World
 
 
@@ -44,7 +46,8 @@ class ProjectStore:
     @classmethod
     def create(cls, root: Path, cfg: NovelConfig) -> "ProjectStore":
         """创建新项目目录并写入配置快照。project_id = 时间戳_标题。"""
-        project_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{_safe_name(cfg.effective_title())}"
+        # P1 修复：加短 uuid 后缀，避免同一秒创建同名书时目录冲突
+        project_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{_safe_name(cfg.effective_title())}_{uuid.uuid4().hex[:6]}"
         store = cls(Path(root) / project_id)
         store.save_config(cfg)
         store.save_state(ProjectState())  # 初始化状态机
@@ -85,11 +88,26 @@ class ProjectStore:
             "content_type": cfg.content_type,
             "expand_targets": list(cfg.expand_targets),
             "user_words": getattr(cfg, "_user_words", 0),
+            # P0 修复：补全落盘字段，否则重新读取时全部丢失（高质量模式/技能/节奏参数失效）
+            "character_depth": getattr(cfg, "character_depth", True),
+            "fanqie_style": getattr(cfg, "fanqie_style", True),
+            "high_quality_mode": getattr(cfg, "high_quality_mode", False),
+            "pacing_density": getattr(cfg, "pacing_density", "medium"),
+            "plot_speed": getattr(cfg, "plot_speed", "medium"),
+            "custom_prompt": getattr(cfg, "custom_prompt", ""),
+            "skill_prompt_append": getattr(cfg, "skill_prompt_append", ""),
+            "search": {
+                "provider": cfg.search.provider,
+                "api_url": cfg.search.api_url,
+                "count": cfg.search.count,
+                # api_key 不落盘，读环境变量
+            },
             "llm": {
                 "provider": cfg.llm.provider,
                 "model": cfg.llm.model,
                 "base_url": cfg.llm.base_url,
                 "temperature": cfg.llm.temperature,
+                "top_p": cfg.llm.top_p,
                 "max_tokens": cfg.llm.max_tokens,
                 # 注意：不落盘 api_key，避免密钥明文留在项目目录
             },
@@ -120,6 +138,19 @@ class ProjectStore:
             expand_input=d.get("expand_input", ""),
             content_type=d.get("content_type", ""),
             expand_targets=[int(x) for x in (d.get("expand_targets") or [])],
+            character_depth=bool(d.get("character_depth", True)),
+            fanqie_style=bool(d.get("fanqie_style", True)),
+            high_quality_mode=bool(d.get("high_quality_mode", False)),
+            pacing_density=d.get("pacing_density", "medium"),
+            plot_speed=d.get("plot_speed", "medium"),
+            custom_prompt=d.get("custom_prompt", ""),
+            skill_prompt_append=d.get("skill_prompt_append", ""),
+            search=SearchConfig(
+                provider=(d.get("search") or {}).get("provider", ""),
+                api_key="",
+                api_url=(d.get("search") or {}).get("api_url", ""),
+                count=int((d.get("search") or {}).get("count", 5)),
+            ),
             llm=LLMConfig(
                 provider=llm_d.get("provider", "deepseek"),
                 model=llm_d.get("model", ""),
@@ -348,7 +379,12 @@ class ProjectStore:
     # ---------- 工具 ----------
     @staticmethod
     def _write_json(path: Path, data) -> None:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        """原子写：先写临时文件再 os.replace，避免进程崩溃留下半截 JSON。"""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
     @staticmethod
     def _read_json(path: Path, default):

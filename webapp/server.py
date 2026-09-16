@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,7 @@ logger = get_logger("server")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = BASE_DIR / "projects"
+_MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
 OUTPUT_DIR = BASE_DIR / "output"
 WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
@@ -587,6 +588,8 @@ async def parse_content(file: UploadFile | None = File(None), text: str = Form("
     try:
         if file is not None:
             data = await file.read()
+            if len(data) > _MAX_UPLOAD:
+                raise HTTPException(status_code=413, detail="文件过大，请上传 10MB 以内的文档")
             text = extract_text(file.filename or "", data)
         raw = text or ""
     except ValueError as e:
@@ -612,6 +615,8 @@ async def parse_outline(file: UploadFile = File(...), user: dict = Depends(_requ
     """上传大纲文档（txt/md/docx），智能解析成新建表单字段。"""
     try:
         data = await file.read()
+        if len(data) > _MAX_UPLOAD:
+            raise HTTPException(status_code=413, detail="文件过大，请上传 10MB 以内的文档")
         text = extract_text(file.filename or "", data)
     except ValueError as e:
         logger.info(f"解析大纲失败（文件读取/格式）：{e}，user={user['username']}")
@@ -733,11 +738,46 @@ def _public_user(user: dict) -> dict:
     }
 
 
+# P2 安全：登录失败限流（按 IP，防爆破）
+import time as _time
+_login_fails: dict[str, list] = {}
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_MAX = 8        # 最多失败次数
+_LOGIN_WINDOW = 300  # 5 分钟窗口
+
+
+def _client_ip(request) -> str:
+    return request.client.host if request and request.client else "unknown"
+
+
+def _login_ratelimit(ip: str):
+    now = _time.time()
+    with _LOGIN_LOCK:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < _LOGIN_WINDOW]
+        if len(fails) >= _LOGIN_MAX:
+            return False
+        _login_fails[ip] = fails
+    return True
+
+
+def _record_login_fail(ip: str):
+    now = _time.time()
+    with _LOGIN_LOCK:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < _LOGIN_WINDOW]
+        fails.append(now)
+        _login_fails[ip] = fails
+
+
 @app.post("/api/login")
-def login(req: LoginReq):
+def login(req: LoginReq, request: Request):
+    ip = _client_ip(request)
+    if not _login_ratelimit(ip):
+        logger.warning("登录限流拦截: ip=%s identifier=%s", ip, req.username)
+        raise HTTPException(status_code=429, detail="尝试次数过多，请 5 分钟后再试")
     # req.username 支持「用户名 或 邮箱」两种登录方式
     uid = db.authenticate(req.username, req.password)
     if uid is None:
+        _record_login_fail(ip)
         logger.warning("登录失败: identifier=%s", req.username)
         raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)
@@ -755,10 +795,14 @@ def logout(authorization: str = Header(default="")):
 
 
 @app.post("/api/admin/login")
-def admin_login(req: LoginReq):
+def admin_login(req: LoginReq, request: Request):
     """管理后台登录：仅站长（is_admin=1）可登录，普通用户返回 403。支持用户名或邮箱。"""
+    ip = _client_ip(request)
+    if not _login_ratelimit(ip):
+        raise HTTPException(status_code=429, detail="尝试次数过多，请 5 分钟后再试")
     uid = db.authenticate(req.username, req.password)
     if uid is None:
+        _record_login_fail(ip)
         logger.warning("管理登录失败: identifier=%s", req.username)
         raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)

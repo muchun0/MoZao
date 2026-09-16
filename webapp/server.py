@@ -41,7 +41,7 @@ from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
-from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
+from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, Volume
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.store.project import ProjectStore, _safe_name
 
@@ -1245,6 +1245,7 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
     return {
         "title": outline.title,
         "intro": outline.intro,
+        "volumes": [v.to_dict() for v in outline.volumes],
         "chapters": [c.to_dict() for c in outline.chapters],
     }
 
@@ -1265,11 +1266,23 @@ class OutlineChapterReq(BaseModel):
     emotion: str = ""
     transition: str = ""
     tag: str = ""
+    volume_no: int = 0
 
+
+class VolumeReq(BaseModel):
+    no: int = 0
+    name: str = ""
+    intro: str = ""
+    main_conflict: str = ""
+    character_growth: str = ""
+    climax: str = ""
+    start_ch: int = 0
+    end_ch: int = 0
 
 class OutlineSaveReq(BaseModel):
     title: str = ""
     intro: str = ""
+    volumes: list[VolumeReq] = []
     chapters: list[OutlineChapterReq] = []
 
 
@@ -1342,13 +1355,24 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
             emotion=(c.emotion or "").strip(),
             transition=(c.transition or "").strip(),
             tag=(c.tag or "").strip(),
+            volume_no=int(getattr(c, "volume_no", 0) or 0),
         ))
     unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
 
     old = store.load_outline()
+    volumes = []
+    for i, v in enumerate(req.volumes, start=1):
+        volumes.append(Volume(
+            no=i, name=(v.name or "").strip(), intro=(v.intro or "").strip(),
+            main_conflict=(v.main_conflict or "").strip(),
+            character_growth=(v.character_growth or "").strip(),
+            climax=(v.climax or "").strip(),
+            start_ch=v.start_ch or 0, end_ch=v.end_ch or 0,
+        ))
     new_outline = Outline(
         title=(req.title or "").strip() or (old.title if old else ""),
         intro=(req.intro or "").strip() or (old.intro if old else ""),
+        volumes=volumes,
         chapters=chapters,
     )
     store.save_outline(new_outline)

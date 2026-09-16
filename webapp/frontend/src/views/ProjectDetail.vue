@@ -17,11 +17,14 @@
     <el-tabs v-model="tab">
       <el-tab-pane label="章节" name="chapters">
         <div v-if="chapters.length" class="ch-list">
-          <div v-for="c in chapters" :key="c.no" class="ch-item" @click="openChapter(c)">
-            <span class="ch-no">第{{ c.no }}章</span>
-            <span class="ch-title">{{ c.title }}</span>
-            <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ c.status }}</el-tag>
-            <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
+          <div v-for="g in groupedChapters" :key="g.key" class="ch-group">
+            <div class="ch-group-title">{{ g.name }}</div>
+            <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
+              <span class="ch-no">第{{ c.no }}章</span>
+              <span class="ch-title">{{ c.title }}</span>
+              <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ c.status }}</el-tag>
+              <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
+            </div>
           </div>
         </div>
         <el-empty v-else description="暂无章节" />
@@ -86,7 +89,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter } from '../api/novel'
@@ -117,6 +120,26 @@ const genPct = ref(0)
 const genStatus = ref('')
 const regenNo = ref(0)
 
+// 按分卷分组的章节菜单：以 outline.volumes 为骨架，已生成章节按 no 合并状态
+const groupedChapters = computed(() => {
+  const vols = (outline.value && outline.value.volumes) || []
+  const out = []
+  const chMap = {}
+  ;(chapters.value || []).forEach(c => { chMap[c.no] = c })
+  const olChs = (outline.value && outline.value.chapters) || []
+  vols.forEach(v => {
+    const list = olChs.filter(c => c.volume_no === v.no).map(c => ({ ...chMap[c.no], ...c }))
+    if (list.length) out.push({ key: 'vol-' + v.no, name: v.name || ('第' + v.no + '卷'), list })
+  })
+  const unassigned = olChs.filter(c => !c.volume_no || c.volume_no === 0).map(c => ({ ...chMap[c.no], ...c }))
+  if (unassigned.length) out.push({ key: 'vol-0', name: '未分卷', list: unassigned })
+  // 兜底：outline 为空时直接用 chapters
+  if (!olChs.length && chapters.value.length) {
+    out.push({ key: 'all', name: '全部章节', list: chapters.value })
+  }
+  return out
+})
+
 async function regenChapter(c) {
   if (!confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`)) return
   regenNo.value = c.no
@@ -139,6 +162,7 @@ async function loadAll() {
   loading.value = true
   try {
     project.value = await getProject(pid)
+    outline.value = await getOutline(pid)
     chapters.value = (await getChapters(pid)).chapters || []
     world.value = await getWorld(pid)
     await checkStatus()
@@ -243,6 +267,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .gen-status { font-size: 13px; color: #909399; margin-left: 12px; }
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
+.ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }
 .ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }
 .ch-item:hover { background: #f5f7fa; }
 .ch-no { color: #909399; font-size: 13px; width: 60px; }

@@ -70,6 +70,7 @@ class ChapterPlan:
     emotion: str = ""          # 情绪价值：本节点带给读者的情绪（爽点/虐点/笑点/悬念）
     transition: str = ""        # 转场提示：与前后章节的衔接方式
     tag: str = ""              # 节点标签：高潮/过渡/伏笔/爽点/反转/虐点等
+    volume_no: int = 0        # 所属分卷编号，0=未分配
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +78,7 @@ class ChapterPlan:
             "core_event": self.core_event, "conflict": self.conflict,
             "character_moves": self.character_moves, "foreshadowing": self.foreshadowing,
             "emotion": self.emotion, "transition": self.transition, "tag": self.tag,
+            "volume_no": self.volume_no,
         }
 
     @classmethod
@@ -93,6 +95,7 @@ class ChapterPlan:
             emotion=d.get("emotion", ""),
             transition=d.get("transition", ""),
             tag=d.get("tag", ""),
+            volume_no=int(d.get("volume_no", 0)),
         )
 
 

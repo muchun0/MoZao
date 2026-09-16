@@ -315,3 +315,28 @@ docker compose logs -f novel-gen
 
 *最后更新：2026-09-16 · 由开发记录整理（新增三级大纲：总纲→分卷→章节、volume_no 全链路、章节按分卷分组、高质量模式 3 元/万字、MySQL 全量切换、Vue3 前端迁移完成、服务器 git 部署、多用户并发生成）*
 
+
+---
+
+## 12. 代码审查修复与安全加固（2026-09-17）
+
+### 计费与并发
+- 余额扣改：change_balance 加 SELECT ... FOR UPDATE 行锁，读改写同事务，消除并发丢更新
+- 结算幂等：先落 settle 标记再扣费，避免崩溃重复扣费
+- 生成防透支：每章生成前实时检查项目所有者余额，余额 <= 0 自动停止并提示充值后从断点继续（不做创建预扣冻结，仍按实际 AI 字数结算）
+- 批量生成改用真 RunHandle（stop_event/error），finally 清理信号量与 RUNS，失败落盘 failed.json
+
+### 数据与稳定性
+- save_config/load_config 补落盘 8 个字段（高质量/人物深度/番茄风/节奏/剧情速度/自定义提示词等）
+- 项目目录写 JSON 改临时文件 + os.replace 原子写；project_id 加短 uuid 防同秒撞名
+
+### 安全
+- 密码升级 bcrypt(cost=12)，旧 sha256 用户首登自动平滑重哈希
+- CORS 由 `*`+credentials 改为环境变量 ALLOWED_ORIGINS 白名单
+- 验证码改用 secrets 密码学随机数
+- 登录按 IP 限流（5 分钟失败 8 次封 10 分钟）
+- 上传文件 10MB 上限，超限返回 413
+- config.yaml 移出 git 并加 gitignore，新增 config.example.yaml（注意：历史 key 需去厂商后台吊销重发）
+- 导出文件名加 project_id 前缀，避免不同用户同名书互相覆盖
+
+*最后更新：2026-09-17 · 代码审查报告 P0/P1/P2 修复、余额耗尽自动停止、bcrypt 密码升级*

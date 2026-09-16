@@ -11,7 +11,7 @@ Agent 基类：所有创作角色的公共接口。
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from pathlib import Path
 
 from ...config import NovelConfig
@@ -78,7 +78,6 @@ class BaseAgent(ABC):
         parts.append(_skill_append(self.cfg))
         return "\n\n".join(p for p in parts if p)
 
-    @abstractmethod
     def run(self, **kwargs):
-        """执行本角色的核心任务，返回产物或 None。"""
-        ...
+        """执行本角色的核心任务（子类可按需覆盖）。"""
+        return None

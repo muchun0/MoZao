@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +41,7 @@ from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
-from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, Volume
+from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.store.project import ProjectStore, _safe_name
 
@@ -58,18 +58,22 @@ logger = get_logger("server")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = BASE_DIR / "projects"
+_MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
 OUTPUT_DIR = BASE_DIR / "output"
 WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
 
-# 允许前端跨域（前端独立部署时用）
+# CORS：P2 安全修复，不再通配 "*" + credentials（高危）。
+# 生产前后端同域部署时无需跨域；如需独立域名，用环境变量 ALLOWED_ORIGINS 逗号分隔白名单。
+_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS",
+            "http://127.0.0.1:8000,http://localhost:8000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -420,6 +424,11 @@ def _settle_price(store: ProjectStore) -> None:
         billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
         hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
         final_price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
+        # P0 修复：先落盘幂等标记再扣费。进程崩溃/异常时 settle.json 已存在，重启后不再重复扣费；
+        # 宁可漏扣（站长后台补偿）也不重复扣。
+        sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
+                                  "target_ai_words": target_ai_words, "final_price": final_price,
+                                  "hq": hq, "status": "charging"}), encoding="utf-8")
         bal = db.get_user(uid)["balance"]
         if bal >= final_price:
             db.change_balance(uid, -final_price,
@@ -437,7 +446,8 @@ def _settle_price(store: ProjectStore) -> None:
                            uid, project_id, final_price, bal, short)
         db.update_project_price(project_id, final_price)
         sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": target_ai_words, "final_price": final_price}),
+                                  "target_ai_words": target_ai_words, "final_price": final_price,
+                                  "hq": hq, "status": "done"}),
                       encoding="utf-8")
         logger.info("结算完成: project=%s ai_words=%d billable=%d target=%d final=%.2f balance=%.2f",
                     project_id, ai_words, billable_words, target_ai_words, final_price,
@@ -475,6 +485,19 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
+
+
+def _balance_exhausted(store: ProjectStore) -> tuple[bool, float]:
+    """检查项目所有者余额是否已耗尽（<=0）。返回 (是否应停止, 当前余额)。"""
+    try:
+        uid = db.project_owner(store.dir.name)
+        if uid is None:
+            return False, 0.0
+        u = db.get_user(uid)
+        bal = float(u["balance"]) if u else 0.0
+        return bal <= 0, bal
+    except Exception:
+        return False, 0.0
 
 
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
@@ -524,6 +547,11 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 print(f"[web] 收到停止请求，第 {no} 章暂停")
                 logger.info("生成停止: project=%s 阶段=writing 第 %d 章暂停", store.dir.name, no)
                 break
+            exhausted, bal = _balance_exhausted(store)
+            if exhausted:
+                handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止生成。充值后可继续从断点生成。"
+                logger.warning("余额耗尽停止: project=%s 第 %d 章前 balance=%.2f", store.dir.name, no, bal)
+                break
             pipeline.write_chapter(no, silent=False)
 
         # 未停止则导出成品
@@ -532,6 +560,13 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         logger.info("生成完成: project=%s title=%s", store.dir.name, cfg.effective_title())
     except Exception as exc:  # noqa: BLE001
         handle.error = f"{type(exc).__name__}: {exc}"
+        # P1 修复：失败落盘标记，前端可展示 failed 状态与原因
+        try:
+            store.dir.joinpath("failed.json").write_text(
+                json.dumps({"error": handle.error, "title": cfg.effective_title()}, ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:
+            pass
         logger.exception("生成失败: project=%s title=%s error=%s",
                          store.dir.name, cfg.effective_title(), exc)
     finally:
@@ -571,6 +606,8 @@ async def parse_content(file: UploadFile | None = File(None), text: str = Form("
     try:
         if file is not None:
             data = await file.read()
+            if len(data) > _MAX_UPLOAD:
+                raise HTTPException(status_code=413, detail="文件过大，请上传 10MB 以内的文档")
             text = extract_text(file.filename or "", data)
         raw = text or ""
     except ValueError as e:
@@ -596,6 +633,8 @@ async def parse_outline(file: UploadFile = File(...), user: dict = Depends(_requ
     """上传大纲文档（txt/md/docx），智能解析成新建表单字段。"""
     try:
         data = await file.read()
+        if len(data) > _MAX_UPLOAD:
+            raise HTTPException(status_code=413, detail="文件过大，请上传 10MB 以内的文档")
         text = extract_text(file.filename or "", data)
     except ValueError as e:
         logger.info(f"解析大纲失败（文件读取/格式）：{e}，user={user['username']}")
@@ -717,11 +756,46 @@ def _public_user(user: dict) -> dict:
     }
 
 
+# P2 安全：登录失败限流（按 IP，防爆破）
+import time as _time
+_login_fails: dict[str, list] = {}
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_MAX = 8        # 最多失败次数
+_LOGIN_WINDOW = 300  # 5 分钟窗口
+
+
+def _client_ip(request) -> str:
+    return request.client.host if request and request.client else "unknown"
+
+
+def _login_ratelimit(ip: str):
+    now = _time.time()
+    with _LOGIN_LOCK:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < _LOGIN_WINDOW]
+        if len(fails) >= _LOGIN_MAX:
+            return False
+        _login_fails[ip] = fails
+    return True
+
+
+def _record_login_fail(ip: str):
+    now = _time.time()
+    with _LOGIN_LOCK:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < _LOGIN_WINDOW]
+        fails.append(now)
+        _login_fails[ip] = fails
+
+
 @app.post("/api/login")
-def login(req: LoginReq):
+def login(req: LoginReq, request: Request):
+    ip = _client_ip(request)
+    if not _login_ratelimit(ip):
+        logger.warning("登录限流拦截: ip=%s identifier=%s", ip, req.username)
+        raise HTTPException(status_code=429, detail="尝试次数过多，请 5 分钟后再试")
     # req.username 支持「用户名 或 邮箱」两种登录方式
     uid = db.authenticate(req.username, req.password)
     if uid is None:
+        _record_login_fail(ip)
         logger.warning("登录失败: identifier=%s", req.username)
         raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)
@@ -739,10 +813,14 @@ def logout(authorization: str = Header(default="")):
 
 
 @app.post("/api/admin/login")
-def admin_login(req: LoginReq):
+def admin_login(req: LoginReq, request: Request):
     """管理后台登录：仅站长（is_admin=1）可登录，普通用户返回 403。支持用户名或邮箱。"""
+    ip = _client_ip(request)
+    if not _login_ratelimit(ip):
+        raise HTTPException(status_code=429, detail="尝试次数过多，请 5 分钟后再试")
     uid = db.authenticate(req.username, req.password)
     if uid is None:
+        _record_login_fail(ip)
         logger.warning("管理登录失败: identifier=%s", req.username)
         raise HTTPException(status_code=401, detail="用户名/邮箱或密码错误")
     user = db.get_user(uid)
@@ -1245,7 +1323,6 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
     return {
         "title": outline.title,
         "intro": outline.intro,
-        "volumes": [v.to_dict() for v in outline.volumes],
         "chapters": [c.to_dict() for c in outline.chapters],
     }
 
@@ -1266,23 +1343,11 @@ class OutlineChapterReq(BaseModel):
     emotion: str = ""
     transition: str = ""
     tag: str = ""
-    volume_no: int = 0
 
-
-class VolumeReq(BaseModel):
-    no: int = 0
-    name: str = ""
-    intro: str = ""
-    main_conflict: str = ""
-    character_growth: str = ""
-    climax: str = ""
-    start_ch: int = 0
-    end_ch: int = 0
 
 class OutlineSaveReq(BaseModel):
     title: str = ""
     intro: str = ""
-    volumes: list[VolumeReq] = []
     chapters: list[OutlineChapterReq] = []
 
 
@@ -1355,24 +1420,13 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
             emotion=(c.emotion or "").strip(),
             transition=(c.transition or "").strip(),
             tag=(c.tag or "").strip(),
-            volume_no=int(getattr(c, "volume_no", 0) or 0),
         ))
     unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
 
     old = store.load_outline()
-    volumes = []
-    for i, v in enumerate(req.volumes, start=1):
-        volumes.append(Volume(
-            no=i, name=(v.name or "").strip(), intro=(v.intro or "").strip(),
-            main_conflict=(v.main_conflict or "").strip(),
-            character_growth=(v.character_growth or "").strip(),
-            climax=(v.climax or "").strip(),
-            start_ch=v.start_ch or 0, end_ch=v.end_ch or 0,
-        ))
     new_outline = Outline(
         title=(req.title or "").strip() or (old.title if old else ""),
         intro=(req.intro or "").strip() or (old.intro if old else ""),
-        volumes=volumes,
         chapters=chapters,
     )
     store.save_outline(new_outline)
@@ -1661,20 +1715,30 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
         handle = _RunHandle()
         _RUNS[project_id] = handle
     _check_regen_limit(store, project_id)
+    # P1 修复：原路径只 release 不 acquire，导致信号量永久泄漏。这里补 acquire。
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
+    try:
+        # 删除 no 及之后章节 + 对应记忆
+        for ch in store.list_chapters():
+            if ch.no >= no:
+                p = store.chapter_path(ch.no)
+                if p.exists():
+                    p.unlink()
+        summaries = [x for x in store.load_summaries() if int(x.get("no", 0)) < no]
+        store._write_json(store.memory_path(), summaries)
 
-    # 删除 no 及之后章节 + 对应记忆
-    for ch in store.list_chapters():
-        if ch.no >= no:
-            p = store.chapter_path(ch.no)
-            if p.exists():
-                p.unlink()
-    summaries = [s for s in store.load_summaries() if int(s.get("no", 0)) < no]
-    store._write_json(store.memory_path(), summaries)
-
-    logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
-    t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
-    handle.thread = t
-    t.start()
+        logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
+        t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
     return {"started": True, "project_id": project_id, "from_chapter": no}
 
 
@@ -2124,25 +2188,35 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
             raise HTTPException(status_code=409, detail="该项目正在生成中")
     if not _GEN_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
-    # 复用现有后台生成逻辑（从start到end逐章）
+    # P1 修复：用真 _RunHandle（含 stop_event/error），finally 清理 _RUNS，结束后结算
+    handle = _RunHandle()
     def _batch():
         try:
             pipeline = _open_pipeline(store)
             outline = store.load_outline()
             research = store.load_research()
             for no in range(start, end + 1):
-                if no > len(outline.chapters):
+                if handle.stop_event.is_set() or no > len(outline.chapters):
+                    break
+                exhausted, bal = _balance_exhausted(store)
+                if exhausted:
+                    handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止批量生成。"
+                    logger.warning("批量生成余额耗尽: project=%s 第 %d 章前 balance=%.2f", project_id, no, bal)
                     break
                 plan = outline.chapters[no - 1]
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+            _settle_price(store)
         except Exception as e:
+            handle.error = f"{type(e).__name__}: {e}"
             logger.exception("批量生成失败: %s", project_id)
         finally:
             _GEN_SEMAPHORE.release()
-    import threading
+            with _LOCK:
+                _RUNS.pop(project_id, None)
     t = threading.Thread(target=_batch, daemon=True)
+    handle.thread = t
+    _RUNS[project_id] = handle
     t.start()
-    _RUNS[project_id] = type("R", (), {"thread": t, "stop_flag": False})()
     return {"msg": f"批量生成已启动：第{start}-{end}章"}
 
 
@@ -2155,33 +2229,36 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
     fmt = (format or "txt").lower()
 
     if fmt == "txt":
-        out = OUTPUT_DIR / f"{name}.txt"
         media = "text/plain; charset=utf-8"
+        out = OUTPUT_DIR / f"{project_id}_{name}.txt"
         if not out.exists():
             try:
                 pipeline = _open_pipeline(store)
-                out = pipeline.export()
+                src = pipeline.export()
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"尚未生成可下载的 txt：{exc}")
     elif fmt == "epub":
-        out = OUTPUT_DIR / f"{name}.epub"
         media = "application/epub+zip"
+        out = OUTPUT_DIR / f"{project_id}_{name}.epub"
         if not out.exists():
             try:
-                out = export_epub(store)
+                src = export_epub(store)
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"导出 epub 失败：{exc}")
     elif fmt == "docx":
-        out = OUTPUT_DIR / f"{name}.docx"
         media = ("application/vnd.openxmlformats-officedocument."
                  "wordprocessingml.document")
+        out = OUTPUT_DIR / f"{project_id}_{name}.docx"
         if not out.exists():
             try:
-                out = export_docx(store)
+                src = export_docx(store)
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"导出 docx 失败：{exc}")
     elif fmt == "md":
-        out = OUTPUT_DIR / f"{name}.md"
+        out = OUTPUT_DIR / f"{project_id}_{name}.md"
         media = "text/markdown; charset=utf-8"
         if not out.exists():
             try:
@@ -2208,7 +2285,7 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
     if not out.exists():
         raise HTTPException(status_code=404, detail="尚未生成可下载的文件")
     logger.info("下载导出: uid=%d project=%s format=%s file=%s", user["id"], project_id, fmt, out.name)
-    return FileResponse(str(out), filename=out.name, media_type=media)
+    return FileResponse(str(out), filename=f"{name}.{fmt}", media_type=media)
 
 
 # ---------- 静态前端（同源部署时） ----------

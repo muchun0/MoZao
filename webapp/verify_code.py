@@ -36,7 +36,9 @@ _TEXTS = {
 
 
 def _gen_code() -> str:
-    return f"{random.randint(0, 999999):06d}"
+    # P2 安全修复：secrets 密码学安全随机数替代 random
+    import secrets
+    return f"{secrets.randbelow(1000000):06d}"
 
 
 def send_code(purpose: str, email: str) -> tuple[bool, str]:

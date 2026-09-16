@@ -219,10 +219,23 @@ _SKILLS = """CREATE TABLE IF NOT EXISTS writing_skills (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
+_USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(255) DEFAULT '',
+    prompt_append TEXT,
+    role VARCHAR(20) NOT NULL DEFAULT '',
+    is_active INT NOT NULL DEFAULT 1,
+    created_at DOUBLE NOT NULL,
+    KEY idx_us_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
 
 def init_db() -> None:
     with _connect() as conn:
-        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS):
+        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS):
             conn.execute(ddl)
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
@@ -775,4 +788,63 @@ def update_skill(skill_id: int, **fields) -> bool:
 def delete_skill(skill_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM writing_skills WHERE id=%s", (skill_id,))
+
+
+
+# ---------- 用户自定义 Skills ----------
+
+def list_user_skills(user_id: int, only_active: bool = False) -> list[dict]:
+    sql = "SELECT * FROM user_skills WHERE user_id=%s"
+    if only_active:
+        sql += " AND is_active=1"
+    sql += " ORDER BY id DESC"
+    with _connect() as conn:
+        rows = conn.execute(sql, (user_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+def get_user_skill(skill_id: int, user_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM user_skills WHERE id=%s AND user_id=%s",
+                           (skill_id, user_id)).fetchone()
+        return dict(row) if row else None
+
+def create_user_skill(user_id: int, name: str, description: str,
+                      prompt_append: str, role: str = "", is_active: int = 1) -> int:
+    import time
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO user_skills (user_id, name, description, prompt_append, role, is_active, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, name, description, prompt_append, role, is_active, time.time()))
+        return cur.lastrowid
+
+def update_user_skill(skill_id: int, user_id: int, **fields) -> bool:
+    allowed = {"name", "description", "prompt_append", "role", "is_active"}
+    sets = []
+    vals = []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=%s")
+            vals.append(v)
+    if not sets:
+        return False
+    vals.extend([skill_id, user_id])
+    with _connect() as conn:
+        cur = conn.execute(f"UPDATE user_skills SET {','.join(sets)} WHERE id=%s AND user_id=%s", vals)
+        return cur.rowcount > 0
+
+def delete_user_skill(skill_id: int, user_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM user_skills WHERE id=%s AND user_id=%s", (skill_id, user_id))
+
+def list_user_skills_by_project(project_id: str) -> list[dict]:
+    """根据项目ID查用户skills：通过project_owner表找到user_id。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT user_id FROM project_owner WHERE project_id=%s", (project_id,)).fetchone()
+        if not row:
+            return []
+        uid = row["user_id"]
+        rows = conn.execute(
+            "SELECT * FROM user_skills WHERE user_id=%s AND is_active=1 ORDER BY id DESC", (uid,)).fetchall()
+        return [dict(r) for r in rows]
 

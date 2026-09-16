@@ -113,6 +113,43 @@
         </div>
       </div>
     </el-card>
+
+    <!-- 我的Skills -->
+    <el-card class="tool-card">
+      <template #header><b>我的Skills</b></template>
+      <p class="muted">自定义写作风格，生成时自动注入对应角色</p>
+      <el-button size="small" type="primary" @click="showSkillDlg = true">+ 新建Skill</el-button>
+      <div class="result-area">
+        <div v-for="s in mySkills" :key="s.id" class="fs-row">
+          <span>📝 {{ s.name }} <small v-if="s.role" class="muted">({{ s.role }})</small></span>
+          <el-button size="small" link type="danger" @click="delMySkill(s.id)">删</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 新建Skill弹窗 -->
+    <el-dialog v-model="showSkillDlg" title="新建自定义Skill" width="560px" append-to-body>
+      <el-form :model="skillForm" label-width="80px">
+        <el-form-item label="名称"><el-input v-model="skillForm.name" placeholder="如：克制冷峻风格" /></el-form-item>
+        <el-form-item label="适用角色">
+          <el-select v-model="skillForm.role" placeholder="全部角色" clearable style="width:100%">
+            <el-option label="全部角色" value="" />
+            <el-option label="调研(Researcher)" value="researcher" />
+            <el-option label="架构师(Architect)" value="architect" />
+            <el-option label="写手(Writer)" value="writer" />
+            <el-option label="审校(Reviewer)" value="reviewer" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="描述"><el-input v-model="skillForm.description" placeholder="一句话说明这个Skill的作用" /></el-form-item>
+        <el-form-item label="提示词内容">
+          <el-input v-model="skillForm.prompt_append" type="textarea" :rows="6" placeholder="写给AI的写作要求，如：叙事克制，多用动作细节和感官描写传递情绪，少直接抒情" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showSkillDlg = false">取消</el-button>
+        <el-button type="primary" @click="saveMySkill">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -239,7 +276,38 @@ async function delLk(i) {
   loadLk()
 }
 
-onMounted(() => { loadSnaps(); loadFs(); loadLk() })
+const mySkills = ref([])
+const showSkillDlg = ref(false)
+const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' })
+
+async function loadMySkills() {
+  try {
+    const r = await fetch('/api/my-skills')
+    const data = await r.json()
+    mySkills.value = data.skills || []
+  } catch {}
+}
+async function saveMySkill() {
+  if (!skillForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
+  try {
+    await fetch('/api/my-skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(skillForm.value)
+    })
+    ElMessage.success('Skill已保存')
+    showSkillDlg.value = false
+    skillForm.value = { name: '', role: '', description: '', prompt_append: '' }
+    loadMySkills()
+  } catch { ElMessage.error('保存失败') }
+}
+async function delMySkill(id) {
+  if (!confirm('确定删除？')) return
+  await fetch(`/api/my-skills/${id}`, { method: 'DELETE' })
+  loadMySkills()
+}
+
+onMounted(() => { loadSnaps(); loadFs(); loadLk(); loadMySkills() })
 </script>
 
 <style scoped>

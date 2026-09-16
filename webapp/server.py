@@ -812,6 +812,51 @@ def admin_delete_skill(skill_id: int, user: dict = Depends(_require_admin)):
     return {"ok": True}
 
 
+# ---------- 用户自定义 Skills ----------
+
+@app.get("/api/my-skills")
+def my_skills(user: dict = Depends(_require_user)):
+    return {"skills": db.list_user_skills(user["id"])}
+
+
+@app.post("/api/my-skills")
+def create_my_skill(req: dict, user: dict = Depends(_require_user)):
+    name = (req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    sid = db.create_user_skill(
+        user_id=user["id"],
+        name=name,
+        description=req.get("description", ""),
+        prompt_append=req.get("prompt_append", ""),
+        role=req.get("role", ""),
+        is_active=1 if req.get("is_active", True) else 0,
+    )
+    logger.info("用户创建skill: uid=%d sid=%d name=%s", user["id"], sid, name)
+    return {"ok": True, "id": sid}
+
+
+@app.put("/api/my-skills/{skill_id}")
+def update_my_skill(skill_id: int, req: dict, user: dict = Depends(_require_user)):
+    if not db.get_user_skill(skill_id, user["id"]):
+        raise HTTPException(status_code=404, detail="Skill不存在")
+    fields = {}
+    for k in ("name", "description", "prompt_append", "role", "is_active"):
+        if k in req:
+            v = req[k]
+            if k == "is_active":
+                v = 1 if v else 0
+            fields[k] = v
+    db.update_user_skill(skill_id, user["id"], **fields)
+    return {"ok": True}
+
+
+@app.delete("/api/my-skills/{skill_id}")
+def delete_my_skill(skill_id: int, user: dict = Depends(_require_user)):
+    db.delete_user_skill(skill_id, user["id"])
+    return {"ok": True}
+
+
 @app.get("/api/admin/users")
 def admin_users(user: dict = Depends(_require_admin)):
     return {"users": db.list_users_admin()}

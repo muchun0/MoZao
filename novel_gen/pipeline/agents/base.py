@@ -5,6 +5,7 @@ Agent 基类：所有创作角色的公共接口。
 每个 Agent 对应一个创作角色，独立持有：
 - prompts/{role}.md  角色身份和写作规则（Markdown，可编辑）
 - 专属 skill（从数据库 writing_skills 表按 role 过滤）
+- 用户自定义 skill（从 user_skills 表按项目owner过滤）
 
 后续要调整某个角色的风格，直接改对应的 .md 文件或在管理页
 加该角色的专属 skill 即可，不用动代码。
@@ -45,21 +46,28 @@ class BaseAgent(ABC):
         return self._role_prompt
 
     def _role_skill_append(self) -> str:
-        """从数据库加载当前角色的专属 skill（role 匹配）+ 全局 skill（role=''）。
-
-        项目级选了 skill_id 的全局 prompt 也会在 templates._skill_append 里注入。
-        这里只补「按角色过滤」的专属 skill。
-        """
+        """加载：管理员全局skill + 管理员角色专属skill + 当前用户自定义skill。"""
         try:
             from webapp import db
-            # 专属本角色的 skill
-            own = db.list_skills(only_active=True, role=self.role_name)
-            # 全局 skill（role 为空）也对所有角色生效
-            common = db.list_skills(only_active=True, role="")
             blocks = []
-            for sk in own + common:
+            # 管理员全局 skill（role=''）
+            for sk in db.list_skills(only_active=True, role=""):
                 if sk.get("prompt_append"):
                     blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
+            # 管理员角色专属 skill
+            for sk in db.list_skills(only_active=True, role=self.role_name):
+                if sk.get("prompt_append"):
+                    blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
+            # 用户自定义 skill（通过项目owner反查user_id）
+            try:
+                pid = self.store.dir.name
+                for usk in db.list_user_skills_by_project(pid):
+                    if usk.get("prompt_append"):
+                        # role为空=所有角色生效；role匹配=只对该角色生效
+                        if not usk.get("role") or usk["role"] == self.role_name:
+                            blocks.append(f"【用户自定义：{usk['name']}】\n{usk['prompt_append']}")
+            except Exception as ue:
+                self.logger.warning("加载用户skill失败（忽略）: %s", ue)
             return "\n\n".join(blocks)
         except Exception as e:
             self.logger.warning("加载角色 skill 失败（忽略）: %s", e)

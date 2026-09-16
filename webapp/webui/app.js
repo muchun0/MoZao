@@ -1266,9 +1266,24 @@
       if (w.characters && w.characters.length) {
         html += "<h4>人物关系图谱</h4>";
         html += renderCharGraph(w.characters);
-        html += "<h4>人物档案</h4>" + w.characters.map((c) =>
-          '<div class="char"><span class="name">' + esc(c.name) + '</span><span class="role">' + esc(c.role) + '</span><div>' + esc(c.desc) + "</div></div>"
-        ).join("");
+        html += "<h4>人物档案</h4>";
+        html += w.characters.map((c) => {
+          const fields = [
+            ["role", "身份"],
+            ["appearance", "外貌"],
+            ["personality", "性格"],
+            ["desire", "核心欲望"],
+            ["wound", "软肋/创伤"],
+            ["arc", "人物弧光"],
+            ["speech_style", "说话方式"],
+            ["relations", "人物关系"],
+          ].filter(([k]) => c[k] && c[k].trim());
+          let inner = fields.map(([k, label]) =>
+            '<div class="char-field"><span class="char-label">' + label + "</span><span>" + esc(c[k]) + "</span></div>"
+          ).join("");
+          if (c.desc && c.desc.trim()) inner += '<div class="char-field"><span class="char-label">简介</span><span>' + esc(c.desc) + "</span></div>";
+          return '<div class="char-card"><div class="char-head"><span class="name">' + esc(c.name || "未命名") + "</span></div>" + inner + "</div>";
+        }).join("");
       }
       if (w.foreshadowing && w.foreshadowing.length) {
         html += "<h4>伏笔</h4><ul>" + w.foreshadowing.map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul>";

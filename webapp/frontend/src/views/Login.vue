@@ -6,7 +6,7 @@
         <el-tab-pane label="登录" name="login">
           <el-form @submit.prevent="doLogin">
             <el-form-item>
-              <el-input v-model="loginForm.email" placeholder="邮箱" />
+              <el-input v-model="loginForm.username" placeholder="用户名或邮箱" />
             </el-form-item>
             <el-form-item>
               <el-input v-model="loginForm.password" type="password" placeholder="密码" show-password />
@@ -76,7 +76,7 @@ const loading = ref(false)
 const cooldown = ref(0)
 let timer = null
 
-const loginForm = ref({ email: '', password: '' })
+const loginForm = ref({ username: '', password: '' })
 const regForm = ref({ username: '', email: '', password: '', code: '' })
 const resetForm = ref({ email: '', code: '', password: '' })
 

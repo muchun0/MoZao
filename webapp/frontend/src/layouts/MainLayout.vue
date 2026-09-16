@@ -3,7 +3,7 @@
     <el-header class="header">
       <div class="logo" @click="$router.push('/')">墨造 · AI小说生成</div>
       <div class="right">
-        <span v-if="auth.user" class="balance">余额 ¥{{ balance.toFixed(2) }}</span>
+        <span v-if="auth.user" class="balance">余额 ¥{{ (balance || 0).toFixed(2) }}</span>
         <el-button v-if="auth.user" text @click="rechargeRef.open()">充值</el-button>
         <el-button v-if="auth.isAdmin" text @click="$router.push('/admin')">管理后台</el-button>
         <el-dropdown v-if="auth.user" @command="onCommand">
@@ -37,7 +37,10 @@ const balance = ref(0)
 const rechargeRef = ref(null)
 
 onMounted(async () => {
-  try { balance.value = (await getBalance()).balance } catch {}
+  try {
+    const r = await getBalance()
+    balance.value = r.user?.balance ?? 0
+  } catch {}
 })
 
 function onCommand(cmd) {

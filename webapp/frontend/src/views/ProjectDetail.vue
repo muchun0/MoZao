@@ -106,11 +106,11 @@ async function loadAll() {
 async function checkStatus() {
   try {
     const s = await getStatus(pid)
-    generating.value = s.generating
-    genDone.value = !s.generating && s.generated > 0
-    if (s.total && s.generated) genPct.value = Math.round(s.generated / s.total * 100)
-    genStatus.value = s.message || ''
-    if (s.generating) startPolling()
+    generating.value = s.running
+    genDone.value = !s.running && s.chapters_done > 0
+    if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+    genStatus.value = s.error ? ('错误: ' + s.error) : ''
+    if (s.running) startPolling()
   } catch {}
 }
 
@@ -119,10 +119,10 @@ function startPolling() {
   pollTimer = setInterval(async () => {
     try {
       const s = await getStatus(pid)
-      generating.value = s.generating
-      if (s.total && s.generated) genPct.value = Math.round(s.generated / s.total * 100)
-      genStatus.value = s.message || ''
-      if (!s.generating) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
+      generating.value = s.running
+      if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+      genStatus.value = s.error ? ('错误: ' + s.error) : ''
+      if (!s.running) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
     } catch {}
   }, 3000)
 }

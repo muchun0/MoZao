@@ -17,6 +17,21 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('user', JSON.stringify(res.user))
   }
 
+  // 启动时刷新用户信息，避免 localStorage 里的旧数据导致 is_admin 等字段过期
+  async function fetchMe() {
+    if (!token.value) return
+    try {
+      const res = await authApi.me()
+      user.value = res.user
+      localStorage.setItem('user', JSON.stringify(res.user))
+    } catch {
+      token.value = ''
+      user.value = null
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+    }
+  }
+
   async function logout() {
     try { await authApi.logout() } catch {}
     token.value = ''
@@ -25,5 +40,5 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('user')
   }
 
-  return { token, user, isLoggedIn, isAdmin, login, logout }
+  return { token, user, isLoggedIn, isAdmin, login, logout, fetchMe }
 })

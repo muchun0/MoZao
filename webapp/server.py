@@ -1663,8 +1663,9 @@ def project_world(project_id: str, user: dict = Depends(_require_user)):
         return {"world_view": "", "characters": [], "foreshadowing": []}
     return {
         "world_view": world.world_view,
-        "characters": [{"name": c.name, "role": c.role, "desc": c.desc} for c in world.characters],
+        "characters": [c.to_dict() for c in world.characters],
         "foreshadowing": list(world.foreshadowing),
+        "locked_settings": list(world.locked_settings),
     }
 
 

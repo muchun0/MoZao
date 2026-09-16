@@ -636,3 +636,11 @@ input:focus, select:focus, textarea:focus {
 .tool-result .fs-item { display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:#fff; border:1px solid #e5e7eb; margin-bottom:4px; border-radius:4px; }
 .rhythm-bar { height:18px; background:#e0e7ff; border-radius:3px; margin-bottom:4px; position:relative; }
 .rhythm-bar span { position:absolute; right:6px; top:0; font-size:11px; line-height:18px; color:#4338ca; }
+
+/* 人物档案卡片 */
+.char-card { border:1px solid #e5e7eb; border-radius:8px; padding:14px; margin-bottom:10px; background:#fff; }
+.char-head { margin-bottom:8px; }
+.char-head .name { font-weight:600; font-size:15px; color:#1f2937; }
+.char-field { display:flex; gap:8px; font-size:13px; line-height:1.6; margin-bottom:4px; }
+.char-label { flex:0 0 80px; color:#6b7280; font-weight:500; }
+.char-field span:last-child { color:#374151; flex:1; }

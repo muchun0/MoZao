@@ -1830,5 +1830,163 @@
     }
     showLogin();
     loadPricing();
+
+  // ========== 工具tab功能 ==========
+  const $tools = (sel) => document.querySelector(sel);
+
+  // 质量校验三件套
+  async function runVerify(kind, label) {
+    const box = $tools("#verify-result");
+    box.innerHTML = `<div class="muted">正在${label}…</div>`;
+    try {
+      const r = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/verify/" + kind, { method: "POST" });
+      const issues = r.issues || r.problems || [];
+      if (!issues.length) {
+        box.innerHTML = `<div class="ok">未发现问题</div>`;
+      } else {
+        box.innerHTML = issues.map(i => {
+          const text = i.problem || i.issue || i.suggestion || JSON.stringify(i);
+          const lvl = i.level ? ` [${i.level}]` : "";
+          const sug = i.suggestion ? `<br><span class="muted">建议：${i.suggestion}</span>` : "";
+          return `<div class="issue">${text}${lvl}${sug}</div>`;
+        }).join("");
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="issue">失败：${e.message}</div>`;
+    }
+  }
+  $tools("#btn-verify-consistency")?.addEventListener("click", () => runVerify("consistency", "检查设定一致性"));
+  $tools("#btn-verify-logic")?.addEventListener("click", () => runVerify("logic", "检查剧情逻辑"));
+  $tools("#btn-verify-compliance")?.addEventListener("click", () => runVerify("compliance", "检测合规"));
+
+  // 节奏分析
+  $tools("#btn-rhythm")?.addEventListener("click", async () => {
+    const box = $tools("#rhythm-result");
+    box.innerHTML = `<div class="muted">分析中…</div>`;
+    try {
+      const r = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/stats/rhythm");
+      const max = Math.max(...r.chapters.map(c => c.words), 1);
+      const bars = r.chapters.map(c => {
+        const pct = Math.round(c.words / max * 100);
+        return `<div class="rhythm-bar" style="width:${pct}%"><span>第${c.no}章 ${c.words}字</span></div>`;
+      }).join("");
+      box.innerHTML = `<div class="muted">共${r.chapter_count}章，总${r.total_words}字</div>${bars}`;
+    } catch (e) {
+      box.innerHTML = `<div class="issue">失败：${e.message}</div>`;
+    }
+  });
+
+  // 多方案生成
+  $tools("#btn-alternatives")?.addEventListener("click", async () => {
+    const goal = $tools("#alt-goal").value.trim();
+    if (!goal) { toast("请输入章节目标"); return; }
+    const box = $tools("#alternatives-result");
+    box.innerHTML = `<div class="muted">生成中…</div>`;
+    try {
+      const r = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/generate/alternatives", {
+        method: "POST", body: JSON.stringify({ goal })
+      });
+      const alts = r.alternatives || [];
+      if (!alts.length) { box.innerHTML = `<div class="muted">无结果</div>`; return; }
+      box.innerHTML = alts.map((a, i) =>
+        `<div class="alt-item"><strong>方案${i + 1}：${a.title || ""}</strong><br>${a.description || ""}</div>`
+      ).join("");
+    } catch (e) {
+      box.innerHTML = `<div class="issue">失败：${e.message}</div>`;
+    }
+  });
+
+  // 批量生成
+  $tools("#btn-batch")?.addEventListener("click", async () => {
+    const start = parseInt($tools("#batch-start").value);
+    const end = parseInt($tools("#batch-end").value);
+    if (!start || !end || end < start) { toast("请输入有效章节范围"); return; }
+    try {
+      await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/chapters/batch", {
+        method: "POST", body: JSON.stringify({ start, end })
+      });
+      toast(`已开始批量生成第${start}-${end}章`);
+      startPolling();
+    } catch (e) {
+      toast("批量生成失败：" + e.message);
+    }
+  });
+
+  // 大纲快照
+  async function loadSnapshots() {
+    const box = $tools("#snap-list");
+    try {
+      const r = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/snapshots");
+      const snaps = r.snapshots || [];
+      if (!snaps.length) { box.innerHTML = `<div class="muted">暂无快照</div>`; return; }
+      box.innerHTML = snaps.map(s => {
+        const t = new Date(s.created * 1000).toLocaleString();
+        return `<div class="snap-item"><span>${s.name} <span class="muted">${t}</span></span><button class="btn tiny" data-snap="${s.name}">回滚</button></div>`;
+      }).join("");
+      box.querySelectorAll("[data-snap]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if (!confirm(`回滚到快照「${btn.dataset.snap}」？当前大纲将被覆盖`)) return;
+          try {
+            await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/snapshots/" + encodeURIComponent(btn.dataset.snap) + "/restore", { method: "POST" });
+            toast("已回滚");
+            loadSnapshots();
+            loadOutline();
+          } catch (e) { toast("回滚失败：" + e.message); }
+        });
+      });
+    } catch (e) { box.innerHTML = `<div class="issue">加载失败：${e.message}</div>`; }
+  }
+  $tools("#btn-snap-save")?.addEventListener("click", async () => {
+    const name = $tools("#snap-name").value.trim();
+    try {
+      await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/outline/snapshots" + (name ? "?name=" + encodeURIComponent(name) : ""), { method: "POST" });
+      toast("快照已保存");
+      $tools("#snap-name").value = "";
+      loadSnapshots();
+    } catch (e) { toast("保存失败：" + e.message); }
+  });
+
+  // 伏笔管理
+  async function loadForeshadowing() {
+    const box = $tools("#foreshadow-list");
+    try {
+      const r = await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/foreshadowing");
+      const list = r.foreshadowing || [];
+      if (!list.length) { box.innerHTML = `<div class="muted">暂无伏笔</div>`; return; }
+      box.innerHTML = list.map((f, i) =>
+        `<div class="fs-item"><span>${f}</span><button class="btn tiny danger" data-fs="${i}">删</button></div>`
+      ).join("");
+      box.querySelectorAll("[data-fs]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          try {
+            await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/foreshadowing/" + btn.dataset.fs, { method: "DELETE" });
+            loadForeshadowing();
+          } catch (e) { toast("删除失败：" + e.message); }
+        });
+      });
+    } catch (e) { box.innerHTML = `<div class="issue">加载失败：${e.message}</div>`; }
+  }
+  $tools("#btn-foreshadow-add")?.addEventListener("click", async () => {
+    const item = $tools("#foreshadow-input").value.trim();
+    if (!item) { toast("请输入伏笔内容"); return; }
+    try {
+      await api("/api/projects/" + encodeURIComponent(currentProjectId) + "/foreshadowing", {
+        method: "POST", body: JSON.stringify({ item })
+      });
+      $tools("#foreshadow-input").value = "";
+      loadForeshadowing();
+    } catch (e) { toast("添加失败：" + e.message); }
+  });
+
+  // 切到工具tab时加载快照和伏笔
+  document.querySelectorAll(".tab[data-tab]").forEach(tab => {
+    tab.addEventListener("click", () => {
+      if (tab.dataset.tab === "tools") {
+        loadSnapshots();
+        loadForeshadowing();
+      }
+    });
+  });
+
   })();
 })();

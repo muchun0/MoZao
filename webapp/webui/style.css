@@ -621,3 +621,18 @@ input:focus, select:focus, textarea:focus {
 .ol-volume-name { font-weight: 700; color: #5a4a3a; }
 .ol-volume-intro { font-size: 13px; margin-top: 4px; color: #6b5b4a; }
 .ol-volume-climax { font-size: 12px; margin-top: 2px; color: #b04a3a; }
+
+/* 工具tab */
+.tools-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:16px; }
+.tool-card { border:1px solid #e5e7eb; border-radius:10px; padding:16px; background:#fafafa; }
+.tool-card h4 { margin:0 0 4px; font-size:15px; }
+.tool-actions { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.tool-row { display:flex; gap:8px; align-items:center; margin:8px 0; }
+.tool-result { margin-top:10px; font-size:13px; max-height:300px; overflow-y:auto; }
+.tool-result .issue { padding:8px 10px; background:#fff7ed; border-left:3px solid #f59e0b; margin-bottom:6px; border-radius:4px; }
+.tool-result .ok { padding:8px 10px; background:#ecfdf5; border-left:3px solid #10b981; margin-bottom:6px; border-radius:4px; }
+.tool-result .alt-item { padding:8px 10px; background:#fff; border:1px solid #e5e7eb; margin-bottom:6px; border-radius:4px; }
+.tool-result .snap-item { display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:#fff; border:1px solid #e5e7eb; margin-bottom:4px; border-radius:4px; }
+.tool-result .fs-item { display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:#fff; border:1px solid #e5e7eb; margin-bottom:4px; border-radius:4px; }
+.rhythm-bar { height:18px; background:#e0e7ff; border-radius:3px; margin-bottom:4px; position:relative; }
+.rhythm-bar span { position:absolute; right:6px; top:0; font-size:11px; line-height:18px; color:#4338ca; }

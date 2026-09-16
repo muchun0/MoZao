@@ -394,6 +394,7 @@
             <button class="tab active" data-tab="chapters">章节</button>
             <button class="tab" data-tab="outline">大纲</button>
             <button class="tab" data-tab="world">人物 / 世界观</button>
+            <button class="tab" data-tab="tools">工具</button>
           </div>
           <div id="tab-chapters" class="tab-panel active">
             <div id="chapter-list" class="chapter-list"></div>
@@ -407,6 +408,61 @@
           </div>
           <div id="tab-world" class="tab-panel">
             <div id="world-box" class="world-box"></div>
+          </div>
+          <div id="tab-tools" class="tab-panel">
+            <div class="tools-grid">
+              <div class="tool-card">
+                <h4>质量校验</h4>
+                <p class="muted small">用AI检查最近章节的问题</p>
+                <div class="tool-actions">
+                  <button class="btn small" id="btn-verify-consistency">设定一致性</button>
+                  <button class="btn small" id="btn-verify-logic">剧情逻辑</button>
+                  <button class="btn small" id="btn-verify-compliance">合规检测</button>
+                </div>
+                <div id="verify-result" class="tool-result"></div>
+              </div>
+              <div class="tool-card">
+                <h4>节奏分析</h4>
+                <p class="muted small">每章字数分布与总进度</p>
+                <button class="btn small" id="btn-rhythm">查看节奏</button>
+                <div id="rhythm-result" class="tool-result"></div>
+              </div>
+              <div class="tool-card">
+                <h4>多方案生成</h4>
+                <p class="muted small">针对章节目标生成3个不同走向</p>
+                <textarea id="alt-goal" rows="2" placeholder="输入章节目标，如：主角发现反派身份"></textarea>
+                <button class="btn small" id="btn-alternatives">生成方案</button>
+                <div id="alternatives-result" class="tool-result"></div>
+              </div>
+              <div class="tool-card">
+                <h4>批量生成</h4>
+                <p class="muted small">指定范围，后台逐章生成</p>
+                <div class="tool-row">
+                  <input type="number" id="batch-start" placeholder="起始章" min="1" style="width:80px">
+                  <span>至</span>
+                  <input type="number" id="batch-end" placeholder="结束章" min="1" style="width:80px">
+                  <button class="btn small primary" id="btn-batch">开始</button>
+                </div>
+              </div>
+              <div class="tool-card">
+                <h4>大纲快照</h4>
+                <p class="muted small">保存/回滚大纲版本</p>
+                <div class="tool-actions">
+                  <input type="text" id="snap-name" placeholder="版本名（选填）" style="flex:1">
+                  <button class="btn small" id="btn-snap-save">保存快照</button>
+                </div>
+                <div id="snap-list" class="tool-result"></div>
+              </div>
+              <div class="tool-card">
+                <h4>伏笔管理</h4>
+                <p class="muted small">追踪已埋设的伏笔</p>
+                <div class="tool-actions">
+                  <input type="text" id="foreshadow-input" placeholder="添加一条伏笔" style="flex:1">
+                  <button class="btn small" id="btn-foreshadow-add">添加</button>
+                </div>
+                <div id="foreshadow-list" class="tool-result"></div>
+              </div>
+            </div>
           </div>
         </div>
 

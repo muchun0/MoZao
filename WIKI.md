@@ -340,3 +340,28 @@ docker compose logs -f novel-gen
 - 导出文件名加 project_id 前缀，避免不同用户同名书互相覆盖
 
 *最后更新：2026-09-17 · 代码审查报告 P0/P1/P2 修复、余额耗尽自动停止、bcrypt 密码升级*
+
+---
+
+## 13. 部署流程（务必遵守）
+
+### 服务器信息
+- 实例：i-bp14oxtecrth3wbq6thc（cn-hangzhou），部署目录 /opt/novel-gen
+- 容器：mysql-mozao + novel-gen，docker compose 管理
+- 服务器直连 GitHub 常超时；本地代码用 git archive 打包后经 workbench 上传部署
+
+### 发版步骤（前后端都改了时）
+1. 本地 master 上：cd webapp/frontend && npm run build
+2. 打包整个 webapp/frontend/dist（用 python zipfile，路径必须用正斜杠 /，Windows 资源管理器/Compress-Archive 打的包在 Linux 解压会出问题）
+3. workbench upload 把 dist 包传到服务器 /tmp
+4. 服务器上清空旧 dist、解压新 dist
+5. docker compose build（必须 rebuild，因为前端是 COPY 进镜像的，不是挂载）
+6. docker compose up -d，等健康检查
+7. 验证：curl -s -o /dev/null -w '%{size_download}' http://127.0.0.1:8000/assets/index-*.js 应是几百 KB，不是几百字节
+
+### 常见坑
+- **白屏**：dist 不完整 / 主 bundle 没打进镜像。症状是访问页面 200 但空白，F12 看到 JS 请求返回了 HTML（SPA fallback）。必须本地重新 build 再上传。
+- **bcrypt 等新依赖**：改了 requirements.txt 必须 docker compose build，不能只 up -d
+- **config.yaml**：已 gitignore，服务器上保留，不要删
+
+*最后更新：2026-09-17*

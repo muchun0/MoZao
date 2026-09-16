@@ -59,7 +59,7 @@ logger = get_logger("server")
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = BASE_DIR / "projects"
 OUTPUT_DIR = BASE_DIR / "output"
-WEB_DIR = Path(__file__).resolve().parent / "webui"
+WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
 

@@ -1,4 +1,4 @@
-# AI 自动生成小说（novel_gen）
+﻿# AI 自动生成小说（novel_gen）
 
 输入题材/创意，自动产出完整小说。生成前先**调研热门小说共性**（情节/文风/节奏），再按「调研 → 大纲 → 编辑质检 → 人物世界观 → 逐章正文 → 导出」流水线推进，全程可断点续传。
 
@@ -47,14 +47,14 @@ config.yaml ──► 配置层(config.py)         多 Provider / 题材 / 字�
 | `pipeline/` | 生成流水线：大纲/人物/逐章生成器 + 记忆系统 + 流程编排 + 编辑质检 |
 | `store/` | 项目落盘、状态机、断点续传、txt 导出 |
 | `export/` | 封面生成（Pillow）、EPUB/DOCX 多格式导出 |
-| `webapp/` | 多用户 SaaS Web 服务（FastAPI + 原生 JS 前端 + SQLite） |
+| `webapp/` | 多用户 SaaS Web 服务（FastAPI + Vue 3 前端 + MySQL/SQLite） |
 
 ## Web 界面（推荐，无需命令行）
 
 前端已按"墨造 · AI 小说创作平台"设计方案整体重做——**深夜书房 × AI 工坊**视觉语言（深靛蓝主色 + 暖金强调 + 暖白纸面、衬线标题、墨水晕染进度条），前后端分离：
 
 - 后端：FastAPI（`webapp/server.py`），封装全部流水线为 REST API
-- 前端：独立静态页（`webapp/webui/`），原生 HTML/CSS/JS，无构建依赖
+- 前端：Vue 3 + Element Plus + Vite（`webapp/frontend/`），构建产物 `dist/` 由 FastAPI 挂载
 - 通信：REST API（同源部署）
 
 ### 启动
@@ -401,3 +401,4 @@ python -m pytest tests/ -v
 - 联网搜索需第三方搜索 API Key，未配置时调研退化为内置知识库 + 模型先验，质量仍可用。
 - 邮件通知需配置 SMTP（QQ/163 邮箱的 SMTP 授权码），未配置时退款申请仍可提交，站长在后台手动查看处理。
 - 本工具用于个人创作辅助，请勿用于批量生产侵权或违反平台规则的内容。
+

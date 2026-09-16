@@ -1,4 +1,4 @@
-# 墨造 · AI 小说创作平台 — 项目 Wiki
+﻿# 墨造 · AI 小说创作平台 — 项目 Wiki
 
 > 本文档是项目长期知识库（Wiki），记录产品、架构、业务、部署、流程与已知问题。
 > 代码更新时同步维护本文档；密钥类信息一律不入库（见 .env，已被 .gitignore 排除）。
@@ -40,8 +40,8 @@
 
 ### 技术栈
 
-- 后端：Python 3.13 · FastAPI · Uvicorn · SQLite（标准库 sqlite3）
-- 前端：静态 HTML/CSS/JS（`webapp/webui/`，原生 JS，无框架），FastAPI 挂载
+- 后端：Python 3.13 · FastAPI · Uvicorn · MySQL（生产）/ SQLite（本地开发兼容）
+- 前端：**Vue 3 + Element Plus + Vite + Pinia + Vue Router**（`webapp/frontend/`，构建产物 `dist/` 由 FastAPI 静态挂载 + SPA fallback）；旧原生 JS 在 `webapp/webui/`（保留未删）
 - AI：DeepSeek（文本生成，openai 库）、博查 Bocha（联网调研）、硅基流动 ERNIE-Image-Turbo（封面）
 - 依赖约束：`httpx<0.28`（openai 1.x 硬依赖）；`python-multipart`（FastAPI 表单上传必需）
 - 部署：Docker（python:3.13-slim + Noto CJK 字体），docker-compose 编排
@@ -313,3 +313,4 @@ docker compose logs -f novel-gen
 ---
 
 *最后更新：2026-09-11 · 由开发记录整理（含按字数计费、大纲编辑与章节重写、续写/扩写已有内容、番茄写作纪律、扣费时点变更、章节名唯一性）*
+

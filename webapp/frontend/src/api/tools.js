@@ -1,0 +1,17 @@
+import request from './request'
+
+export const verifyConsistency = (pid) => request.post(`/projects/${pid}/verify/consistency`)
+export const verifyLogic = (pid) => request.post(`/projects/${pid}/verify/logic`)
+export const verifyCompliance = (pid) => request.post(`/projects/${pid}/verify/compliance`)
+export const getRhythm = (pid) => request.get(`/projects/${pid}/stats/rhythm`)
+export const genAlternatives = (pid, data) => request.post(`/projects/${pid}/generate/alternatives`, data)
+export const listSnapshots = (pid) => request.get(`/projects/${pid}/outline/snapshots`)
+export const saveSnapshot = (pid, name) => request.post(`/projects/${pid}/outline/snapshots`, null, { params: { name } })
+export const restoreSnapshot = (pid, name) => request.post(`/projects/${pid}/outline/snapshots/${name}/restore`)
+export const listForeshadowing = (pid) => request.get(`/projects/${pid}/foreshadowing`)
+export const addForeshadowing = (pid, data) => request.post(`/projects/${pid}/foreshadowing`, data)
+export const delForeshadowing = (pid, idx) => request.delete(`/projects/${pid}/foreshadowing/${idx}`)
+export const listLocked = (pid) => request.get(`/projects/${pid}/locked-settings`)
+export const addLocked = (pid, data) => request.post(`/projects/${pid}/locked-settings`, data)
+export const delLocked = (pid, idx) => request.delete(`/projects/${pid}/locked-settings/${idx}`)
+export const genCover = (pid) => request.post(`/projects/${pid}/cover`)

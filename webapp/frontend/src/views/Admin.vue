@@ -1,0 +1,253 @@
+<template>
+  <div v-loading="loading">
+    <h2>管理后台</h2>
+
+    <!-- 经营概览 -->
+    <el-row :gutter="16" class="stat-row">
+      <el-col :span="6" v-for="s in stats" :key="s.label">
+        <el-card class="stat-card">
+          <div class="stat-val">{{ s.value }}</div>
+          <div class="stat-label">{{ s.label }}</div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-tabs v-model="tab">
+      <!-- 用户管理 -->
+      <el-tab-pane label="用户管理" name="users">
+        <el-table :data="users" stripe size="small">
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="username" label="用户名" />
+          <el-table-column prop="email" label="邮箱" />
+          <el-table-column prop="balance" label="余额" width="80" />
+          <el-table-column prop="is_admin" label="站长" width="70">
+            <template #default="{ row }">{{ row.is_admin ? '✓' : '' }}</template>
+          </el-table-column>
+          <el-table-column prop="is_agent" label="代理" width="70">
+            <template #default="{ row }">{{ row.is_agent ? '✓' : '' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="180">
+            <template #default="{ row }">
+              <el-button size="small" @click="showRecharge(row)">充值</el-button>
+              <el-button size="small" @click="showAgentOpen(row)">开代理</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 退款管理 -->
+      <el-tab-pane label="退款管理" name="refunds">
+        <el-radio-group v-model="refundFilter" size="small" @change="loadRefunds">
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="pending">待处理</el-radio-button>
+          <el-radio-button value="approved">已退款</el-radio-button>
+          <el-radio-button value="rejected">已拒绝</el-radio-button>
+        </el-radio-group>
+        <el-table :data="refunds" stripe size="small" style="margin-top:10px">
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="username" label="用户" />
+          <el-table-column prop="amount" label="金额" width="80" />
+          <el-table-column prop="reason" label="原因" />
+          <el-table-column prop="status" label="状态" width="80" />
+          <el-table-column prop="created_at" label="时间" width="160" />
+          <el-table-column label="操作" width="200">
+            <template #default="{ row }">
+              <template v-if="row.status === 'pending'">
+                <el-button size="small" type="danger" @click="doRefund(row, false)">拒绝</el-button>
+                <el-button size="small" type="primary" @click="doRefund(row, true)">退款</el-button>
+              </template>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 余额流水 -->
+      <el-tab-pane label="余额流水" name="transactions">
+        <el-table :data="transactions" stripe size="small">
+          <el-table-column prop="username" label="用户" />
+          <el-table-column prop="amount" label="变动" width="80" />
+          <el-table-column prop="kind" label="类型" width="100" />
+          <el-table-column prop="note" label="备注" />
+          <el-table-column prop="created_at" label="时间" width="160" />
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 写作风格Skill -->
+      <el-tab-pane label="写作风格" name="skills">
+        <el-button type="primary" size="small" @click="skillDialog = true">+ 新建风格</el-button>
+        <el-table :data="skills" stripe size="small" style="margin-top:10px">
+          <el-table-column prop="name" label="名称" />
+          <el-table-column prop="role" label="角色" width="100" />
+          <el-table-column prop="description" label="描述" />
+          <el-table-column label="操作" width="100">
+            <template #default="{ row }">
+              <el-button size="small" link type="danger" @click="delSkill(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 系统日志 -->
+      <el-tab-pane label="系统日志" name="logs">
+        <el-button size="small" @click="loadLogs">刷新</el-button>
+        <pre class="log-view">{{ logs }}</pre>
+      </el-tab-pane>
+    </el-tabs>
+
+    <!-- 充值弹窗 -->
+    <el-dialog v-model="rechargeDialog" title="手动充值" width="400px">
+      <p>用户：{{ rechargeUser?.username }}</p>
+      <el-input-number v-model="rechargeAmount" :min="1" placeholder="充值金额" />
+      <template #footer>
+        <el-button @click="rechargeDialog = false">取消</el-button>
+        <el-button type="primary" @click="doRecharge">确认到账</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 开代理弹窗 -->
+    <el-dialog v-model="agentDialog" title="开通代理" width="400px">
+      <p>用户：{{ agentUser?.username }}</p>
+      <p class="muted">开通后该用户可获得下级消费返佣</p>
+      <template #footer>
+        <el-button @click="agentDialog = false">取消</el-button>
+        <el-button type="primary" @click="doOpenAgent">确认开通</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Skill编辑弹窗 -->
+    <el-dialog v-model="skillDialog" title="新建写作风格" width="600px">
+      <el-form :model="skillForm" label-width="80px">
+        <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="skillForm.role">
+            <el-option label="规划师" value="researcher" />
+            <el-option label="架构师" value="architect" />
+            <el-option label="写手" value="writer" />
+            <el-option label="审核员" value="reviewer" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
+        <el-form-item label="提示词"><el-input v-model="skillForm.prompt" type="textarea" :rows="8" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="skillDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveSkill">保存</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import * as adminApi from '../api/admin'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+const loading = ref(false)
+const tab = ref('users')
+const overview = ref({})
+const users = ref([])
+const refunds = ref([])
+const refundFilter = ref('')
+const transactions = ref([])
+const skills = ref([])
+const logs = ref('')
+
+const rechargeDialog = ref(false)
+const rechargeUser = ref(null)
+const rechargeAmount = ref(10)
+
+const agentDialog = ref(false)
+const agentUser = ref(null)
+
+const skillDialog = ref(false)
+const skillForm = ref({ name: '', role: 'writer', description: '', prompt: '' })
+
+const stats = computed(() => [
+  { label: '总用户', value: overview.value.user_count ?? '-' },
+  { label: '总项目', value: overview.value.project_count ?? '-' },
+  { label: '总收入', value: '¥' + (overview.value.total_revenue ?? 0).toFixed(2) },
+  { label: '今日生成', value: overview.value.today_words ?? '-' },
+])
+
+async function loadAll() {
+  loading.value = true
+  try {
+    const [ov, us] = await Promise.all([adminApi.getOverview(), adminApi.listUsers()])
+    overview.value = ov
+    users.value = us.users || us || []
+  } catch {} finally { loading.value = false }
+}
+
+async function loadRefunds() {
+  const r = await adminApi.listRefunds({ status: refundFilter.value })
+  refunds.value = r.refunds || []
+}
+
+async function loadLogs() {
+  const r = await adminApi.getLogs({ lines: 200 })
+  logs.value = r.logs || ''
+}
+
+async function loadSkills() {
+  const r = await adminApi.listSkills()
+  skills.value = r.skills || []
+}
+
+function showRecharge(row) { rechargeUser.value = row; rechargeDialog.value = true }
+async function doRecharge() {
+  await adminApi.manualRecharge({ user_id: rechargeUser.value.id, amount: rechargeAmount.value })
+  ElMessage.success('充值成功')
+  rechargeDialog.value = false
+  loadAll()
+}
+
+function showAgentOpen(row) { agentUser.value = row; agentDialog.value = true }
+async function doOpenAgent() {
+  await adminApi.openAgent({ user_id: agentUser.value.id })
+  ElMessage.success('已开通代理')
+  agentDialog.value = false
+  loadAll()
+}
+
+async function doRefund(row, approve) {
+  await ElMessageBox.confirm(approve ? '确认退款？' : '拒绝申请？', '确认')
+  try {
+    if (approve) await adminApi.approveRefund(row.id, {})
+    else await adminApi.rejectRefund(row.id, {})
+    ElMessage.success(approve ? '已退款' : '已拒绝')
+    loadRefunds()
+  } catch (e) { ElMessage.error('操作失败') }
+}
+
+async function saveSkill() {
+  await adminApi.saveSkill(skillForm.value)
+  ElMessage.success('已保存')
+  skillDialog.value = false
+  skillForm.value = { name: '', role: 'writer', description: '', prompt: '' }
+  loadSkills()
+}
+
+async function delSkill(row) {
+  await ElMessageBox.confirm(`删除风格「${row.name}」？`, '确认', { type: 'warning' })
+  await adminApi.deleteSkill(row.id)
+  ElMessage.success('已删除')
+  loadSkills()
+}
+
+onMounted(() => {
+  loadAll()
+  loadRefunds()
+  adminApi.listTransactions().then(r => { transactions.value = r.transactions || [] }).catch(() => {})
+  loadSkills()
+  loadLogs()
+})
+</script>
+
+<style scoped>
+.stat-row { margin-bottom: 20px; }
+.stat-card { text-align: center; }
+.stat-val { font-size: 28px; font-weight: 700; color: #303133; }
+.stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
+.log-view { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; max-height: 500px; overflow-y: auto; font-size: 12px; }
+.muted { color: #909399; font-size: 13px; }
+</style>

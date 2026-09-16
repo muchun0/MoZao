@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 小说生成 Web 后端（FastAPI）：多用户 SaaS 版。
 
@@ -59,7 +59,7 @@ logger = get_logger("server")
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = BASE_DIR / "projects"
 OUTPUT_DIR = BASE_DIR / "output"
-WEB_DIR = Path(__file__).resolve().parent / "webui"
+WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
 
@@ -2054,6 +2054,15 @@ class _NoCacheStaticFiles(StaticFiles):
 
 
 if WEB_DIR.exists():
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        file_path = WEB_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(WEB_DIR / "index.html"))
+
     app.mount("/", _NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="webui")
 
 
@@ -2061,3 +2070,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

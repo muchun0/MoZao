@@ -1,0 +1,15 @@
+import request from './request'
+
+export const getOverview = () => request.get('/admin/stats')
+export const listUsers = (params) => request.get('/admin/users', { params })
+export const listAgents = () => request.get('/admin/users')
+export const listAllProjects = () => request.get('/admin/projects')
+export const listRefunds = (params) => request.get('/admin/refunds', { params })
+export const handleRefund = (id, data) => request.post(`/admin/refunds/${id}/handle`, data)
+export const listTransactions = (params) => request.get('/admin/recharges', { params })
+export const getLogs = (params) => request.get('/admin/logs', { params })
+export const listSkills = () => request.get('/admin/skills')
+export const saveSkill = (data) => request.post('/admin/skills', data)
+export const deleteSkill = (id) => request.delete(`/admin/skills/${id}`)
+export const manualRecharge = (data) => request.post(`/admin/users/${data.user_id}/recharge`, data)
+export const openAgent = (data) => request.post(`/admin/users/${data.user_id}/agent`, data)

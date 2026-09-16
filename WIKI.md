@@ -58,16 +58,30 @@ D:\PythonProjects\DouBao\
 ├── novel_gen/                  # 生成引擎（LLM 调用、调研、流水线、导出、封面）
 │   ├── config.py               # NovelConfig：内容类型/content_type、expand_targets、fanqie_style 等开关
 │   ├── pipeline/
-│   │   ├── manager.py          # 流水线：续写分支(_resume_continue) / 扩写分支(run_expand_existing)
+│   │   ├── manager.py          # 流水线编排（委托各 agent）
 │   │   ├── templates.py        # 提示词模板（含 world_from_content / continue_outline / expand_chapter）
-│   │   └── stages.py           # 大纲/世界观/章节写作器；_strip_html_tags
+│   │   ├── stages.py           # 大纲/世界观/章节写作器；_strip_html_tags
+│   │   ├── editor.py           # 编辑视角质检
+│   │   ├── reviser.py          # 高质量模式自动修订
+│   │   ├── memory.py           # 章节记忆/摘要
+│   │   └── agents/             # 多智能体角色（v2）
+│   │       ├── base.py         # BaseAgent：从 prompts/{role}.md 加载角色+按role过滤skill
+│   │       ├── researcher.py   # 调研员：题材调研+反套路改造
+│   │       ├── architect.py    # 架构师：三级大纲+人物世界观+时间线
+│   │       ├── writer.py      # 写手：逐章正文生成
+│   │       ├── reviewer.py    # 审校：一致性/逻辑/合规
+│   │       └── prompts/       # 各角色独立提示词（Markdown，可编辑）
+│   │           ├── researcher.md
+│   │           ├── architect.md
+│   │           ├── writer.md
+│   │           └── reviewer.md
 │   ├── store/project.py        # ProjectStore：save_user_content/set_user_words/user_words
 │   ├── store/schemas.py        # Chapter（含 source=ai|user、goal 快照）
 │   ├── utils/chapter_splitter.py  # 已有正文章节切分器（split_chapters/summarize_preview）
 │   └── export/cover.py         # 封面：AI(ERNIE-Image-Turbo) + 程序化兜底
 ├── webapp/                     # Web 应用（FastAPI）
 │   ├── server.py               # 全部 API 路由（含 /api/parse-content、结算 _settle_price）
-│   ├── db.py                   # SQLite 数据层（init_db 自动迁移；update_project_price）
+│   ├── db.py                   # MySQL 数据层（init_db 自动迁移；writing_skills 支持 role 字段）
 │   ├── pricing.py              # 按字数计费（PRICE_PER_10K=2.0）
 │   ├── referral.py             # 代理/分销参数
 │   ├── verify_code.py          # 邮箱验证码（注册/重置）
@@ -75,8 +89,18 @@ D:\PythonProjects\DouBao\
 │   ├── logger.py               # 日志
 │   ├── admin_cli.py            # 命令行管理工具
 │   └── webui/                  # 前端页面（index.html / admin.html / app.js / admin.js / style.css）
-└── tests/                      # pytest（当前 35 passed）
 ```
+
+### 多智能体角色（v2 架构）
+
+| 角色 | 文件 | 职责 | 专属prompt |
+|---|---|---|---|
+| Researcher | `agents/researcher.py` | 联网调研同题材热门、反套路改造、元素叠加 | `prompts/researcher.md` |
+| Architect | `agents/architect.py` | 三级大纲（总纲/分卷/章节）、人物三层设计、世界观、时间线 | `prompts/architect.md` |
+| Writer | `agents/writer.py` | 逐章正文（场景级生成、润色、字数兜底） | `prompts/writer.md` |
+| Reviewer | `agents/reviewer.py` | 一致性校验、逻辑审查、合规检测、修订 | `prompts/reviewer.md` |
+
+**Skill 按角色挂载：** `writing_skills.role` 字段空=全局（所有agent都注入），填 researcher/architect/writer/reviewer 则只注入对应agent。改风格直接编辑 `prompts/*.md` 或在管理页加专属skill，不动代码。
 
 ### 数据流（创建一本小说）
 

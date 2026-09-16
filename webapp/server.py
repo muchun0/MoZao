@@ -2206,33 +2206,36 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
     fmt = (format or "txt").lower()
 
     if fmt == "txt":
-        out = OUTPUT_DIR / f"{name}.txt"
         media = "text/plain; charset=utf-8"
+        out = OUTPUT_DIR / f"{project_id}_{name}.txt"
         if not out.exists():
             try:
                 pipeline = _open_pipeline(store)
-                out = pipeline.export()
+                src = pipeline.export()
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"尚未生成可下载的 txt：{exc}")
     elif fmt == "epub":
-        out = OUTPUT_DIR / f"{name}.epub"
         media = "application/epub+zip"
+        out = OUTPUT_DIR / f"{project_id}_{name}.epub"
         if not out.exists():
             try:
-                out = export_epub(store)
+                src = export_epub(store)
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"导出 epub 失败：{exc}")
     elif fmt == "docx":
-        out = OUTPUT_DIR / f"{name}.docx"
         media = ("application/vnd.openxmlformats-officedocument."
                  "wordprocessingml.document")
+        out = OUTPUT_DIR / f"{project_id}_{name}.docx"
         if not out.exists():
             try:
-                out = export_docx(store)
+                src = export_docx(store)
+                shutil.copy2(src, out)
             except Exception as exc:
                 raise HTTPException(status_code=404, detail=f"导出 docx 失败：{exc}")
     elif fmt == "md":
-        out = OUTPUT_DIR / f"{name}.md"
+        out = OUTPUT_DIR / f"{project_id}_{name}.md"
         media = "text/markdown; charset=utf-8"
         if not out.exists():
             try:
@@ -2259,7 +2262,7 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
     if not out.exists():
         raise HTTPException(status_code=404, detail="尚未生成可下载的文件")
     logger.info("下载导出: uid=%d project=%s format=%s file=%s", user["id"], project_id, fmt, out.name)
-    return FileResponse(str(out), filename=out.name, media_type=media)
+    return FileResponse(str(out), filename=f"{name}.{fmt}", media_type=media)
 
 
 # ---------- 静态前端（同源部署时） ----------

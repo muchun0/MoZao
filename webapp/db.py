@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import bcrypt
 import hmac
 import os
 import re
@@ -278,6 +279,29 @@ def _hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
+def _is_bcrypt(pass_hash: str) -> bool:
+    return bool(pass_hash) and pass_hash.startswith(("$2a$", "$2b$", "$2y$"))
+
+
+def _new_password_hash(password: str) -> str:
+    """新密码统一用 bcrypt（自带盐，cost=12）。"""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    """兼容两种格式：bcrypt 直接验；旧 sha256 存为 '<hex>:<salt>'。"""
+    stored = stored or ""
+    if _is_bcrypt(stored):
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
+        except Exception:
+            return False
+    pass_hash, _, salt = stored.partition(":")
+    if not pass_hash or not salt:
+        return False
+    return hmac.compare_digest(pass_hash, _hash_password(password, salt))
+
+
 # ---------- 用户 ----------
 def create_user(username: str, password: str, is_admin: bool = False,
                 invite_code: str = "", email: str = "") -> tuple[bool, str]:
@@ -306,7 +330,7 @@ def create_user(username: str, password: str, is_admin: bool = False,
         try:
             cur = conn.execute(
                 "INSERT INTO users (username, pass_hash, email, balance, is_admin, created_at) VALUES (%s,%s,%s,%s,%s,%s)",
-                (username, _hash_password(password, salt) + ":" + salt, email, 0, int(is_admin), time.time()),
+                (username, _new_password_hash(password), email, 0, int(is_admin), time.time()),
             )
         except MyIntegrityError:
             return False, "用户名已被注册"
@@ -445,8 +469,16 @@ def authenticate(identifier: str, password: str) -> Optional[int]:
             row = conn.execute("SELECT id, pass_hash FROM users WHERE username=%s", (identifier,)).fetchone()
     if not row:
         return None
-    pass_hash, salt = (row["pass_hash"] or "").rsplit(":", 1)
-    if hmac.compare_digest(pass_hash, _hash_password(password, salt)):
+    stored = row["pass_hash"] or ""
+    if _verify_password(password, stored):
+        # 老 sha256 用户首次登录成功后，自动平滑升级为 bcrypt
+        if not _is_bcrypt(stored):
+            try:
+                new_hash = _new_password_hash(password)
+                with _connect() as conn:
+                    conn.execute("UPDATE users SET pass_hash=%s WHERE id=%s", (new_hash, row["id"]))
+            except Exception:
+                pass
         return row["id"]
     return None
 
@@ -473,10 +505,9 @@ def update_password(user_id: int, new_password: str) -> None:
     """重置密码（忘记密码用）。"""
     if not new_password or len(new_password) < 4:
         return
-    salt = secrets.token_hex(8)
     with _connect() as conn:
         conn.execute("UPDATE users SET pass_hash=%s WHERE id=%s",
-                     (_hash_password(new_password, salt) + ":" + salt, user_id))
+                     (_new_password_hash(new_password), user_id))
 
 
 def delete_user_sessions(user_id: int) -> None:

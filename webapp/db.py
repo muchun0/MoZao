@@ -226,6 +226,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE project_owner ADD COLUMN price DOUBLE NOT NULL DEFAULT 0")
         if "discount" not in pcols:
             conn.execute("ALTER TABLE project_owner ADD COLUMN discount DOUBLE NOT NULL DEFAULT 1.0")
+        # writing_skills 加 role 字段：空=全局，researcher/architect/writer/reviewer=专属某角色
+        scol = _column_names(conn, "writing_skills")
+        if "role" not in scol:
+            conn.execute("ALTER TABLE writing_skills ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT ''")
+            conn.execute("ALTER TABLE writing_skills ADD KEY idx_ws_role (role)")
         # 老用户补邀请码（无码则按 id 生成 INV+id）
         rows = conn.execute(
             "SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
@@ -696,13 +701,23 @@ init_db()
 
 # ---------- 写作风格 Skill ----------
 
-def list_skills(only_active: bool = False) -> list[dict]:
+def list_skills(only_active: bool = False, role: str = None) -> list[dict]:
+    """列出 skill。role=None 返回全部；role='' 只返回全局（空）；role='writer' 等返回专属。"""
     sql = "SELECT * FROM writing_skills"
+    conds = []
     if only_active:
-        sql += " WHERE is_active=1"
+        conds.append("is_active=1")
+    if role is not None:
+        # role='writer' → 查 role='writer'；role='' → 查 role=''（全局）
+        conds.append("role=%s")
+        params = [role]
+    else:
+        params = []
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY sort_order ASC, id ASC"
     with _connect() as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -713,19 +728,19 @@ def get_skill(skill_id: int) -> dict | None:
 
 
 def create_skill(name: str, description: str, prompt_append: str,
-                 is_active: int = 1, sort_order: int = 0) -> int:
+                 is_active: int = 1, sort_order: int = 0, role: str = "") -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO writing_skills (name, description, prompt_append, is_active, sort_order, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s)",
-            (name, description, prompt_append, is_active, sort_order, time.time()))
+            "INSERT INTO writing_skills (name, description, prompt_append, is_active, sort_order, role, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (name, description, prompt_append, is_active, sort_order, role, time.time()))
         return cur.lastrowid
 
 
 def update_skill(skill_id: int, **fields) -> bool:
     if not fields:
         return False
-    allowed = {"name", "description", "prompt_append", "is_active", "sort_order"}
+    allowed = {"name", "description", "prompt_append", "is_active", "sort_order", "role"}
     sets = []
     vals = []
     for k, v in fields.items():

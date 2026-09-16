@@ -4,10 +4,10 @@ Agent 基类：所有创作角色的公共接口。
 
 每个 Agent 对应一个创作角色，独立持有：
 - prompts/{role}.md  角色身份和写作规则（Markdown，可编辑）
-- skills（从数据库按 role 过滤）专属风格片段
+- 专属 skill（从数据库 writing_skills 表按 role 过滤）
 
-后续要调整某个角色的风格，直接改对应的 .md 文件即可，
-不用动代码。
+后续要调整某个角色的风格，直接改对应的 .md 文件或在管理页
+加该角色的专属 skill 即可，不用动代码。
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 class BaseAgent(ABC):
     """所有创作 Agent 的基类。"""
 
-    #: 角色名（子类覆盖），对应 prompts/{role}.md
+    #: 角色名（子类覆盖），对应 prompts/{role}.md 和 skills.role
     role_name: str = "base"
 
     def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore):
@@ -44,12 +44,36 @@ class BaseAgent(ABC):
             self._role_prompt = p.read_text(encoding="utf-8") if p.exists() else ""
         return self._role_prompt
 
+    def _role_skill_append(self) -> str:
+        """从数据库加载当前角色的专属 skill（role 匹配）+ 全局 skill（role=''）。
+
+        项目级选了 skill_id 的全局 prompt 也会在 templates._skill_append 里注入。
+        这里只补「按角色过滤」的专属 skill。
+        """
+        try:
+            from webapp import db
+            # 专属本角色的 skill
+            own = db.list_skills(only_active=True, role=self.role_name)
+            # 全局 skill（role 为空）也对所有角色生效
+            common = db.list_skills(only_active=True, role="")
+            blocks = []
+            for sk in own + common:
+                if sk.get("prompt_append"):
+                    blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
+            return "\n\n".join(blocks)
+        except Exception as e:
+            self.logger.warning("加载角色 skill 失败（忽略）: %s", e)
+            return ""
+
     def _system_with_role(self, extra: str = "") -> str:
-        """拼接：角色 prompt + 用户自定义 + 写作风格 skill。"""
+        """拼接：角色 prompt + 角色专属skill + 全局skill + 额外指令。"""
         parts = [self.role_prompt]
+        role_skill = self._role_skill_append()
+        if role_skill:
+            parts.append("## 本角色专属写作要求\n" + role_skill)
         if extra:
             parts.append(extra)
-        # 注入写作风格 skill 和自定义提示词（全局）
+        # 项目级选的 skill（用户创建时选的写作风格）
         from ...pipeline.templates import _skill_append
         parts.append(_skill_append(self.cfg))
         return "\n\n".join(p for p in parts if p)

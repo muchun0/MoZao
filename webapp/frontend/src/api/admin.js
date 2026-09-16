@@ -1,0 +1,18 @@
+import request from './request'
+
+export const getOverview = () => request.get('/admin/overview')
+export const listUsers = (params) => request.get('/admin/users', { params })
+export const listAgents = () => request.get('/admin/agents')
+export const listAllProjects = () => request.get('/admin/projects')
+export const listRefunds = (params) => request.get('/admin/refunds', { params })
+export const approveRefund = (id, data) => request.post(`/admin/refunds/${id}/approve`, data)
+export const rejectRefund = (id, data) => request.post(`/admin/refunds/${id}/reject`, data)
+export const listTransactions = (params) => request.get('/admin/transactions', { params })
+export const getLogs = (params) => request.get('/admin/logs', { params })
+export const listSkills = () => request.get('/admin/skills')
+export const saveSkill = (data) => request.post('/admin/skills', data)
+export const deleteSkill = (id) => request.delete(`/admin/skills/${id}`)
+export const manualRecharge = (data) => request.post('/admin/recharge', data)
+export const openAgent = (data) => request.post('/admin/open-agent', data)
+export const getParams = () => request.get('/admin/params')
+export const saveParams = (data) => request.put('/admin/params', data)

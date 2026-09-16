@@ -487,6 +487,19 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
             _RUNS.pop(store.dir.name, None)
 
 
+def _balance_exhausted(store: ProjectStore) -> tuple[bool, float]:
+    """检查项目所有者余额是否已耗尽（<=0）。返回 (是否应停止, 当前余额)。"""
+    try:
+        uid = db.project_owner(store.dir.name)
+        if uid is None:
+            return False, 0.0
+        u = db.get_user(uid)
+        bal = float(u["balance"]) if u else 0.0
+        return bal <= 0, bal
+    except Exception:
+        return False, 0.0
+
+
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
     """后台线程：从断点续跑整条流水线，结束后自动导出。
 
@@ -533,6 +546,11 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             if handle.stop_event.is_set():
                 print(f"[web] 收到停止请求，第 {no} 章暂停")
                 logger.info("生成停止: project=%s 阶段=writing 第 %d 章暂停", store.dir.name, no)
+                break
+            exhausted, bal = _balance_exhausted(store)
+            if exhausted:
+                handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止生成。充值后可继续从断点生成。"
+                logger.warning("余额耗尽停止: project=%s 第 %d 章前 balance=%.2f", store.dir.name, no, bal)
                 break
             pipeline.write_chapter(no, silent=False)
 
@@ -2179,6 +2197,11 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
             research = store.load_research()
             for no in range(start, end + 1):
                 if handle.stop_event.is_set() or no > len(outline.chapters):
+                    break
+                exhausted, bal = _balance_exhausted(store)
+                if exhausted:
+                    handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止批量生成。"
+                    logger.warning("批量生成余额耗尽: project=%s 第 %d 章前 balance=%.2f", project_id, no, bal)
                     break
                 plan = outline.chapters[no - 1]
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))

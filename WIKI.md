@@ -23,7 +23,7 @@
 |---|---|
 | 账号 | 邮箱注册（验证码）、登录、忘记密码（邮件重置）、会话管理 |
 | 建书 | 题材可选、目标字数、自定义提示词、**三种内容类型**：① 智能生成工作流（联网调研→大纲→正文）；② AI 扩写（大纲/梗概扩写成文）；③ 续写/扩写已有内容（粘贴或上传手写正文，AI 续写或把已有章节写长） |
-| 大纲 | **上传大纲文件 → 智能解析 → 自动填表**（webapp/outline_parser.py）；**章节级大纲编辑**（改标题/目标、增删章、重排） |
+| 大纲 | **上传大纲文件 → 智能解析 → 自动填表**（webapp/outline_parser.py）；**三级大纲编辑器**：总纲 → 分卷（卷名/主线/矛盾/高潮）→ 章节；章节可跨分卷拖拽、分卷增删、按卷保存；章节菜单按分卷分组展示；大纲快照可保存/回滚 |
 | 内容解析 | **上传/粘贴已有正文 → 自动切分章节 → 预览确认**（/api/parse-content，识别 第一章/Chapter N/数字序号/楔子等） |
 | 生成 | 生成前**联网搜索热门小说**参考文风情节（博查 API）；短篇硬约束 >7000 字 |
 | 质量 | 去 AI 味、防同质化（拒绝套路、人物内在矛盾、代价制、私有细节）、结局优化（人物弧光闭环、升维收尾）、**番茄写作纪律**（黄金三章/爽点闭环/章末断章/移动端排版，fanqie_style 开关注入） |
@@ -40,8 +40,8 @@
 
 ### 技术栈
 
-- 后端：Python 3.13 · FastAPI · Uvicorn · MySQL（生产）/ SQLite（本地开发兼容）
-- 前端：**Vue 3 + Element Plus + Vite + Pinia + Vue Router**（`webapp/frontend/`，构建产物 `dist/` 由 FastAPI 静态挂载 + SPA fallback）；旧原生 JS 在 `webapp/webui/`（保留未删）
+- 后端：Python 3.13 · FastAPI · Uvicorn · **MySQL（本地与生产均用 MySQL，库 `mozao`；本地 root/yue_426983）**
+- 前端：**Vue 3 + Element Plus + Vite + Pinia + Vue Router**（`webapp/frontend/`，构建产物 `dist/` 由 FastAPI 静态挂载 + SPA fallback）；旧原生 JS 在 `webapp/webui/`（已淘汰，不再维护）
 - AI：DeepSeek（文本生成，openai 库）、博查 Bocha（联网调研）、硅基流动 ERNIE-Image-Turbo（封面）
 - 依赖约束：`httpx<0.28`（openai 1.x 硬依赖）；`python-multipart`（FastAPI 表单上传必需）
 - 部署：Docker（python:3.13-slim + Noto CJK 字体），docker-compose 编排
@@ -126,7 +126,7 @@ D:\PythonProjects\DouBao\
 | 账号 | POST /api/send-register-code · /api/register · /api/send-reset-code · /api/reset-password · /api/login · /api/logout |
 | 站长后台 | POST /api/admin/login · GET /api/admin/stats|users|recharges|projects|settings|logs|refunds · POST /api/admin/users/{id}/recharge|agent|unagent · GET /api/admin/users/{id}/downline|commissions · POST /api/admin/refunds/{id}/handle |
 | 我的 | GET /api/me · /api/me/recharges · /api/me/referral · /api/me/refundable · /api/me/refund-requests · POST /api/me/bind-referrer · /api/me/refund-request |
-| 项目 | GET/POST /api/projects · GET /api/projects/{id} · GET /{id}/outline · **PUT /{id}/outline（章节级大纲编辑）** · **GET /{id}/outline/diff（大纲改动检测）** · /{id}/chapters · /{id}/chapters/{no} · PUT /{id}/chapters/{no} · **POST /{id}/chapters/{no}/rewrite（仅重写本章+自动重摘要）** · POST /{id}/regenerate-from/{no} · POST /{id}/cover · GET /{id}/cover · /{id}/world · /{id}/research · POST /{id}/start|stop|refund · GET /{id}/download |
+| 项目 | GET/POST /api/projects（**多用户并发生成，互不阻塞**）· GET /api/projects/{id} · GET /{id}/outline · **PUT /{id}/outline（三级大纲编辑：总纲/分卷 volumes/章节，章节带 volume_no）** · **GET /{id}/outline/diff（大纲改动检测）** · /{id}/chapters · /{id}/chapters/{no} · PUT /{id}/chapters/{no} · **POST /{id}/chapters/{no}/rewrite（仅重写本章+自动重摘要）** · POST /{id}/regenerate-from/{no} · POST /{id}/cover · GET /{id}/cover · /{id}/world · /{id}/research · POST /{id}/start|stop|refund · GET /{id}/download |
 
 ---
 
@@ -134,7 +134,7 @@ D:\PythonProjects\DouBao\
 
 ### 计费（webapp/pricing.py，改后重启生效）
 
-- **按字数计费**：`PRICE_PER_10K = 2.0`（每万字 2 元），`price_for(words) = round(words / 10000 * 2, 2)`
+- **按字数计费**：普通 `PRICE_PER_10K = 2.0`（每万字 2 元）；**高质量模式 3 元/万字**；`price_for(words) = round(words / 10000 * 费率, 2)`
 - **档位仅作展示**（/api/pricing 返回 `billing_mode="by_words"` + `price_per_10k`）：
 
 | 档位 | 字数上限 | 展示价（元） | 备注 |
@@ -184,7 +184,7 @@ D:\PythonProjects\DouBao\
 
 ---
 
-## 5. 数据库结构（SQLite，webapp/db.py）
+## 5. 数据库结构（MySQL，webapp/db.py）
 
 | 表 | 关键字段 |
 |---|---|
@@ -228,10 +228,10 @@ D:\PythonProjects\DouBao\
 | 地域 | cn-hangzhou |
 | 规格 | ecs.e-c1m2.large（2核2G）· 40G 磁盘 |
 | 系统 | Alibaba Cloud Linux 3（Docker 26.1.3 + Compose v2.27） |
-| 公网 IP | 47.114.41.136（**安全组放行 TCP 80/443**） |
+| 公网 IP | 47.114.114.136（**安全组放行 TCP 80/443**） |
 | 服务目录 | /opt/novel-gen |
-| 部署形态 | 本地 master 打包上传 → docker compose up -d --build |
-| **当前运行版本** | 745d58a（旧版：**不含**按字数计费/番茄纪律/大纲编辑/续写扩写；新功能合并 master 后待部署） |
+| 部署形态 | 服务器已装 git：`cd /opt/novel-gen && git pull origin master && docker compose up -d --build novel-gen` |
+| **当前运行版本** | master 最新（含按字数计费、三级大纲、续写扩写、多智能体、MySQL、Vue3 前端） |
 
 ### Docker 卷（持久化，勿 `down -v`）
 
@@ -250,7 +250,7 @@ D:\PythonProjects\DouBao\
 
 - Workbench CLI：`C:\Users\pc\AppData\Local\Programs\workbench\workbench.exe`（凭据 `~/.workbench/config.json`，AK 模式）
 - 常用：`workbench exec -i <实例ID> --command "..."` · `workbench upload <本地> <远程> -i <实例ID> -f` · `workbench list ecs`
-- **注意**：服务器未装 git；发布 = 本地 master 打包（tar 排除规则见 BRANCH_FLOW.md）→ 上传 → 覆盖解压 → rebuild
+- **注意**：服务器已装 git（GitHub token 已配）；发布 = 本地 `git push origin master` → 服务器 `git pull` → rebuild
 
 ---
 
@@ -299,6 +299,7 @@ docker compose logs -f novel-gen
 | Edit 工具对大文件反复 Native execution failed | 工具限制 | 写临时 `_patch_*.py` 脚本执行 + 运行后删除；脚本内 Python 源码字符串须用 `\\n` 显式转义（多行字面量会被解释坏） |
 | PowerShell 执行多行/中文命令报错 | 引号转义 | 写 .py/.sh 文件上传执行，不在命令行内嵌 |
 | 域名 mozao.click 打不开 | 备案未生效被阿里云拦截 | 回滚纯 IP 直连；备案通过后启用 Caddy HTTPS |
+| 大纲分卷/章节刷新后丢失 | 后端 OutlineChapterReq/ChapterPlan 无 volume_no 字段，拖拽后保存被丢弃 | ChapterPlan 加 volume_no（0=未分配）并在 to/from_dict、OutlineChapterReq、save_outline 全链路序列化 |
 
 ---
 
@@ -312,5 +313,5 @@ docker compose logs -f novel-gen
 
 ---
 
-*最后更新：2026-09-11 · 由开发记录整理（含按字数计费、大纲编辑与章节重写、续写/扩写已有内容、番茄写作纪律、扣费时点变更、章节名唯一性）*
+*最后更新：2026-09-16 · 由开发记录整理（新增三级大纲：总纲→分卷→章节、volume_no 全链路、章节按分卷分组、高质量模式 3 元/万字、MySQL 全量切换、Vue3 前端迁移完成、服务器 git 部署、多用户并发生成）*
 

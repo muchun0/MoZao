@@ -66,7 +66,7 @@
 import { ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { sendCode as sendCodeApi, resetPassword } from '../api/auth'
+import { sendCode as sendCodeApi, resetPassword, register } from '../api/auth'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -103,7 +103,7 @@ async function doLogin() {
 async function doRegister() {
   loading.value = true
   try {
-    const res = await import('../api/auth').then(m => m.register(regForm.value))
+    await register(regForm.value)
     ElMessage.success('注册成功，请登录')
     tab.value = 'login'
   } catch (e) {

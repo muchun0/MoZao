@@ -1,8 +1,17 @@
 <template>
   <div v-loading="loading">
     <div class="detail-head">
-      <h2>{{ project?.title || '加载中…' }}</h2>
-      <el-button type="primary" @click="startGen">开始生成</el-button>
+      <div>
+        <h2>{{ project?.title || '加载中…' }}</h2>
+        <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px" :status="genDone?'success':''" />
+        <span v-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
+      </div>
+      <div>
+        <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
+        <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
+          {{ generating && !genDone ? '生成中…' : '开始生成' }}
+        </el-button>
+      </div>
     </div>
 
     <el-tabs v-model="tab">
@@ -24,6 +33,7 @@
             <p>{{ ch.goal }}</p>
           </div>
         </div>
+        <el-empty v-else description="暂无大纲" />
       </el-tab-pane>
 
       <el-tab-pane label="人物/世界观" name="world">
@@ -36,6 +46,7 @@
             <p style="margin-top:6px;color:#606266">{{ c.desc }}</p>
           </el-card>
         </div>
+        <el-empty v-else description="暂无人物设定" />
       </el-tab-pane>
 
       <el-tab-pane label="工具" name="tools">
@@ -50,9 +61,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, startGenerate } from '../api/project'
+import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import { ElMessage } from 'element-plus'
@@ -68,6 +79,11 @@ const tab = ref('chapters')
 const readerVisible = ref(false)
 const currentCh = ref(null)
 const currentContent = ref('')
+const generating = ref(false)
+const genDone = ref(false)
+const genPct = ref(0)
+const genStatus = ref('')
+let pollTimer = null
 
 async function loadAll() {
   loading.value = true
@@ -76,9 +92,46 @@ async function loadAll() {
     chapters.value = (await getChapters(pid)).chapters || []
     outline.value = await getOutline(pid)
     world.value = await getWorld(pid)
+    await checkStatus()
   } catch (e) {
     ElMessage.error('加载失败')
   } finally { loading.value = false }
+}
+
+async function checkStatus() {
+  try {
+    const s = await getStatus(pid)
+    generating.value = s.generating
+    genDone.value = !s.generating && s.generated > 0
+    if (s.total && s.generated) {
+      genPct.value = Math.round(s.generated / s.total * 100)
+    }
+    genStatus.value = s.message || ''
+    if (s.generating) {
+      startPolling()
+    }
+  } catch {}
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = setInterval(async () => {
+    try {
+      const s = await getStatus(pid)
+      generating.value = s.generating
+      if (s.total && s.generated) genPct.value = Math.round(s.generated / s.total * 100)
+      genStatus.value = s.message || ''
+      if (!s.generating) {
+        genDone.value = true
+        clearInterval(pollTimer)
+        loadChapters()
+      }
+    } catch {}
+  }, 3000)
+}
+
+async function loadChapters() {
+  chapters.value = (await getChapters(pid)).chapters || []
 }
 
 async function openChapter(c) {
@@ -94,8 +147,22 @@ async function startGen() {
   try {
     await startGenerate(pid, {})
     ElMessage.success('已开始生成')
+    generating.value = true
+    genDone.value = false
+    startPolling()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '启动失败')
+  }
+}
+
+async function cancelGen() {
+  try {
+    await cancelGenerate(pid)
+    ElMessage.info('已取消')
+    generating.value = false
+    if (pollTimer) clearInterval(pollTimer)
+  } catch (e) {
+    ElMessage.error('取消失败')
   }
 }
 
@@ -106,10 +173,12 @@ function statusType(s) {
 }
 
 onMounted(loadAll)
+onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <style scoped>
 .detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.gen-status { font-size: 13px; color: #909399; margin-left: 12px; }
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
 .ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }
 .ch-item:hover { background: #f5f7fa; }

@@ -1,27 +1,228 @@
 <template>
   <div class="tools-grid">
-    <el-card v-for="tool in tools" :key="tool.title" class="tool-card">
-      <template #header><b>{{ tool.title }}</b></template>
-      <p class="muted">{{ tool.desc }}</p>
-      <slot :name="tool.slot" />
+    <!-- 质量校验 -->
+    <el-card class="tool-card">
+      <template #header><b>质量校验</b></template>
+      <p class="muted">AI检查设定一致性/剧情逻辑/合规</p>
+      <el-space wrap>
+        <el-button size="small" @click="runVerify('consistency', '设定一致性')">设定一致性</el-button>
+        <el-button size="small" @click="runVerify('logic', '剧情逻辑')">剧情逻辑</el-button>
+        <el-button size="small" @click="runVerify('compliance', '合规检测')">合规检测</el-button>
+      </el-space>
+      <div class="result-area">
+        <div v-for="(item, i) in verifyResult" :key="i" :class="item.ok ? 'ok-box' : 'issue-box'">
+          {{ item.text }}
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 节奏分析 -->
+    <el-card class="tool-card">
+      <template #header><b>节奏分析</b></template>
+      <p class="muted">每章字数分布与进度</p>
+      <el-button size="small" @click="loadRhythm">查看节奏</el-button>
+      <div class="result-area">
+        <div v-for="(c, i) in rhythmData" :key="i" class="rhythm-row">
+          <span class="rhythm-label">第{{ c.no }}章</span>
+          <div class="rhythm-bar" :style="{width: (c.words/maxRhythm*100)+'%'}"></div>
+          <span class="rhythm-words">{{ c.words }}字</span>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 多方案生成 -->
+    <el-card class="tool-card">
+      <template #header><b>多方案生成</b></template>
+      <p class="muted">为章节目标生成3个走向</p>
+      <el-input v-model="altGoal" placeholder="输入章节目标" />
+      <el-button size="small" type="primary" style="margin-top:8px" @click="genAlts" :loading="altLoading">生成方案</el-button>
+      <div class="result-area">
+        <div v-for="(a, i) in alts" :key="i" class="alt-box">
+          <b>方案{{ i+1 }}：{{ a.title }}</b>
+          <p>{{ a.description }}</p>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 批量生成 -->
+    <el-card class="tool-card">
+      <template #header><b>批量生成</b></template>
+      <p class="muted">指定章节范围后台逐章生成</p>
+      <el-space>
+        <el-input-number v-model="batchStart" :min="1" controls-position="right" style="width:90px" />
+        <span>至</span>
+        <el-input-number v-model="batchEnd" :min="1" controls-position="right" style="width:90px" />
+        <el-button size="small" type="primary" @click="doBatch">开始</el-button>
+      </el-space>
+    </el-card>
+
+    <!-- 大纲快照 -->
+    <el-card class="tool-card">
+      <template #header><b>大纲快照</b></template>
+      <p class="muted">保存/回滚大纲版本</p>
+      <el-space>
+        <el-input v-model="snapName" placeholder="版本名（选填）" style="width:140px" />
+        <el-button size="small" @click="saveSnap">保存</el-button>
+      </el-space>
+      <div class="result-area">
+        <div v-for="(s, i) in snaps" :key="i" class="snap-row">
+          <span>{{ s.name }} <small class="muted">{{ s.created }}</small></span>
+          <el-button size="small" link @click="restoreSnap(s.name)">回滚</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 伏笔管理 -->
+    <el-card class="tool-card">
+      <template #header><b>伏笔管理</b></template>
+      <p class="muted">追踪已埋伏笔</p>
+      <el-space>
+        <el-input v-model="fsInput" placeholder="添加伏笔" style="flex:1" />
+        <el-button size="small" @click="addFs">添加</el-button>
+      </el-space>
+      <div class="result-area">
+        <div v-for="(f, i) in foreshadowing" :key="i" class="fs-row">
+          <span>{{ f }}</span>
+          <el-button size="small" link type="danger" @click="delFs(i)">删</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 核心设定锁定 -->
+    <el-card class="tool-card">
+      <template #header><b>核心设定锁定</b></template>
+      <p class="muted">AI必须遵守的铁律</p>
+      <el-space>
+        <el-input v-model="lkInput" placeholder="如：主角不能杀人" style="flex:1" />
+        <el-button size="small" @click="addLk">添加</el-button>
+      </el-space>
+      <div class="result-area">
+        <div v-for="(f, i) in locked" :key="i" class="fs-row">
+          <span>🔒 {{ f }}</span>
+          <el-button size="small" link type="danger" @click="delLk(i)">删</el-button>
+        </div>
+      </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-defineProps({ pid: String })
-const tools = [
-  { title: '质量校验', desc: 'AI检查设定一致性/剧情逻辑/合规', slot: 'quality' },
-  { title: '节奏分析', desc: '每章字数分布与进度', slot: 'rhythm' },
-  { title: '多方案生成', desc: '为章节目标生成3个走向', slot: 'alt' },
-  { title: '批量生成', desc: '指定章节范围后台逐章生成', slot: 'batch' },
-  { title: '大纲快照', desc: '保存/回滚大纲版本', slot: 'snap' },
-  { title: '伏笔管理', desc: '追踪已埋伏笔', slot: 'foreshadow' },
-  { title: '核心设定锁定', desc: 'AI必须遵守的铁律', slot: 'locked' },
-]
+import { ref, onMounted } from 'vue'
+import * as toolsApi from '../../api/tools'
+import { batchGenerate } from '../../api/novel'
+import { ElMessage } from 'element-plus'
+
+const props = defineProps({ pid: String })
+
+const verifyResult = ref([])
+const rhythmData = ref([])
+const maxRhythm = ref(1)
+const altGoal = ref('')
+const altLoading = ref(false)
+const alts = ref([])
+const batchStart = ref(1)
+const batchEnd = ref(1)
+const snapName = ref('')
+const snaps = ref([])
+const fsInput = ref('')
+const foreshadowing = ref([])
+const lkInput = ref('')
+const locked = ref([])
+
+async function runVerify(kind, label) {
+  verifyResult.value = [{ text: `正在检查${label}…`, ok: false }]
+  try {
+    const apiMap = { consistency: toolsApi.verifyConsistency, logic: toolsApi.verifyLogic, compliance: toolsApi.verifyCompliance }
+    const r = await apiMap[kind](props.pid)
+    const issues = r.issues || r.problems || []
+    if (!issues.length) verifyResult.value = [{ text: '未发现问题 ✓', ok: true }]
+    else verifyResult.value = issues.map(i => ({ text: (i.problem || i.issue || JSON.stringify(i)) + (i.suggestion ? '（建议：' + i.suggestion + '）' : ''), ok: false }))
+  } catch (e) {
+    verifyResult.value = [{ text: '失败：' + (e.response?.data?.detail || e.message), ok: false }]
+  }
+}
+
+async function loadRhythm() {
+  try {
+    const r = await toolsApi.getRhythm(props.pid)
+    rhythmData.value = r.chapters || []
+    maxRhythm.value = Math.max(...rhythmData.value.map(c => c.words), 1)
+  } catch (e) { ElMessage.error('节奏分析失败') }
+}
+
+async function genAlts() {
+  if (!altGoal.value) { ElMessage.warning('请输入章节目标'); return }
+  altLoading.value = true
+  try {
+    const r = await toolsApi.genAlternatives(props.pid, { goal: altGoal.value })
+    alts.value = r.alternatives || []
+  } catch (e) { ElMessage.error('生成失败') } finally { altLoading.value = false }
+}
+
+async function doBatch() {
+  try {
+    await batchGenerate(props.pid, { start: batchStart.value, end: batchEnd.value })
+    ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
+  } catch (e) { ElMessage.error('批量生成失败') }
+}
+
+async function loadSnaps() {
+  try { const r = await toolsApi.listSnapshots(props.pid); snaps.value = r.snapshots || [] } catch {}
+}
+async function saveSnap() {
+  await toolsApi.saveSnapshot(props.pid, snapName.value || undefined)
+  ElMessage.success('快照已保存')
+  snapName.value = ''
+  loadSnaps()
+}
+async function restoreSnap(name) {
+  if (!confirm(`回滚到「${name}」？`)) return
+  await toolsApi.restoreSnapshot(props.pid, name)
+  ElMessage.success('已回滚')
+}
+
+async function loadFs() {
+  try { const r = await toolsApi.listForeshadowing(props.pid); foreshadowing.value = r.foreshadowing || [] } catch {}
+}
+async function addFs() {
+  if (!fsInput.value) return
+  await toolsApi.addForeshadowing(props.pid, { item: fsInput.value })
+  fsInput.value = ''
+  loadFs()
+}
+async function delFs(i) {
+  await toolsApi.delForeshadowing(props.pid, i)
+  loadFs()
+}
+
+async function loadLk() {
+  try { const r = await toolsApi.listLocked(props.pid); locked.value = r.locked_settings || [] } catch {}
+}
+async function addLk() {
+  if (!lkInput.value) return
+  await toolsApi.addLocked(props.pid, { item: lkInput.value })
+  lkInput.value = ''
+  loadLk()
+}
+async function delLk(i) {
+  await toolsApi.delLocked(props.pid, i)
+  loadLk()
+}
+
+onMounted(() => { loadSnaps(); loadFs(); loadLk() })
 </script>
 
 <style scoped>
-.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
 .muted { color: #909399; font-size: 13px; }
+.result-area { margin-top: 10px; max-height: 250px; overflow-y: auto; }
+.issue-box { padding: 8px 10px; background: #fdf6ec; border-left: 3px solid #e6a23c; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }
+.ok-box { padding: 8px 10px; background: #f0f9eb; border-left: 3px solid #67c23a; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }
+.alt-box { padding: 8px 10px; background: #f5f7fa; border: 1px solid #e4e7ed; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }
+.alt-box p { margin-top: 4px; color: #606266; }
+.snap-row, .fs-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 13px; }
+.rhythm-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+.rhythm-label { width: 50px; color: #909399; }
+.rhythm-bar { height: 12px; background: #c6e2ff; border-radius: 3px; }
+.rhythm-words { color: #606266; }
 </style>

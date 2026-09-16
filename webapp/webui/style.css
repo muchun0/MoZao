@@ -621,3 +621,18 @@ input:focus, select:focus, textarea:focus {
 .ol-volume-name { font-weight: 700; color: #5a4a3a; }
 .ol-volume-intro { font-size: 13px; margin-top: 4px; color: #6b5b4a; }
 .ol-volume-climax { font-size: 12px; margin-top: 2px; color: #b04a3a; }
+
+/* 人物档案卡片 */
+.char-card { border:1px solid #e5e7eb; border-radius:8px; padding:14px; margin-bottom:10px; background:#fff; }
+.char-head { margin-bottom:8px; }
+.char-head .name { font-weight:600; font-size:15px; color:#1f2937; }
+.char-field { display:flex; gap:8px; font-size:13px; line-height:1.6; margin-bottom:4px; }
+.char-label { flex:0 0 80px; color:#6b7280; font-weight:500; }
+.char-field span:last-child { color:#374151; flex:1; }
+
+.char-card { border:1px solid #e5e7eb; border-radius:8px; padding:14px; margin-bottom:10px; background:#fff; }
+.char-head { margin-bottom:8px; }
+.char-head .name { font-weight:600; font-size:15px; }
+.char-field { display:flex; gap:8px; font-size:13px; line-height:1.6; margin-bottom:4px; }
+.char-label { flex:0 0 80px; color:#6b7280; font-weight:500; }
+.char-field span:last-child { flex:1; }

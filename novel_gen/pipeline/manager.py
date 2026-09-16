@@ -235,7 +235,7 @@ class NovelPipeline:
         research = None
         if not self.is_expand_mode():
             research = self.store.load_research() or self.run_research(silent=True)
-        logger.info("章节开始: 第 %d 章「%s」（写手）", no, plan.title, is_final)
+        logger.info("章节开始: 第 %d 章「%s」（写手）is_final=%s", no, plan.title, is_final)
         try:
             chapter = self.writer.write_chapter(no, plan.title, plan.goal, research,
                                                 silent=silent, is_final=is_final)

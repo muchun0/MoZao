@@ -21,6 +21,7 @@
             <span class="ch-no">第{{ c.no }}章</span>
             <span class="ch-title">{{ c.title }}</span>
             <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ c.status }}</el-tag>
+            <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
           </div>
         </div>
         <el-empty v-else description="暂无章节" />
@@ -58,8 +59,28 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="readerVisible" :title="currentCh?.title" width="700px">
-      <div class="reader-content" v-html="currentContent"></div>
+    <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh">
+      <template #header>
+        <div class="reader-header">
+          <span>第{{ currentCh?.no }}章 {{ currentCh?.title }}</span>
+          <div class="reader-tools">
+            <el-button-group size="small">
+              <el-button @click="readerTheme = readerTheme === 'light' ? 'dark' : 'light'" :title="readerTheme === 'light' ? '夜间模式' : '日间模式'">
+                {{ readerTheme === 'light' ? '🌙' : '☀️' }}
+              </el-button>
+              <el-button @click="fontSize = Math.max(14, fontSize - 2)" title="缩小字体">A-</el-button>
+              <el-button @click="fontSize = Math.min(24, fontSize + 2)" title="放大字体">A+</el-button>
+            </el-button-group>
+            <el-button v-if="!editing" size="small" type="primary" @click="startEdit">编辑</el-button>
+            <template v-else>
+              <el-button size="small" @click="cancelEdit">取消</el-button>
+              <el-button size="small" type="success" @click="saveEdit" :loading="saving">保存</el-button>
+            </template>
+          </div>
+        </div>
+      </template>
+      <div v-if="!editing" class="reader-content" :class="readerTheme" :style="{fontSize: fontSize + 'px'}" v-html="currentContent"></div>
+      <el-input v-else v-model="editContent" type="textarea" :rows="22" class="editor-area" />
     </el-dialog>
   </div>
 </template>
@@ -85,10 +106,33 @@ const tab = ref('chapters')
 const readerVisible = ref(false)
 const currentCh = ref(null)
 const currentContent = ref('')
+const editing = ref(false)
+const editContent = ref('')
+const saving = ref(false)
+const readerTheme = ref('light')
+const fontSize = ref(16)
 const generating = ref(false)
 const genDone = ref(false)
 const genPct = ref(0)
 const genStatus = ref('')
+const regenNo = ref(0)
+
+async function regenChapter(c) {
+  if (!confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`)) return
+  regenNo.value = c.no
+  try {
+    const res = await fetch(`/api/projects/${pid}/chapters/${c.no}/rewrite`, { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.json()
+      ElMessage.error(err.detail || '重生成失败')
+      return
+    }
+    ElMessage.success(`第${c.no}章已重新生成（${(await res.json()).words}字）`)
+    loadChapters()
+  } catch (e) {
+    ElMessage.error('重生成失败')
+  } finally { regenNo.value = 0 }
+}
 let pollTimer = null
 
 async function loadAll() {
@@ -134,10 +178,34 @@ async function loadChapters() {
 async function openChapter(c) {
   currentCh.value = c
   readerVisible.value = true
+  editing.value = false
   try {
     const res = await getChapter(pid, c.no)
-    currentContent.value = (res.content || '').replace(/\n/g, '<br>')
+    editContent.value = res.content || ''
+    currentContent.value = editContent.value.replace(/\n/g, '<br>')
   } catch { currentContent.value = '内容加载失败' }
+}
+
+function startEdit() {
+  editing.value = true
+}
+function cancelEdit() {
+  editing.value = false
+}
+async function saveEdit() {
+  saving.value = true
+  try {
+    await fetch(`/api/projects/${pid}/chapters/${currentCh.value.no}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: editContent.value })
+    })
+    currentContent.value = editContent.value.replace(/\n/g, '<br>')
+    editing.value = false
+    ElMessage.success('已保存')
+  } catch (e) {
+    ElMessage.error('保存失败')
+  } finally { saving.value = false }
 }
 
 async function startGen() {
@@ -184,5 +252,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .char-fields { display: flex; flex-direction: column; gap: 4px; }
 .char-row { display: flex; gap: 8px; font-size: 13px; }
 .char-label { flex: 0 0 70px; color: #909399; }
-.reader-content { line-height: 1.8; font-size: 15px; }
+.reader-content { line-height: 1.9; padding: 8px 12px; }
+.reader-content.dark { background: #1a1a2e; color: #e0e0e0; padding: 16px; border-radius: 8px; }
+.reader-header { display: flex; justify-content: space-between; align-items: center; }
+.reader-tools { display: flex; gap: 8px; align-items: center; }
+.editor-area :deep(.el-textarea__inner) { font-family: inherit; line-height: 1.8; font-size: 15px; }
 </style>

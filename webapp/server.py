@@ -493,22 +493,29 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         if start_from > 0:
             done = start_from - 1
         else:
-            pipeline.run_research()
-            if handle.stop_event.is_set():
-                logger.info("生成停止: project=%s 阶段=research", store.dir.name)
-                return
-            pipeline.run_outline()
-            if handle.stop_event.is_set():
-                logger.info("生成停止: project=%s 阶段=outline", store.dir.name)
-                return
-            pipeline.run_editor_review()
-            if handle.stop_event.is_set():
-                logger.info("生成停止: project=%s 阶段=editor_review", store.dir.name)
-                return
-            pipeline.run_world()
-            if handle.stop_event.is_set():
-                logger.info("生成停止: project=%s 阶段=world", store.dir.name)
-                return
+            # 已有大纲则复用，不重新生成（用户上传大纲/之前已生成过的情况）
+            existing_outline = store.load_outline()
+            has_outline = bool(existing_outline and existing_outline.chapters)
+            if not has_outline:
+                pipeline.run_research()
+                if handle.stop_event.is_set():
+                    logger.info("生成停止: project=%s 阶段=research", store.dir.name)
+                    return
+                pipeline.run_outline()
+                if handle.stop_event.is_set():
+                    logger.info("生成停止: project=%s 阶段=outline", store.dir.name)
+                    return
+                pipeline.run_editor_review()
+                if handle.stop_event.is_set():
+                    logger.info("生成停止: project=%s 阶段=editor_review", store.dir.name)
+                    return
+            # 世界观：有则复用，没有则生成
+            existing_world = store.load_world()
+            if not (existing_world and (existing_world.world_view or existing_world.characters)):
+                pipeline.run_world()
+                if handle.stop_event.is_set():
+                    logger.info("生成停止: project=%s 阶段=world", store.dir.name)
+                    return
             done, _total = pipeline.progress()
 
         done, total = pipeline.progress()
@@ -1711,6 +1718,72 @@ def generate_outline_only(project_id: str, user: dict = Depends(_require_user)):
             _RUNS.pop(project_id, None)
         raise
     return {"started": True, "project_id": project_id, "stage": "outline"}
+
+
+@app.post("/api/projects/{project_id}/outline/regenerate")
+def regen_outline(project_id: str, user: dict = Depends(_require_user)):
+    """重新生成大纲：删除旧大纲，重新跑 outline 阶段。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙")
+    try:
+        from novel_gen.store.schemas import Outline
+        store.save_outline(Outline(title="", intro="", chapters=[]))
+        t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
+    return {"started": True}
+
+
+@app.post("/api/projects/{project_id}/world/regenerate")
+def regen_world(project_id: str, user: dict = Depends(_require_user)):
+    """重新生成世界观。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail="系统繁忙")
+    try:
+        def _do():
+            try:
+                pipeline = _open_pipeline(store)
+                from novel_gen.store.schemas import World
+                store.save_world(World(world_view="", characters=[], foreshadowing=[]))
+                pipeline.run_world()
+            except Exception as e:
+                handle.error = str(e)
+            finally:
+                _GEN_SEMAPHORE.release()
+                with _LOCK:
+                    _RUNS.pop(project_id, None)
+        t = threading.Thread(target=_do, daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise
+    return {"started": True}
 
 
 @app.post("/api/projects/{project_id}/start")

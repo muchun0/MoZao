@@ -56,6 +56,16 @@
       </el-space>
     </el-card>
 
+    <!-- 重新生成 -->
+    <el-card class="tool-card">
+      <template #header><b>重新生成</b></template>
+      <p class="muted">对已生成内容不满意可重新生成</p>
+      <el-space wrap>
+        <el-button size="small" type="warning" @click="regenOutline" :loading="regenLoading">重新生成大纲</el-button>
+        <el-button size="small" type="warning" @click="regenWorld" :loading="regenLoading2">重新生成世界观</el-button>
+      </el-space>
+    </el-card>
+
     <!-- 大纲快照 -->
     <el-card class="tool-card">
       <template #header><b>大纲快照</b></template>
@@ -128,6 +138,26 @@ const fsInput = ref('')
 const foreshadowing = ref([])
 const lkInput = ref('')
 const locked = ref([])
+const regenLoading = ref(false)
+const regenLoading2 = ref(false)
+
+async function regenOutline() {
+  if (!confirm('重新生成大纲将删除现有大纲和章节，确定？')) return
+  regenLoading.value = true
+  try {
+    await fetch(`/api/projects/${props.pid}/outline/regenerate`, { method: 'POST' })
+    ElMessage.success('已开始重新生成大纲')
+    setTimeout(() => location.reload(), 2000)
+  } catch (e) { ElMessage.error('操作失败') } finally { regenLoading.value = false }
+}
+async function regenWorld() {
+  regenLoading2.value = true
+  try {
+    await fetch(`/api/projects/${props.pid}/world/regenerate`, { method: 'POST' })
+    ElMessage.success('已开始重新生成世界观')
+    setTimeout(() => location.reload(), 2000)
+  } catch (e) { ElMessage.error('操作失败') } finally { regenLoading2.value = false }
+}
 
 async function runVerify(kind, label) {
   verifyResult.value = [{ text: `正在检查${label}…`, ok: false }]

@@ -56,6 +56,18 @@
           </el-form-item>
         </template>
         <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
+        <el-form-item label="费用估算">
+          <div class="price-hint">
+            <span v-if="form.mode === 'expand'">
+              目标 {{ form.total_words }} 字 - 已有 {{ form.existing_words || 0 }} 字 = AI生成约 {{ aiWords }} 字
+            </span>
+            <span v-else>AI生成约 {{ form.total_words }} 字</span>
+            <br>
+            单价：{{ form.high_quality_mode ? '3.00 元/万字（高质量）' : '2.00 元/万字' }}
+            <b>预估费用：约 {{ estPrice }} 元</b>
+            <small class="muted">（创建不扣费，生成完成后按实际字数结算）</small>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreate=false">取消</el-button>
@@ -84,6 +96,16 @@ const form = ref({
   existing_words: 0, user_content: '', expand_input: '',
 })
 const fileInput = ref(null)
+
+const aiWords = computed(() => {
+  const target = form.value.total_words || 0
+  const existing = form.value.existing_words || 0
+  return Math.max(0, target - existing)
+})
+const estPrice = computed(() => {
+  const rate = form.value.high_quality_mode ? 3 : 2
+  return ((aiWords.value / 10000) * rate).toFixed(2)
+})
 
 function onFilePick(e) {
   const f = e.target.files[0]
@@ -160,4 +182,7 @@ onMounted(load)
 .pname { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
 .pmeta { font-size: 13px; color: #909399; }
 .pactions { display: flex; gap: 8px; margin-top: 10px; }
+.price-hint { background: #f6f8fa; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.8; color: #606266; }
+.price-hint b { color: #c9a227; }
+.price-hint .muted { color: #909399; font-size: 12px; }
 </style>

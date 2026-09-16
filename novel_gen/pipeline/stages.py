@@ -165,6 +165,20 @@ class OutlineGenerator:
                 c.title = f"第{i}章"
             if not c.goal:
                 c.goal = f"推进主线剧情，制造冲突并留下悬念。"
+            if not c.core_event:
+                c.core_event = c.goal
+            if not c.conflict:
+                c.conflict = "主角面临新的阻碍，需要做出选择。"
+            if not c.character_moves:
+                c.character_moves = "主角行动并应对局势变化。"
+            if not c.foreshadowing:
+                c.foreshadowing = "无"
+            if not c.emotion:
+                c.emotion = "悬念推进"
+            if not c.transition:
+                c.transition = "自然衔接前章，引出下章。"
+            if not c.tag:
+                c.tag = "过渡"
             normalized.append(c)
         unique_chapter_titles(normalized)  # 章节名全书唯一（重名自动加后缀）
         outline.chapters = normalized

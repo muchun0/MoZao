@@ -2,7 +2,7 @@
   <div v-loading="loading">
     <div class="detail-head">
       <div>
-        <h2>{{ project?.title || '加载中…' }}</h2>
+        <h2>{{ project?.config?.title || '加载中…' }}</h2>
         <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px" :status="genDone?'success':''" />
         <span v-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
       </div>

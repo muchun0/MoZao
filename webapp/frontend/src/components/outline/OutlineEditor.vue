@@ -7,22 +7,23 @@
     </div>
 
     <draggable v-model="chapters" item-key="no" class="ol-list" :animation="200">
-      #item="{ element, index }"
-      <el-card class="ol-card">
-        <div class="ol-head">
-          <el-icon class="drag-icon"><rank /></el-icon>
-          <span class="ol-no">第{{ index+1 }}章</span>
-          <el-input v-model="element.title" placeholder="章节标题" size="small" style="flex:1" />
-          <el-tag v-if="element.tag" size="small">{{ element.tag }}</el-tag>
-          <el-button size="small" link type="danger" @click="removeChapter(index)">删</el-button>
-        </div>
-        <div class="ol-fields">
-          <div v-for="f in fields" :key="f.key" class="ol-field">
-            <label>{{ f.label }}</label>
-            <el-input v-model="element[f.key]" type="textarea" :rows="f.rows" size="small" :placeholder="f.placeholder" />
+      <template #item="{ element, index }">
+        <el-card class="ol-card">
+          <div class="ol-head">
+            <el-icon class="drag-icon"><rank /></el-icon>
+            <span class="ol-no">第{{ index+1 }}章</span>
+            <el-input v-model="element.title" placeholder="章节标题" size="small" style="flex:1" />
+            <el-tag v-if="element.tag" size="small">{{ element.tag }}</el-tag>
+            <el-button size="small" link type="danger" @click="removeChapter(index)">删</el-button>
           </div>
-        </div>
-      </el-card>
+          <div class="ol-fields">
+            <div v-for="f in fields" :key="f.key" class="ol-field">
+              <label>{{ f.label }}</label>
+              <el-input v-model="element[f.key]" type="textarea" :rows="f.rows" size="small" :placeholder="f.placeholder" />
+            </div>
+          </div>
+        </el-card>
+      </template>
     </draggable>
   </div>
 </template>

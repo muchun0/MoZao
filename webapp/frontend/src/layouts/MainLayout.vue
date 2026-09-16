@@ -1,7 +1,10 @@
 <template>
   <el-container class="layout">
     <el-header class="header">
-      <div class="logo" @click="$router.push('/')">墨造 · AI小说生成</div>
+      <div class="logo" @click="$router.push('/')">
+        <span class="seal">墨</span>
+        墨造 · AI小说生成
+      </div>
       <div class="right">
         <span v-if="auth.user" class="balance">余额 ¥{{ (balance || 0).toFixed(2) }}</span>
         <el-button v-if="auth.user" text @click="rechargeRef.open()">充值</el-button>
@@ -53,9 +56,48 @@ function onCommand(cmd) {
 
 <style scoped>
 .layout { min-height: 100vh; }
-.header { display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e4e7ed; padding: 0 24px; }
-.logo { font-size: 18px; font-weight: 600; color: #303133; cursor: pointer; }
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 60px;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--serif);
+  font-size: 20px;
+  letter-spacing: 4px;
+  color: #f0e2b6;
+  cursor: pointer;
+}
+.seal {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(140deg, #c9a227, #8a6d1e);
+  color: #f5efdc;
+  box-shadow: 0 3px 8px rgba(201,162,39,.4);
+}
 .right { display: flex; align-items: center; gap: 16px; }
-.balance { font-size: 14px; color: #606266; }
-.username { cursor: pointer; font-size: 14px; color: #303133; }
+.balance {
+  font-weight: 700;
+  color: #f0e2b6;
+  font-size: 14px;
+  padding: 5px 12px;
+  background: rgba(0,0,0,.22);
+  border: 1px solid rgba(201,162,39,.4);
+  border-radius: 999px;
+}
+.username {
+  cursor: pointer;
+  font-size: 14px;
+  color: rgba(233,228,210,.75);
+}
 </style>

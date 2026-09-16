@@ -1,2 +1,107 @@
+/* ============================================================
+   墨造 · AI 小说创作平台 — 全局样式
+   设计语言：深夜书房 × AI 工坊
+   深靛蓝 · 暖金 · 暖白纸面 · 衬线标题 · 墨水晕染
+   ============================================================ */
+
+:root {
+  --ink: #1c2233;
+  --ink-soft: #4a5166;
+  --muted: #8a8f9f;
+  --paper: #f6f3ea;
+  --card: #fdfcf7;
+  --card-line: #e6dfcc;
+  --indigo: #232f55;
+  --indigo-deep: #18213d;
+  --indigo-soft: #eef0f7;
+  --gold: #c9a227;
+  --gold-soft: #f0e6c4;
+  --gold-line: #d9bd62;
+  --gold-deep: #8a6d1e;
+  --danger: #b3402f;
+  --ok: #3c7a4e;
+  --radius: 14px;
+  --shadow: 0 2px 10px rgba(28,34,51,.06), 0 1px 3px rgba(28,34,51,.05);
+  --serif: Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; }
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--sans);
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.65;
+  background-image: radial-gradient(rgba(35,47,85,.035) 1px, transparent 1.4px);
+  background-size: 24px 24px;
+}
+
+/* Element Plus 主题覆盖 */
+:root {
+  --el-color-primary: #232f55;
+  --el-color-primary-light-3: #3a4a7a;
+  --el-color-primary-light-5: #5a6a95;
+  --el-color-primary-light-7: #8a95b8;
+  --el-color-primary-light-8: #b0b8d0;
+  --el-color-primary-light-9: #eef0f7;
+  --el-color-primary-dark-2: #18213d;
+  --el-border-radius-base: 10px;
+  --el-font-family: var(--sans);
+}
+
+h1, h2, h3 { font-family: var(--serif); }
+
+/* 覆盖 Element Plus 卡片/按钮等默认样式，融入暖纸色调 */
+.el-card {
+  background: var(--card);
+  border: 1px solid var(--card-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--indigo);
+  --el-button-border-color: var(--indigo);
+  --el-button-hover-bg-color: #2c3a66;
+  --el-button-hover-border-color: #2c3a66;
+}
+
+.el-input__wrapper {
+  box-shadow: 0 0 0 1px var(--card-line) inset;
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--gold-line) inset !important;
+}
+
+.el-tabs__item.is-active { color: var(--indigo-deep); }
+.el-tabs__active-bar { background-color: var(--gold); }
+
+.el-header {
+  background: linear-gradient(90deg, var(--indigo-deep), var(--indigo) 60%, #2b3a63) !important;
+  color: #e9e4d2 !important;
+  border-bottom: none !important;
+  box-shadow: 0 3px 14px rgba(20,26,48,.35);
+}
+
+.el-main { background: transparent; }
+
+/* 顶栏品牌名 */
+.app-brand {
+  font-family: var(--serif);
+  font-size: 20px;
+  letter-spacing: 4px;
+  color: #f0e2b6;
+}
+
+/* 去掉数字输入框上下箭头（防鼠标滚轮误改） */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

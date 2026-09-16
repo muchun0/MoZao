@@ -27,25 +27,29 @@
       </el-tab-pane>
 
       <el-tab-pane label="大纲" name="outline">
-        <div v-if="outline" class="outline-view">
-          <div v-for="ch in outline.chapters" :key="ch.no" class="ol-item">
-            <b>第{{ ch.no }}章 {{ ch.title }}</b>
-            <p>{{ ch.goal }}</p>
-          </div>
-        </div>
-        <el-empty v-else description="暂无大纲" />
+        <OutlineEditor :pid="pid" @saved="loadAll" />
       </el-tab-pane>
 
       <el-tab-pane label="人物/世界观" name="world">
-        <div v-if="world" class="world-view">
+        <template v-if="world">
+          <CharacterGraph v-if="world.characters?.length" :characters="world.characters" />
           <h4>世界观</h4>
-          <p>{{ world.world_view }}</p>
-          <h4>人物</h4>
+          <p class="world-text">{{ world.world_view }}</p>
+          <h4>人物档案</h4>
           <el-card v-for="(c,i) in world.characters" :key="i" style="margin-bottom:10px">
-            <b>{{ c.name }}</b> <el-tag size="small">{{ c.role }}</el-tag>
-            <p style="margin-top:6px;color:#606266">{{ c.desc }}</p>
+            <div class="char-head"><b>{{ c.name }}</b> <el-tag size="small">{{ c.role }}</el-tag></div>
+            <div class="char-fields">
+              <div v-if="c.appearance" class="char-row"><span class="char-label">外貌</span><span>{{ c.appearance }}</span></div>
+              <div v-if="c.personality" class="char-row"><span class="char-label">性格</span><span>{{ c.personality }}</span></div>
+              <div v-if="c.desire" class="char-row"><span class="char-label">核心欲望</span><span>{{ c.desire }}</span></div>
+              <div v-if="c.wound" class="char-row"><span class="char-label">软肋</span><span>{{ c.wound }}</span></div>
+              <div v-if="c.arc" class="char-row"><span class="char-label">弧光</span><span>{{ c.arc }}</span></div>
+              <div v-if="c.speech_style" class="char-row"><span class="char-label">说话方式</span><span>{{ c.speech_style }}</span></div>
+              <div v-if="c.relations" class="char-row"><span class="char-label">关系</span><span>{{ c.relations }}</span></div>
+              <div v-if="c.desc" class="char-row"><span class="char-label">简介</span><span>{{ c.desc }}</span></div>
+            </div>
           </el-card>
-        </div>
+        </template>
         <el-empty v-else description="暂无人物设定" />
       </el-tab-pane>
 
@@ -66,6 +70,8 @@ import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
+import OutlineEditor from '../components/outline/OutlineEditor.vue'
+import CharacterGraph from '../components/world/CharacterGraph.vue'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
@@ -90,7 +96,6 @@ async function loadAll() {
   try {
     project.value = await getProject(pid)
     chapters.value = (await getChapters(pid)).chapters || []
-    outline.value = await getOutline(pid)
     world.value = await getWorld(pid)
     await checkStatus()
   } catch (e) {
@@ -103,13 +108,9 @@ async function checkStatus() {
     const s = await getStatus(pid)
     generating.value = s.generating
     genDone.value = !s.generating && s.generated > 0
-    if (s.total && s.generated) {
-      genPct.value = Math.round(s.generated / s.total * 100)
-    }
+    if (s.total && s.generated) genPct.value = Math.round(s.generated / s.total * 100)
     genStatus.value = s.message || ''
-    if (s.generating) {
-      startPolling()
-    }
+    if (s.generating) startPolling()
   } catch {}
 }
 
@@ -121,11 +122,7 @@ function startPolling() {
       generating.value = s.generating
       if (s.total && s.generated) genPct.value = Math.round(s.generated / s.total * 100)
       genStatus.value = s.message || ''
-      if (!s.generating) {
-        genDone.value = true
-        clearInterval(pollTimer)
-        loadChapters()
-      }
+      if (!s.generating) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
     } catch {}
   }, 3000)
 }
@@ -161,9 +158,7 @@ async function cancelGen() {
     ElMessage.info('已取消')
     generating.value = false
     if (pollTimer) clearInterval(pollTimer)
-  } catch (e) {
-    ElMessage.error('取消失败')
-  }
+  } catch (e) { ElMessage.error('取消失败') }
 }
 
 function statusType(s) {
@@ -184,7 +179,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .ch-item:hover { background: #f5f7fa; }
 .ch-no { color: #909399; font-size: 13px; width: 60px; }
 .ch-title { flex: 1; }
-.ol-item { padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-.ol-item p { color: #606266; font-size: 13px; margin-top: 4px; }
+.world-text { margin-bottom: 16px; line-height: 1.8; color: #606266; }
+.char-head { margin-bottom: 8px; }
+.char-fields { display: flex; flex-direction: column; gap: 4px; }
+.char-row { display: flex; gap: 8px; font-size: 13px; }
+.char-label { flex: 0 0 70px; color: #909399; }
 .reader-content { line-height: 1.8; font-size: 15px; }
 </style>

@@ -36,3 +36,7 @@ AGENTS.md
 
 stderr.log
 stdout.log
+
+# 本地测试脚本（不上生产）
+tests/
+.pytest_cache/

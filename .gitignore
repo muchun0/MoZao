@@ -25,6 +25,8 @@ webapp/webui/payment_qr.png
 _*.py
 _*.sh
 *.tar.gz
+# 但保留Python包初始化文件（_*.py 会误匹配 __init__.py）
+!**/__init__.py
 
 # ===== IDE =====
 .idea/

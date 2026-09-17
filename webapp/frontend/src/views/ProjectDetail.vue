@@ -6,11 +6,18 @@
         <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px" :status="genDone?'success':''" />
         <span v-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
       </div>
-      <div>
+      <div class="step-actions">
         <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
-        <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
-          {{ generating && !genDone ? '生成中…' : '开始生成' }}
+        <el-button v-if="!outlineReady" type="primary" @click="runOutline" :loading="generating && !genDone">
+          {{ generating && !genDone ? '生成中…' : '生成大纲与世界观' }}
         </el-button>
+        <template v-else>
+          <el-button @click="doRegenOutline" :disabled="generating && !genDone" title="重生成总纲/分卷">重生成大纲</el-button>
+          <el-button @click="doRegenWorld" :disabled="generating && !genDone" title="重生成世界观/人物">重生成世界观</el-button>
+          <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
+            {{ generating && !genDone ? '生成中…' : '开始写章节' }}
+          </el-button>
+        </template>
       </div>
     </div>
 
@@ -111,11 +118,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
 const pid = route.params.id
@@ -127,6 +134,7 @@ const world = ref(null)
 const worldDraft = ref({ world_view: "", characters: [] })
 const worldSaving = ref(false)
 const lock = ref({})
+const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 const isWorldLocked = computed(() => !!lock.value.world_view)
 const isChLocked = (no) => !!(lock.value.chapter || {})[no]
 const isCharLocked = (name) => !!(lock.value.character || {})[name]
@@ -282,6 +290,20 @@ async function saveEdit() {
   } finally { saving.value = false }
 }
 
+async function runOutline() {
+  try { await genOutline(pid); ElMessage.success('已开始生成大纲与世界观，完成后可在「大纲」「人物/世界观」查看/编辑'); startPolling() }
+  catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
+}
+async function doRegenOutline() {
+  try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
+  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); startPolling() }
+  catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+}
+async function doRegenWorld() {
+  try { await ElMessageBox.confirm('重生成世界观会覆盖现有世界设定，已锁定内容不受影响。继续？', '重生成世界观', { type: 'warning' }) } catch { return }
+  try { await regenWorld(pid); ElMessage.success('已开始重生成世界观'); startPolling() }
+  catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+}
 async function startGen() {
   try {
     await startGenerate(pid, {})
@@ -315,6 +337,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <style scoped>
 .detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.step-actions { display:flex; gap:8px; align-items:center; }
 .gen-status { font-size: 13px; color: #909399; margin-left: 12px; }
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
 .ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }

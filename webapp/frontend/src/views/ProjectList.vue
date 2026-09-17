@@ -19,7 +19,7 @@
       <el-card v-for="p in filtered" :key="p.id" class="pcard" @click="$router.push('/project/'+p.id)">
         <div class="pname">{{ p.title }}</div>
         <div class="pmeta">{{ p.genre }} · {{ p.total_words }}字</div>
-        <div class="pmeta">已生成 {{ p.generated_chapters || 0 }} 章</div>
+        <div class="pmeta">已生成 {{ p.chapters_done || 0 }} 章</div>
         <el-progress :percentage="pct(p)" :stroke-width="6" style="margin-top:8px" />
         <div class="pactions" @click.stop>
           <el-button v-if="!p.archived" size="small" @click="doArchive(p)">归档</el-button>
@@ -138,7 +138,7 @@ const filtered = computed(() => {
 
 function pct(p) {
   if (!p.total_words) return 0
-  return Math.round((p.generated_words || 0) / p.total_words * 100)
+  return Math.min(100, Math.round((p.generated_words || 0) / p.total_words * 100))
 }
 
 async function doCreate() {

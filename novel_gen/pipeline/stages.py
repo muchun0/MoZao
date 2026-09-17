@@ -249,6 +249,29 @@ class ChapterWriter:
         except Exception:
             pass
 
+        # 注入用户锁定的内容作为硬约束
+        try:
+            lock_path = self.store.dir / "lock.json"
+            if lock_path.exists():
+                import json as _json
+                _lk = _json.loads(lock_path.read_text(encoding="utf-8"))
+                _locked_bits = []
+                if _lk.get("world_view") and world and world.world_view:
+                    _locked_bits.append("【用户已锁定的世界观，必须严格遵守，不得违背】\n" + world.world_view)
+                _locked_chars = (_lk.get("character") or {})
+                if _locked_chars and world and world.characters:
+                    for _c in world.characters:
+                        if _locked_chars.get(getattr(_c, "name", "")):
+                            _locked_bits.append(
+                                f"【用户已锁定人物「{getattr(_c,'name','')}」，设定不得改动】\n"
+                                f"性格:{getattr(_c,'personality','')} 欲望:{getattr(_c,'desire','')} "
+                                f"说话方式:{getattr(_c,'speech_style','')}")
+                if _locked_bits:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
+                        "以下为用户锁定的不可违背设定：\n" + "\n".join(_locked_bits)
+        except Exception:
+            pass
+
         if getattr(self.cfg, "high_quality_mode", False):
             text = self._generate_chapter_hq(
                 chapter_no, plan_title, plan_goal,

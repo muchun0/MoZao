@@ -24,6 +24,7 @@
           <span class="vol-label">第{{ vi+1 }}卷</span>
           <el-input v-model="vol.name" placeholder="卷名" size="small" style="width:200px" />
           <el-button size="small" link type="primary" @click="addChapterToVolume(vol.no)">+ 章节</el-button>
+          <el-button size="small" link @click="regenVolume(vol)" :loading="regeningVol === vol.no">重生成本卷</el-button>
           <el-button size="small" link type="danger" @click="removeVolume(vi)">删卷</el-button>
         </div>
         <div class="vol-fields">
@@ -96,7 +97,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import draggable from 'vuedraggable'
-import { getOutline, saveOutline as saveOutlineApi } from '../../api/novel'
+import { getOutline, saveOutline as saveOutlineApi, regenerateVolume } from '../../api/novel'
 import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -108,6 +109,20 @@ const outlineIntro = ref('')
 const volumes = ref([])
 const chapters = ref([])  // 所有章节，每个chapter带volume_no
 const saving = ref(false)
+const regeningVol = ref(0)
+async function regenVolume(vol) {
+  try {
+    await ElMessageBox.confirm('只重写本卷的简介和章节规划，其他分卷不动。继续？', '重生成本卷', { type: 'warning' })
+  } catch { return }
+  regeningVol.value = vol.no
+  try {
+    await regenerateVolume(props.pid, vol.no)
+    ElMessage.success('本卷已重新生成，请刷新查看')
+    emit('saved')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '重生成失败')
+  } finally { regeningVol.value = 0 }
+}
 
 const fields = [
   { key: 'goal', label: '剧情目标', rows: 2, placeholder: '一句话说清本章发生什么' },

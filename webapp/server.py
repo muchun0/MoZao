@@ -351,6 +351,7 @@ def _list_projects(user: dict, sort: str = "created", show_archived: bool = Fals
                 "archived": archived,
                 "chapters_done": len(chapters),
                 "chapters_total": total,
+                "generated_words": sum(len(c.content or "") for c in chapters),
                 "running": d.name in _RUNS,
                 "has_error": bool(_RUNS.get(d.name) and _RUNS[d.name].error),
                 "price": db.project_price(d.name),
@@ -1404,6 +1405,11 @@ def project_outline(project_id: str, user: dict = Depends(_require_user)):
     return {
         "title": outline.title,
         "intro": outline.intro,
+        "core_conflict": outline.core_conflict,
+        "main_line": outline.main_line,
+        "timelines": outline.timelines,
+        "units": outline.units,
+        "volumes": [v.to_dict() if hasattr(v, "to_dict") else v for v in (outline.volumes or [])],
         "chapters": [c.to_dict() for c in outline.chapters],
     }
 
@@ -1955,6 +1961,49 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
         "foreshadowing": fs,
         "locked_settings": ls,
     }
+
+
+@app.post("/api/projects/{project_id}/volumes/{vol_no}/regenerate")
+def regenerate_volume(project_id: str, vol_no: int, user: dict = Depends(_require_user)):
+    """单独重生成某分卷：只重写该分卷的 intro 和其下章节的 title/goal，其他分卷不动。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    _assert_not_locked(store, "volume", vol_no, "该分卷已被锁定，如需重生成请先解锁")
+    outline = store.load_outline()
+    if not outline or not outline.volumes:
+        raise HTTPException(status_code=400, detail="尚无大纲")
+    vol = next((v for v in outline.volumes if v.no == vol_no), None)
+    if vol is None:
+        raise HTTPException(status_code=404, detail="分卷不存在")
+    targets = [c for c in outline.chapters if c.volume_no == vol_no]
+    if not targets:
+        raise HTTPException(status_code=400, detail="该分卷下暂无章节")
+    cfg = store.load_config()
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        sys = ("你是资深网文大纲策划。根据总纲重写指定分卷的简介和该卷章节规划，"
+               "保持与其他分卷的衔接，不要改动其他分卷。只输出JSON。")
+        user_msg = (
+            f"书名：{outline.title}\n题材：{cfg.genre}\n总纲：{outline.intro}\n"
+            f"要重写的分卷：{vol.name}（当前简介：{vol.intro}）\n"
+            f"该卷共 {len(targets)} 章。请输出JSON："
+            '{"intro":"分卷简介","chapters":[{"title":"章名","goal":"本章目标"}...]}，'
+            f"chapters 数量必须为 {len(targets)}，顺序对应。")
+        raw = llm.chat(sys, user_msg, temperature=0.7, max_tokens=2000)
+        data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+        vol.intro = str(data.get("intro", vol.intro))
+        new_chs = data.get("chapters", [])
+        for i, ch in enumerate(targets):
+            if i < len(new_chs):
+                ch.title = str(new_chs[i].get("title", ch.title))
+                ch.goal = str(new_chs[i].get("goal", ch.goal))
+        store.save_outline(outline)
+        logger.info("分卷重生成: project=%s vol=%d", project_id, vol_no)
+        return {"ok": True, "intro": vol.intro, "chapters": [{"no": c.no, "title": c.title, "goal": c.goal} for c in targets]}
+    except Exception as e:
+        logger.exception("分卷重生成失败: project=%s vol=%d", project_id, vol_no)
+        raise HTTPException(status_code=500, detail=f"重生成失败：{e}")
 
 
 @app.get("/api/projects/{project_id}/lock")

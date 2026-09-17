@@ -24,6 +24,9 @@
               <span class="ch-title">{{ c.title }}</span>
               <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ c.status }}</el-tag>
               <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
+              <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link @click.stop="toggleLock('chapter', c.no)">
+                {{ isChLocked(c.no) ? '🔒已锁' : '🔓锁' }}
+              </el-button>
             </div>
           </div>
         </div>
@@ -39,7 +42,12 @@
           <CharacterGraph v-if="world.characters?.length" :characters="worldDraft.characters" />
           <div class="world-edit-head">
             <h4 style="margin:0">世界观</h4>
-            <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
+            <div>
+              <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="toggleLock('world_view', '', !isWorldLocked)">
+                {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
+              </el-button>
+              <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
+            </div>
           </div>
           <el-input v-model="worldDraft.world_view" type="textarea" :rows="6" placeholder="描述这个世界的规则、时代背景、核心矛盾、势力格局……" />
           <div class="world-edit-head" style="margin-top:16px">
@@ -50,6 +58,7 @@
             <div class="char-head">
               <el-input v-model="c.name" size="small" placeholder="姓名" style="width:140px" />
               <el-input v-model="c.role" size="small" placeholder="角色（主角/配角/反派…）" style="width:180px;margin-left:8px" />
+              <el-button size="small" :type="isCharLocked(c.name) ? 'success' : 'default'" link @click="toggleLock('character', c.name, !isCharLocked(c.name))">{{ isCharLocked(c.name) ? '🔒' : '🔓' }}</el-button>
               <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.characters.splice(i,1)">删除</el-button>
             </div>
             <div class="char-fields">
@@ -102,7 +111,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, saveWorld } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
@@ -117,6 +126,20 @@ const outline = ref(null)
 const world = ref(null)
 const worldDraft = ref({ world_view: "", characters: [] })
 const worldSaving = ref(false)
+const lock = ref({})
+const isWorldLocked = computed(() => !!lock.value.world_view)
+const isChLocked = (no) => !!(lock.value.chapter || {})[no]
+const isCharLocked = (name) => !!(lock.value.character || {})[name]
+async function toggleLock(kind, key="", forced) {
+  try {
+    const locked = forced !== undefined ? forced : !((lock.value[kind]||{})[key])
+    await setLock(pid, { kind, key: String(key), locked })
+    lock.value = await getLock(pid)
+    ElMessage.success(locked ? "已锁定，重生成时不会覆盖" : "已解锁")
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || "操作失败")
+  }
+}
 const tab = ref('chapters')
 const readerVisible = ref(false)
 const currentCh = ref(null)
@@ -191,6 +214,7 @@ async function loadAll() {
     chapters.value = (await getChapters(pid)).chapters || []
     world.value = await getWorld(pid)
     worldDraft.value = JSON.parse(JSON.stringify(world.value))
+    try { lock.value = await getLock(pid) } catch { lock.value = {} }
     await checkStatus()
   } catch (e) {
     ElMessage.error('加载失败')

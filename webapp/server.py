@@ -1546,6 +1546,7 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
         raise HTTPException(status_code=400, detail=f"章节 {no} 尚未生成，无法重写")
     if store.load_chapter(no).source == "user":
         raise HTTPException(status_code=400, detail="该章为用户手写内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
+    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需重生成请先解锁")
     with _LOCK:
         if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
             raise HTTPException(status_code=409, detail="该项目正在生成中")
@@ -1881,6 +1882,37 @@ def get_cover(project_id: str, user: dict = Depends(_require_user)):
     return FileResponse(str(p), media_type="image/png")
 
 
+def _load_lock(store: ProjectStore) -> dict:
+    """读取项目锁定状态（lock.json）。无文件视为全未锁定。"""
+    f = store.dir / "lock.json"
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_lock(store: ProjectStore, lock: dict) -> None:
+    f = store.dir / "lock.json"
+    store._write_json(f, lock)
+
+
+def _is_locked(store: ProjectStore, kind: str, key="") -> bool:
+    lock = _load_lock(store)
+    if kind == "outline":
+        return bool(lock.get("outline", False))
+    if kind == "world_view":
+        return bool(lock.get("world_view", False))
+    sec = lock.get(kind, {}) or {}
+    return bool(sec.get(str(key), False))
+
+
+def _assert_not_locked(store: ProjectStore, kind: str, key="", msg="") -> None:
+    if _is_locked(store, kind, key):
+        raise HTTPException(status_code=409, detail=msg or "内容已被用户锁定，如需重生成请先解锁")
+
+
 @app.get("/api/projects/{project_id}/world")
 def project_world(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
@@ -1923,6 +1955,36 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
         "foreshadowing": fs,
         "locked_settings": ls,
     }
+
+
+@app.get("/api/projects/{project_id}/lock")
+def get_lock(project_id: str, user: dict = Depends(_require_user)):
+    _check_project_access(project_id, user)
+    return _load_lock(_find_project(project_id))
+
+
+@app.put("/api/projects/{project_id}/lock")
+def put_lock(project_id: str, payload: dict, user: dict = Depends(_require_user)):
+    """切换某项锁定。body: {kind, key, locked}。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    kind = str(payload.get("kind", ""))
+    key = str(payload.get("key", ""))
+    locked = bool(payload.get("locked", False))
+    if kind not in ("outline", "world_view", "volume", "chapter", "character"):
+        raise HTTPException(status_code=400, detail="非法 kind")
+    lock = _load_lock(store)
+    if kind in ("outline", "world_view"):
+        lock[kind] = locked
+    else:
+        sec = lock.get(kind, {}) or {}
+        if locked:
+            sec[key] = True
+        else:
+            sec.pop(key, None)
+        lock[kind] = sec
+    _save_lock(store, lock)
+    return lock
 
 
 @app.get("/api/projects/{project_id}/research")
@@ -1968,6 +2030,7 @@ def regen_outline(project_id: str, user: dict = Depends(_require_user)):
     """重新生成大纲：删除旧大纲，重新跑 outline 阶段。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
+    _assert_not_locked(store, "outline")
     with _LOCK:
         if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
             raise HTTPException(status_code=409, detail="该项目正在生成中")
@@ -1996,6 +2059,7 @@ def regen_world(project_id: str, user: dict = Depends(_require_user)):
     """重新生成世界观。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
+    _assert_not_locked(store, "world_view")
     with _LOCK:
         if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
             raise HTTPException(status_code=409, detail="该项目正在生成中")
@@ -2308,6 +2372,9 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
             for no in range(start, end + 1):
                 if handle.stop_event.is_set() or no > len(outline.chapters):
                     break
+                if _is_locked(store, "chapter", no):
+                    logger.info("批量生成跳过锁定章节: project=%s no=%d", project_id, no)
+                    continue
                 plan = outline.chapters[no - 1]
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
                 stop, why = _settle_incremental(store)

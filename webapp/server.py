@@ -1592,8 +1592,10 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
 
     logger.info("章节重写: uid=%d project=%s no=%d words=%d",
                 user["id"], project_id, no, len(chapter.content))
+    should_stop, stop_reason = _settle_incremental(store)
     return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
-            "summary": chapter.summary, "words": len(chapter.content)}
+            "summary": chapter.summary, "words": len(chapter.content),
+            "balance_warning": stop_reason if should_stop else ""}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")
@@ -2113,8 +2115,10 @@ def regen_outline(project_id: str, user: dict = Depends(_require_user)):
             _RUNS.pop(project_id, None)
         raise HTTPException(status_code=429, detail="系统繁忙")
     try:
-        from novel_gen.store.schemas import Outline
-        store.save_outline(Outline(title="", intro="", chapters=[]))
+        # 删除旧大纲文件（而非写空壳）：否则 run_outline 检测到"已有大纲对象"会直接复用，永不重新生成
+        _op = store.outline_path()
+        if _op.exists():
+            _op.unlink()
         logger.info("重生成大纲启动: project=%s user=%s", project_id, user["username"])
         t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
         handle.thread = t

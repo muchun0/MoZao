@@ -21,10 +21,15 @@ from .sources import KnowledgeBaseSource, SourceResult, WebSearchSource
 
 
 class ResearchEngine:
-    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore):
+    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
+                 role_prompt: str = ""):
         self.cfg = cfg
         self.llm = llm
         self.store = store
+        self.role_prompt = role_prompt
+
+    def _sys(self, system: str) -> str:
+        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
     # ---------- 素材收集 ----------
     def _collect_material(self) -> list[SourceResult]:
@@ -73,7 +78,7 @@ class ResearchEngine:
             f"报告要求：紧扣素材、给出混合方案而非单一复制某部作品。"
         )
 
-        data = self.llm.chat_json(system, user)
+        data = self.llm.chat_json(self._sys(system), user)
         report = ResearchReport.from_dict(data)
         if not report.genre:
             report.genre = self.cfg.genre

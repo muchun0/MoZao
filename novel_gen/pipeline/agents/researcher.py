@@ -20,7 +20,9 @@ class ResearcherAgent(BaseAgent):
         if existing is not None:
             return existing
         self.logger.info("题材调研开始")
-        result = ResearchEngine(self.cfg, self.llm, self.store).run(silent=silent)
+        engine = ResearchEngine(self.cfg, self.llm, self.store,
+                                role_prompt=self.persona_prefix())
+        result = engine.run(silent=silent)
         self.logger.info("题材调研完成")
         self._run_anti_cliche(silent=silent)
         return result

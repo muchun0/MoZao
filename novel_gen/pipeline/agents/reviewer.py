@@ -15,5 +15,6 @@ class ReviewerAgent(BaseAgent):
                        content: str, silent: bool = False) -> str:
         """根据审校结果修订正文（高质量模式自动改稿）。"""
         from ...pipeline.reviser import ChapterReviser
-        reviser = ChapterReviser(self.cfg, self.llm, self.store)
+        reviser = ChapterReviser(self.cfg, self.llm, self.store,
+                                 role_prompt=self.persona_prefix())
         return reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)

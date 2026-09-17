@@ -25,10 +25,15 @@ logger = logging.getLogger(__name__)
 class ChapterReviser:
     """单章自动改稿。"""
 
-    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore):
+    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
+                 role_prompt: str = ""):
         self.cfg = cfg
         self.llm = llm
         self.store = store
+        self.role_prompt = role_prompt
+
+    def _sys(self, system: str) -> str:
+        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
     def revise(self, chapter_no: int, chapter_title: str, chapter_goal: str,
                content: str, silent: bool = False) -> str:
@@ -44,6 +49,7 @@ class ChapterReviser:
         sys_l, user_l = revise_locate_prompt(
             self.cfg, chapter_no, chapter_title, chapter_goal, content
         )
+        sys_l = self._sys(sys_l)
         raw = self.llm.chat(sys_l, user_l, temperature=0.3, max_tokens=1500)
         locate = self._parse_json(raw)
         issues = locate.get("issues", [])
@@ -67,6 +73,7 @@ class ChapterReviser:
         sys_a, user_a = revise_apply_prompt(
             self.cfg, chapter_no, chapter_title, content, small
         )
+        sys_a = self._sys(sys_a)
         revised = self.llm.chat(
             sys_a, user_a,
             temperature=0.7, max_tokens=8000,
@@ -78,6 +85,7 @@ class ChapterReviser:
         sys_v, user_v = revise_verify_prompt(
             self.cfg, chapter_no, revised, small
         )
+        sys_v = self._sys(sys_v)
         raw_v = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=500)
         verify = self._parse_json(raw_v)
 

@@ -73,6 +73,18 @@ class BaseAgent(ABC):
             self.logger.warning("加载角色 skill 失败（忽略）: %s", e)
             return ""
 
+    def persona_prefix(self) -> str:
+        """角色底色：角色 prompt + 角色专属 skill（DB），供外部阶段拼接到 system 之前。
+
+        与 _system_with_role 的区别：本方法不接收任务指令、也不追加项目级 skill
+        ——项目级 skill 由各阶段提示词函数自行追加，此处重复追加会导致两份。
+        """
+        parts = [self.role_prompt]
+        role_skill = self._role_skill_append()
+        if role_skill:
+            parts.append("## 本角色专属写作要求\n" + role_skill)
+        return "\n\n".join(p for p in parts if p)
+
     def _system_with_role(self, extra: str = "") -> str:
         """拼接：角色 prompt + 角色专属skill + 全局skill + 额外指令。"""
         parts = [self.role_prompt]

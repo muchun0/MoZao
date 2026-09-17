@@ -17,7 +17,13 @@ class WriterAgent(BaseAgent):
 
     def __init__(self, cfg, llm, store, memory: Memory):
         super().__init__(cfg, llm, store)
-        self._writer = ChapterWriter(cfg, llm, store, memory)
+        # 自动改稿发生在 ChapterWriter 内部（ReviewerAgent 没有独立调用点），
+        # 审校角色底色必须在这里一并传进去，否则 reviewer.md 不会被读取。
+        from .reviewer import ReviewerAgent
+        reviewer_persona = ReviewerAgent(cfg, llm, store).persona_prefix()
+        self._writer = ChapterWriter(cfg, llm, store, memory,
+                                     role_prompt=self.persona_prefix(),
+                                     reviewer_role_prompt=reviewer_persona)
 
     def write_chapter(
         self,

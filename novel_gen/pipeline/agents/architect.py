@@ -16,8 +16,9 @@ class ArchitectAgent(BaseAgent):
 
     def __init__(self, cfg, llm, store):
         super().__init__(cfg, llm, store)
-        self._outline_gen = OutlineGenerator(cfg, llm, store)
-        self._world_gen = WorldGenerator(cfg, llm, store)
+        persona = self.persona_prefix()
+        self._outline_gen = OutlineGenerator(cfg, llm, store, role_prompt=persona)
+        self._world_gen = WorldGenerator(cfg, llm, store, role_prompt=persona)
 
     def run_outline(self, research: ResearchReport | None, silent: bool = False) -> Outline:
         outline = self.store.load_outline()

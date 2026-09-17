@@ -2033,6 +2033,8 @@ def put_lock(project_id: str, payload: dict, user: dict = Depends(_require_user)
             sec.pop(key, None)
         lock[kind] = sec
     _save_lock(store, lock)
+    logger.info("锁定切换: project=%s user=%s kind=%s key=%s locked=%s",
+                project_id, user["username"], kind, key, locked)
     return lock
 
 
@@ -2092,10 +2094,12 @@ def regen_outline(project_id: str, user: dict = Depends(_require_user)):
     try:
         from novel_gen.store.schemas import Outline
         store.save_outline(Outline(title="", intro="", chapters=[]))
+        logger.info("重生成大纲启动: project=%s user=%s", project_id, user["username"])
         t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
         handle.thread = t
         t.start()
     except Exception:
+        logger.exception("重生成大纲启动失败: project=%s", project_id)
         _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(project_id, None)
@@ -2131,10 +2135,12 @@ def regen_world(project_id: str, user: dict = Depends(_require_user)):
                 _GEN_SEMAPHORE.release()
                 with _LOCK:
                     _RUNS.pop(project_id, None)
+        logger.info("重生成世界观启动: project=%s user=%s", project_id, user["username"])
         t = threading.Thread(target=_do, daemon=True)
         handle.thread = t
         t.start()
     except Exception:
+        logger.exception("重生成世界观启动失败: project=%s", project_id)
         _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(project_id, None)
@@ -2242,6 +2248,7 @@ def archive_project(project_id: str, user: dict = Depends(_require_user)):
     state = store.load_state()
     state.archived = not getattr(state, "archived", False)
     store.save_state(state)
+    logger.info("项目归档: project=%s user=%s archived=%s", project_id, user["username"], state.archived)
     return {"ok": True, "archived": state.archived}
 
 
@@ -2270,6 +2277,7 @@ def clone_project(project_id: str, user: dict = Depends(_require_user)):
         if world:
             (new_dir / "world.json").write_text(json.dumps(world.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         db.claim_project(new_id, user["id"], price=0.0)
+        logger.info("克隆项目: src=%s user=%s new=%s", project_id, user["username"], new_id)
         return {"ok": True, "project_id": new_id}
     except Exception as e:
         logger.exception("克隆项目失败: src=%s err=%s", project_id, e)

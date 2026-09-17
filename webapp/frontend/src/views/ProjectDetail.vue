@@ -118,7 +118,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
@@ -187,13 +187,8 @@ async function regenChapter(c) {
   if (!confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`)) return
   regenNo.value = c.no
   try {
-    const res = await fetch(`/api/projects/${pid}/chapters/${c.no}/rewrite`, { method: 'POST' })
-    if (!res.ok) {
-      const err = await res.json()
-      ElMessage.error(err.detail || '重生成失败')
-      return
-    }
-    ElMessage.success(`第${c.no}章已重新生成（${(await res.json()).words}字）`)
+    const res = await rewriteChapter(pid, c.no)
+    ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
     loadChapters()
   } catch (e) {
     ElMessage.error('重生成失败')

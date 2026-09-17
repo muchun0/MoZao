@@ -34,7 +34,7 @@
       <el-form :model="form" label-width="100px">
         <el-form-item label="书名"><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
-        <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="10000" :step="10000" /></el-form-item>
+        <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="10000" :step="5000" /></el-form-item>
         <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
         <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="模式">
@@ -91,7 +91,7 @@ const showCreate = ref(false)
 const creating = ref(false)
 
 const form = ref({
-  title: '', genre: '', total_words: 100000, style: '', premise: '',
+  title: '', genre: '', total_words: 25000, style: '', premise: '',
   mode: 'auto', high_quality_mode: false,
   existing_words: 0, user_content: '', expand_input: '',
 })

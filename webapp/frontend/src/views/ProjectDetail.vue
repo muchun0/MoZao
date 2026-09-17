@@ -30,7 +30,7 @@
             <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
               <span class="ch-no">第{{ c.no }}章</span>
               <span class="ch-title">{{ c.title }}</span>
-              <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ c.status }}</el-tag>
+              <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ statusText(c.status) }}</el-tag>
               <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
               <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link @click.stop="toggleLock('chapter', c.no)">
                 {{ isChLocked(c.no) ? '🔒已锁' : '🔓锁' }}
@@ -187,7 +187,7 @@ const groupedChapters = computed(() => {
 })
 
 async function regenChapter(c) {
-  if (!confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`)) return
+  try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
   try {
     const res = await rewriteChapter(pid, c.no)
@@ -343,8 +343,11 @@ async function cancelGen() {
 function statusType(s) {
   if (s === 'done') return 'success'
   if (s === 'generating') return 'warning'
+  if (s === 'failed') return 'danger'
   return 'info'
 }
+const STATUS_TEXT = { done: '已完成', generating: '生成中', pending: '待生成', failed: '失败' }
+function statusText(s) { return STATUS_TEXT[s] || s }
 
 onMounted(loadAll)
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })

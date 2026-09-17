@@ -157,7 +157,7 @@
 import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
 import { batchGenerate, regenOutline as apiRegenOutline, regenWorld as apiRegenWorld } from '../../api/novel'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({ pid: String })
 
@@ -179,7 +179,7 @@ const regenLoading = ref(false)
 const regenLoading2 = ref(false)
 
 async function regenOutline() {
-  if (!confirm('重新生成大纲将删除现有大纲和章节，确定？')) return
+  try { await ElMessageBox.confirm('重新生成大纲将删除现有大纲和章节，确定？', '重新生成大纲', { type: 'warning' }) } catch { return }
   regenLoading.value = true
   try {
     await apiRegenOutline(props.pid)
@@ -243,7 +243,7 @@ async function saveSnap() {
   loadSnaps()
 }
 async function restoreSnap(name) {
-  if (!confirm(`回滚到「${name}」？`)) return
+  try { await ElMessageBox.confirm(`回滚到「${name}」？`, '恢复快照', { type: 'warning' }) } catch { return }
   await toolsApi.restoreSnapshot(props.pid, name)
   ElMessage.success('已回滚')
 }
@@ -297,7 +297,7 @@ async function saveMySkill() {
   } catch { ElMessage.error('保存失败') }
 }
 async function delMySkill(id) {
-  if (!confirm('确定删除？')) return
+  try { await ElMessageBox.confirm('确定删除？', '删除 Skill', { type: 'warning' }) } catch { return }
   await toolsApi.delMySkill(id)
   loadMySkills()
 }

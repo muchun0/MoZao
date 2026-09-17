@@ -389,6 +389,82 @@ def _grant_consume_commission(buyer_uid: int, project_id: str, amount: float, ti
                     ref["id"], buyer_uid, commission, project_id)
 
 
+def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
+    """每生成完一章后增量结算：按该章新增 AI 字数实时扣费。
+
+    与整批结束的 _settle_price 幂等互补：
+    - 本函数每章后调用，实时从余额扣，余额扣到 <=0 即返回 should_stop
+    - settle.json 由本函数写入后，_settle_price 开头的幂等检查会直接跳过，不会双扣
+    返回 (should_stop, 原因)。
+    """
+    try:
+        project_id = store.dir.name
+        uid = db.project_owner(project_id)
+        if uid is None:
+            return False, ""
+        title = store.load_config().effective_title()
+        user_words = store.user_words()
+        chapters = store.list_chapters()
+        total_words = sum(len(c.content) for c in chapters)
+        ai_words = max(0, total_words - user_words)
+
+        sp = store.dir / "settle.json"
+        settled_ai = 0
+        settled_price = 0.0
+        if sp.exists():
+            try:
+                old = json.loads(sp.read_text(encoding="utf-8"))
+                settled_ai = int(old.get("settled_ai_words", 0))
+                settled_price = float(old.get("settled_price", 0.0))
+            except Exception:
+                settled_ai, settled_price = 0, 0.0
+
+        # 计费封顶：累计不超过创建时的目标 AI 字数
+        target_total = store.load_config().total_words or 0
+        target_ai_words = max(0, target_total - user_words)
+        def _billable(w):
+            return min(w, target_ai_words) if target_ai_words > 0 else w
+        prev_b = _billable(settled_ai)
+        cur_b = _billable(ai_words)
+        billable_new = max(0, cur_b - prev_b)
+
+        if billable_new > 0:
+            discount = db.project_discount(project_id)
+            hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
+            price = round_money(agent_price(price_for(billable_new, high_quality=hq), discount))
+            bal = float(db.get_user(uid)["balance"])
+            actual = min(bal, price)
+            if actual > 0:
+                db.change_balance(uid, -actual,
+                                  f"《{title}》章节增量结算：{billable_new} 字，扣 {actual:.2f} 元")
+            settled_price = round_money(settled_price + actual)
+            try:
+                _grant_consume_commission(uid, project_id, actual, title)
+            except Exception:
+                pass
+            new_bal = float(db.get_user(uid)["balance"])
+        else:
+            new_bal = float(db.get_user(uid)["balance"])
+
+        sp.write_text(json.dumps({
+            "settled_ai_words": ai_words,
+            "settled_price": settled_price,
+            "target_ai_words": target_ai_words,
+            "status": "incremental",
+        }, ensure_ascii=False), encoding="utf-8")
+        try:
+            db.update_project_price(project_id, settled_price)
+        except Exception:
+            pass
+
+        if new_bal <= 0:
+            return True, f"余额已耗尽（扣费后余额 {new_bal:.2f} 元），已停止生成。充值后可从断点继续。"
+        return False, ""
+    except Exception:
+        logger.exception("增量结算异常: project=%s", store.dir.name)
+        return False, ""
+
+
 def _settle_price(store: ProjectStore) -> None:
     """生成完成后按 AI 实际生成字数结算扣费（创建时不扣费，真正生成文字才扣）。
 
@@ -547,12 +623,17 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 print(f"[web] 收到停止请求，第 {no} 章暂停")
                 logger.info("生成停止: project=%s 阶段=writing 第 %d 章暂停", store.dir.name, no)
                 break
-            exhausted, bal = _balance_exhausted(store)
-            if exhausted:
-                handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止生成。充值后可继续从断点生成。"
-                logger.warning("余额耗尽停止: project=%s 第 %d 章前 balance=%.2f", store.dir.name, no, bal)
+            stop, why = _settle_incremental(store)
+            if stop:
+                handle.error = why
+                logger.warning("余额耗尽停止: project=%s 第 %d 章后 %s", store.dir.name, no, why)
                 break
             pipeline.write_chapter(no, silent=False)
+            stop, why = _settle_incremental(store)
+            if stop:
+                handle.error = why
+                logger.warning("余额耗尽停止: project=%s 第 %d 章后 %s", store.dir.name, no, why)
+                break
 
         # 未停止则导出成品
         if not handle.stop_event.is_set():
@@ -2198,13 +2279,13 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
             for no in range(start, end + 1):
                 if handle.stop_event.is_set() or no > len(outline.chapters):
                     break
-                exhausted, bal = _balance_exhausted(store)
-                if exhausted:
-                    handle.error = f"余额已耗尽（当前余额 {bal:.2f} 元），已自动停止批量生成。"
-                    logger.warning("批量生成余额耗尽: project=%s 第 %d 章前 balance=%.2f", project_id, no, bal)
-                    break
                 plan = outline.chapters[no - 1]
                 pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+                stop, why = _settle_incremental(store)
+                if stop:
+                    handle.error = why
+                    logger.warning("批量生成余额耗尽: project=%s 第 %d 章后 %s", project_id, no, why)
+                    break
             _settle_price(store)
         except Exception as e:
             handle.error = f"{type(e).__name__}: {e}"

@@ -92,6 +92,27 @@ _LOCK = threading.Lock()
 _GEN_SEMAPHORE = threading.Semaphore(3)
 
 
+def _acquire_slot(project_id: str, busy_msg: str = "系统繁忙，已有多个任务在生成，请稍后再试") -> _RunHandle:
+    """占用一个生成槽位：检查是否已在运行 + 建句柄 + 申请并发信号量。失败抛 409/429。"""
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        raise HTTPException(status_code=429, detail=busy_msg)
+    return handle
+
+
+def _release_slot(project_id: str) -> None:
+    """释放生成槽位：归还信号量并移除句柄。"""
+    _GEN_SEMAPHORE.release()
+    with _LOCK:
+        _RUNS.pop(project_id, None)
+
+
 # ---------- 请求/响应模型 ----------
 class LLMReq(BaseModel):
     provider: str = "deepseek"
@@ -2152,23 +2173,13 @@ def regen_world(project_id: str, user: dict = Depends(_require_user)):
 def start_generation(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
     store = _find_project(project_id)
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-        handle = _RunHandle()
-        _RUNS[project_id] = handle
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
+    handle = _acquire_slot(project_id)
     try:
         t = threading.Thread(target=_run_generation, args=(store, handle), daemon=True)
         handle.thread = t
         t.start()
     except Exception:
-        _GEN_SEMAPHORE.release()
-        with _LOCK:
-            _RUNS.pop(project_id, None)
+        _release_slot(project_id)
         raise
     return {"started": True, "project_id": project_id}
 

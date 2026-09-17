@@ -156,7 +156,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
-import { batchGenerate } from '../../api/novel'
+import { batchGenerate, regenOutline as apiRegenOutline, regenWorld as apiRegenWorld } from '../../api/novel'
 import { ElMessage } from 'element-plus'
 
 const props = defineProps({ pid: String })
@@ -182,16 +182,16 @@ async function regenOutline() {
   if (!confirm('重新生成大纲将删除现有大纲和章节，确定？')) return
   regenLoading.value = true
   try {
-    await fetch(`/api/projects/${props.pid}/outline/regenerate`, { method: 'POST' })
-    ElMessage.success('已开始重新生成大纲')
+    await apiRegenOutline(props.pid)
+    ElMessage.success('已开始重新生成大纲，请稍候几分钟')
     setTimeout(() => location.reload(), 2000)
   } catch (e) { ElMessage.error('操作失败') } finally { regenLoading.value = false }
 }
 async function regenWorld() {
   regenLoading2.value = true
   try {
-    await fetch(`/api/projects/${props.pid}/world/regenerate`, { method: 'POST' })
-    ElMessage.success('已开始重新生成世界观')
+    await apiRegenWorld(props.pid)
+    ElMessage.success('已开始重新生成世界观，请稍候')
     setTimeout(() => location.reload(), 2000)
   } catch (e) { ElMessage.error('操作失败') } finally { regenLoading2.value = false }
 }

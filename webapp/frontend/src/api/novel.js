@@ -2,6 +2,7 @@ import request from './request'
 
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
 export const getChapter = (pid, no) => request.get(`/projects/${pid}/chapters/${no}`)
+export const updateChapterContent = (pid, no, data) => request.put(`/projects/${pid}/chapters/${no}`, data)
 export const regenerateChapter = (pid, no) => request.post(`/projects/${pid}/chapters/${no}/regenerate`)
 export const rewriteChapter = (pid, no) => request.post(`/projects/${pid}/chapters/${no}/rewrite`)
 export const batchGenerate = (pid, data) => request.post(`/projects/${pid}/chapters/batch`, data)

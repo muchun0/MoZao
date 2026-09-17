@@ -30,9 +30,14 @@ from .schemas import Chapter, Outline, ProjectState, World
 
 
 def _safe_name(name: str) -> str:
-    """把标题清洗成合法的目录名片段。"""
-    cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())
-    return cleaned[:30] or "novel"
+    """把标题清洗成合法的 ASCII 目录名片段（避免项目 ID 含中文导致 URL 编码问题）。
+    只保留 ASCII 字母数字；无可保留字符时用标题 hash 兜底。"""
+    cleaned = re.sub(r'[^A-Za-z0-9]+', '', name.strip())
+    cleaned = cleaned[:20]
+    if not cleaned:
+        import hashlib
+        cleaned = hashlib.md5(name.strip().encode("utf-8")).hexdigest()[:8]
+    return cleaned or "novel"
 
 
 class ProjectStore:

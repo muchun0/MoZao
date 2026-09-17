@@ -4,7 +4,8 @@
       <div>
         <h2>{{ project?.config?.title || '加载中…' }}</h2>
         <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px" :status="genDone?'success':''" />
-        <span v-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
+        <span v-if="genError" class="gen-error">{{ genError }}</span>
+        <span v-else-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
       </div>
       <div class="step-actions">
         <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
@@ -118,7 +119,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
@@ -161,6 +162,8 @@ const generating = ref(false)
 const genDone = ref(false)
 const genPct = ref(0)
 const genStatus = ref('')
+const genError = ref('')
+let genStartTs = 0
 const regenNo = ref(0)
 
 // 按分卷分组的章节菜单：以 outline.volumes 为骨架，已生成章节按 no 合并状态
@@ -224,25 +227,46 @@ async function loadAll() {
   } finally { loading.value = false }
 }
 
+const PHASE_LABEL = {
+  research: '正在调研热门题材',
+  outline: '正在生成大纲（分批进行，约几分钟）',
+  editor_review: '正在审稿优化大纲',
+  world: '正在生成人物与世界观',
+  writing: '正在逐章写作',
+  done: '已完成'
+}
+function phaseText(s) {
+  const ph = s.state && s.state.phase
+  const label = PHASE_LABEL[ph] || '正在生成'
+  if (genStartTs) {
+    const m = Math.floor((Date.now() - genStartTs) / 60000)
+    if (m >= 1) return `${label}（已 ${m} 分钟）`
+  }
+  return label + '…'
+}
+
 async function checkStatus() {
   try {
     const s = await getStatus(pid)
     generating.value = s.running
     genDone.value = !s.running && s.chapters_done > 0
     if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
-    genStatus.value = s.error ? ('错误: ' + s.error) : ''
+    genError.value = s.error || ''
+    genStatus.value = s.running && !s.error ? phaseText(s) : ''
     if (s.running) startPolling()
   } catch {}
 }
 
 function startPolling() {
+  if (!genStartTs) genStartTs = Date.now()
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(async () => {
     try {
       const s = await getStatus(pid)
       generating.value = s.running
       if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
-      genStatus.value = s.error ? ('错误: ' + s.error) : ''
+      genError.value = s.error || ''
+      genStatus.value = s.running && !s.error ? phaseText(s) : ''
       if (!s.running) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
     } catch {}
   }, 3000)
@@ -272,11 +296,7 @@ function cancelEdit() {
 async function saveEdit() {
   saving.value = true
   try {
-    await fetch(`/api/projects/${pid}/chapters/${currentCh.value.no}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: editContent.value })
-    })
+    await updateChapterContent(pid, currentCh.value.no, { content: editContent.value })
     currentContent.value = editContent.value.replace(/\n/g, '<br>')
     editing.value = false
     ElMessage.success('已保存')
@@ -334,6 +354,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .step-actions { display:flex; gap:8px; align-items:center; }
 .gen-status { font-size: 13px; color: #909399; margin-left: 12px; }
+.gen-error { display:block; margin-top:6px; font-size:13px; color:#f56c6c; background:#fef0f0; border:1px solid #fbc4c4; border-radius:6px; padding:6px 10px; max-width:640px; word-break:break-all; }
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
 .ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }
 .ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }

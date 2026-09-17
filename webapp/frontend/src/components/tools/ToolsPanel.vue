@@ -282,19 +282,14 @@ const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' }
 
 async function loadMySkills() {
   try {
-    const r = await fetch('/api/my-skills')
-    const data = await r.json()
+    const data = await toolsApi.listMySkills()
     mySkills.value = data.skills || []
   } catch {}
 }
 async function saveMySkill() {
   if (!skillForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
   try {
-    await fetch('/api/my-skills', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(skillForm.value)
-    })
+    await toolsApi.saveMySkill(skillForm.value)
     ElMessage.success('Skill已保存')
     showSkillDlg.value = false
     skillForm.value = { name: '', role: '', description: '', prompt_append: '' }
@@ -303,7 +298,7 @@ async function saveMySkill() {
 }
 async function delMySkill(id) {
   if (!confirm('确定删除？')) return
-  await fetch(`/api/my-skills/${id}`, { method: 'DELETE' })
+  await toolsApi.delMySkill(id)
   loadMySkills()
 }
 

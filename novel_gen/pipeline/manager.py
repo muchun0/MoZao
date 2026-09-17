@@ -343,6 +343,7 @@ class NovelPipeline:
         state = self.store.load_state()
         state.phase = phase
         state.last_chapter = last_chapter
+        state.error = ""
         outline = self.store.load_outline()
         state.total_chapters = len(outline.chapters) if outline else state.total_chapters
         self.store.save_state(state)

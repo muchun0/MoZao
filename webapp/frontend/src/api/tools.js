@@ -15,3 +15,6 @@ export const listLocked = (pid) => request.get(`/projects/${pid}/locked-settings
 export const addLocked = (pid, data) => request.post(`/projects/${pid}/locked-settings`, data)
 export const delLocked = (pid, idx) => request.delete(`/projects/${pid}/locked-settings/${idx}`)
 export const genCover = (pid) => request.post(`/projects/${pid}/cover`)
+export const listMySkills = () => request.get('/my-skills')
+export const saveMySkill = (data) => request.post('/my-skills', data)
+export const delMySkill = (id) => request.delete(`/my-skills/${id}`)

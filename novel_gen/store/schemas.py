@@ -284,6 +284,7 @@ class ProjectState:
     last_chapter: int = 0    # 已写到的章节号（writing 阶段用）
     total_chapters: int = 0
     archived: bool = False   # 用户归档标记
+    error: str = ""          # 最近一次生成失败的错误信息（持久化，供前端红色提示）
 
     def to_dict(self) -> dict:
         return {
@@ -291,6 +292,7 @@ class ProjectState:
             "last_chapter": self.last_chapter,
             "total_chapters": self.total_chapters,
             "archived": self.archived,
+            "error": self.error,
         }
 
     @classmethod
@@ -300,4 +302,5 @@ class ProjectState:
             last_chapter=int(d.get("last_chapter", 0)),
             total_chapters=int(d.get("total_chapters", 0)),
             archived=bool(d.get("archived", False)),
+            error=str(d.get("error", "")),
         )

@@ -378,3 +378,18 @@ docker compose logs -f novel-gen
 - workbench 上传进度条走 stderr，PowerShell 会显示「命令退出码 1」，看 `Upload complete` 即成功，不要误判失败。
 
 *最后更新：2026-09-17 · 扩写模式补分卷、regen_outline 删空壳、前端重生成按钮带 token、服务器用 python3 解压 dist*
+
+---
+
+## 15. 待修复问题清单（2026-09-17 记录，按优先级分批修）
+
+| 编号 | 优先级 | 问题 | 根因/位置 | 修复方案 |
+|---|---|---|---|---|
+| P0-1 | 高 | 大纲分批静默失败 | `stages._run_batched` `_BATCH_SIZE=25`，一批要模型输出 25 章完整 JSON，max_tokens=8000 必截断；`chat_json` 重试 2 次同参数（同样截断）；失败后 server.py 只写日志，状态 error 字段不回填，前端 genStatus 永远空 | a) 批量 25→8，批次提示词要求字段精简；b) 失败把 error 写入状态并红色展示；c) 重试降批量/温度 |
+| P0-2/3 | 高 | 裸 fetch 无 token | `ProjectDetail.saveEdit`、`ToolsPanel.loadMySkills/saveMySkill/delMySkill` 未走 axios 实例 | 统一改用 `api/request.js` |
+| P1-4 | 中 | 项目列表排序无效 | filtered computed 缺 sort 分支 | computed 里补 sort |
+| P1-6 | 中 | 大纲阶段无心跳文案 | 进度条只覆盖章节生成 | 轮询消费 running+state.phase，显示"大纲生成中（已X分钟）" |
+| P2-9 | 低 | 项目 ID 含中文 | `_safe_name` 生成 ID 带中文 | 改 ASCII+hash 后缀 |
+
+*最后更新：2026-09-17*
+

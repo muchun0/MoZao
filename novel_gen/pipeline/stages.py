@@ -57,12 +57,19 @@ class OutlineGenerator:
     每批约 _BATCH_SIZE 章，批间用「前情提要」衔接，最后合并为完整大纲。
     """
 
-    _BATCH_SIZE = 25
+    _BATCH_SIZE = 8
 
-    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore):
+    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
+                 role_prompt: str = ""):
         self.cfg = cfg
         self.llm = llm
         self.store = store
+        #: 角色底色（prompts/architect.md 等），为空则不拼接
+        self.role_prompt = role_prompt
+
+    def _sys(self, system: str) -> str:
+        """把角色底色拼到阶段提示词之前；未配置时原样返回。"""
+        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
     def run(self, research: ResearchReport | None, silent: bool = False) -> Outline:
         target = self.cfg.num_chapters
@@ -71,6 +78,7 @@ class OutlineGenerator:
             outline = self._run_batched(research, target, silent=silent)
         else:
             system, user = outline_prompt(self.cfg, research_block)
+            system = self._sys(system)
             data = self.llm.chat_json(system, user, temperature=0.7)
             outline = Outline.from_dict(data)
         outline.title = outline.title or self.cfg.effective_title()
@@ -111,6 +119,7 @@ class OutlineGenerator:
             f"- main_line：全书主线脉络（3-5 句）\n"
             f"- volumes：分卷数组，将全书按剧情阶段分为3-5卷，每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章号), end_ch(结束章号)\n"
         )
+        head_system = self._sys(head_system)
         head = self.llm.chat_json(head_system, head_user, temperature=0.7)
 
         title = head.get("title") or self.cfg.effective_title()
@@ -130,6 +139,7 @@ class OutlineGenerator:
                 research.to_prompt_block(),
                 batch=(start, end, prev_summary),
             )
+            system = self._sys(system)
             data = self.llm.chat_json(system, user, temperature=0.7)
             batch_chapters = [ChapterPlan.from_dict(c) for c in data.get("chapters", [])]
             # 校验并修复序号（模型可能漂移，强制从 start 连续编号）
@@ -192,13 +202,19 @@ class OutlineGenerator:
 
 
 class WorldGenerator:
-    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore):
+    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
+                 role_prompt: str = ""):
         self.cfg = cfg
         self.llm = llm
         self.store = store
+        self.role_prompt = role_prompt
+
+    def _sys(self, system: str) -> str:
+        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
     def run(self, outline: Outline, research: ResearchReport | None, silent: bool = False) -> World:
         system, user = world_prompt(self.cfg, outline, research.to_prompt_block() if research else "")
+        system = self._sys(system)
         data = self.llm.chat_json(system, user, temperature=0.7)
         world = World.from_dict(data)
         if not world.world_view:
@@ -216,11 +232,19 @@ class ChapterWriter:
         llm: LLMClient,
         store: ProjectStore,
         memory: Memory,
+        role_prompt: str = "",
+        reviewer_role_prompt: str = "",
     ):
         self.cfg = cfg
         self.llm = llm
         self.store = store
         self.memory = memory
+        self.role_prompt = role_prompt
+        #: 审校角色底色，供 write() 内部的自动改稿使用
+        self.reviewer_role_prompt = reviewer_role_prompt
+
+    def _sys(self, system: str) -> str:
+        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
     def write(
         self,
@@ -295,6 +319,7 @@ class ChapterWriter:
                 prev_tail=prev_tail,
                 is_final=is_final,
             )
+            system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -314,7 +339,8 @@ class ChapterWriter:
         if getattr(self.cfg, 'high_quality_mode', False) and content:
             try:
                 from .reviser import ChapterReviser
-                reviser = ChapterReviser(self.cfg, self.llm, self.store)
+                reviser = ChapterReviser(self.cfg, self.llm, self.store,
+                                         role_prompt=self.reviewer_role_prompt)
                 content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
             except Exception as e:
                 print(f'  [改稿] 跳过: {e}')
@@ -357,6 +383,7 @@ class ChapterWriter:
                 research_block="", memory_context=memory_context,
                 prev_tail=prev_tail, is_final=is_final,
             )
+            system = self._sys(system)
             return self.llm.chat(system, user, temperature=0.85,
                                  frequency_penalty=0.3, presence_penalty=0.15)
 
@@ -370,6 +397,7 @@ class ChapterWriter:
                 self.cfg, chapter_no, plan_title, idx, sc,
                 memory_context, running_tail, dynamic,
             )
+            sys_c = self._sys(sys_c)
             try:
                 piece = self.llm.chat(
                     sys_c, user_c,

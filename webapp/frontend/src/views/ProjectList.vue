@@ -133,6 +133,10 @@ const filtered = computed(() => {
     const q = search.value.toLowerCase()
     arr = arr.filter(p => p.title?.toLowerCase().includes(q) || p.genre?.toLowerCase().includes(q))
   }
+  arr = [...arr]
+  if (sort.value === 'name') arr.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh'))
+  else if (sort.value === 'updated') arr.sort((a, b) => (b.updated || 0) - (a.updated || 0))
+  else arr.sort((a, b) => (b.created || 0) - (a.created || 0))
   return arr
 })
 

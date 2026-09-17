@@ -579,6 +579,12 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     except Exception as exc:
         handle.error = f"{type(exc).__name__}: {exc}"
         logger.exception("大纲生成失败: project=%s error=%s", store.dir.name, exc)
+        try:
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
+        except Exception:
+            pass
     finally:
         _GEN_SEMAPHORE.release()
         with _LOCK:
@@ -668,6 +674,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             store.dir.joinpath("failed.json").write_text(
                 json.dumps({"error": handle.error, "title": cfg.effective_title()}, ensure_ascii=False),
                 encoding="utf-8")
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
         except Exception:
             pass
         logger.exception("生成失败: project=%s title=%s error=%s",
@@ -1405,7 +1414,7 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
         "chapters_done": len(chapters),
         "chapters_total": total,
         "running": bool(handle and handle.thread and handle.thread.is_alive()),
-        "error": handle.error if handle else None,
+        "error": (handle.error if handle and handle.error else state.error),
         "generated_words": sum(len(c.content) for c in chapters),
         "has_txt": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.txt").exists(),
         "has_cover": _cover_files(store)[0].exists(),

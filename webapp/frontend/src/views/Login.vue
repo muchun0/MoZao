@@ -15,10 +15,6 @@
             </el-form-item>
             <el-button type="primary" native-type="submit" :loading="loading" class="btn-block">登录</el-button>
           </el-form>
-          <div class="links">
-            <el-link @click="tab='register'">注册账号</el-link>
-            <el-link @click="tab='forgot'">忘记密码</el-link>
-          </div>
         </el-tab-pane>
 
         <el-tab-pane label="注册" name="register">

@@ -407,3 +407,8 @@ python -m pytest tests/ -v
 - 邮件通知需配置 SMTP（QQ/163 邮箱的 SMTP 授权码），未配置时退款申请仍可提交，站长在后台手动查看处理。
 - 本工具用于个人创作辅助，请勿用于批量生产侵权或违反平台规则的内容。
 
+## 更新记录
+
+- **2026-09-17**：修复**扩写模式**（用户上传大纲，`mode=expand`）重新生成大纲后分卷为空的问题——扩写提示词 `expand_outline_prompt` 原只让模型输出 title/intro/chapters，现补 `core_conflict / main_line / volumes`（每卷 no/name/intro/main_conflict/character_growth/climax/start_ch/end_ch）；`regen_outline` 改为删 outline.json 后再起后台线程（不再先写空壳导致「已存在则复用」直接跳过）；前端「重生成大纲/世界观」按钮改走带 token 的封装请求。服务器无 unzip，dist.zip 用 `python3 -m zipfile -e` 解压。详见 WIKI.md 第 14 节。
+
+

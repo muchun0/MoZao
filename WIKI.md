@@ -135,15 +135,6 @@ D:\PythonProjects\DouBao\
 ### 计费（webapp/pricing.py，改后重启生效）
 
 - **按字数计费**：普通 `PRICE_PER_10K = 2.0`（每万字 2 元）；**高质量模式 3 元/万字**；`price_for(words) = round(words / 10000 * 费率, 2)`
-- **档位仅作展示**（/api/pricing 返回 `billing_mode="by_words"` + `price_per_10k`）：
-
-| 档位 | 字数上限 | 展示价（元） | 备注 |
-|---|---|---|---|
-| 极短篇 | ≤5,000 | 0.99 | 原价 2.99 优惠标识 |
-| 短篇 | ≤25,000 | 按字数 | — |
-| 中篇 | ≤100,000 | 按字数 | — |
-| 长篇 | ≤300,000 | 按字数 | — |
-| 超长篇 | 不限 | 按字数 | — |
 
 - **创建时不扣费**，仅余额校验（余额 < 预估费用拒绝创建）；**生成完成后**按 AI 实际生成字数 `price_for(ai_words)` 结算扣费（`settle.json` 幂等；ai_words=0 不收费；余额不足扣到 0 并写 `debt.json` 欠费记录，不阻塞交付）
 - `ai_words = 全书当前总字数 − 用户手写原字数`（续写/扩写模式；普通模式即全书总字数）
@@ -305,7 +296,6 @@ docker compose logs -f novel-gen
 
 ## 11. 用户长期偏好（系统已记忆）
 
-1. **短篇小说字数必须大于 7000 字**
 2. **代码更新流程：先推 devtest 验证 → 确认后合并 master → 服务器运行 master**
 3. 部署方式：A 方案（本地 master 打包上传，服务器不装 git）
 4. 收款：人工收款；定价按单本字数计费；当前 IP:端口内测
@@ -365,3 +355,26 @@ docker compose logs -f novel-gen
 - **config.yaml**：已 gitignore，服务器上保留，不要删
 
 *最后更新：2026-09-17*
+
+---
+
+## 14. 扩写模式分卷丢失修复（2026-09-17）
+
+### 现象
+- 标准模式（全自动）重新生成大纲能产出分卷（volumes），但**扩写模式**（mode=expand，用户上传大纲走 `manager._run_expand_outline`）重新生成后分卷一直为空。
+
+### 根因（三层）
+1. **提示词缺字段**：`templates.expand_outline_prompt` 的 JSON 输出要求只让模型返回 title/intro/chapters，没要求 volumes/core_conflict/main_line；`Outline.from_dict` 虽能解析 volumes，但模型压根不返回 → 分卷为空。
+2. **空壳覆盖**：`server.regen_outline` 接口先写了一个空壳 Outline 占位，而 `manager.run_outline()` 有「大纲已存在则直接复用」逻辑，后台线程读到空壳就复用、永不重生成。改为：重生成前删除 outline.json（让 load_outline 返回 None）。
+3. **前端无 token**：`ToolsPanel.vue` 的「重生成大纲/世界观」按钮用裸 `fetch`，不带 Authorization，HTTP 401 时 fetch 不 reject，走 success 分支误提示「已开始」。改为走 `api/novel.js` 的封装（自动带 token）。
+
+### 修复点
+- `templates.expand_outline_prompt`：JSON 输出补 `core_conflict / main_line / volumes`（每卷 no/name/intro/main_conflict/character_growth/climax/start_ch/end_ch）。
+- `server.regen_outline`：改为删除 outline.json 后再起后台线程，而非先写空壳。
+- `ToolsPanel.vue`：两个重生成按钮改走封装请求。
+
+### 部署备注
+- 服务器**没有 unzip**：`unzip` 命令会 exit 127。解压 dist.zip 用 `python3 -m zipfile -e /tmp/dist.zip .`。
+- workbench 上传进度条走 stderr，PowerShell 会显示「命令退出码 1」，看 `Upload complete` 即成功，不要误判失败。
+
+*最后更新：2026-09-17 · 扩写模式补分卷、regen_outline 删空壳、前端重生成按钮带 token、服务器用 python3 解压 dist*

@@ -7,3 +7,4 @@ export const batchGenerate = (pid, data) => request.post(`/projects/${pid}/chapt
 export const getOutline = (pid) => request.get(`/projects/${pid}/outline`)
 export const saveOutline = (pid, data) => request.put(`/projects/${pid}/outline`, data)
 export const getWorld = (pid) => request.get(`/projects/${pid}/world`)
+export const saveWorld = (pid, data) => request.put(`/projects/${pid}/world`, data)

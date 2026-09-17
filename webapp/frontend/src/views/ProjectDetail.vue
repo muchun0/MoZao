@@ -36,21 +36,31 @@
 
       <el-tab-pane label="人物/世界观" name="world">
         <template v-if="world">
-          <CharacterGraph v-if="world.characters?.length" :characters="world.characters" />
-          <h4>世界观</h4>
-          <p class="world-text">{{ world.world_view }}</p>
-          <h4>人物档案</h4>
-          <el-card v-for="(c,i) in world.characters" :key="i" style="margin-bottom:10px">
-            <div class="char-head"><b>{{ c.name }}</b> <el-tag size="small">{{ c.role }}</el-tag></div>
+          <CharacterGraph v-if="world.characters?.length" :characters="worldDraft.characters" />
+          <div class="world-edit-head">
+            <h4 style="margin:0">世界观</h4>
+            <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
+          </div>
+          <el-input v-model="worldDraft.world_view" type="textarea" :rows="6" placeholder="描述这个世界的规则、时代背景、核心矛盾、势力格局……" />
+          <div class="world-edit-head" style="margin-top:16px">
+            <h4 style="margin:0">人物档案（{{ worldDraft.characters.length }}）</h4>
+            <el-button size="small" @click="addCharacter">+ 添加人物</el-button>
+          </div>
+          <el-card v-for="(c,i) in worldDraft.characters" :key="i" style="margin-bottom:10px">
+            <div class="char-head">
+              <el-input v-model="c.name" size="small" placeholder="姓名" style="width:140px" />
+              <el-input v-model="c.role" size="small" placeholder="角色（主角/配角/反派…）" style="width:180px;margin-left:8px" />
+              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.characters.splice(i,1)">删除</el-button>
+            </div>
             <div class="char-fields">
-              <div v-if="c.appearance" class="char-row"><span class="char-label">外貌</span><span>{{ c.appearance }}</span></div>
-              <div v-if="c.personality" class="char-row"><span class="char-label">性格</span><span>{{ c.personality }}</span></div>
-              <div v-if="c.desire" class="char-row"><span class="char-label">核心欲望</span><span>{{ c.desire }}</span></div>
-              <div v-if="c.wound" class="char-row"><span class="char-label">软肋</span><span>{{ c.wound }}</span></div>
-              <div v-if="c.arc" class="char-row"><span class="char-label">弧光</span><span>{{ c.arc }}</span></div>
-              <div v-if="c.speech_style" class="char-row"><span class="char-label">说话方式</span><span>{{ c.speech_style }}</span></div>
-              <div v-if="c.relations" class="char-row"><span class="char-label">关系</span><span>{{ c.relations }}</span></div>
-              <div v-if="c.desc" class="char-row"><span class="char-label">简介</span><span>{{ c.desc }}</span></div>
+              <div class="char-row"><span class="char-label">外貌</span><el-input v-model="c.appearance" size="small" /></div>
+              <div class="char-row"><span class="char-label">性格</span><el-input v-model="c.personality" size="small" /></div>
+              <div class="char-row"><span class="char-label">核心欲望</span><el-input v-model="c.desire" size="small" /></div>
+              <div class="char-row"><span class="char-label">软肋</span><el-input v-model="c.wound" size="small" /></div>
+              <div class="char-row"><span class="char-label">弧光</span><el-input v-model="c.arc" size="small" /></div>
+              <div class="char-row"><span class="char-label">说话方式</span><el-input v-model="c.speech_style" size="small" /></div>
+              <div class="char-row"><span class="char-label">关系</span><el-input v-model="c.relations" size="small" /></div>
+              <div class="char-row"><span class="char-label">简介</span><el-input v-model="c.desc" size="small" /></div>
             </div>
           </el-card>
         </template>
@@ -92,7 +102,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, saveWorld } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
@@ -105,6 +115,8 @@ const project = ref(null)
 const chapters = ref([])
 const outline = ref(null)
 const world = ref(null)
+const worldDraft = ref({ world_view: "", characters: [] })
+const worldSaving = ref(false)
 const tab = ref('chapters')
 const readerVisible = ref(false)
 const currentCh = ref(null)
@@ -156,6 +168,19 @@ async function regenChapter(c) {
     ElMessage.error('重生成失败')
   } finally { regenNo.value = 0 }
 }
+function addCharacter() {
+  worldDraft.value.characters.push({ name: "", role: "", desc: "", appearance: "", personality: "", desire: "", wound: "", arc: "", speech_style: "", relations: "" })
+}
+async function saveWorldDraft() {
+  worldSaving.value = true
+  try {
+    const res = await saveWorld(pid, worldDraft.value)
+    world.value = res
+    ElMessage.success("已保存")
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || "保存失败")
+  } finally { worldSaving.value = false }
+}
 let pollTimer = null
 
 async function loadAll() {
@@ -165,6 +190,7 @@ async function loadAll() {
     outline.value = await getOutline(pid)
     chapters.value = (await getChapters(pid)).chapters || []
     world.value = await getWorld(pid)
+    worldDraft.value = JSON.parse(JSON.stringify(world.value))
     await checkStatus()
   } catch (e) {
     ElMessage.error('加载失败')
@@ -273,8 +299,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .ch-no { color: #909399; font-size: 13px; width: 60px; }
 .ch-title { flex: 1; }
 .world-text { margin-bottom: 16px; line-height: 1.8; color: #606266; }
-.char-head { margin-bottom: 8px; }
-.char-fields { display: flex; flex-direction: column; gap: 4px; }
+.world-edit-head { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
+.char-head { margin-bottom: 8px; display: flex; align-items: center; flex-wrap: wrap; }
+.char-row .el-input { flex: 1; }
+.char-row .char-label { width: 70px; flex-shrink: 0; color: #909399; font-size: 13px; }
+.char-fields { display: flex; flex-direction: column; gap: 6px; }
+.char-row { display: flex; align-items: center; gap: 8px; }
 .char-row { display: flex; gap: 8px; font-size: 13px; }
 .char-label { flex: 0 0 70px; color: #909399; }
 .reader-content { line-height: 1.9; padding: 8px 12px; }

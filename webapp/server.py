@@ -41,7 +41,7 @@ from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
-from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
+from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, World, Character
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.store.project import ProjectStore, _safe_name
 
@@ -1893,6 +1893,35 @@ def project_world(project_id: str, user: dict = Depends(_require_user)):
         "characters": [c.to_dict() for c in world.characters],
         "foreshadowing": list(world.foreshadowing),
         "locked_settings": list(world.locked_settings),
+    }
+
+
+@app.put("/api/projects/{project_id}/world")
+def update_world(project_id: str, payload: dict, user: dict = Depends(_require_user)):
+    """用户手动编辑世界观/人物档案（增删改人物、拓展世界观文本）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    old = store.load_world() or World(world_view="", characters=[], foreshadowing=[], locked_settings=[])
+    world_view = str(payload.get("world_view", "")).strip()
+    chars_in = payload.get("characters", []) or []
+    chars = []
+    for raw in chars_in:
+        if not isinstance(raw, dict):
+            continue
+        c = Character.from_dict(raw)
+        if not c.name:
+            continue
+        chars.append(c)
+    fs = [str(x) for x in (payload.get("foreshadowing", old.foreshadowing) or [])]
+    ls = [str(x) for x in (payload.get("locked_settings", old.locked_settings) or [])]
+    new_world = World(world_view=world_view, characters=chars, foreshadowing=fs, locked_settings=ls)
+    store.save_world(new_world)
+    logger.info("用户编辑世界观: project=%s chars=%d", project_id, len(chars))
+    return {
+        "world_view": new_world.world_view,
+        "characters": [c.to_dict() for c in new_world.characters],
+        "foreshadowing": fs,
+        "locked_settings": ls,
     }
 
 

@@ -12,7 +12,7 @@ from ..config import NovelConfig
 from ..llm.base import LLMClient
 from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
-from ..store.schemas import Chapter, ChapterPlan, Outline, World
+from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .templates import (
     chapter_prompt,
@@ -107,11 +107,17 @@ class OutlineGenerator:
             f"请输出 JSON：\n"
             f"- title：最终书名（如可用则沿用给定书名）\n"
             f"- intro：作品简介（3-5 句，含卖点与情绪钩子）\n"
+            f"- core_conflict：全书核心冲突（一句话）\n"
+            f"- main_line：全书主线脉络（3-5 句）\n"
+            f"- volumes：分卷数组，将全书按剧情阶段分为3-5卷，每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章号), end_ch(结束章号)\n"
         )
         head = self.llm.chat_json(head_system, head_user, temperature=0.7)
 
         title = head.get("title") or self.cfg.effective_title()
         intro = head.get("intro", "")
+        core_conflict = head.get("core_conflict", "")
+        main_line = head.get("main_line", "")
+        volumes = [Volume.from_dict(v) for v in (head.get("volumes") or []) if isinstance(v, dict)]
 
         chapters: list[ChapterPlan] = []
         prev_summary = ""
@@ -135,7 +141,7 @@ class OutlineGenerator:
             prev_summary = "；".join(
                 f"第{c.no}章《{c.title}》：{c.goal}" for c in recent
             )
-        return Outline(title=title, intro=intro, chapters=chapters)
+        return Outline(title=title, intro=intro, core_conflict=core_conflict, main_line=main_line, volumes=volumes, chapters=chapters)
 
     def _head_blocks(self) -> str:
         """复用强约束/参考方向区块文本。"""

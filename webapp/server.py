@@ -646,6 +646,15 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             done, _total = pipeline.progress()
 
         done, total = pipeline.progress()
+        try:
+            st = store.load_state()
+            st.phase = "writing"
+            st.last_chapter = done
+            st.total_chapters = total
+            st.error = ""
+            store.save_state(st)
+        except Exception:
+            pass
         for no in range(done + 1, total + 1):
             if handle.stop_event.is_set():
                 print(f"[web] 收到停止请求，第 {no} 章暂停")
@@ -663,9 +672,18 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 logger.warning("余额耗尽停止: project=%s 第 %d 章后 %s", store.dir.name, no, why)
                 break
 
-        # 未停止则导出成品
+        # 未停止则导出成品，并把状态统一回写为 done，避免 phase 滞后
         if not handle.stop_event.is_set():
             pipeline.export()
+            try:
+                st = store.load_state()
+                st.phase = "done"
+                st.last_chapter = len(store.list_chapters())
+                outline = store.load_outline()
+                st.total_chapters = len(outline.chapters) if outline else st.total_chapters
+                store.save_state(st)
+            except Exception:
+                pass
         logger.info("生成完成: project=%s title=%s", store.dir.name, cfg.effective_title())
     except Exception as exc:  # noqa: BLE001
         handle.error = f"{type(exc).__name__}: {exc}"

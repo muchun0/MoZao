@@ -15,6 +15,9 @@ projects/
 output/
 logs/
 
+# 前端本地构建产物与依赖（多阶段构建在镜像内重新 build，不打进镜像）
+webapp/frontend/dist/
+webapp/frontend/node_modules/
 
 # 根目录临时脚本
 _*.py

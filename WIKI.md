@@ -266,12 +266,15 @@ py -3.13 -m pytest tests/ -q          # 47 passed（26 基线 + 4 大纲编辑 +
 py -3.13 run_web.py --host 0.0.0.0 --port 8000
 # 命令行管理（充值/代理/查用户）
 py -3.13 -m webapp.admin_cli users
-# 打包部署（master 分支）
-tar.exe -czf %TEMP%\novel_deploy.tar.gz --exclude=... -C D:\PythonProjects\DouBao .
-# 服务器（经 workbench exec）
-cd /opt/novel-gen && docker compose up -d --build
-curl http://127.0.0.1:80/api/health
-docker compose logs -f novel-gen
+# 发版（master，前端在容器内 build，无需本地 build / dist.zip）
+git archive --format=zip -o "$env:TEMP\novel_master.zip" master
+$wb="C:\Users\pc\AppData\Local\Programs\workbench\workbench.exe"
+& $wb upload -i i-bp14oxtecrth3wbq6thc -r cn-hangzhou -f "$env:TEMP\novel_master.zip" /tmp/
+& $wb exec -i i-bp14oxtecrth3wbq6thc -r cn-hangzhou --timeout 600 -c "cd /opt/novel-gen && python3 -m zipfile -e /tmp/novel_master.zip . && docker compose up -d --build"
+# 服务器运维
+& $wb exec -i i-bp14oxtecrth3wbq6thc -r cn-hangzhou -c "cd /opt/novel-gen && docker compose ps"
+& $wb exec -i i-bp14oxtecrth3wbq6thc -r cn-hangzhou -c "cd /opt/novel-gen && docker compose logs -f novel-gen"
+curl http://127.0.0.1/api/health   # 本机访问
 ```
 
 ---
@@ -340,21 +343,27 @@ docker compose logs -f novel-gen
 - 容器：mysql-mozao + novel-gen，docker compose 管理
 - 服务器直连 GitHub 常超时；本地代码用 git archive 打包后经 workbench 上传部署
 
-### 发版步骤（前后端都改了时）
-1. 本地 master 上：cd webapp/frontend && npm run build
-2. 打包整个 webapp/frontend/dist（用 python zipfile，路径必须用正斜杠 /，Windows 资源管理器/Compress-Archive 打的包在 Linux 解压会出问题）
-3. workbench upload 把 dist 包传到服务器 /tmp
-4. 服务器上清空旧 dist、解压新 dist
-5. docker compose build（必须 rebuild，因为前端是 COPY 进镜像的，不是挂载）
-6. docker compose up -d，等健康检查
-7. 验证：curl -s -o /dev/null -w '%{size_download}' http://127.0.0.1:8000/assets/index-*.js 应是几百 KB，不是几百字节
+### 发版步骤（多阶段 Docker 构建，2026-09-18 起）
+前端已改为**容器内多阶段构建**，本地无需 `npm run build`、无需上传 dist：
+- Dockerfile 阶段一 `node:20-alpine`：`npm ci` + `npm run build`；阶段二 `python:3.13-slim`：`COPY --from=builder` 拿 dist。
+- `.dockerignore` 已排除 `webapp/frontend/dist/` 与 `node_modules/`。
+- **为什么仍要上传代码包**：服务器直连 github.com 常超时、且仓库私有需凭证，所以不走服务器 `git pull`，改用 workbench upload（阿里云控制台通道）。多阶段构建省掉的是 dist.zip，不是代码包。
+
+1. 本地 master：提交并 `git push origin master`（若 GitHub 暂时连不上，本地 commit 仍可先打包部署，网络恢复后补推）
+2. `git archive --format=zip -o "$env:TEMP\novel_master.zip" master`
+3. workbench upload 把代码包传到服务器 `/tmp/`
+4. 服务器：`cd /opt/novel-gen && python3 -m zipfile -e /tmp/novel_master.zip . && docker compose up -d --build`
+   - build 阶段自动在容器内编译前端（依赖层有缓存，二次发版很快）
+5. 验证：首页 200，主 JS `curl -s -o /dev/null -w '%{size_download}' http://127.0.0.1/assets/index-*.js` 应 ~881KB，不是几百字节
 
 ### 常见坑
-- **白屏**：dist 不完整 / 主 bundle 没打进镜像。症状是访问页面 200 但空白，F12 看到 JS 请求返回了 HTML（SPA fallback）。必须本地重新 build 再上传。
-- **bcrypt 等新依赖**：改了 requirements.txt 必须 docker compose build，不能只 up -d
-- **config.yaml**：已 gitignore，服务器上保留，不要删
+- **白屏（主 JS 几百字节）**：SPA fallback，说明 dist 未正确打进镜像。多阶段改造后多为源码 index.html / title 未提交进 git，导致容器 build 用旧源码；确认 `git archive` 包里含最新前端源码后 rebuild。
+- **标题/前端改动没生效**：前端改动在源码 `webapp/frontend/src` / `index.html`，必须 commit 进 git 才会被容器内 build；本地未提交的 dist 不会进镜像（已被 dockerignore）。
+- **bcrypt 等新依赖**：改了 requirements.txt 或前端依赖，必须 `--build` rebuild，不能只 `up -d`。
+- **服务器无 unzip**：解压用 `python3 -m zipfile -e <zip> <dir>`。
+- **config.yaml**：已 gitignore，服务器上保留，不要删。
 
-*最后更新：2026-09-17*
+*最后更新：2026-09-18（前端多阶段 Docker 构建）*
 
 ---
 

@@ -92,6 +92,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 
 **部署要点**：
 
+- **前端多阶段构建**：`docker build` 时第一阶段用 `node:20-alpine` 在容器内自动 `npm ci && npm run build`，第二阶段把 `dist` 拷进 Python 镜像。**无需在宿主机提前 build 前端、也无需单独上传 dist**。
 - **镜像**：基于 `python:3.13-slim`，已内置中文字体（Noto CJK，封面绘制必须）、时区（Asia/Shanghai）、健康检查
 - **数据持久化**：四个命名卷——`projects`（中间产物）/ `output`（成品）/ `logs`（日志）/ `data`（数据库）。容器重建不丢数据；数据库通过环境变量 `NOVEL_DB_PATH=/data/novel_web.db` 落到卷内
 - **密钥安全**：`.env` 被 `.dockerignore` 排除、**不写入镜像**，通过 compose 的 `env_file` 从宿主机注入；`run_web.py` 遵循"环境变量优先"（`.env` 里的值不会覆盖已存在的环境变量）

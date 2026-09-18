@@ -22,6 +22,9 @@
     <el-main>
       <router-view />
     </el-main>
+    <el-footer class="footer">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">冀ICP备2026038211号</a>
+    </el-footer>
     <RechargeDialog ref="rechargeRef" />
   </el-container>
 </template>
@@ -95,6 +98,16 @@ function onCommand(cmd) {
   border: 1px solid rgba(201,162,39,.4);
   border-radius: 999px;
 }
+.footer {
+  padding: 14px 0 20px;
+  text-align: center;
+  font-size: 12px;
+}
+.footer a {
+  color: rgba(233,228,210,.5);
+  text-decoration: none;
+}
+.footer a:hover { color: #c9a227; }
 .username {
   cursor: pointer;
   font-size: 14px;

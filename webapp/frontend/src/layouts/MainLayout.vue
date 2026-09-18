@@ -58,7 +58,7 @@ function onCommand(cmd) {
 </script>
 
 <style scoped>
-.layout { min-height: 100vh; }
+.layout { min-height: 100vh; flex-direction: column; }
 .header {
   display: flex;
   align-items: center;

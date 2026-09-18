@@ -340,6 +340,10 @@ curl http://127.0.0.1/api/health   # 本机访问
 
 ### 服务器信息
 - 实例：i-bp14oxtecrth3wbq6thc（cn-hangzhou），部署目录 /opt/novel-gen
+- 域名：mozao.click / www.mozao.click（均解析到 47.114.41.136），ICP 备案 冀ICP备2026038211号（2026-09-18 通过）
+- HTTPS：宿主机 nginx（/etc/nginx/conf.d/mozao.conf），80 反代 127.0.0.1:8000 并 301 跳 HTTPS；443 反代同后端，证书 Let's Encrypt（certbot webroot，/var/www/certbot，自动续期，到期 2026-12-17）
+- 备案刚通过时，阿里云会按域名 HTTP 拦截（带 Host: mozao.click 返回 403，IP 直连正常），属正常同步延迟，等几小时自动放行后再签证书
+- 公安备案：beian.mps.gov.cn 用阿里云给的数据码办理（不影响上线，上线后 30 天内补）
 - 容器：mysql-mozao + novel-gen，docker compose 管理
 - 服务器直连 GitHub 常超时；本地代码用 git archive 打包后经 workbench 上传部署
 

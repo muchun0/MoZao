@@ -58,6 +58,7 @@
       </el-tabs>
       <p class="login-note">注册即送 <b>10 元</b> 体验金</p>
     </div>
+    <a class="login-icp" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">冀ICP备2026038211号</a>
   </div>
 </template>
 
@@ -204,6 +205,8 @@ async function doReset() {
 }
 .links { display: flex; justify-content: space-between; margin-top: 12px; }
 .btn-block { width: 100%; }
+.login-icp { position: fixed; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 12px; color: rgba(255,255,255,.45); text-decoration: none; }
+.login-icp:hover { color: rgba(201,162,39,.9); }
 .login-note {
   text-align: center;
   color: var(--muted);

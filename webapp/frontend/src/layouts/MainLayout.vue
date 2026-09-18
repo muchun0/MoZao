@@ -104,7 +104,7 @@ function onCommand(cmd) {
   font-size: 12px;
 }
 .footer a {
-  color: rgba(233,228,210,.5);
+  color: #9aa0a6;
   text-decoration: none;
 }
 .footer a:hover { color: #c9a227; }

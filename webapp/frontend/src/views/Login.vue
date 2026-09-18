@@ -186,7 +186,6 @@ async function doReset() {
   font-family: var(--serif); font-size: 30px; color: #f5efdc;
   background: linear-gradient(140deg, #c9a227, #8a6d1e);
   border-radius: 14px; box-shadow: 0 6px 18px rgba(201,162,39,.4);
-  transform: rotate(-4deg);
 }
 .login-title {
   text-align: center;

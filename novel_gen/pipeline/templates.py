@@ -948,24 +948,6 @@ def blind_check_prompt(cfg, chapter_no, recent_summaries, world_text):
     return system, user
 
 
-def rewrite_guard_prompt(cfg, chapter_no, chapter_title, chapter_goal,
-                         locked_outline, anchors, persona):
-    """大改风控：重生成某章时注入硬约束。中温 0.7。"""
-    system = (
-        "你是一位网文作者。你正在重写已经写过的一章。"
-        "用户对原版不满意，但主线不能变。"
-        "你必须严格遵守以下硬约束，不能偏离主线、不能遗忘已埋伏笔、不能让人物OOC。"
-    )
-    user = (
-        f"【第{chapter_no}章《{chapter_title}】】\n"
-        f"【本章目标】{chapter_goal}\n\n"
-        f"【主线硬约束（不可偏离）】\n{locked_outline}\n\n"
-        f"【必须保留的信息锚点】\n{anchors}\n\n"
-        f"【主角当前人设】\n{persona}\n\n"
-        "请基于以上约束重新生成本章正文，保持主线不变，但在表达/节奏/对话上做得更好。"
-        "输出格式：先输出正文，正文结束后另起一行输出【摘要】加1-2句剧情摘要。"
-    )
-    return system, user
 
 
 def chapter_prompt(

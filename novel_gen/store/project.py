@@ -174,10 +174,6 @@ class ProjectStore:
     def save_user_content(self, text: str) -> None:
         self.user_content_path().write_text(text or "", encoding="utf-8")
 
-    def load_user_content(self) -> str:
-        p = self.user_content_path()
-        return p.read_text(encoding="utf-8") if p.exists() else ""
-
     def set_user_words(self, words: int) -> None:
         """记录用户手写内容原字数（创建时统计），用于按 AI 实际生成字数结算。"""
         cfg = self.load_config()
@@ -220,24 +216,7 @@ class ProjectStore:
         except Exception:
             pass
 
-    def list_outline_snapshots(self) -> list:
-        """列出所有大纲快照（时间戳列表）。"""
-        try:
-            import glob
-            snap_dir = self.dir / "outline_snapshots"
-            files = sorted(glob.glob(str(snap_dir / "snap_*.json")))
-            return [{"file": f, "ts": int(f.split("snap_")[-1].replace(".json", ""))} for f in files]
-        except Exception:
-            return []
 
-    def load_outline_snapshot(self, file_name: str) -> dict | None:
-        """读取指定快照。"""
-        try:
-            import json
-            f = self.dir / "outline_snapshots" / file_name
-            return json.loads(f.read_text(encoding="utf-8"))
-        except Exception:
-            return None
 
     def load_outline(self) -> Optional[Outline]:
         d = self._read_json(self.outline_path(), None)

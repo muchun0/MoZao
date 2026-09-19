@@ -36,19 +36,6 @@ FREE_REGISTER_BONUS = 10.0
 
 
 
-def original_price_for(total_words: int) -> float | None:
-    """按字数返回该档位的原价（无优惠配置时返回 None）。"""
-    for name, cap, orig in PRICE_TIERS:
-        if cap is None or total_words <= cap:
-            return orig
-    return PRICE_TIERS[-1][2]
-
-
-def tier_name_for(total_words: int) -> str:
-    for name, cap, _orig in PRICE_TIERS:
-        if cap is None or total_words <= cap:
-            return name
-    return PRICE_TIERS[-1][0]
 
 
 def tiers() -> list[dict]:

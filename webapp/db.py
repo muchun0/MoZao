@@ -413,11 +413,6 @@ def list_downline(agent_id: int, limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def count_downline(agent_id: int) -> int:
-    with _connect() as conn:
-        row = conn.execute("SELECT COUNT(*) AS c FROM users WHERE referrer_id=%s", (agent_id,)).fetchone()
-    return row["c"] if row else 0
-
 
 def pay_commission(agent_id: int, buyer_id: int, amount: float, kind: str,
                    project_id: str = "", note: str = "") -> bool:

@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
 
 # 内置题材列表（题材可选：允许自定义，不在此列表内也放行）
 GENRES = ["玄幻", "仙侠", "都市", "科幻", "历史", "悬疑", "言情", "游戏", "奇幻", "体育", "军事", "自定义"]
@@ -140,73 +139,12 @@ def _apply_provider_defaults(llm: LLMConfig) -> LLMConfig:
     return llm
 
 
-def load_config(path: str | Path) -> NovelConfig:
-    """从 YAML 文件加载配置；缺失文件时返回全默认配置（便于程序化使用）。"""
-    path = Path(path)
-    if not path.exists():
-        return NovelConfig()
-
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
-    llm_raw = raw.get("llm", {}) or {}
-    llm = LLMConfig(
-        provider=llm_raw.get("provider", "deepseek"),
-        model=llm_raw.get("model", ""),
-        api_key=llm_raw.get("api_key", ""),
-        base_url=llm_raw.get("base_url", ""),
-        temperature=llm_raw.get("temperature", 0.8),
-        top_p=llm_raw.get("top_p", 0.0),
-        max_tokens=llm_raw.get("max_tokens", 4096),
-    )
-    _apply_provider_defaults(llm)
-
-    search_raw = raw.get("search", {}) or {}
-    search = SearchConfig(
-        provider=search_raw.get("provider", ""),
-        api_key=search_raw.get("api_key", "") or os.environ.get(
-            SEARCH_PROVIDER_DEFAULTS.get(search_raw.get("provider", ""), {}).get("env_key", ""), ""
-        ),
-        api_url=search_raw.get("api_url", ""),
-        count=int(search_raw.get("count", 5)),
-    )
-
-    cfg = NovelConfig(
-        title=raw.get("title", "未命名小说"),
-        genre=raw.get("genre", "玄幻"),
-        total_words=int(raw.get("total_words", 100_000)),
-        chapter_words=int(raw.get("chapter_words", 2500)),
-        style=raw.get("style", ""),
-        premise=raw.get("premise", ""),
-        background=raw.get("background", ""),
-        hero=raw.get("hero", ""),
-        characters=[str(x) for x in (raw.get("characters") or [])],
-        plot_direction=raw.get("plot_direction", ""),
-        forbidden=[str(x) for x in (raw.get("forbidden") or [])],
-        editor_review=bool(raw.get("editor_review", True)),
-        de_ai=bool(raw.get("de_ai", True)),
-        anti_similarity=bool(raw.get("anti_similarity", True)),
-        character_depth=bool(raw.get("character_depth", True)),
-        fanqie_style=bool(raw.get("fanqie_style", True)),
-        confirm=bool(raw.get("confirm", False)),
-        memory_window=int(raw.get("memory_window", 5)),
-        mode=raw.get("mode", "auto"),
-        expand_input=raw.get("expand_input", ""),
-        content_type=raw.get("content_type", ""),
-        expand_targets=[int(x) for x in (raw.get("expand_targets") or [])],
-        llm=llm,
-        search=search,
-        skill_prompt_append=str(raw.get('skill_prompt_append', '')),
-        high_quality_mode=bool(raw.get('high_quality_mode', False)),
-        custom_prompt=str(raw.get('custom_prompt', '')),
-    )
-    return cfg
 
 
 def validate_config(cfg: NovelConfig) -> list[str]:
     """配置校验，返回问题列表；空列表表示通过。"""
     issues: list[str] = []
-    # 字数完全由用户决定，不做下限建议（按档位收费即可）
+    # 字数完全由用户决定，不做下限建议（按字数收费即可）
     if cfg.chapter_words < 20:
         issues.append("chapter_words 过小（<20），单章字数不合理")
     if cfg.memory_window < 0:
@@ -214,19 +152,7 @@ def validate_config(cfg: NovelConfig) -> list[str]:
     if cfg.llm.provider not in PROVIDER_DEFAULTS:
         issues.append(f"未知 provider: {cfg.llm.provider}，可选 {list(PROVIDER_DEFAULTS)}")
     if cfg.llm.provider != "mock" and not cfg.llm.api_key:
-        issues.append(f"provider[{cfg.llm.provider}] 缺少 api_key：请在 config.yaml 填写或设置环境变量 "
+        issues.append(f"provider[{cfg.llm.provider}] 缺少 api_key：请设置环境变量 "
                       f"{PROVIDER_DEFAULTS.get(cfg.llm.provider, {}).get('env_key', '')}")
     return issues
 
-
-# 短篇小说范围（仅用于分档参考；已取消字数下限硬约束，字数完全由用户决定）
-SHORT_NOVEL_WORDS_UPPER = 25_000   # ≤ 此值视为短篇（与用户定义「2.5万字以内」一致）
-
-
-def check_short_novel_hard_constraint(cfg: NovelConfig) -> str:
-    """短篇字数硬约束：已按用户要求取消（字数由用户自行决定，仅按档位收费）。
-
-    保留函数签名以兼容既有调用点（CLI / Web），但恒返回空字符串表示通过。
-    历史版本曾强制短篇（≤2.5 万）必须大于 7000 字，现已放开。
-    """
-    return ""

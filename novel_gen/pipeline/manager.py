@@ -54,10 +54,6 @@ class NovelPipeline:
         """题材调研阶段（委托 ResearcherAgent）。"""
         return self.researcher.run(silent=silent)
 
-    def run_anti_cliche(self, silent: bool = False) -> None:
-        """反套路改造（委托 ResearcherAgent）。"""
-        self.researcher._run_anti_cliche(silent=silent)
-
     def run_outline(self, silent: bool = False) -> Outline:
         existing = self.store.load_outline()
         if existing is not None:
@@ -528,11 +524,6 @@ class NovelPipeline:
         if not silent:
             print(f"\n扩写完成：共处理 {len(chapters)} 章。")
         logger.info("扩写完成: chapters=%d targets=%s", len(chapters), targets)
-
-    def run_all(self, silent: bool = False) -> Path | None:
-        """一键全流程（等价于从零 resume），结束后导出 txt。返回导出文件路径。"""
-        self.resume(silent=silent)
-        return self.export(silent=silent)
 
     def export(self, silent: bool = False):
         from pathlib import Path

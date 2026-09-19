@@ -50,7 +50,7 @@ from . import mailer
 from . import verify_code
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
-from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tier_name_for, tiers
+from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tiers
 from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
                        REFERRAL_BONUS, agent_price, round_money)
 
@@ -589,19 +589,6 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
-
-
-def _balance_exhausted(store: ProjectStore) -> tuple[bool, float]:
-    """检查项目所有者余额是否已耗尽（<=0）。返回 (是否应停止, 当前余额)。"""
-    try:
-        uid = db.project_owner(store.dir.name)
-        if uid is None:
-            return False, 0.0
-        u = db.get_user(uid)
-        bal = float(u["balance"]) if u else 0.0
-        return bal <= 0, bal
-    except Exception:
-        return False, 0.0
 
 
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:

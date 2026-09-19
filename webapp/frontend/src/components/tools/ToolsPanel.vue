@@ -16,6 +16,31 @@
       </div>
     </el-card>
 
+    <!-- 改稿建议 -->
+    <el-card class="tool-card">
+      <template #header><b>改稿建议</b></template>
+      <p class="muted">自动改稿记录与待人工处理的中改问题</p>
+      <el-button size="small" @click="loadReview">查看改稿记录</el-button>
+      <div class="result-area">
+        <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
+        <div v-else-if="!reviewItems.length" class="ok-box">暂无改稿记录</div>
+        <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
+          <div class="review-head">
+            <b>第{{ r.chapter }}章</b>
+            <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
+            <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
+            <span v-else class="tag-ok">无问题</span>
+          </div>
+          <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
+            <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
+            <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
+            <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
+            <span>{{ it.detail }}</span>
+          </div>
+        </div>
+      </div>
+    </el-card>
+
     <!-- 节奏分析 -->
     <el-card class="tool-card">
       <template #header><b>节奏分析</b></template>
@@ -162,6 +187,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const props = defineProps({ pid: String })
 
 const verifyResult = ref([])
+const reviewItems = ref([])
+const reviewLoaded = ref(false)
 const rhythmData = ref([])
 const maxRhythm = ref(1)
 const altGoal = ref('')
@@ -207,6 +234,14 @@ async function runVerify(kind, label) {
   } catch (e) {
     verifyResult.value = [{ text: '失败：' + (e.response?.data?.detail || e.message), ok: false }]
   }
+}
+
+async function loadReview() {
+  try {
+    const r = await toolsApi.getReview(props.pid)
+    reviewItems.value = r.items || []
+    reviewLoaded.value = true
+  } catch (e) { ElMessage.error('改稿记录加载失败') }
 }
 
 async function loadRhythm() {
@@ -318,4 +353,14 @@ onMounted(() => { loadSnaps(); loadFs(); loadLk(); loadMySkills() })
 .rhythm-label { width: 50px; color: #909399; }
 .rhythm-bar { height: 12px; background: #c6e2ff; border-radius: 3px; }
 .rhythm-words { color: #606266; }
+.review-chapter { padding: 6px 8px; background: #f5f7fa; border-radius: 4px; margin-bottom: 6px; }
+.review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+.tag-auto { background: #e1f3d8; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.tag-todo { background: #fdf6ec; color: #e6a23c; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.tag-ok { background: #f0f9eb; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }
+.lv-small { color: #909399; }
+.lv-big { color: #f56c6c; font-weight: 700; }
+.review-type { color: #409eff; }
+.review-pos { color: #909399; }
 </style>

@@ -1661,6 +1661,23 @@ def rhythm_stats(project_id: str, user: dict = Depends(_require_user)):
     return {"chapters": data, "total_words": total, "chapter_count": len(data)}
 
 
+@app.get("/api/projects/{project_id}/review")
+def list_review(project_id: str, user: dict = Depends(_require_user)):
+    """读取改稿记录 review.json，按章返回问题与改稿情况。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    path = store.dir / "review.json"
+    if not path.exists():
+        return {"items": []}
+    try:
+        import json as _json
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = []
+    data.sort(key=lambda r: int(r.get("chapter", 0)))
+    return {"items": data}
+
+
 @app.post("/api/projects/{project_id}/verify/consistency")
 def verify_consistency(project_id: str, user: dict = Depends(_require_user)):
     """设定一致性校验：用LLM检查最近章节是否与世界设定矛盾。"""

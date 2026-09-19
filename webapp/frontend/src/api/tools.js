@@ -4,6 +4,7 @@ export const verifyConsistency = (pid) => request.post(`/projects/${pid}/verify/
 export const verifyLogic = (pid) => request.post(`/projects/${pid}/verify/logic`)
 export const verifyCompliance = (pid) => request.post(`/projects/${pid}/verify/compliance`)
 export const getRhythm = (pid) => request.get(`/projects/${pid}/stats/rhythm`)
+export const getReview = (pid) => request.get(`/projects/${pid}/review`)
 export const genAlternatives = (pid, data) => request.post(`/projects/${pid}/generate/alternatives`, data)
 export const listSnapshots = (pid) => request.get(`/projects/${pid}/outline/snapshots`)
 export const saveSnapshot = (pid, name) => request.post(`/projects/${pid}/outline/snapshots`, null, { params: { name } })

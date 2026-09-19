@@ -27,25 +27,10 @@ logger = get_logger("mailer")
 
 
 def _load_env() -> None:
-    """从项目根 .env 读取环境变量（与 run_web.py 同款手写解析，无第三方依赖）。
-
-    每次调用都覆盖 os.environ 中的值，因此修改 .env 后无需重启服务即可生效。
-    """
-    env_file = Path(__file__).resolve().parent.parent / ".env"
-    if not env_file.exists():
-        return
-    try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key:
-                os.environ[key] = value
-    except Exception:
-        pass
+    """从项目根 .env 读取环境变量。每次调用都覆盖 os.environ，
+    因此修改 .env 后无需重启服务即可生效。"""
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 
 def is_configured() -> bool:

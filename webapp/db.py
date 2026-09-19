@@ -31,27 +31,9 @@ from pymysql.cursors import DictCursor
 from pymysql.err import IntegrityError as MyIntegrityError
 from dbutils.pooled_db import PooledDB
 
-# ---------- .env 轻量加载（兼容 python -m uvicorn 直启，不依赖 run_web.py） ----------
-def _load_env_file() -> None:
-    """从项目根目录 .env 读取环境变量（若存在且未设置过）。幂等。"""
-    env_file = Path(__file__).resolve().parent.parent / ".env"
-    if not env_file.exists():
-        return
-    try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    except OSError:
-        pass
-
-
-_load_env_file()
+# ---------- .env 加载（兼容 python -m uvicorn 直启，不依赖 run_web.py） ----------
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 # ---------- MySQL 连接配置（均来自环境变量，不硬编码） ----------
 DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")

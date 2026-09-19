@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -27,19 +28,8 @@ logger = get_logger("run")
 
 
 def _load_env() -> None:
-    """从项目根目录 .env 文件读取环境变量（若存在）。"""
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+    """从项目根目录 .env 文件读取环境变量（若存在）。系统环境变量优先。"""
+    load_dotenv(ROOT / ".env", override=False)
 
 
 def main() -> None:

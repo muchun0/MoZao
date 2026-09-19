@@ -15,6 +15,7 @@ httpx<0.28,>=0.23
 
 # ===== 配置与数据 =====
 PyYAML>=6.0             # config.yaml 解析
+python-dotenv>=1.0.0    # .env 文件加载（API Key / SMTP / DB 连接串）
 
 # ===== 封面生成（程序化绘制，零外部 API） =====
 Pillow>=12.3.0

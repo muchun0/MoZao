@@ -20,7 +20,7 @@
     <el-card class="tool-card">
       <template #header><b>改稿建议</b></template>
       <p class="muted">自动改稿记录与待人工处理的中改问题</p>
-      <el-button size="small" @click="loadReview">查看改稿记录</el-button>
+      <el-button size="small" @click="loadReview">查看改稿建议</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
         <div v-else-if="!reviewItems.length" class="ok-box">暂无改稿记录</div>

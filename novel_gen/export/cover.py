@@ -205,9 +205,8 @@ def _draw_text_overlay(img: Image.Image, title: str, genre: str,
     draw.line([(w * 0.2, h - 78), (w * 0.8, h - 78)], fill=(255, 255, 255, 140), width=2)
 
 
-def _build_cover_prompt(title: str, genre: str, subtitle: str, extra: str = "") -> str:
-    """构造 AI 封面 prompt：只描述题材氛围插画，文字一律由程序叠加，
-    因此 prompt 不注入书名/副标题（否则 AI 会渲染成画面文字）。"""
+def _build_cover_prompt(title: str, genre: str, extra: str = "") -> str:
+    """构造 AI 封面 prompt：只描述题材氛围插画，prompt 注入书名"""
     desc = {
         "玄幻": "东方玄幻史诗感，仙山云海与星辰交汇，玄奥符文光带缭绕，神秘磅礴",
         "仙侠": "水墨意境与仙光结合，青峰流云、飞剑灵鹤，清冷出尘的仙侠氛围",
@@ -252,8 +251,6 @@ def _fit_cover(img: Image.Image) -> Image.Image:
 def generate_ai_cover(
     title: str,
     genre: str = "其他",
-    author: str = "AI 自动生成",
-    subtitle: str = "",
     out_path: Optional[Path] = None,
     extra: str = "",
 ) -> Optional[Path]:
@@ -271,7 +268,7 @@ def generate_ai_cover(
         logger.info("未配置 SILICONFLOW_API_KEY，跳过 AI 封面")
         return None
 
-    prompt = _build_cover_prompt(title, genre, subtitle, extra)
+    prompt = _build_cover_prompt(title, genre, extra)
     seed = random.randint(0, 999999999)
     payload = {
         "model": AI_MODEL,
@@ -357,7 +354,7 @@ def generate_best_cover(
     默认失败回退程序化封面（测试环境友好）；
     COVER_AI_STRICT=1（生产）时失败直接抛异常，确保生产封面一定走配置模型生成。
     """
-    ai = generate_ai_cover(title, genre, author, subtitle, out_path, extra=extra)
+    ai = generate_ai_cover(title, genre, out_path, extra=extra)
     if ai is not None:
         return ai
     if COVER_AI_STRICT:

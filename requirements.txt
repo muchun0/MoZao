@@ -17,7 +17,7 @@ httpx<0.28,>=0.23
 PyYAML>=6.0             # config.yaml 解析
 
 # ===== 封面生成（程序化绘制，零外部 API） =====
-Pillow>=10.0.0
+Pillow>=12.3.0
 
 # ===== 多格式导出 =====
 ebooklib>=0.18          # EPUB 3 导出
@@ -27,6 +27,6 @@ python-docx>=1.1.0      # Word DOCX 导出
 # pytest>=8.0.0
 
 pymysql==1.1.1
-cryptography>=42.0.8
+cryptography>=50.0.0
 DBUtils>=3.1.0         # MySQL 连接池，高并发时避免每次新建 TCP 连接
 bcrypt>=4.1.0           # 密码哈希（新密码用 bcrypt，老 sha256 用户首登自动迁移）

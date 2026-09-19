@@ -30,7 +30,7 @@ def _collect(store: ProjectStore):
     return cfg, outline, chapters
 
 
-def _meta_summary(outline, intro: str) -> str:
+def _meta_summary(outline) -> str:
     return (outline.intro if outline and outline.intro else "").strip() or "AI 自动生成小说。"
 
 
@@ -38,7 +38,7 @@ def export_epub(store: ProjectStore) -> Path:
     """导出 EPUB 3 电子书。返回 output/ 下的最终路径。"""
     cfg, outline, chapters = _collect(store)
     title = cfg.effective_title()
-    intro = _meta_summary(outline, "")
+    intro = _meta_summary(outline)
 
     book = epub.EpubBook()
     book.set_identifier(f"novel-{store.project_id}")
@@ -87,7 +87,7 @@ def _epub_bytes(book) -> bytes:
 
 def _write_outputs(store: ProjectStore, filename: str, payload) -> Path:
     """统一落盘：项目目录副本 + output/ 主输出。payload 为 bytes 或可 write_epub 对象。"""
-    cfg = store.load_config()
+    store.load_config()
     output_dir = store.dir.parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,7 +113,7 @@ def export_docx(store: ProjectStore) -> Path:
     """导出 Word 文档（.docx）。返回 output/ 下的最终路径。"""
     cfg, outline, chapters = _collect(store)
     title = cfg.effective_title()
-    intro = _meta_summary(outline, "")
+    intro = _meta_summary(outline)
 
     doc = Document()
     # 全局中文字体

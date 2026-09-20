@@ -2053,7 +2053,16 @@ def gen_cover(project_id: str, user: dict = Depends(_require_user)):
 
 
 @app.get("/api/projects/{project_id}/cover")
-def get_cover(project_id: str, user: dict = Depends(_require_user)):
+def get_cover(project_id: str, token: str = "", authorization: str = Header(default="")):
+    # img 标签无法带 header，支持 query token
+    if authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+    uid = db.get_session_user(token)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    user = db.get_user(uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="用户不存在")
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     out_path, proj_path = _cover_files(store)

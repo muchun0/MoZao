@@ -1,5 +1,18 @@
 <template>
   <div class="tools-grid">
+    <!-- 封面生成 -->
+    <el-card class="tool-card">
+      <template #header><b>小说封面</b></template>
+      <p class="muted">AI 生成小说封面（每本限 5 次）</p>
+      <div v-if="coverUrl" class="cover-preview" style="margin-bottom:10px">
+        <img :src="coverUrl" alt="封面" style="max-width:200px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.15)" />
+      </div>
+      <el-button size="small" type="primary" @click="genCover" :loading="coverLoading">
+        {{ coverLoading ? '生成中…' : (coverUrl ? '重新生成' : '生成封面') }}
+      </el-button>
+      <span v-if="coverRemaining !== null" class="muted" style="margin-left:8px">剩余 {{ coverRemaining }} 次</span>
+    </el-card>
+
     <!-- 质量校验 -->
     <el-card class="tool-card">
       <template #header><b>质量校验</b></template>
@@ -208,6 +221,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
+import { getProject } from '../../api/project'
 import { listMarketSkills, publishToMarket, installMarketSkill } from '../../api/tools'
 import { batchGenerate, regenOutline as apiRegenOutline, regenWorld as apiRegenWorld } from '../../api/novel'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -217,6 +231,42 @@ const props = defineProps({ pid: String })
 const verifyResult = ref([])
 const reviewItems = ref([])
 const reviewLoaded = ref(false)
+const coverUrl = ref('')
+const coverLoading = ref(false)
+const coverRemaining = ref(null)
+
+async function loadCover() {
+  try {
+    const info = await getProject(props.pid)
+    if (info.has_cover) {
+      coverUrl.value = `/api/projects/${props.pid}/cover?t=${Date.now()}&token=${localStorage.getItem('token')}`
+    }
+    coverRemaining.value = (info.cover_max || 5) - (info.cover_used || 0)
+  } catch (e) { console.warn('loadCover', e) }
+}
+
+async function genCover() {
+  coverLoading.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const res = await fetch(`/api/projects/${props.pid}/cover`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    })
+    const data = await res.json()
+    if (data.cover_url) {
+      coverUrl.value = data.cover_url + '?t=' + Date.now() + '&token=' + localStorage.getItem('token')
+      coverRemaining.value = data.cover_remaining
+      ElMessage.success('封面生成成功')
+    } else {
+      ElMessage.error(data.detail || '生成失败')
+    }
+  } catch (e) {
+    ElMessage.error('生成失败: ' + e.message)
+  } finally {
+    coverLoading.value = false
+  }
+}
 const rhythmData = ref([])
 const maxRhythm = ref(1)
 const altGoal = ref('')
@@ -366,7 +416,9 @@ async function delMySkill(id) {
   loadMySkills()
 }
 
-onMounted(() => { loadSnaps(); loadFs(); loadLk(); loadMySkills(); loadMarket() })
+onMounted(() => {
+  loadCover(); loadSnaps(); loadFs(); loadLk(); loadMySkills(); loadMarket()
+})
 
 const loadMarket = async () => {
   try {

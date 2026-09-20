@@ -75,6 +75,7 @@ D:\PythonProjects\DouBao\
 └── webapp/
     ├── server.py               # 全部 API 路由（91 个）
     ├── db.py                   # MySQL 数据层 + 自动迁移
+    ├── secret_encrypt.py       # 敏感配置加密（BYOK Key，Fernet）
     ├── pricing.py              # 按字数计费
     ├── referral.py             # 代理/分销
     ├── verify_code.py          # 邮箱验证码
@@ -132,7 +133,7 @@ D:\PythonProjects\DouBao\
 
 | 表 | 关键字段 |
 |---|---|
-| users | id, username, pass_hash(bcrypt), email, balance, is_admin, is_agent, agent_discount, invite_code, referrer_id, **llm_provider, llm_api_key, llm_base_url, llm_model**（BYOK）, created_at |
+| users | id, username, pass_hash(bcrypt), email, balance, is_admin, is_agent, agent_discount, invite_code, referrer_id, **llm_provider, llm_api_key（Fernet 密文）, llm_base_url, llm_model**（BYOK）, created_at |
 | sessions | token, user_id, created_at |
 | project_owner | project_id, user_id, price, discount, created_at |
 | recharges | id, user_id, amount, note, created_at |
@@ -155,6 +156,7 @@ D:\PythonProjects\DouBao\
 | BOCHA_API_KEY | 联网调研 Key |
 | SILICONFLOW_API_KEY | 封面 AI 生图 Key |
 | AI_COVER_ENABLED | 封面 AI 开关（1/0） |
+| LLM_KEY_ENCRYPT_SECRET | BYOK Key 加密密钥（可选；未配置时自动生成根目录 `.llm_encrypt.key`，已 gitignore，服务器 zip 解压不覆盖） |
 | ADMIN_EMAIL | 站长收件邮箱（退款通知） |
 | SMTP_HOST/PORT/USER/PASS | SMTP 发信 |
 | ALLOWED_ORIGINS | CORS 白名单 |
@@ -221,6 +223,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 | 硅基流动 401 | 用 `api.siliconflow.cn` |
 | 前端改动不生效 | 必须 commit 进 git，容器内 build 才会用新代码 |
 | 改了 requirements.txt | 必须 `--build` rebuild |
+| BYOK 密文解不开（报错/回退平台 key） | 密钥丢失（清空服务目录或换机）。备份根目录 `.llm_encrypt.key`，或在 .env 固定 `LLM_KEY_ENCRYPT_SECRET`；无法恢复时用户需重新填写 key |
 
 ---
 
@@ -232,6 +235,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 上传文件 10MB 上限
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等（先落 settle 标记再扣费）
+- BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
 
 ---
 

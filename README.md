@@ -123,7 +123,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 - **注册必填邮箱 + 验证码**：全站唯一（不区分大小写，统一存小写），注册前先点"获取验证码"（邮件发到用户自己邮箱）；登录输入框同时支持用户名和邮箱；历史老用户无邮箱不受影响，可在后台用户表中看到邮箱列
 - **忘记密码**：登录页"忘记密码？"→ 输入注册邮箱收验证码 → 输码 + 新密码重置；重置后该账号所有登录会话失效，必须重新登录（未注册邮箱不发送、不泄露注册状态）
 - **邮件发送**：验证码发给用户本人邮箱，退款申请通知仍发站长（`ADMIN_EMAIL`）；未配置 SMTP 时验证码接口返回"发送失败"（注册/重置不可用），退款申请仍可提交
-- **API Key 只放服务端**（`.env` 文件或系统环境变量），用户不需要也不可见 Key
+- **API Key 只放服务端**（`.env` 文件或系统环境变量），用户不需要也不可见 Key；用户自配的 BYOK Key **加密落库**（Fernet，密文前缀 `enc:v1:`），DB 泄露不暴露明文
 - **按目标 AI 字数封顶收费**：创建项目不扣费，生成完成后按用户创建时填的目标 AI 字数结算（用户手写内容不计费），每万字 2 元；AI 多写的部分平台承担，不另收费
 - **多用户并发**：不同用户生成互不阻塞，后台多线程执行
 - **未生成可退**：项目零章节产出时可全额退费并删除（详情见"退费删除"）；已产出章节则不可退
@@ -375,21 +375,21 @@ novel_gen/
 webapp/
 ├── server.py            # FastAPI 后端（REST API + 生成线程）
 ├── db.py                # MySQL 数据层（连接池，用户/会话/余额/代理/返佣/退款/skills）
+├── secret_encrypt.py    # 敏感配置加密（BYOK Key，Fernet）
 ├── pricing.py           # 定价档位
 ├── referral.py          # 代理商业参数（折扣/返佣比例/返佣基数）
 ├── mailer.py            # 邮件通知（退款申请等）
 ├── logger.py            # 统一日志（文件滚动 + 控制台）
 ├── admin_cli.py         # 站长命令行管理工具
-├── frontend/            # Vue 3 + Element Plus 前端（src/，产物 dist/）
-└── webui/               # 旧原生前端（已淘汰，不再维护）
-tests/                   # 26 个测试（config/store/memory/结局/端到端 mock）
+└── frontend/            # Vue 3 + Element Plus 前端（src/，产物 dist/）
+tests/                   # 本地测试（不入库，见「测试」节说明）
 examples/config.yaml     # 示例配置
 projects/<项目>/         # 中间产物：调研/大纲/人物/章节json/摘要（断点续跑用）
 output/                  # 最终成品：txt / epub / docx / 封面 png
 logs/                    # 服务日志（app.log，自动轮转）
 ```
 
-- `projects/`：每本书一个子目录，保存调研/大纲/人物/章节等中间产物，支持 `resume` 断点续跑
+- `projects/`：每本书一个子目录，保存调研/大纲/人物/章节等中间产物，支持 `resume` 断点续跑；列表页统计走 `meta.json` 轻量缓存（章节未变化时零文件内容读取）
 - `output/`：最终成品统一输出到这里，每本书一个文件；项目目录下也保留一份副本
 
 ## 测试
@@ -399,6 +399,8 @@ python -m pytest tests/ -v
 ```
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗等。
+
+> 注意：`tests/` 按 `gitignore` 规则本地维护、不随仓库提交（见 commit `4125e02`）；改动结算/权限/加密等关键路径时，请先在本地跑通测试再发版。
 
 ## 说明与边界
 
@@ -410,6 +412,7 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
+- **2026-09-20**：第一批优化（feat/optimization-batch1）——① BYOK Key 加密落库（`webapp/secret_encrypt.py`，Fernet；存量明文启动自动迁移）；② 项目列表性能（`meta.json` 轻量统计缓存，章节未变化时零章节读取）；③ 文档对齐（server.py 头注释/README/WIKI 与实际代码一致）；④ 清理部署产物与已淘汰的 webui 目录。
 - **2026-09-17**：修复**扩写模式**（用户上传大纲，`mode=expand`）重新生成大纲后分卷为空的问题——扩写提示词 `expand_outline_prompt` 原只让模型输出 title/intro/chapters，现补 `core_conflict / main_line / volumes`（每卷 no/name/intro/main_conflict/character_growth/climax/start_ch/end_ch）；`regen_outline` 改为删 outline.json 后再起后台线程（不再先写空壳导致「已存在则复用」直接跳过）；前端「重生成大纲/世界观」按钮改走带 token 的封装请求。服务器无 unzip，dist.zip 用 `python3 -m zipfile -e` 解压。详见 WIKI.md 第 14 节。
 
 

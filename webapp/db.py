@@ -31,6 +31,11 @@ from pymysql.cursors import DictCursor
 from pymysql.err import IntegrityError as MyIntegrityError
 from dbutils.pooled_db import PooledDB
 
+from .secret_encrypt import decrypt_secret, encrypt_secret
+from .logger import get_logger
+
+logger = get_logger("db")
+
 # ---------- .env 加载（兼容 python -m uvicorn 直启，不依赖 run_web.py） ----------
 from dotenv import load_dotenv as _load_dotenv
 _load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
@@ -277,6 +282,18 @@ def init_db() -> None:
         for r in rows:
             code = _make_invite_code(r["id"])
             conn.execute("UPDATE users SET invite_code=%s WHERE id=%s", (code, r["id"]))
+        # 存量明文 BYOK Key 迁移为密文（enc:v1: 前缀幂等；密钥缺失时跳过并警告）
+        if "llm_api_key" in cols:
+            plain_rows = conn.execute(
+                "SELECT id, llm_api_key FROM users "
+                "WHERE llm_api_key IS NOT NULL AND llm_api_key<>'' "
+                "AND llm_api_key NOT LIKE 'enc:v1:%'").fetchall()
+            for r in plain_rows:
+                enc = encrypt_secret(r["llm_api_key"])
+                if enc:
+                    conn.execute("UPDATE users SET llm_api_key=%s WHERE id=%s", (enc, r["id"]))
+                else:
+                    logger.warning("BYOK Key 加密迁移跳过: user_id=%d", r["id"])
 
 
 def _make_invite_code(user_id: int) -> str:
@@ -488,39 +505,60 @@ def authenticate(identifier: str, password: str) -> Optional[int]:
 
 
 def get_user_llm(user_id: int) -> dict:
-    """返回用户自配 LLM（未配则空字符串）。"""
+    """返回用户自配 LLM（未配则空字符串）。llm_api_key 解密后返回。
+
+    键名统一为 provider/api_key/base_url/model（与 server.py 调用方契约一致）。
+    P0 修复：原实现命中时返回 llm_* 前缀键，与调用方期望不符，导致
+    _user_llm_cfg 永远判"未配置"，BYOK 自配 key 不生效且按平台 key 计费。
+    """
     with _connect() as conn:
         row = conn.execute(
             "SELECT llm_provider, llm_api_key, llm_base_url, llm_model FROM users WHERE id=%s",
             (user_id,)).fetchone()
     if not row:
         return {"provider": "", "api_key": "", "base_url": "", "model": ""}
-    return dict(row)
+    return {
+        "provider": row.get("llm_provider") or "",
+        "api_key": decrypt_secret(row.get("llm_api_key") or ""),
+        "base_url": row.get("llm_base_url") or "",
+        "model": row.get("llm_model") or "",
+    }
 
 
 def set_user_llm(user_id: int, provider: str, api_key: str, base_url: str, model: str) -> None:
+    """保存用户自配 LLM。api_key 加密后落库（DB 泄露不暴露明文）。"""
     with _connect() as conn:
         conn.execute(
             "UPDATE users SET llm_provider=%s, llm_api_key=%s, llm_base_url=%s, llm_model=%s WHERE id=%s",
-            (provider, api_key, base_url, model, user_id))
+            (provider, encrypt_secret(api_key), base_url, model, user_id))
 
 
 def get_user(user_id: int) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE id=%s", (user_id,)).fetchone()
-    return dict(row) if row else None
+    return _decrypt_user_row(row)
 
 
 def get_user_by_name(username: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE username=%s", (username.strip(),)).fetchone()
-    return dict(row) if row else None
+    return _decrypt_user_row(row)
 
 
 def get_user_by_email(email: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE email=%s", ((email or "").strip().lower(),)).fetchone()
-    return dict(row) if row else None
+    return _decrypt_user_row(row)
+
+
+def _decrypt_user_row(row) -> Optional[dict]:
+    """get_user* 统一出口：llm_api_key 解密后返回，保持"读取即明文"语义。"""
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("llm_api_key"):
+        d["llm_api_key"] = decrypt_secret(d["llm_api_key"])
+    return d
 
 
 def update_password(user_id: int, new_password: str) -> None:

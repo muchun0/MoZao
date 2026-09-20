@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""结算逻辑单元测试（webapp/server.py _compute_settle / _settle_incremental / _settle_price）。
+"""结算逻辑单元测试（webapp/core.py _compute_settle / _settle_incremental / _settle_price）。
 
 用真实 ProjectStore（临时目录）+ monkeypatch 掉 db 层，不触碰真实资金。
 覆盖：统一计算口径、计费封顶、用户手写字数扣除、增量结算幂等、
@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 from novel_gen.config import NovelConfig
 from novel_gen.store.project import ProjectStore
 from novel_gen.store.schemas import Chapter
-from webapp import server
+# 第三批拆分：结算逻辑位于 webapp/core.py（server.py 仅为组装壳）；core.db 即 webapp.db
+from webapp import core as server
 
 
 @pytest.fixture

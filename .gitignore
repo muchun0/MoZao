@@ -1,5 +1,6 @@
 # ===== 密钥与敏感文件（绝不提交） =====
 .env
+.llm_encrypt.key
 
 # ===== Python 缓存/虚拟环境 =====
 __pycache__/

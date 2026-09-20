@@ -2,12 +2,12 @@
 """
 小说生成 Web 后端（FastAPI）：多用户 SaaS 版。
 
-相对单用户版的改动：
-1. 用户系统：注册/登录/登出，token 鉴权（SQLite 持久化）
+1. 用户系统：注册/登录/登出，token 鉴权（MySQL 持久化，库 mozao）
 2. 项目隔离：每个项目归属一个用户，只能看/操作自己的项目（管理员可见全部）
-3. Key 集中管理：LLM API Key 只放服务端环境变量，前端不再需要填 Key
-4. 按单本收费：创建项目时按字数档位从余额扣费，余额不足拒绝
-5. 人工收款：充值由管理员命令行手动加余额（见 webapp/admin_cli.py）
+3. Key 集中管理：平台 LLM API Key 只放服务端环境变量，前端不可见；
+   用户自配 Key（BYOK）加密落库，DB 泄露不暴露明文（见 webapp/secret_encrypt.py）
+4. 按 AI 实际生成字数计费：创建项目不扣费，生成完成后按实际字数结算（见 _settle_price）
+5. 人工收款：充值由管理员后台/命令行手动加余额（见 webapp/admin_cli.py）
 """
 from __future__ import annotations
 
@@ -381,9 +381,8 @@ def _list_projects(user: dict, sort: str = "created", show_archived: bool = Fals
             store = ProjectStore.open(d)
             cfg = store.load_config()
             state = store.load_state()
-            outline = store.load_outline()
-            chapters = store.list_chapters()
-            total = len(outline.chapters) if outline else cfg.num_chapters
+            # 轻量统计走 meta 缓存（章节未变化时零章节读取），首次/变更后自动重算
+            meta = store.load_or_refresh_meta()
             archived = getattr(state, "archived", False)
             if archived and not show_archived:
                 continue
@@ -396,9 +395,9 @@ def _list_projects(user: dict, sort: str = "created", show_archived: bool = Fals
                 "updated": d.stat().st_mtime,
                 "phase": state.phase,
                 "archived": archived,
-                "chapters_done": len(chapters),
-                "chapters_total": total,
-                "generated_words": sum(len(c.content or "") for c in chapters),
+                "chapters_done": meta["chapters_done"],
+                "chapters_total": meta["chapters_total"],
+                "generated_words": meta["generated_words"],
                 "running": d.name in _RUNS,
                 "has_error": bool(_RUNS.get(d.name) and _RUNS[d.name].error),
                 "price": db.project_price(d.name),

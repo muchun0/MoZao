@@ -264,6 +264,56 @@ class ProjectStore:
         items.sort(key=lambda c: c.no)
         return items
 
+    # ---------- 轻量统计（列表页缓存，避免每次全量读章节文本） ----------
+    def meta_path(self) -> Path:
+        return self.dir / "meta.json"
+
+    def load_or_refresh_meta(self) -> dict:
+        """返回 {generated_words, chapters_done, chapters_total}，带缓存失效检测。
+
+        meta.json 比 config/outline/所有章节文件都新时直接复用缓存（零文件内容读取）；
+        否则全量重算并原子写回。章节被编辑/新增/删除都会使 meta 过期。
+        """
+        meta = self.meta_path()
+        stale = not meta.exists()
+        if not stale:
+            meta_mt = meta.stat().st_mtime
+            for p in (self.config_path(), self.outline_path()):
+                if p.exists() and p.stat().st_mtime > meta_mt:
+                    stale = True
+                    break
+            if not stale:
+                try:
+                    for e in os.scandir(self.chapters_dir):
+                        if e.stat().st_mtime > meta_mt:
+                            stale = True
+                            break
+                except OSError:
+                    stale = True
+        if not stale:
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+                if all(k in data for k in ("generated_words", "chapters_done", "chapters_total")):
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+            stale = True
+        # 全量重算（首次或已过期）
+        cfg = self.load_config()
+        outline = self.load_outline()
+        chapters = self.list_chapters()
+        data = {
+            "generated_words": sum(len(c.content or "") for c in chapters),
+            "chapters_done": len(chapters),
+            "chapters_total": len(outline.chapters) if outline and outline.chapters else cfg.num_chapters,
+            "updated_at": time.time(),
+        }
+        try:
+            self._write_json(meta, data)
+        except OSError:
+            pass
+        return data
+
     # ---------- 状态机 ----------
     def state_path(self) -> Path:
         return self.dir / "state.json"

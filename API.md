@@ -203,6 +203,7 @@
 ### 封面
 - 每本书限 5 次 AI 封面生成
 - 项目目录 `_cover_count.txt` 计数
+- `GET /cover` 是图片接口，`<img>` 标签直接引用，鉴权用 query 参数 `?token=xxx`（不用 Authorization header）
 
 ---
 

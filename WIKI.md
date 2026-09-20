@@ -123,6 +123,8 @@ D:\PythonProjects\DouBao\
 ### 封面
 
 - 每本限 5 次 AI 封面生成
+- `GET /api/projects/{id}/cover` 是 `<img>` 标签直接引用，鉴权用 query 参数 `?token=xxx`（不是 Authorization header）
+- 计数存在项目目录 `_cover_count.txt`
 
 ---
 

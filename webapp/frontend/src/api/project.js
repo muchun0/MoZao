@@ -11,3 +11,5 @@ export const startGenerate = (id, data) => request.post(`/projects/${id}/start`,
 export const cancelGenerate = (id) => request.post(`/projects/${id}/stop`)
 export const getStatus = (id) => request.get(`/projects/${id}`)
 export const getBalance = () => request.get('/me')
+export const getMyLlm = () => request.get('/me/llm')
+export const saveMyLlm = (data) => request.put('/me/llm', data)

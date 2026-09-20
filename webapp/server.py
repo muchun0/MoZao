@@ -280,10 +280,36 @@ def _cover_used_count(store: ProjectStore) -> int:
         return 0
 
 
+def _user_llm_cfg(uid: int | None) -> dict | None:
+    """读用户自配 LLM；未配 key 返回 None。"""
+    if uid is None:
+        return None
+    u = db.get_user_llm(uid)
+    if u.get("api_key") and u.get("provider"):
+        return u
+    return None
+
+
+def _project_use_user_llm(store: ProjectStore) -> bool:
+    """该项目是否在用用户自己的 key（是则不扣费）。"""
+    uid = db.project_owner(store.dir.name)
+    return _user_llm_cfg(uid) is not None
+
+
 def _open_pipeline(store: ProjectStore) -> NovelPipeline:
     cfg = store.load_config()
-    # 若 config.json 未落盘 key（设计如此），从服务端环境变量补齐
-    if cfg.llm.provider != "mock" and not cfg.llm.api_key:
+    uid = db.project_owner(store.dir.name)
+    user_llm = _user_llm_cfg(uid)
+    if user_llm is not None:
+        # 用户自配：用用户的 provider/key/base_url/model
+        cfg.llm.provider = user_llm["provider"]
+        cfg.llm.api_key = user_llm["api_key"]
+        if user_llm.get("base_url"):
+            cfg.llm.base_url = user_llm["base_url"]
+        if user_llm.get("model"):
+            cfg.llm.model = user_llm["model"]
+    elif cfg.llm.provider != "mock" and not cfg.llm.api_key:
+        # 平台 key：从服务端环境变量补齐
         cfg.llm.api_key = _server_api_key(cfg.llm.provider)
     if cfg.search.provider and not cfg.search.api_key:
         from novel_gen.config import SEARCH_PROVIDER_DEFAULTS
@@ -450,7 +476,7 @@ def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
         cur_b = _billable(ai_words)
         billable_new = max(0, cur_b - prev_b)
 
-        if billable_new > 0:
+        if billable_new > 0 and not _project_use_user_llm(store):
             discount = db.project_discount(project_id)
             hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
             price = round_money(agent_price(price_for(billable_new, high_quality=hq), discount))
@@ -514,6 +540,13 @@ def _settle_price(store: ProjectStore) -> None:
             # 未真正生成任何 AI 文字：不收费
             db.update_project_price(project_id, 0.0)
             sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
+            return
+        # 用户自配 key：平台未花 LLM 钱，不扣费
+        if _project_use_user_llm(store):
+            db.update_project_price(project_id, 0.0)
+            sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": 0,
+                                      "final_price": 0.0, "mode": "user_llm_free"}),
+                          encoding="utf-8")
             return
         discount = db.project_discount(project_id)  # 创建时折扣快照
         # 计费封顶：按用户创建时填的目标 AI 字数收，AI 多写的部分平台承担
@@ -1052,6 +1085,52 @@ def delete_my_skill(skill_id: int, user: dict = Depends(_require_user)):
     return {"ok": True}
 
 
+# ---------- Skill 市场 ----------
+@app.get("/api/skills/market")
+def skills_market_list(role: str = "", user: dict = Depends(_require_user)):
+    return {"skills": db.list_market_skills(role=role, user_id=user["id"])}
+
+
+@app.post("/api/skills/market")
+def publish_market(req: dict, user: dict = Depends(_require_user)):
+    """把我的某个 skill 发布到市场。"""
+    src_id = req.get("source_id")
+    if not src_id:
+        raise HTTPException(status_code=400, detail="缺少 source_id")
+    src = db.get_user_skill(int(src_id), user["id"])
+    if not src:
+        raise HTTPException(status_code=404, detail="原 skill 不存在")
+    mid = db.publish_market_skill(
+        author_id=user["id"],
+        name=src["name"],
+        description=src.get("description", ""),
+        prompt_append=src["prompt_append"],
+        role=src.get("role", ""),
+    )
+    logger.info("用户发布skill到市场: uid=%d sid=%d mid=%d name=%s",
+                user["id"], src_id, mid, src["name"])
+    return {"ok": True, "market_id": mid}
+
+
+@app.post("/api/skills/market/{market_id}/install")
+def install_market(market_id: int, user: dict = Depends(_require_user)):
+    try:
+        sid = db.install_market_skill(user["id"], market_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    logger.info("用户安装市场skill: uid=%d market_id=%d my_skill_id=%d",
+                user["id"], market_id, sid)
+    return {"ok": True, "user_skill_id": sid}
+
+
+@app.delete("/api/skills/market/{market_id}")
+def unpublish_market(market_id: int, user: dict = Depends(_require_user)):
+    ok = db.unpublish_market_skill(market_id, user["id"])
+    if not ok:
+        raise HTTPException(status_code=403, detail="只能下架自己发布的技能")
+    return {"ok": True}
+
+
 @app.get("/api/admin/users")
 def admin_users(user: dict = Depends(_require_admin)):
     return {"users": db.list_users_admin()}
@@ -1248,6 +1327,48 @@ def bind_referrer(req: BindReferrerReq, user: dict = Depends(_require_user)):
     if not ok:
         raise HTTPException(status_code=400, detail=why)
     return {"ok": True, "message": "绑定成功"}
+
+
+# ---------- 用户自配模型（BYOK） ----------
+class UserLlmReq(BaseModel):
+    provider: str = "deepseek"
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+
+
+@app.get("/api/me/llm")
+def me_llm(user: dict = Depends(_require_user)):
+    """返回用户自配模型配置（api_key 脱敏：只留前4后4）。"""
+    u = db.get_user_llm(user["id"])
+    key = u.get("api_key", "") or ""
+    masked = (key[:4] + "..." + key[-4:]) if len(key) >= 10 else ("****" if key else "")
+    return {
+        "provider": u.get("provider", ""),
+        "api_key": key,        # 完整 key 也返回，方便前端回填编辑（仅本人可见）
+        "api_key_masked": masked,
+        "base_url": u.get("base_url", ""),
+        "model": u.get("model", ""),
+        "enabled": bool(key and u.get("provider")),
+    }
+
+
+@app.put("/api/me/llm")
+def save_me_llm(req: UserLlmReq, user: dict = Depends(_require_user)):
+    provider = (req.provider or "").strip().lower()
+    api_key = (req.api_key or "").strip()
+    base_url = (req.base_url or "").strip()
+    model = (req.model or "").strip()
+    if api_key:
+        if provider not in ("deepseek", "openai", "zhipu", "qwen", "moonshot", "custom"):
+            raise HTTPException(status_code=400, detail="暂不支持该 provider")
+    else:
+        # 清空 = 回到平台 key
+        provider = ""
+    db.set_user_llm(user["id"], provider, api_key, base_url, model)
+    logger.info("用户更新自配模型: uid=%d provider=%s has_key=%s",
+                user["id"], provider, bool(api_key))
+    return {"ok": True, "enabled": bool(api_key and provider)}
 
 
 # ---------- 退款申请（用户侧） ----------

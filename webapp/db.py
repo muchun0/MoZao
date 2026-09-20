@@ -202,6 +202,20 @@ _SKILLS = """CREATE TABLE IF NOT EXISTS writing_skills (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
+_SKILL_MARKET = """CREATE TABLE IF NOT EXISTS skill_market (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    author_id INT NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(255) DEFAULT '',
+    prompt_append TEXT,
+    role VARCHAR(20) NOT NULL DEFAULT '',
+    downloads INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL,
+    KEY idx_sm_author (author_id),
+    KEY idx_sm_role (role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
 _USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -218,7 +232,7 @@ _USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
 
 def init_db() -> None:
     with _connect() as conn:
-        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS):
+        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET):
             conn.execute(ddl)
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
@@ -234,6 +248,19 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_invite (invite_code)")
         if "referrer_id" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN referrer_id INT")
+        # 用户自配模型（填了即用自己的 key，平台不扣费）
+        if "llm_provider" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN llm_provider VARCHAR(30) NOT NULL DEFAULT ''")
+        if "llm_api_key" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN llm_api_key VARCHAR(200) NOT NULL DEFAULT ''")
+        if "llm_base_url" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(200) NOT NULL DEFAULT ''")
+        if "llm_model" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN llm_model VARCHAR(100) NOT NULL DEFAULT ''")
+        usk_cols = _column_names(conn, "user_skills")
+        if "market_id" not in usk_cols:
+            conn.execute("ALTER TABLE user_skills ADD COLUMN market_id INT NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE user_skills ADD KEY idx_us_market (market_id)")
         pcols = _column_names(conn, "project_owner")
         if "price" not in pcols:
             conn.execute("ALTER TABLE project_owner ADD COLUMN price DOUBLE NOT NULL DEFAULT 0")
@@ -458,6 +485,24 @@ def authenticate(identifier: str, password: str) -> Optional[int]:
                 pass
         return row["id"]
     return None
+
+
+def get_user_llm(user_id: int) -> dict:
+    """返回用户自配 LLM（未配则空字符串）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT llm_provider, llm_api_key, llm_base_url, llm_model FROM users WHERE id=%s",
+            (user_id,)).fetchone()
+    if not row:
+        return {"provider": "", "api_key": "", "base_url": "", "model": ""}
+    return dict(row)
+
+
+def set_user_llm(user_id: int, provider: str, api_key: str, base_url: str, model: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET llm_provider=%s, llm_api_key=%s, llm_base_url=%s, llm_model=%s WHERE id=%s",
+            (provider, api_key, base_url, model, user_id))
 
 
 def get_user(user_id: int) -> Optional[dict]:
@@ -857,3 +902,70 @@ def list_user_skills_by_project(project_id: str) -> list[dict]:
             "SELECT * FROM user_skills WHERE user_id=%s AND is_active=1 ORDER BY id DESC", (uid,)).fetchall()
         return [dict(r) for r in rows]
 
+# ---------- Skill 市场 ----------
+def list_market_skills(role: str = "", user_id: int = 0) -> list[dict]:
+    """市场列表；user_id 用于标记该用户是否已安装。"""
+    sql = ("SELECT m.id, m.author_id, m.name, m.description, m.role, m.downloads, m.created_at, "
+           "u.username AS author_name "
+           "FROM skill_market m LEFT JOIN users u ON u.id=m.author_id ")
+    args = []
+    if role:
+        sql += "WHERE m.role=%s "
+        args.append(role)
+    sql += "ORDER BY m.downloads DESC, m.id DESC LIMIT 200"
+    with _connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+        result = [dict(r) for r in rows]
+        installed = set()
+        if user_id:
+            installed = {r["market_id"] for r in conn.execute(
+                "SELECT DISTINCT market_id FROM user_skills WHERE user_id=%s AND market_id>0",
+                (user_id,)).fetchall()}
+        for r in result:
+            r["installed"] = r["id"] in installed
+    return result
+
+
+def get_market_skill(market_id: int) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM skill_market WHERE id=%s", (market_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def publish_market_skill(author_id: int, name: str, description: str,
+                         prompt_append: str, role: str) -> int:
+    import time
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO skill_market (author_id, name, description, prompt_append, role, downloads, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,0,%s)",
+            (author_id, name, description, prompt_append, role, time.time()))
+        return cur.lastrowid
+
+
+def install_market_skill(user_id: int, market_id: int) -> int:
+    """把市场 skill 装到我的 user_skills。幂等：已装过返回旧 id。"""
+    m = get_market_skill(market_id)
+    if not m:
+        raise RuntimeError("市场技能不存在")
+    with _connect() as conn:
+        old = conn.execute(
+            "SELECT id FROM user_skills WHERE user_id=%s AND market_id=%s",
+            (user_id, market_id)).fetchone()
+        if old:
+            return old["id"]
+        sid = create_user_skill(user_id=user_id, name=m["name"], description=m["description"],
+                                prompt_append=m["prompt_append"], role=m["role"], is_active=1)
+        # create_user_skill 不写 market_id，补一下
+        conn.execute("UPDATE user_skills SET market_id=%s WHERE id=%s", (market_id, sid))
+        conn.execute("UPDATE skill_market SET downloads=downloads+1 WHERE id=%s", (market_id,))
+        return sid
+
+
+def unpublish_market_skill(market_id: int, author_id: int) -> bool:
+    m = get_market_skill(market_id)
+    if not m or m["author_id"] != author_id:
+        return False
+    with _connect() as conn:
+        conn.execute("DELETE FROM skill_market WHERE id=%s", (market_id,))
+    return True

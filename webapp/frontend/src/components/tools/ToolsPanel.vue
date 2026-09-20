@@ -147,8 +147,32 @@
       <div class="result-area">
         <div v-for="s in mySkills" :key="s.id" class="fs-row">
           <span>📝 {{ s.name }} <small v-if="s.role" class="muted">({{ s.role }})</small></span>
-          <el-button size="small" link type="danger" @click="delMySkill(s.id)">删</el-button>
+          <span style="display:flex;gap:6px">
+            <el-button size="small" link type="primary" @click="publishSkill(s)">发布到市场</el-button>
+            <el-button size="small" link type="danger" @click="delMySkill(s.id)">删</el-button>
+          </span>
         </div>
+      </div>
+    </el-card>
+
+    <!-- Skill 市场 -->
+    <el-card class="tool-card">
+      <template #header>
+        <b>Skill 市场</b>
+        <el-button size="small" link @click="loadMarket" style="float:right">刷新</el-button>
+      </template>
+      <p class="muted">安装别人分享的写作技能，或把你的技能分享给所有人</p>
+      <div class="result-area">
+        <div v-for="m in marketSkills" :key="m.id" class="fs-row">
+          <div>
+            <b>{{ m.name }}</b> <small v-if="m.role" class="muted">({{ m.role }})</small>
+            <div class="muted" style="font-size:12px">{{ m.description }}</div>
+            <div class="muted" style="font-size:12px">by {{ m.author_name || '匿名' }} · 下载 {{ m.downloads }}</div>
+          </div>
+          <el-button v-if="m.installed" size="small" disabled>已安装</el-button>
+          <el-button v-else size="small" type="primary" @click="installSkill(m)">安装</el-button>
+        </div>
+        <div v-if="!marketSkills.length" class="muted">市场还没有技能，快把你的第一个 Skill 发布上来</div>
       </div>
     </el-card>
 
@@ -181,6 +205,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
+import { listMarketSkills, publishToMarket, installMarketSkill } from '../../api/tools'
 import { batchGenerate, regenOutline as apiRegenOutline, regenWorld as apiRegenWorld } from '../../api/novel'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -312,6 +337,7 @@ async function delLk(i) {
 }
 
 const mySkills = ref([])
+const marketSkills = ref([])
 const showSkillDlg = ref(false)
 const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' })
 
@@ -337,7 +363,33 @@ async function delMySkill(id) {
   loadMySkills()
 }
 
-onMounted(() => { loadSnaps(); loadFs(); loadLk(); loadMySkills() })
+onMounted(() => { loadSnaps(); loadFs(); loadLk(); loadMySkills(); loadMarket() })
+
+const loadMarket = async () => {
+  try {
+    const r = await listMarketSkills()
+    marketSkills.value = r.skills || []
+  } catch (e) { console.warn(e) }
+}
+const publishSkill = async (s) => {
+  try {
+    await publishToMarket(s.id)
+    ElMessage.success('已发布到市场')
+    loadMarket()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '发布失败')
+  }
+}
+const installSkill = async (m) => {
+  try {
+    await installMarketSkill(m.id)
+    ElMessage.success('已安装到我的Skills')
+    m.installed = true
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '安装失败')
+  }
+}
+
 </script>
 
 <style scoped>

@@ -13,6 +13,7 @@
           <span class="username">{{ auth.user.username }}<el-icon><arrow-down /></el-icon></span>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item command="llm">模型配置</el-dropdown-item>
               <el-dropdown-item command="logout">退出</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -26,6 +27,7 @@
       <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">冀ICP备2026038211号</a>
     </el-footer>
     <RechargeDialog ref="rechargeRef" />
+    <LlmSettingsDialog ref="llmRef" />
   </el-container>
 </template>
 
@@ -36,11 +38,13 @@ import { useAuthStore } from '../stores/auth'
 import { getBalance } from '../api/project'
 import { ArrowDown } from '@element-plus/icons-vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
+import LlmSettingsDialog from '../components/LlmSettingsDialog.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
 const balance = ref(0)
 const rechargeRef = ref(null)
+const llmRef = ref(null)
 
 onMounted(async () => {
   try {
@@ -50,6 +54,7 @@ onMounted(async () => {
 })
 
 function onCommand(cmd) {
+  if (cmd === 'llm') { llmRef.value.open(); return; }
   if (cmd === 'logout') {
     auth.logout()
     router.push('/login')

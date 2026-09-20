@@ -42,6 +42,7 @@ stdout.log
 # 本地测试脚本（不上生产）
 tests/
 .pytest_cache/
+ux_report/
 
 # 本地配置（含密钥，不入库）
 config.yaml

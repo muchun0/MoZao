@@ -4,7 +4,7 @@
 # ===== Web 服务（多用户 SaaS 前端/后端） =====
 fastapi>=0.110.0        # 后端 REST API
 uvicorn>=0.27.0         # ASGI 服务器，run_web.py 启动用
-python-multipart>=0.0.9 # FastAPI 表单/文件上传（上传大纲解析必须）
+python-multipart>=0.0.31 # FastAPI 表单/文件上传（上传大纲解析必须）
 
 # ===== LLM 调用 =====
 # openai 官方 SDK 同时兼容 DeepSeek / 豆包火山方舟 / OpenAI，一个 SDK 覆盖多 Provider

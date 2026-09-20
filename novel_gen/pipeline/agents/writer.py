@@ -21,9 +21,12 @@ class WriterAgent(BaseAgent):
         # 审校角色底色必须在这里一并传进去，否则 reviewer.md 不会被读取。
         from .reviewer import ReviewerAgent
         reviewer_persona = ReviewerAgent(cfg, llm, store).persona_prefix()
+        from .reader import ReaderAgent
+        reader_persona = ReaderAgent(cfg, llm, store).persona_prefix()
         self._writer = ChapterWriter(cfg, llm, store, memory,
                                      role_prompt=self.persona_prefix(),
-                                     reviewer_role_prompt=reviewer_persona)
+                                     reviewer_role_prompt=reviewer_persona,
+                                     reader_role_prompt=reader_persona)
 
     def write_chapter(
         self,

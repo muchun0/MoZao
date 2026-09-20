@@ -234,6 +234,7 @@ class ChapterWriter:
         memory: Memory,
         role_prompt: str = "",
         reviewer_role_prompt: str = "",
+        reader_role_prompt: str = "",
     ):
         self.cfg = cfg
         self.llm = llm
@@ -242,6 +243,7 @@ class ChapterWriter:
         self.role_prompt = role_prompt
         #: 审校角色底色，供 write() 内部的自动改稿使用
         self.reviewer_role_prompt = reviewer_role_prompt
+        self.reader_role_prompt = reader_role_prompt
 
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
@@ -344,6 +346,14 @@ class ChapterWriter:
                 content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
             except Exception as e:
                 print(f'  [改稿] 跳过: {e}')
+            # 读者视角审校（只记录不改正文）
+            try:
+                from .reviser import ReaderReviewer
+                reader = ReaderReviewer(self.cfg, self.llm, self.store,
+                                        role_prompt=self.reader_role_prompt)
+                reader.review(chapter_no, plan_title, plan_goal, content)
+            except Exception as e:
+                print(f'  [读者审校] 跳过: {e}')
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)

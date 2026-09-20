@@ -927,6 +927,29 @@ def revise_verify_prompt(cfg, chapter_no, content, original_issues):
     return system, user
 
 
+def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
+    """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。"""
+    system = (
+        "你是一位挑剔的网文追更读者，在手机上刷文，3秒决定要不要划走。"
+        "你只做读者体验问题定位，不改写正文。按 JSON 输出问题清单。"
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}】】\n"
+        f"【本章目标】{chapter_goal}\n\n"
+        f"【本章正文】\n{content[:6000]}\n\n"
+        "请从读者追更体验角度找出问题：\n"
+        "1. 代入感：主角情绪反应像不像真人？有没有出戏的地方？\n"
+        "2. 爽点闭环：这章有没有完整的压抑→铺垫→爆发→余韵？爽点够不够？\n"
+        "3. 章末钩子：结尾有没有让读者想看下一章？还是流水账就结束了？\n"
+        "4. 阅读障碍：有没有大段设定堆砌？长句绕口？节奏拖沓想快进？\n"
+        "5. 主角主动性：主角是主动选择推进剧情，还是全程被动挨打？\n\n"
+        '输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], '
+        '"追更欲": 1-5, "一句话感受": "..."}\n'
+        "level 判定：小改=句子级瑕疵；中改=某段不爽但还能看；大改=整章想划走。"
+    )
+    return system, user
+
+
 def blind_check_prompt(cfg, chapter_no, recent_summaries, world_text):
     """读者视角自检：三问。低温 0.3。"""
     system = (

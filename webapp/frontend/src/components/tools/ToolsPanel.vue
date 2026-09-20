@@ -30,7 +30,9 @@
             <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
             <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
             <span v-else class="tag-ok">无问题</span>
+            <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
           </div>
+          <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
           <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
             <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
             <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
@@ -412,6 +414,7 @@ const installSkill = async (m) => {
 .tag-todo { background: #fdf6ec; color: #e6a23c; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .tag-ok { background: #f0f9eb; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }
+.review-feeling { font-size: 12px; color: #e6a23c; padding: 2px 0 4px; font-style: italic; }
 .lv-small { color: #909399; }
 .lv-big { color: #f56c6c; font-weight: 700; }
 .review-type { color: #409eff; }

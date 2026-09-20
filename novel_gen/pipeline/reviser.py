@@ -17,6 +17,7 @@ from .templates import (
     revise_locate_prompt,
     revise_apply_prompt,
     revise_verify_prompt,
+    reader_review_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,4 +132,71 @@ class ChapterReviser:
             "original_words": len(original),
             "revised_words": len(revised),
         })
+        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class ReaderReviewer:
+    """读者视角审校：只定位不改写，结果追加到 review.json。"""
+
+    def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
+                 role_prompt: str = ""):
+        self.cfg = cfg
+        self.llm = llm
+        self.store = store
+        self.role_prompt = role_prompt
+
+    def review(self, chapter_no: int, chapter_title: str, chapter_goal: str,
+               content: str) -> None:
+        """对本章跑读者视角审校，结果合并进 review.json。"""
+        try:
+            sys_r, user_r = reader_review_prompt(
+                self.cfg, chapter_no, chapter_title, chapter_goal, content
+            )
+            if self.role_prompt:
+                sys_r = f"{self.role_prompt}\n\n{sys_r}"
+            raw = self.llm.chat(sys_r, user_r, temperature=0.3, max_tokens=1200)
+            result = self._parse_json(raw)
+            issues = result.get("issues", [])
+            # 标记类型
+            for it in issues:
+                it["type"] = f"读者-{it.get('type', '')}"
+            self._merge_reader_review(chapter_no, issues, result.get("追更欲"), result.get("一句话感受"))
+        except Exception as e:
+            logger.warning("读者审校失败（忽略）: 第%d章 %s", chapter_no, e)
+
+    def _parse_json(self, text: str) -> dict:
+        t = text.strip()
+        if t.startswith("```"):
+            lines = t.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            t = "\n".join(lines).strip()
+        try:
+            return json.loads(t)
+        except Exception:
+            return {"issues": []}
+
+    def _merge_reader_review(self, chapter_no, issues, hook_score, feeling):
+        """把读者审校结果合并进 review.json 同一章记录。"""
+        path = self.store.dir / "review.json"
+        existing = []
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = []
+        # 找该章记录
+        rec = next((r for r in existing if int(r.get("chapter", 0)) == chapter_no), None)
+        if rec is None:
+            rec = {"chapter": chapter_no, "issues": [], "auto_revised": False}
+            existing.append(rec)
+        # 追加读者 issues
+        rec.setdefault("issues", []).extend(issues)
+        # 追更欲和感受
+        if hook_score:
+            rec["reader_hook_score"] = hook_score
+        if feeling:
+            rec["reader_feeling"] = feeling
         path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")

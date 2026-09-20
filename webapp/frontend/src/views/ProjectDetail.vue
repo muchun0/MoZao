@@ -260,6 +260,7 @@ async function checkStatus() {
 function startPolling() {
   if (!genStartTs) genStartTs = Date.now()
   if (pollTimer) clearInterval(pollTimer)
+  let lastDone = -1
   pollTimer = setInterval(async () => {
     try {
       const s = await getStatus(pid)
@@ -267,6 +268,11 @@ function startPolling() {
       if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
       genError.value = s.error || ''
       genStatus.value = s.running && !s.error ? phaseText(s) : ''
+      // 每生成完一章就刷新章节列表，让用户实时看到进度
+      if (s.chapters_done !== lastDone) {
+        lastDone = s.chapters_done
+        loadChapters()
+      }
       if (!s.running) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
     } catch {}
   }, 3000)

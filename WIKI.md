@@ -252,6 +252,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 部署记录（2026-09-20）：首次服务器部署完成（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen）。发版方式：本地 `git archive master` → workbench upload → `python3 -m zipfile -e` 解压 → `docker compose up -d --build`（前端容器内多阶段构建）。部署前发现 compose 漏挂 projects 卷（容器实际已挂），提交 e279eb5 补 `novel_projects:/app/projects` 命名卷后部署，项目数据无缝保留；`.llm_encrypt.key` 随部署放置（BYOK 密文解密依赖）。部署验证：health/域名 200、主 JS 881KB、注册→建书→登出全链路、BYOK 加密列迁移生效、冒烟数据已清理。
 - 第四批优化（feat/optimization-batch4）：项目域再拆分——`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块（base/outline/chapters/world/generation）。路由路径/方法/返回体不变；回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。
 - 第三批优化（feat/optimization-batch3）：最大架构债清理——原 2853 行单文件 `server.py` 拆分为 `webapp/core.py`（共享状态/鉴权/项目工具/结算/生成线程/任务持久化）+ `webapp/routers/`（按域 6 文件、90 个路由）+ `server.py` 组装壳。路由路径/方法/返回体逐字节不变；回归：拆前拆后 openapi 路由集合 96=96 一致、29 个 pytest 全绿、服务端到端 + 注册建书业务冒烟通过。
 

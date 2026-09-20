@@ -75,7 +75,8 @@ D:\PythonProjects\DouBao\
 └── webapp/
     ├── server.py               # FastAPI 组装壳（导入路由注册 + 静态托管 + 启动入口）
     ├── core.py                 # 核心层：共享状态/鉴权/项目工具/结算/生成线程/任务持久化
-    ├── routers/                # 按域拆分路由（90 个）：system/auth/me/skills/admin/projects
+    ├── routers/                # 按域拆分路由（90 个）：system/auth/me/skills/admin
+    │                           #   + projects 域 5 子模块：base/outline/chapters/world/generation
     ├── db.py                   # MySQL 数据层 + 自动迁移
     ├── secret_encrypt.py       # 敏感配置加密（BYOK Key，Fernet）
     ├── pricing.py              # 按字数计费
@@ -251,6 +252,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 第四批优化（feat/optimization-batch4）：项目域再拆分——`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块（base/outline/chapters/world/generation）。路由路径/方法/返回体不变；回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。
 - 第三批优化（feat/optimization-batch3）：最大架构债清理——原 2853 行单文件 `server.py` 拆分为 `webapp/core.py`（共享状态/鉴权/项目工具/结算/生成线程/任务持久化）+ `webapp/routers/`（按域 6 文件、90 个路由）+ `server.py` 组装壳。路由路径/方法/返回体逐字节不变；回归：拆前拆后 openapi 路由集合 96=96 一致、29 个 pytest 全绿、服务端到端 + 注册建书业务冒烟通过。
 
 ---

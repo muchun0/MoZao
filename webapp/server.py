@@ -4,7 +4,8 @@
 
 第三批优化：原 2853 行单文件已按职责拆分——
 - webapp/core.py：共享状态、鉴权、项目工具、结算、生成线程、任务持久化
-- webapp/routers/：按域拆分路由（system/auth/me/skills/admin/projects）
+- webapp/routers/：按域拆分路由（system/auth/me/skills/admin/projects*）
+- 第四批：projects 域再拆为 5 个功能子模块（base/outline/chapters/world/generation）
 - 本文件仅保留组装（导入路由注册 + 静态前端托管 + 启动入口）
 
 业务规则摘要：
@@ -18,7 +19,9 @@
 6. 任务持久化：生成任务落盘 task.json，服务重启自动重拾中断任务
 """
 from .core import *  # noqa: F401,F403  触发 app 创建与核心状态初始化
-from .routers import system, auth, me, skills, admin, projects  # noqa: F401  触发路由注册
+from .routers import (system, auth, me, skills, admin,
+                      projects_base, projects_outline, projects_chapters,
+                      projects_world, projects_generation)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

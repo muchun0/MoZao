@@ -375,7 +375,8 @@ novel_gen/
 webapp/
 ├── server.py            # FastAPI 组装壳（导入路由注册 + 静态前端托管 + 启动入口）
 ├── core.py              # 核心层：共享状态/鉴权/项目工具/结算/生成线程/任务持久化
-├── routers/             # 按域拆分路由：system/auth/me/skills/admin/projects（90 个路由）
+├── routers/             # 按域拆分路由：system/auth/me/skills/admin/projects*
+│                        # projects 域再拆 5 子模块：base/outline/chapters/world/generation（共 90 路由）
 ├── db.py                # MySQL 数据层（连接池，用户/会话/余额/代理/返佣/退款/skills）
 ├── secret_encrypt.py    # 敏感配置加密（BYOK Key，Fernet）
 ├── pricing.py           # 定价档位
@@ -414,6 +415,7 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
+- **2026-09-20**：第四批优化（feat/optimization-batch4）——⑪ 项目域再拆分：`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块——`projects_base`（列表/创建/详情/退费/归档/克隆/删除/下载，8）、`projects_outline`（大纲/快照，7）、`projects_chapters`（章节/审校/扩写/批量，13）、`projects_world`（世界观/锁定/调研/伏笔/封面，10）、`projects_generation`（生成控制，5）。路由路径/方法/返回体不变，回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。
 - **2026-09-20**：第三批优化（feat/optimization-batch3）——⑩ 最大架构债：原 2853 行单文件 `webapp/server.py` 拆分为 `webapp/core.py`（共享状态/鉴权/项目工具/结算/生成线程/任务持久化）+ `webapp/routers/`（按域：system/auth/me/skills/admin/projects，90 个路由）+ `server.py` 组装壳（仅导入注册 + 静态托管 + 启动入口）。路由路径/方法/返回体逐字节不变，回归验证：拆前拆后 openapi 路由集合 96=96 完全一致、全量 29 个 pytest 用例绿、服务端到端 health/pricing/鉴权/静态页正常、注册→建书→详情→登出业务冒烟通过；`tests/test_settle.py` 结算测试目标由 server 壳改为 core（monkeypatch 作用点随拆分迁移）。
 - **2026-09-20**：第二批优化（feat/optimization-batch2）——⑥ 结算重构：统一 `_compute_settle` 计算口径（增量/整批共用），增量结算改为**先落盘结算基线再扣费**（P0 资金安全：消除"扣费后崩溃导致重启重复扣费"窗口，宁可漏扣不重扣）；⑦ 生成任务持久化：线程启动落盘 `task.json`、结束清理，服务启动（lifespan）自动重拾崩溃/重启中断的生成/大纲/批量任务并从断点续跑；⑨ 测试恢复入库（tests/ 取消 gitignore），新增加密/meta 缓存/结算单元测试 17 个（共 29 个，全绿）。
 - **2026-09-20**：第一批优化（feat/optimization-batch1）——① BYOK Key 加密落库（`webapp/secret_encrypt.py`，Fernet；存量明文启动自动迁移）；② 项目列表性能（`meta.json` 轻量统计缓存，章节未变化时零章节读取）；③ 文档对齐（server.py 头注释/README/WIKI 与实际代码一致）；④ 清理部署产物与已淘汰的 webui 目录。附带 P0 修复：`get_user_llm` 键名与调用方契约不符导致 BYOK 自配 key 从未生效。

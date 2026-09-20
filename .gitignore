@@ -40,8 +40,7 @@ AGENTS.md
 stderr.log
 stdout.log
 
-# 本地测试脚本（不上生产）
-tests/
+# 测试缓存与报告（测试用例 tests/ 随仓库维护，入库）
 .pytest_cache/
 ux_report/
 

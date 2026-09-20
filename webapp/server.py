@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -62,7 +64,17 @@ _MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
 OUTPUT_DIR = BASE_DIR / "output"
 WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
-app = FastAPI(title="AI 小说生成器 API", version="2.0.0")
+@asynccontextmanager
+async def _lifespan(_app):
+    """服务启动：重拾崩溃残留的生成任务。"""
+    try:
+        _resume_interrupted_tasks()
+    except Exception:
+        logger.exception("启动重拾异常")
+    yield
+
+
+app = FastAPI(title="AI 小说生成器 API", version="2.0.0", lifespan=_lifespan)
 
 # CORS：P2 安全修复，不再通配 "*" + credentials（高危）。
 # 生产前后端同域部署时无需跨域；如需独立域名，用环境变量 ALLOWED_ORIGINS 逗号分隔白名单。
@@ -366,6 +378,85 @@ def _assign_legacy_projects() -> None:
             db.claim_project(d.name, admin["id"])
 
 
+# ---------- 任务持久化（崩溃/重启后自动重拾） ----------
+_TASK_FILE = "task.json"
+
+
+def _mark_task(store: ProjectStore, kind: str, **kw) -> None:
+    """落盘任务标记（服务重启后据此重拾）。线程启动时调用。"""
+    try:
+        store.dir.joinpath(_TASK_FILE).write_text(
+            json.dumps({"kind": kind, "started_at": time.time(), **kw}, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_task(store: ProjectStore) -> None:
+    """清除任务标记。线程正常结束/用户停止/异常退出时调用。"""
+    try:
+        p = store.dir / _TASK_FILE
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def _resume_interrupted_tasks() -> None:
+    """扫描 PROJECTS_DIR 下残留的 task.json，逐个重拾生成任务。
+
+    重拾后从断点继续（章节产物文件是唯一权威来源，不重复生成）；
+    并发槽不足时跳过并告警（用户可手动重新触发）。
+    """
+    if not PROJECTS_DIR.exists():
+        return
+    resumed = skipped = 0
+    for d in sorted(PROJECTS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        tf = d / _TASK_FILE
+        if not tf.exists():
+            continue
+        project_id = d.name
+        try:
+            meta = json.loads(tf.read_text(encoding="utf-8"))
+            kind = meta.get("kind", "")
+            store = ProjectStore.open(d)
+            handle = _RunHandle()
+            with _LOCK:
+                _RUNS[project_id] = handle
+            if not _GEN_SEMAPHORE.acquire(blocking=False):
+                with _LOCK:
+                    _RUNS.pop(project_id, None)
+                skipped += 1
+                logger.warning("启动重拾跳过（并发槽满）: project=%s kind=%s", project_id, kind)
+                continue
+            if kind == "generation":
+                target = _run_generation
+                args = (store, handle, int(meta.get("start_from", 0) or 0))
+            elif kind == "outline":
+                target = _run_outline_only
+                args = (store, handle)
+            elif kind == "batch":
+                target = _run_batch
+                args = (store, handle, int(meta.get("start", 1) or 1), int(meta.get("end", 1) or 1))
+            else:
+                _clear_task(store)
+                _GEN_SEMAPHORE.release()
+                with _LOCK:
+                    _RUNS.pop(project_id, None)
+                logger.warning("未知任务标记，已清理: project=%s kind=%s", project_id, kind)
+                continue
+            t = threading.Thread(target=target, args=args, daemon=True)
+            handle.thread = t
+            t.start()
+            resumed += 1
+            logger.info("启动重拾任务: project=%s kind=%s", project_id, kind)
+        except Exception:
+            logger.exception("启动重拾失败: project=%s", project_id)
+    logger.info("启动重拾完成: resumed=%d skipped=%d", resumed, skipped)
+
+
 # ---------- 项目列表（按用户过滤） ----------
 def _list_projects(user: dict, sort: str = "created", show_archived: bool = False) -> list[dict]:
     if not PROJECTS_DIR.exists():
@@ -436,13 +527,40 @@ def _grant_consume_commission(buyer_uid: int, project_id: str, amount: float, ti
                     ref["id"], buyer_uid, commission, project_id)
 
 
+def _compute_settle(store: ProjectStore) -> dict:
+    """统一结算计算（单一事实来源）。
+
+    返回 ai_words / billable_words / target_ai_words / price（按 billable 封顶后整本价）
+    / hq / discount / use_user_llm。增量结算与整批结算共用，避免两套口径漂移。
+    """
+    user_words = store.user_words()
+    chapters = store.list_chapters()
+    total_words = sum(len(c.content or "") for c in chapters)
+    ai_words = max(0, total_words - user_words)
+    target_total = store.load_config().total_words or 0
+    target_ai_words = max(0, target_total - user_words)
+    billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
+    hq = bool(store.load_config().__dict__.get("high_quality_mode", False))
+    discount = db.project_discount(store.dir.name)
+    price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
+    return {
+        "ai_words": ai_words,
+        "billable_words": billable_words,
+        "target_ai_words": target_ai_words,
+        "price": price,
+        "hq": hq,
+        "discount": discount,
+        "use_user_llm": _project_use_user_llm(store),
+    }
+
+
 def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
     """每生成完一章后增量结算：按该章新增 AI 字数实时扣费。
 
-    与整批结束的 _settle_price 幂等互补：
-    - 本函数每章后调用，实时从余额扣，余额扣到 <=0 即返回 should_stop
-    - settle.json 由本函数写入后，_settle_price 开头的幂等检查会直接跳过，不会双扣
-    返回 (should_stop, 原因)。
+    与整批结束的 _settle_price 幂等互补（settle.json 已存在时整批跳过，不会双扣）。
+    资金安全（P0）：**先落盘结算基线再扣费**——宁可漏扣（站长后台补偿），
+    也不允许"扣费成功但 settle.json 未写"的崩溃窗口导致重启后重复扣费。
+    返回 (should_stop, 原因)；余额耗尽时停止生成。
     """
     try:
         project_id = store.dir.name
@@ -450,76 +568,70 @@ def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
         if uid is None:
             return False, ""
         title = store.load_config().effective_title()
-        user_words = store.user_words()
-        chapters = store.list_chapters()
-        total_words = sum(len(c.content) for c in chapters)
-        ai_words = max(0, total_words - user_words)
+        calc = _compute_settle(store)
+        ai_words, billable_words = calc["ai_words"], calc["billable_words"]
+        target_ai_words = calc["target_ai_words"]
 
         sp = store.dir / "settle.json"
-        settled_ai = 0
-        settled_price = 0.0
+        settled_ai, settled_price = 0, 0.0
         if sp.exists():
             try:
                 old = json.loads(sp.read_text(encoding="utf-8"))
-                settled_ai = int(old.get("settled_ai_words", 0))
-                settled_price = float(old.get("settled_price", 0.0))
+                settled_ai = int(old.get("settled_ai_words", 0) or 0)
+                settled_price = float(old.get("settled_price", 0.0) or 0.0)
             except Exception:
                 settled_ai, settled_price = 0, 0.0
 
-        # 计费封顶：累计不超过创建时的目标 AI 字数
-        target_total = store.load_config().total_words or 0
-        target_ai_words = max(0, target_total - user_words)
-        def _billable(w):
-            return min(w, target_ai_words) if target_ai_words > 0 else w
-        prev_b = _billable(settled_ai)
-        cur_b = _billable(ai_words)
-        billable_new = max(0, cur_b - prev_b)
+        # 已结算基线按封顶口径换算，避免 target 变更导致多扣
+        prev_b = min(settled_ai, target_ai_words) if target_ai_words > 0 else settled_ai
+        billable_new = max(0, billable_words - prev_b)
 
-        if billable_new > 0 and not _project_use_user_llm(store):
-            discount = db.project_discount(project_id)
-            hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
-            price = round_money(agent_price(price_for(billable_new, high_quality=hq), discount))
+        if billable_new > 0 and not calc["use_user_llm"]:
+            price = round_money(agent_price(price_for(billable_new, high_quality=calc["hq"]),
+                                            calc["discount"]))
             bal = float(db.get_user(uid)["balance"])
             actual = min(bal, price)
+            new_settled_price = round_money(settled_price + actual)
+            # P0：先落盘结算基线（含本次实扣金额），再扣费；崩溃后重跑按基线跳过，不重扣
+            sp.write_text(json.dumps({
+                "settled_ai_words": ai_words,
+                "settled_price": new_settled_price,
+                "target_ai_words": target_ai_words,
+                "status": "incremental",
+            }, ensure_ascii=False), encoding="utf-8")
             if actual > 0:
                 db.change_balance(uid, -actual,
                                   f"《{title}》章节增量结算：{billable_new} 字，扣 {actual:.2f} 元")
-            settled_price = round_money(settled_price + actual)
-            try:
-                _grant_consume_commission(uid, project_id, actual, title)
-            except Exception:
-                pass
-            new_bal = float(db.get_user(uid)["balance"])
+                try:
+                    _grant_consume_commission(uid, project_id, actual, title)
+                except Exception:
+                    pass
+            settled_price = new_settled_price
         else:
-            new_bal = float(db.get_user(uid)["balance"])
-
-        sp.write_text(json.dumps({
-            "settled_ai_words": ai_words,
-            "settled_price": settled_price,
-            "target_ai_words": target_ai_words,
-            "status": "incremental",
-        }, ensure_ascii=False), encoding="utf-8")
+            # 无新增或 BYOK：仅推进基线（幂等），不扣费
+            sp.write_text(json.dumps({
+                "settled_ai_words": ai_words,
+                "settled_price": settled_price,
+                "target_ai_words": target_ai_words,
+                "status": "incremental",
+            }, ensure_ascii=False), encoding="utf-8")
         try:
             db.update_project_price(project_id, settled_price)
         except Exception:
             pass
-
+        new_bal = float(db.get_user(uid)["balance"])
         if new_bal <= 0:
             return True, f"余额已耗尽（扣费后余额 {new_bal:.2f} 元），已停止生成。充值后可从断点继续。"
         return False, ""
     except Exception:
         logger.exception("增量结算异常: project=%s", store.dir.name)
         return False, ""
-
-
 def _settle_price(store: ProjectStore) -> None:
-    """生成完成后按 AI 实际生成字数结算扣费（创建时不扣费，真正生成文字才扣）。
+    """生成完成后整批结算兜底（仅当从未走增量结算时生效，幂等）。
 
-    ai_words = 全书当前总字数 - 用户手写原字数（创建时记录；user_words=0 时即全书总字数）。
-    所有项目统一：未产生任何 AI 文字（ai_words<=0）不收费；已结算项目幂等跳过。
-    余额不足时扣到 0 并记录欠费（debt.json），不阻塞交付。
-    消费返佣在结算足额扣费时发放（按下级实际消费金额）。
-
+    ai_words = 全书当前总字数 - 用户手写原字数；未产生 AI 文字不收费；
+    settle.json 已存在（增量结算已落盘）则跳过，不会双扣；
+    余额不足扣到 0 并记录 debt.json。消费返佣在结算足额扣费时发放。
     """
     try:
         project_id = store.dir.name
@@ -531,39 +643,35 @@ def _settle_price(store: ProjectStore) -> None:
             sp.write_text(json.dumps({"mode": "skip"}), encoding="utf-8")
             return
         title = store.load_config().effective_title()
-        user_words = store.user_words()
-        chapters = store.list_chapters()
-        total_words = sum(len(c.content) for c in chapters)
-        ai_words = max(0, total_words - user_words)
+        calc = _compute_settle(store)
+        ai_words, billable_words = calc["ai_words"], calc["billable_words"]
+        final_price = calc["price"]
         if ai_words <= 0:
             # 未真正生成任何 AI 文字：不收费
             db.update_project_price(project_id, 0.0)
             sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
             return
         # 用户自配 key：平台未花 LLM 钱，不扣费
-        if _project_use_user_llm(store):
+        if calc["use_user_llm"]:
             db.update_project_price(project_id, 0.0)
             sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": 0,
                                       "final_price": 0.0, "mode": "user_llm_free"}),
                           encoding="utf-8")
             return
-        discount = db.project_discount(project_id)  # 创建时折扣快照
-        # 计费封顶：按用户创建时填的目标 AI 字数收，AI 多写的部分平台承担
-        target_total = store.load_config().total_words or 0
-        target_ai_words = max(0, target_total - user_words)
-        billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
-        hq = bool(store.load_config().__dict__.get('high_quality_mode', False))
-        final_price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
-        # P0 修复：先落盘幂等标记再扣费。进程崩溃/异常时 settle.json 已存在，重启后不再重复扣费；
-        # 宁可漏扣（站长后台补偿）也不重复扣。
+        # P0 修复：先落盘幂等标记再扣费。崩溃/异常时 settle.json 已存在，
+        # 重启后不再重复扣费；宁可漏扣（站长后台补偿）也不重复扣。
         sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": target_ai_words, "final_price": final_price,
-                                  "hq": hq, "status": "charging"}), encoding="utf-8")
+                                  "target_ai_words": calc["target_ai_words"],
+                                  "final_price": final_price,
+                                  "hq": calc["hq"], "status": "charging"}), encoding="utf-8")
         bal = db.get_user(uid)["balance"]
         if bal >= final_price:
             db.change_balance(uid, -final_price,
                               f"《{title}》生成结算：AI 生成 {ai_words} 字（计费 {billable_words} 字），扣费 {final_price:.2f} 元")
-            _grant_consume_commission(uid, project_id, final_price, title)
+            try:
+                _grant_consume_commission(uid, project_id, final_price, title)
+            except Exception:
+                pass
         else:
             short = round_money(final_price - bal)
             if bal > 0:
@@ -576,20 +684,20 @@ def _settle_price(store: ProjectStore) -> None:
                            uid, project_id, final_price, bal, short)
         db.update_project_price(project_id, final_price)
         sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": target_ai_words, "final_price": final_price,
-                                  "hq": hq, "status": "done"}),
+                                  "target_ai_words": calc["target_ai_words"],
+                                  "final_price": final_price,
+                                  "hq": calc["hq"], "status": "done"}),
                       encoding="utf-8")
         logger.info("结算完成: project=%s ai_words=%d billable=%d target=%d final=%.2f balance=%.2f",
-                    project_id, ai_words, billable_words, target_ai_words, final_price,
+                    project_id, ai_words, billable_words, calc["target_ai_words"], final_price,
                     db.get_user(uid)["balance"])
     except Exception:
         logger.exception("结算异常: project=%s", store.dir.name)
-
-
 def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     """只跑 research → outline → editor_review → world，不写正文。
     完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
     cfg = store.load_config()
+    _mark_task(store, "outline")
     logger.info("大纲生成线程启动: project=%s title=%s", store.dir.name, cfg.effective_title())
     try:
         pipeline = _open_pipeline(store)
@@ -621,6 +729,7 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         _GEN_SEMAPHORE.release()
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
+        _clear_task(store)
 
 
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
@@ -631,6 +740,7 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
     （用于「从某章重新生成」，此时这些前置产物已存在）。
     """
     cfg = store.load_config()
+    _mark_task(store, "generation", start_from=start_from)
     logger.info("生成线程启动: project=%s title=%s start_from=%d",
                 store.dir.name, cfg.effective_title(), start_from)
     try:
@@ -723,7 +833,44 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         _settle_price(store)
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
+        _clear_task(store)
         logger.info("生成线程结束: project=%s", store.dir.name)
+
+
+def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) -> None:
+    """批量生成章节线程：指定起始/结束章逐章生成，结束后整批结算。
+
+    独立成模块级函数，便于启动重拾复用（task.json 记录 start/end）。
+    """
+    project_id = store.dir.name
+    _mark_task(store, "batch", start=start, end=end)
+    try:
+        pipeline = _open_pipeline(store)
+        outline = store.load_outline()
+        research = store.load_research()
+        for no in range(start, end + 1):
+            if handle.stop_event.is_set() or no > len(outline.chapters):
+                break
+            if _is_locked(store, "chapter", no):
+                logger.info("批量生成跳过锁定章节: project=%s no=%d", project_id, no)
+                continue
+            plan = outline.chapters[no - 1]
+            pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
+                                          is_final=(no == len(outline.chapters)))
+            stop, why = _settle_incremental(store)
+            if stop:
+                handle.error = why
+                logger.warning("批量生成余额耗尽: project=%s 第 %d 章后 %s", project_id, no, why)
+                break
+        _settle_price(store)
+    except Exception as e:
+        handle.error = f"{type(e).__name__}: {e}"
+        logger.exception("批量生成失败: %s", project_id)
+    finally:
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        _clear_task(store)
 
 
 # ---------- 基础 ----------
@@ -2596,33 +2743,7 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
         raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
     # P1 修复：用真 _RunHandle（含 stop_event/error），finally 清理 _RUNS，结束后结算
     handle = _RunHandle()
-    def _batch():
-        try:
-            pipeline = _open_pipeline(store)
-            outline = store.load_outline()
-            research = store.load_research()
-            for no in range(start, end + 1):
-                if handle.stop_event.is_set() or no > len(outline.chapters):
-                    break
-                if _is_locked(store, "chapter", no):
-                    logger.info("批量生成跳过锁定章节: project=%s no=%d", project_id, no)
-                    continue
-                plan = outline.chapters[no - 1]
-                pipeline.chapter_writer.write(no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
-                stop, why = _settle_incremental(store)
-                if stop:
-                    handle.error = why
-                    logger.warning("批量生成余额耗尽: project=%s 第 %d 章后 %s", project_id, no, why)
-                    break
-            _settle_price(store)
-        except Exception as e:
-            handle.error = f"{type(e).__name__}: {e}"
-            logger.exception("批量生成失败: %s", project_id)
-        finally:
-            _GEN_SEMAPHORE.release()
-            with _LOCK:
-                _RUNS.pop(project_id, None)
-    t = threading.Thread(target=_batch, daemon=True)
+    t = threading.Thread(target=_run_batch, args=(store, handle, start, end), daemon=True)
     handle.thread = t
     _RUNS[project_id] = handle
     t.start()

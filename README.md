@@ -412,7 +412,8 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
-- **2026-09-20**：第一批优化（feat/optimization-batch1）——① BYOK Key 加密落库（`webapp/secret_encrypt.py`，Fernet；存量明文启动自动迁移）；② 项目列表性能（`meta.json` 轻量统计缓存，章节未变化时零章节读取）；③ 文档对齐（server.py 头注释/README/WIKI 与实际代码一致）；④ 清理部署产物与已淘汰的 webui 目录。
+- **2026-09-20**：第二批优化（feat/optimization-batch2）——⑥ 结算重构：统一 `_compute_settle` 计算口径（增量/整批共用），增量结算改为**先落盘结算基线再扣费**（P0 资金安全：消除"扣费后崩溃导致重启重复扣费"窗口，宁可漏扣不重扣）；⑦ 生成任务持久化：线程启动落盘 `task.json`、结束清理，服务启动（lifespan）自动重拾崩溃/重启中断的生成/大纲/批量任务并从断点续跑；⑨ 测试恢复入库（tests/ 取消 gitignore），新增加密/meta 缓存/结算单元测试 17 个（共 29 个，全绿）。
+- **2026-09-20**：第一批优化（feat/optimization-batch1）——① BYOK Key 加密落库（`webapp/secret_encrypt.py`，Fernet；存量明文启动自动迁移）；② 项目列表性能（`meta.json` 轻量统计缓存，章节未变化时零章节读取）；③ 文档对齐（server.py 头注释/README/WIKI 与实际代码一致）；④ 清理部署产物与已淘汰的 webui 目录。附带 P0 修复：`get_user_llm` 键名与调用方契约不符导致 BYOK 自配 key 从未生效。
 - **2026-09-17**：修复**扩写模式**（用户上传大纲，`mode=expand`）重新生成大纲后分卷为空的问题——扩写提示词 `expand_outline_prompt` 原只让模型输出 title/intro/chapters，现补 `core_conflict / main_line / volumes`（每卷 no/name/intro/main_conflict/character_growth/climax/start_ch/end_ch）；`regen_outline` 改为删 outline.json 后再起后台线程（不再先写空壳导致「已存在则复用」直接跳过）；前端「重生成大纲/世界观」按钮改走带 token 的封装请求。服务器无 unzip，dist.zip 用 `python3 -m zipfile -e` 解压。详见 WIKI.md 第 14 节。
 
 

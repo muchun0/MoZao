@@ -34,9 +34,11 @@ services:
       - novel_output:/app/output
       - novel_logs:/app/logs
       - novel_data:/data
+      - novel_projects:/app/projects
 
 volumes:
   novel_output:
   novel_logs:
   novel_data:
+  novel_projects:
   mysql_data:

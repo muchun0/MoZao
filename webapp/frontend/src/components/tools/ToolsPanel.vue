@@ -187,6 +187,7 @@
             <el-option label="架构师(Architect)" value="architect" />
             <el-option label="写手(Writer)" value="writer" />
             <el-option label="审校(Reviewer)" value="reviewer" />
+            <el-option label="读者(Reader)" value="reader" />
           </el-select>
         </el-form-item>
         <el-form-item label="描述"><el-input v-model="skillForm.description" placeholder="一句话说明这个Skill的作用" /></el-form-item>

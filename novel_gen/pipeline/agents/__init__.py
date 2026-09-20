@@ -14,6 +14,7 @@ from .researcher import ResearcherAgent
 from .architect import ArchitectAgent
 from .writer import WriterAgent
 from .reviewer import ReviewerAgent
+from .reader import ReaderAgent
 
 __all__ = [
     "BaseAgent",
@@ -21,4 +22,5 @@ __all__ = [
     "ArchitectAgent",
     "WriterAgent",
     "ReviewerAgent",
+    "ReaderAgent",
 ]

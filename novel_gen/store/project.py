@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import LLMConfig, NovelConfig, SearchConfig
+from ..utils.paths import get_output_dir
 from .schemas import Chapter, Outline, ProjectState, World
 
 
@@ -407,8 +408,8 @@ class ProjectStore:
         # 项目目录保留副本（自包含）
         (self.dir / filename).write_text(content, encoding="utf-8")
 
-        # 全局 output/ 作为主输出目录
-        output_dir = self.dir.parent.parent / "output"
+        # 全局 output/ 作为主输出目录（数据根目录由 DATA_DIR 配置）
+        output_dir = get_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
         final_out = output_dir / filename
         final_out.write_text(content, encoding="utf-8")

@@ -42,6 +42,7 @@ from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
 from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, World, Character
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
+from novel_gen.utils.paths import get_output_dir, get_projects_dir
 from novel_gen.store.project import ProjectStore, _safe_name
 
 from . import db
@@ -56,9 +57,10 @@ from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
 logger = get_logger("server")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-PROJECTS_DIR = BASE_DIR / "projects"
+# 数据目录可配置：.env 的 DATA_DIR；未配置时回退代码根，行为与历史版本一致
+PROJECTS_DIR = get_projects_dir()
 _MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = get_output_dir()
 WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 @asynccontextmanager

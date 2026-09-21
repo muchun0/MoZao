@@ -53,7 +53,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="大纲" name="outline">
-        <OutlineEditor :pid="pid" @saved="loadAll" />
+        <OutlineEditor :key="outlineReloadKey" :pid="pid" @saved="loadAll" />
       </el-tab-pane>
 
       <el-tab-pane label="人物/世界观" name="world">
@@ -177,6 +177,8 @@ const genError = ref('')
 const exporting = ref(false)
 let genStartTs = 0
 const regenNo = ref(0)
+// 生成完成后自增，强制重新挂载 OutlineEditor（它只在 onMounted 时拉一次大纲）
+const outlineReloadKey = ref(0)
 
 // 按分卷分组的章节菜单：以 outline.volumes 为骨架，已生成章节按 no 合并状态
 const groupedChapters = computed(() => {
@@ -285,9 +287,33 @@ function startPolling() {
         lastDone = s.chapters_done
         loadChapters()
       }
-      if (!s.running) { genDone.value = true; clearInterval(pollTimer); loadChapters() }
+      if (!s.running) {
+        genDone.value = true
+        clearInterval(pollTimer)
+        // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应 tab 仍是旧空数据
+        if (s.error) {
+          ElMessage.error('生成失败：' + s.error)
+        } else {
+          await refreshAfterGen()
+        }
+      }
     } catch {}
   }, 3000)
+}
+
+// 生成完成后的静默刷新：不弹全屏 loading，只重拉数据并强制重挂大纲编辑器
+async function refreshAfterGen() {
+  try {
+    outline.value = await getOutline(pid)
+    world.value = await getWorld(pid)
+    worldDraft.value = JSON.parse(JSON.stringify(world.value))
+    try { lock.value = await getLock(pid) } catch { lock.value = {} }
+    chapters.value = (await getChapters(pid)).chapters || []
+    outlineReloadKey.value++
+    ElMessage.success('大纲与世界观已生成完成，可在「大纲」「人物/世界观」查看')
+  } catch (e) {
+    ElMessage.error('数据刷新失败，请手动刷新页面')
+  }
 }
 
 async function loadChapters() {

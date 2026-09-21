@@ -34,7 +34,7 @@
       <el-form :model="form" label-width="100px">
         <el-form-item label="书名"><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
-        <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="10000" :step="5000" /></el-form-item>
+        <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
         <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
         <el-form-item label="风格角色">
           <el-select v-model="form.style_role_id" clearable placeholder="可选：一键套用写作风格角色（人设+技能）">

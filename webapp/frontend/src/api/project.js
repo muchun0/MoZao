@@ -13,3 +13,7 @@ export const getStatus = (id) => request.get(`/projects/${id}`)
 export const getBalance = () => request.get('/me')
 export const getMyLlm = () => request.get('/me/llm')
 export const saveMyLlm = (data) => request.put('/me/llm', data)
+export const downloadProject = (id, format) => request.get(`/projects/${id}/download`, {
+  params: { format },
+  responseType: 'blob',
+})

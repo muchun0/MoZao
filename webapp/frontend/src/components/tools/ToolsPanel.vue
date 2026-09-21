@@ -191,6 +191,64 @@
       </div>
     </el-card>
 
+    <!-- 风格角色：写作风格抽象为 agent 角色，可挂载技能 -->
+    <el-card class="tool-card">
+      <template #header><b>风格角色</b></template>
+      <p class="muted">把写作风格存成一个角色（人设+挂载技能），建书时一键套用</p>
+      <el-button size="small" type="primary" @click="openRoleDlg()">+ 新建风格角色</el-button>
+      <div class="result-area">
+        <div v-for="r in styleRoles" :key="r.id" class="fs-row">
+          <div>
+            <b>{{ r.name }}</b>
+            <small class="muted">{{ r.user_id ? '（我的）' : '（平台）' }}</small>
+            <div v-if="(r.skills || []).length" style="margin-top:4px">
+              <el-tag v-for="s in r.skills" :key="s.skill_type + '-' + s.skill_id" size="small" type="info" style="margin-right:4px">
+                {{ s.skill_name }}
+              </el-tag>
+            </div>
+            <div v-else class="muted" style="font-size:12px">未挂载技能</div>
+          </div>
+          <span v-if="r.user_id" style="display:flex;gap:6px">
+            <el-button size="small" link type="primary" @click="openRoleDlg(r)">编辑</el-button>
+            <el-button size="small" link type="danger" @click="delRole(r)">删</el-button>
+          </span>
+        </div>
+        <div v-if="!styleRoles.length" class="muted">还没有风格角色，点「新建」创建你的第一个</div>
+      </div>
+    </el-card>
+
+    <!-- 新建/编辑风格角色弹窗 -->
+    <el-dialog v-model="showRoleDlg" :title="roleForm.id ? '编辑风格角色' : '新建风格角色'" width="620px" append-to-body>
+      <el-form :model="roleForm" label-width="80px">
+        <el-form-item label="名称"><el-input v-model="roleForm.name" placeholder="如：乌贼·克苏鲁悬疑克制风" /></el-form-item>
+        <el-form-item label="描述"><el-input v-model="roleForm.description" placeholder="一句话说明这个风格的调性" /></el-form-item>
+        <el-form-item label="人设提示词">
+          <el-input v-model="roleForm.role_prompt" type="textarea" :rows="6"
+            placeholder="写给AI的文风总纲：叙事视角、句式节奏、氛围营造、克制边界…" />
+        </el-form-item>
+        <el-form-item label="挂载技能">
+          <div v-for="(sk, i) in roleForm.skills" :key="i" class="fs-row">
+            <span>{{ sk.skill_type === 'user' ? '📝' : '⭐' }} {{ sk.skill_name }}
+              <small class="muted">{{ sk.skill_type === 'user' ? '我的技能' : '平台技能' }}</small>
+            </span>
+            <el-button size="small" link type="danger" @click="roleForm.skills.splice(i, 1)">卸载</el-button>
+          </div>
+          <el-select v-model="newMount" placeholder="选择要挂载的技能" clearable filterable style="width:100%;margin-top:6px">
+            <el-option-group label="我的Skills">
+              <el-option v-for="s in mySkills" :key="'user-' + s.id" :label="s.name" :value="'user:' + s.id" />
+            </el-option-group>
+            <el-option-group label="平台技能">
+              <el-option v-for="s in platformSkills" :key="'admin-' + s.id" :label="s.name" :value="'admin:' + s.id" />
+            </el-option-group>
+          </el-select>
+          <el-button size="small" style="margin-top:6px" @click="addMount">挂载</el-button>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRoleDlg = false">取消</el-button>
+        <el-button type="primary" @click="saveRole">保存</el-button>
+      </template>
+    </el-dialog>
     <!-- 新建Skill弹窗 -->
     <el-dialog v-model="showSkillDlg" title="新建自定义Skill" width="560px" append-to-body>
       <el-form :model="skillForm" label-width="80px">
@@ -393,6 +451,69 @@ const mySkills = ref([])
 const marketSkills = ref([])
 const showSkillDlg = ref(false)
 const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' })
+const styleRoles = ref([])
+const platformSkills = ref([])
+const showRoleDlg = ref(false)
+const roleForm = ref({ id: 0, name: '', description: '', role_prompt: '', skills: [] })
+const newMount = ref('')
+
+async function loadStyleRoles() {
+  try { const r = await toolsApi.listStyleRoles(); styleRoles.value = r.roles || [] } catch {}
+}
+async function loadPlatformSkills() {
+  try { const r = await toolsApi.listPlatformSkills(); platformSkills.value = r.skills || [] } catch {}
+}
+function openRoleDlg(r) {
+  roleForm.value = r
+    ? { id: r.id, name: r.name, description: r.description || '', role_prompt: r.role_prompt || '', skills: [...(r.skills || [])] }
+    : { id: 0, name: '', description: '', role_prompt: '', skills: [] }
+  newMount.value = ''
+  showRoleDlg.value = true
+}
+function addMount() {
+  if (!newMount.value) return
+  const [type, id] = newMount.value.split(':')
+  const list = type === 'user' ? mySkills.value : platformSkills.value
+  const sk = list.find(x => x.id == id)
+  if (!sk || roleForm.value.skills.some(x => x.skill_type === type && x.skill_id == id)) return
+  roleForm.value.skills.push({ skill_type: type, skill_id: sk.id, skill_name: sk.name })
+  newMount.value = ''
+}
+async function saveRole() {
+  if (!roleForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
+  try {
+    const base = { name: roleForm.value.name, description: roleForm.value.description, role_prompt: roleForm.value.role_prompt, is_active: 1, sort_order: 0 }
+    let rid = roleForm.value.id
+    if (rid) {
+      await toolsApi.updateStyleRole(rid, base)
+      const old = styleRoles.value.find(x => x.id === rid)?.skills || []
+      for (const o of old) {
+        if (!roleForm.value.skills.some(x => x.skill_type === o.skill_type && x.skill_id === o.skill_id)) {
+          await toolsApi.unmountStyleRoleSkill(rid, o.skill_type, o.skill_id)
+        }
+      }
+      for (const n of roleForm.value.skills) {
+        if (!old.some(x => x.skill_type === n.skill_type && x.skill_id === n.skill_id)) {
+          await toolsApi.mountStyleRoleSkill(rid, { skill_type: n.skill_type, skill_id: n.skill_id })
+        }
+      }
+    } else {
+      const r = await toolsApi.createStyleRole(base)
+      rid = r.id
+      for (const n of roleForm.value.skills) {
+        await toolsApi.mountStyleRoleSkill(rid, { skill_type: n.skill_type, skill_id: n.skill_id })
+      }
+    }
+    ElMessage.success('已保存')
+    showRoleDlg.value = false
+    loadStyleRoles()
+  } catch (e) { ElMessage.error(e?.response?.data?.detail || '保存失败') }
+}
+async function delRole(r) {
+  try { await ElMessageBox.confirm(`确定删除风格角色「${r.name}」？`, '删除', { type: 'warning' }) } catch { return }
+  await toolsApi.deleteStyleRole(r.id)
+  loadStyleRoles()
+}
 
 async function loadMySkills() {
   try {
@@ -418,6 +539,7 @@ async function delMySkill(id) {
 
 onMounted(() => {
   loadCover(); loadSnaps(); loadFs(); loadLk(); loadMySkills(); loadMarket()
+  loadStyleRoles(); loadPlatformSkills()
 })
 
 const loadMarket = async () => {

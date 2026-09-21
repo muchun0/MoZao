@@ -23,8 +23,16 @@ class WriterAgent(BaseAgent):
         reviewer_persona = ReviewerAgent(cfg, llm, store).persona_prefix()
         from .reader import ReaderAgent
         reader_persona = ReaderAgent(cfg, llm, store).persona_prefix()
+        # 风格角色（风格师）：选定了风格角色时，把其人设+挂载技能叠加到写手角色之上
+        from .stylist import StylistAgent
+        stylist = StylistAgent(cfg, llm, store)
+        role_prompt = self.persona_prefix()
+        if stylist.is_active:
+            stylist_persona = stylist.persona_prefix()
+            if stylist_persona:
+                role_prompt = f"{role_prompt}\n\n{stylist_persona}" if role_prompt else stylist_persona
         self._writer = ChapterWriter(cfg, llm, store, memory,
-                                     role_prompt=self.persona_prefix(),
+                                     role_prompt=role_prompt,
                                      reviewer_role_prompt=reviewer_persona,
                                      reader_role_prompt=reader_persona)
 

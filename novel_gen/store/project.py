@@ -101,6 +101,8 @@ class ProjectStore:
             "plot_speed": getattr(cfg, "plot_speed", "medium"),
             "custom_prompt": getattr(cfg, "custom_prompt", ""),
             "skill_prompt_append": getattr(cfg, "skill_prompt_append", ""),
+            "style_role_id": getattr(cfg, "style_role_id", 0),
+            "style_role_prompt": getattr(cfg, "style_role_prompt", ""),
             "search": {
                 "provider": cfg.search.provider,
                 "api_url": cfg.search.api_url,
@@ -150,6 +152,8 @@ class ProjectStore:
             plot_speed=d.get("plot_speed", "medium"),
             custom_prompt=d.get("custom_prompt", ""),
             skill_prompt_append=d.get("skill_prompt_append", ""),
+            style_role_id=int(d.get("style_role_id", 0) or 0),
+            style_role_prompt=d.get("style_role_prompt", ""),
             search=SearchConfig(
                 provider=(d.get("search") or {}).get("provider", ""),
                 api_key="",

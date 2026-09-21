@@ -1,4 +1,4 @@
-﻿# AI 自动生成小说（novel_gen）
+# AI 自动生成小说（novel_gen）
 
 输入题材/创意，自动产出完整小说。生成前先**调研热门小说共性**（情节/文风/节奏），再按「调研 → 大纲 → 编辑质检 → 人物世界观 → 逐章正文 → 导出」流水线推进，全程可断点续传。
 
@@ -10,6 +10,7 @@ Web 端为**多用户 SaaS**：注册登录、按 AI 实际生成字数计费（
 - **双模式**：`auto`（全自动工作流）/ `expand`（AI 扩写，用户提供大纲或简要内容，AI 扩写为完整小说）
 - **质量增强四件套**：编辑视角质检（不通过自动修正）、去 AI 味写作约束、防同质化常驻提示词（拒绝套路、人物带内在矛盾、剧情有代价）、人物立体化（角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度）
 - **写作风格 Skill**：站长可在管理后台配置多套写作模板（番茄爽文 / 晋江细腻 / 西幻史诗 / 悬疑冷峻 / 轻小说日常等），用户创建小说时可选，prompt 自动注入 System Prompt
+- **风格角色（StylistAgent）**：写作风格抽象为独立 agent 角色——平台内置（爱潜水的乌贼·克苏鲁悬疑克制风 / 烽火戏诸侯·新古典江湖风 / 番茄爆款·短句快节奏风 / 辰东·洪荒史诗苍凉风，来自 skills_library 蒸馏）+ 用户自建；每个风格角色含人设（role_prompt）并**可挂载多个技能**（平台写作技能 + 我的 Skills），建书时一键套用，人设与技能由风格师注入写手正文与扩写路径
 - **强制结局**：无论长短篇，最后一章必须是完整结局——完成人物弧光、收束核心冲突、给出情绪落点，并按结局写作规范落地（四类合格结局形态 / 开篇锚定对照 / 烂尾黑名单 / 尾声写法），结尾升维（技术→哲学 / 产品→人性 / 事件→时代）
 - **多格式导出**：TXT / EPUB / DOCX，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
 - **单章人工编辑 + 继续生成**：可修改任意章节正文，后续章节基于修改继续生成；也可从某章重新生成
@@ -19,7 +20,7 @@ Web 端为**多用户 SaaS**：注册登录、按 AI 实际生成字数计费（
 
 ## 多智能体角色
 
-生成流水线已拆分为四个独立角色（`novel_gen/pipeline/agents/`），各有专属提示词（`prompts/*.md`）与按角色挂载的 skill：Researcher（调研）→ Architect（三级大纲/人物世界观/时间线）→ Writer（逐章正文）→ Reviewer（一致性/逻辑/合规审校）。
+生成流水线已拆分为六个独立角色（`novel_gen/pipeline/agents/`），各有专属提示词（`prompts/*.md`）与按角色挂载的 skill：Researcher（调研）→ Architect（三级大纲/人物世界观/时间线）→ Writer（逐章正文，叠加 Stylist 风格人设）→ Reviewer（一致性/逻辑/合规审校）→ Reader（读者视角），另有 **Stylist（风格师）**：承载项目选定的写作风格角色（人设+挂载技能），注入写手正文与扩写路径。
 
 ## 架构
 
@@ -416,6 +417,7 @@ python -m pytest tests/ -v
 ## 更新记录
 
 - **2026-09-20**：部署加固（deploy/compose-projects-vol，commit e279eb5）——`docker-compose.yml` 补挂 `novel_projects:/app/projects` 命名卷：服务器容器实际已挂载该卷但 compose 漏写，任何 `docker compose up` 重建容器都会去掉挂载导致项目目录从新容器消失。补写后重建无缝。**同日完成首次服务器部署**（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen，docker compose：mysql-mozao + novel-gen），部署后验证：项目数据（projects 卷）无缝保留、域名 https://mozao.click 200、主 JS 881KB 无白屏、注册→登录→建书→详情→登出全链路冒烟通过、BYOK 加密列迁移生效（llm_provider/llm_api_key/llm_base_url/llm_model）、`.llm_encrypt.key` 已随部署放置服务器。
+- **2026-09-21**（feat/style-role-agent）：⑫ 写作风格抽象为 agent 角色（StylistAgent 风格师）——新增 `style_roles`（平台内置+用户自建，role_prompt 人设）/ `style_role_skills`（挂载 admin 平台技能 + user 我的技能）两张表与迁移，启动时从 skills_library/style-references 幂等种子化 4 个默认风格角色；NovelConfig/ProjectStore 持久化 style_role_id/style_role_prompt（创建项目快照）；写手 ChapterWriter 与扩写路径注入风格人设（manager._with_stylist）；新增 7 个风格角色路由（用户级 6 + 管理级 1）；前端建书可选风格角色、工具面板支持风格角色增删改与技能挂载；测试 29→44 全绿，端到端冒烟验证风格人设+挂载技能真实进入正文系统提示。
 - **2026-09-20**：第四批优化（feat/optimization-batch4）——⑪ 项目域再拆分：`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块——`projects_base`（列表/创建/详情/退费/归档/克隆/删除/下载，8）、`projects_outline`（大纲/快照，7）、`projects_chapters`（章节/审校/扩写/批量，13）、`projects_world`（世界观/锁定/调研/伏笔/封面，10）、`projects_generation`（生成控制，5）。路由路径/方法/返回体不变，回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。
 - **2026-09-20**：第三批优化（feat/optimization-batch3）——⑩ 最大架构债：原 2853 行单文件 `webapp/server.py` 拆分为 `webapp/core.py`（共享状态/鉴权/项目工具/结算/生成线程/任务持久化）+ `webapp/routers/`（按域：system/auth/me/skills/admin/projects，90 个路由）+ `server.py` 组装壳（仅导入注册 + 静态托管 + 启动入口）。路由路径/方法/返回体逐字节不变，回归验证：拆前拆后 openapi 路由集合 96=96 完全一致、全量 29 个 pytest 用例绿、服务端到端 health/pricing/鉴权/静态页正常、注册→建书→详情→登出业务冒烟通过；`tests/test_settle.py` 结算测试目标由 server 壳改为 core（monkeypatch 作用点随拆分迁移）。
 - **2026-09-20**：第二批优化（feat/optimization-batch2）——⑥ 结算重构：统一 `_compute_settle` 计算口径（增量/整批共用），增量结算改为**先落盘结算基线再扣费**（P0 资金安全：消除"扣费后崩溃导致重启重复扣费"窗口，宁可漏扣不重扣）；⑦ 生成任务持久化：线程启动落盘 `task.json`、结束清理，服务启动（lifespan）自动重拾崩溃/重启中断的生成/大纲/批量任务并从断点续跑；⑨ 测试恢复入库（tests/ 取消 gitignore），新增加密/meta 缓存/结算单元测试 17 个（共 29 个，全绿）。

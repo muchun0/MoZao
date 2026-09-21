@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """projects_base路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
+import shutil  # noqa: F401  下载导出/删除/克隆均需复制与清理
+
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 
@@ -47,11 +49,18 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         high_quality_mode=req.high_quality_mode,
     )
 
-    # 注入写作风格 skill
+    # 注入写作风格 skill（单技能，向后兼容）
     if req.skill_id:
         _sk = db.get_skill(req.skill_id)
         if _sk and _sk["is_active"]:
             cfg.skill_prompt_append = _sk["prompt_append"] or ""
+
+    # 注入写作风格角色（风格师）：人设 + 挂载技能组装后快照进 config
+    if req.style_role_id:
+        _sr = db.get_style_role_assembled(req.style_role_id)
+        if _sr:
+            cfg.style_role_id = _sr["id"]
+            cfg.style_role_prompt = _sr["assembled"]
 
     # 配置校验（非硬约束问题仅警告）
     issues = validate_config(cfg)

@@ -18,6 +18,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
 from ..store.project import ProjectStore, _safe_name
+from ..utils.paths import get_output_dir
 
 
 def _collect(store: ProjectStore):
@@ -88,7 +89,7 @@ def _epub_bytes(book) -> bytes:
 def _write_outputs(store: ProjectStore, filename: str, payload) -> Path:
     """统一落盘：项目目录副本 + output/ 主输出。payload 为 bytes 或可 write_epub 对象。"""
     store.load_config()
-    output_dir = store.dir.parent.parent / "output"
+    output_dir = get_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     proj_path = store.dir / filename
@@ -160,7 +161,7 @@ def export_docx(store: ProjectStore) -> Path:
     doc.save(buf)
     payload = buf.getvalue()
 
-    output_dir = store.dir.parent.parent / "output"
+    output_dir = get_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     proj_path = store.dir / filename
     final_path = output_dir / filename

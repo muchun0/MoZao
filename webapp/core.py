@@ -42,6 +42,7 @@ from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
 from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, World, Character
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
+from novel_gen.utils.paths import get_output_dir, get_projects_dir
 from novel_gen.store.project import ProjectStore, _safe_name
 
 from . import db
@@ -56,9 +57,10 @@ from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
 logger = get_logger("server")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-PROJECTS_DIR = BASE_DIR / "projects"
+# 数据目录可配置：.env 的 DATA_DIR；未配置时回退代码根，行为与历史版本一致
+PROJECTS_DIR = get_projects_dir()
 _MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = get_output_dir()
 WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 @asynccontextmanager
@@ -163,6 +165,7 @@ class ProjectCreateReq(BaseModel):
     llm: LLMReq = Field(default_factory=LLMReq)
     search: SearchReq = Field(default_factory=SearchReq)
     skill_id: int = 0               # 写作风格 skill id，0=不选
+    style_role_id: int = 0          # 写作风格角色 id（style_roles），0=不选
     pacing_density: str = "medium"  # 爽点密度
     plot_speed: str = "medium"      # 剧情速度
     custom_prompt: str = ""         # 用户自定义提示词
@@ -219,6 +222,7 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
         "chapter_words": cfg.chapter_words,
         "num_chapters": cfg.num_chapters,
         "style": cfg.style,
+        "style_role_id": getattr(cfg, "style_role_id", 0),
         "premise": cfg.premise,
         "background": cfg.background,
         "hero": cfg.hero,
@@ -922,6 +926,19 @@ class SkillReq(BaseModel):
     is_active: int = 1
     sort_order: int = 0
     role: str = ""  # 空=全局；researcher/architect/writer/reviewer=专属角色
+
+
+class StyleRoleReq(BaseModel):
+    name: str = ""
+    description: str = ""
+    role_prompt: str = ""
+    is_active: int = 1
+    sort_order: int = 0
+
+
+class StyleRoleSkillReq(BaseModel):
+    skill_type: str = "admin"   # admin=平台写作技能 / user=我的技能
+    skill_id: int = 0
 
 
 class AgentSetReq(BaseModel):

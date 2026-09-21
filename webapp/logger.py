@@ -2,7 +2,8 @@
 """
 统一日志：文件（滚动）+ 控制台。
 
-日志文件：项目根 logs/app.log，单个最大 5MB，保留 3 个备份（app.log.1/2/3）。
+日志文件：数据根目录 logs/app.log（默认项目根，可通过 .env 的 DATA_DIR 配置），
+单个最大 5MB，保留 3 个备份（app.log.1/2/3）。
 用法：
     from webapp.logger import get_logger
     logger = get_logger("server")
@@ -15,9 +16,10 @@ from __future__ import annotations
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
-LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+from novel_gen.utils.paths import get_logs_dir
+
+LOGS_DIR = get_logs_dir()
 LOG_FILE = LOGS_DIR / "app.log"
 MAX_BYTES = 5 * 1024 * 1024  # 5MB
 BACKUP_COUNT = 3

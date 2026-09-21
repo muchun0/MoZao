@@ -40,6 +40,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # ---- 后端代码 ----
 COPY webapp ./webapp
 COPY novel_gen ./novel_gen
+COPY skills_library ./skills_library
 COPY run_web.py ./
 
 # ---- 前端构建产物（来自阶段一，不再需要本地 dist） ----

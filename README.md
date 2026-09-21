@@ -12,7 +12,7 @@ Web 端为**多用户 SaaS**：注册登录、按 AI 实际生成字数计费（
 - **写作风格 Skill**：站长可在管理后台配置多套写作模板（番茄爽文 / 晋江细腻 / 西幻史诗 / 悬疑冷峻 / 轻小说日常等），用户创建小说时可选，prompt 自动注入 System Prompt
 - **风格角色（StylistAgent）**：写作风格抽象为独立 agent 角色——平台内置（爱潜水的乌贼·克苏鲁悬疑克制风 / 烽火戏诸侯·新古典江湖风 / 番茄爆款·短句快节奏风 / 辰东·洪荒史诗苍凉风，来自 skills_library 蒸馏）+ 用户自建；每个风格角色含人设（role_prompt）并**可挂载多个技能**（平台写作技能 + 我的 Skills），建书时一键套用，人设与技能由风格师注入写手正文与扩写路径
 - **强制结局**：无论长短篇，最后一章必须是完整结局——完成人物弧光、收束核心冲突、给出情绪落点，并按结局写作规范落地（四类合格结局形态 / 开篇锚定对照 / 烂尾黑名单 / 尾声写法），结尾升维（技术→哲学 / 产品→人性 / 事件→时代）
-- **多格式导出**：TXT / EPUB / DOCX，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
+- **多格式导出**：TXT / EPUB / DOCX / Markdown，项目详情页「导出 ▾」一键下载，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
 - **单章人工编辑 + 继续生成**：可修改任意章节正文，后续章节基于修改继续生成；也可从某章重新生成
 - **上传大纲智能解析**：上传 .txt / .md / .docx 大纲文档，AI 自动解析出书名、题材、字数、主角、配角、背景、剧情走向等字段并填入新建表单（支持扩写模式直接生成）
 - **长文一致性**：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填，杜绝前后矛盾
@@ -96,6 +96,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 - **前端多阶段构建**：`docker build` 时第一阶段用 `node:20-alpine` 在容器内自动 `npm ci && npm run build`，第二阶段把 `dist` 拷进 Python 镜像。**无需在宿主机提前 build 前端、也无需单独上传 dist**。
 - **镜像**：基于 `python:3.13-slim`，已内置中文字体（Noto CJK，封面绘制必须）、时区（Asia/Shanghai）、健康检查
 - **数据持久化**：四个命名卷——`projects`（中间产物）/ `output`（成品）/ `logs`（日志）/ `data`（数据库）。容器重建不丢数据；数据库通过环境变量 `NOVEL_DB_PATH=/data/novel_web.db` 落到卷内
+- **数据与代码隔离**：`projects/output/logs` 的根目录由 `DATA_DIR` 环境变量指定（默认代码根，见下方 .env 配置）；服务器不设时容器内回退 `/app`，与既有卷挂载点一致，零影响
 - **密钥安全**：`.env` 被 `.dockerignore` 排除、**不写入镜像**，通过 compose 的 `env_file` 从宿主机注入；`run_web.py` 遵循"环境变量优先"（`.env` 里的值不会覆盖已存在的环境变量）
 - **访问**：默认映射宿主 `8000` 端口（`ports` 左侧可改，如 `8001:8000`）；首次注册用户自动成为站长
 - **静态文件 / 封面 / 大纲上传** 均为纯 Python 实现，无外部系统服务依赖
@@ -135,6 +136,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 ```
 DEEPSEEK_API_KEY=sk-你的Key
 BOCHA_API_KEY=sk-你的Key      # 可选，联网调研用
+DATA_DIR=D:\NovelData         # 可选：数据目录根（projects/output/logs 的父级），默认代码根
 ```
 
 - **邮件通知**（退款申请通知站长 + 注册/重置验证码发用户邮箱）：
@@ -416,6 +418,7 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
+- **2026-09-21**：第二次发版（master e89d563）——① 数据与代码隔离：新增 `novel_gen/utils/paths.py`（DATA_DIR 环境变量解析，默认代码根）+ `novel_gen/utils/migrate.py`（复制→校验→删源迁移工具），`webapp/core.py` / `logger.py` / `novel_gen/store/project.py` / `novel_gen/export/book_formats.py` 4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁移至 `D:\NovelData`（projects/output/logs），代码根零残留，新增 `tests/test_paths.py` 16 用例；② 前端导出按钮：项目详情页「导出 ▾」支持 TXT/EPUB/DOCX/MD（blob 下载），顺带修复 `/projects/{id}/download` 缺失 `import shutil` 的历史 bug（此前前端从未调用该接口，未暴露）；③ 新建目标字数下限修复：表单 `el-input-number :min=10000` 会把低于 1 万字的输入钳回 1 万，改为 min=0 允许短篇；④ 前端产物重建：index.html 与构建产物 hash 对齐，修复白屏报错。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
 - **2026-09-20**：部署加固（deploy/compose-projects-vol，commit e279eb5）——`docker-compose.yml` 补挂 `novel_projects:/app/projects` 命名卷：服务器容器实际已挂载该卷但 compose 漏写，任何 `docker compose up` 重建容器都会去掉挂载导致项目目录从新容器消失。补写后重建无缝。**同日完成首次服务器部署**（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen，docker compose：mysql-mozao + novel-gen），部署后验证：项目数据（projects 卷）无缝保留、域名 https://mozao.click 200、主 JS 881KB 无白屏、注册→登录→建书→详情→登出全链路冒烟通过、BYOK 加密列迁移生效（llm_provider/llm_api_key/llm_base_url/llm_model）、`.llm_encrypt.key` 已随部署放置服务器。
 - **2026-09-21**（feat/style-role-agent）：⑫ 写作风格抽象为 agent 角色（StylistAgent 风格师）——新增 `style_roles`（平台内置+用户自建，role_prompt 人设）/ `style_role_skills`（挂载 admin 平台技能 + user 我的技能）两张表与迁移，启动时从 skills_library/style-references 幂等种子化 4 个默认风格角色；NovelConfig/ProjectStore 持久化 style_role_id/style_role_prompt（创建项目快照）；写手 ChapterWriter 与扩写路径注入风格人设（manager._with_stylist）；新增 7 个风格角色路由（用户级 6 + 管理级 1）；前端建书可选风格角色、工具面板支持风格角色增删改与技能挂载；测试 29→44 全绿，端到端冒烟验证风格人设+挂载技能真实进入正文系统提示。
 - **2026-09-20**：第四批优化（feat/optimization-batch4）——⑪ 项目域再拆分：`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块——`projects_base`（列表/创建/详情/退费/归档/克隆/删除/下载，8）、`projects_outline`（大纲/快照，7）、`projects_chapters`（章节/审校/扩写/批量，13）、`projects_world`（世界观/锁定/调研/伏笔/封面，10）、`projects_generation`（生成控制，5）。路由路径/方法/返回体不变，回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。

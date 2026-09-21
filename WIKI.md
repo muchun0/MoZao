@@ -72,6 +72,8 @@ D:\PythonProjects\DouBao\
 │   ├── store/project.py        # ProjectStore
 │   ├── store/schemas.py        # Chapter/Outline/Volume
 │   ├── utils/chapter_splitter.py
+│   ├── utils/paths.py          # DATA_DIR 数据目录解析（代码与数据隔离）
+│   ├── utils/migrate.py        # 数据迁移工具（复制→校验→删源）
 │   └── export/cover.py        # 封面生成
 └── webapp/
     ├── server.py               # FastAPI 组装壳（导入路由注册 + 静态托管 + 启动入口）
@@ -177,6 +179,7 @@ D:\PythonProjects\DouBao\
 | SMTP_HOST/PORT/USER/PASS | SMTP 发信 |
 | ALLOWED_ORIGINS | CORS 白名单 |
 | DATABASE_URL | MySQL 连接串 |
+| DATA_DIR | 数据目录根（projects/output/logs 的父级，默认代码根）。本地 `D:\NovelData`；服务器不设时容器内回退 `/app`，与既有卷挂载一致，零影响 |
 
 ---
 
@@ -256,10 +259,11 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 部署记录（2026-09-21）：第二次发版（合并 devtest → master，e89d563）。内容：① 数据与代码隔离（DATA_DIR 可配置，新增 `novel_gen/utils/paths.py` + `migrate.py`，4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁至 `D:\NovelData`，代码根无 projects/output/logs；服务器不设 DATA_DIR，容器内回退 `/app` 与卷挂载一致）② 前端导出按钮（项目详情页「导出 ▾」TXT/EPUB/DOCX/MD，blob 下载；顺带修复 `/download` 缺失 shutil import 的历史 bug——前端此前从未调用该接口）③ 新建目标字数下限修复（el-input-number `:min=10000` 钳制，改为 min=0，允许低于 1 万字的短篇）④ 前端产物重建修复白屏（index.html 与构建产物 hash 对齐）。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
 - 部署记录（2026-09-20）：首次服务器部署完成（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen）。发版方式：本地 `git archive master` → workbench upload → `python3 -m zipfile -e` 解压 → `docker compose up -d --build`（前端容器内多阶段构建）。部署前发现 compose 漏挂 projects 卷（容器实际已挂），提交 e279eb5 补 `novel_projects:/app/projects` 命名卷后部署，项目数据无缝保留；`.llm_encrypt.key` 随部署放置（BYOK 密文解密依赖）。部署验证：health/域名 200、主 JS 881KB、注册→建书→登出全链路、BYOK 加密列迁移生效、冒烟数据已清理。
 - 第四批优化（feat/optimization-batch4）：项目域再拆分——`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块（base/outline/chapters/world/generation）。路由路径/方法/返回体不变；回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。
 - 第三批优化（feat/optimization-batch3）：最大架构债清理——原 2853 行单文件 `server.py` 拆分为 `webapp/core.py`（共享状态/鉴权/项目工具/结算/生成线程/任务持久化）+ `webapp/routers/`（按域 6 文件、90 个路由）+ `server.py` 组装壳。路由路径/方法/返回体逐字节不变；回归：拆前拆后 openapi 路由集合 96=96 一致、29 个 pytest 全绿、服务端到端 + 注册建书业务冒烟通过。
 
 ---
 
-*最后更新：2026-09-20*
+*最后更新：2026-09-21*

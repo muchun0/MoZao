@@ -16,7 +16,11 @@ projects/
 output/
 webapp/*.db*
 # ===== 需求分析文档 =====
-docs/
+docs/*
+# AI 知识库三件套入库（Agent 免全盘扫描的固定知识，见 AGENTS.md §0）
+!docs/architecture.md
+!docs/filemap.md
+!docs/decisions.md
 
 # ===== 收款码等运营私有素材（不入库） =====
 webapp/webui/payment_qr2.png

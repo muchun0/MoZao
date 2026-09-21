@@ -1,0 +1,170 @@
+# 架构文档（docs/architecture.md）
+
+> 目的：一次性沉淀项目整体架构，供 AI 助手与开发者在新会话中直接引用，**避免每次从头扫描代码推导架构**。
+> 权威来源关系：本文件描述"结构/职责/依赖"；接口细节以 `API.md` 为准；业务与部署细节以 `WIKI.md`、`README.md` 为准；本文件只维护结构级信息，随代码大改同步更新。
+
+## 1. 系统全景
+
+**墨造 · AI 小说创作平台**：输入题材/创意，自动产出完整小说（调研 → 大纲 → 人物世界观 → 逐章正文 → 质检 → 导出），同时是**多用户 SaaS**（注册登录、按 AI 实际生成字数计费、代理分销、退款、站长后台）。
+
+```
+┌──────────────────────────── 前端 Vue3 (webapp/frontend) ────────────────────────────┐
+│  views(Login/ProjectList/ProjectDetail/Admin) + components + api 封装 + stores      │
+└───────────────────────────────────┬─────────────────────────────────────────────────┘
+                                     │ REST API（同源部署，dist 由 FastAPI 托管）
+┌───────────────────────────────────▼─────────────────────────────────────────────────┐
+│                   Web 服务层 webapp/（FastAPI + MySQL）                              │
+│  server.py(组装壳) ── core.py(核心层) ── routers/(按域 9 个模块)                      │
+│  db.py / secret_encrypt.py / pricing.py / referral.py / mailer.py / logger.py        │
+└───────────────────────────────────┬─────────────────────────────────────────────────┘
+                                     │ 调用生成流水线（后台线程，任务可持久化/断点续跑）
+┌───────────────────────────────────▼─────────────────────────────────────────────────┐
+│                  生成核心库 novel_gen/（纯 Python，无 Web 依赖）                     │
+│  llm/(Provider 抽象)  research/(调研)  pipeline/(六角色 agents + 记忆 + 编排)         │
+│  store/(项目落盘/状态机)  export/(TXT/EPUB/DOCX/封面)                                │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+        产物落盘：projects/<项目>/（JSON 中间产物，断点续传权威源）
+                  output/（成品）+ MySQL mozao（用户/余额/订单/skills）
+```
+
+**依赖方向**：`webapp` → `novel_gen`（core.py 通过 `_open_pipeline` 创建 `NovelPipeline`）；`novel_gen` 内部 `pipeline` → `llm`/`research`/`store`；`export` 独立。**novel_gen 不依赖 webapp**，可独立测试（mock provider 离线跑通）。
+
+## 2. 模块划分与职责
+
+### 2.1 novel_gen/（生成核心库）
+
+| 模块 | 职责 | 关键文件 |
+|---|---|---|
+| `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建 | `base.py`（抽象基类）、`factory.py`、`providers.py` |
+| `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告 | `research.py`、`sources.py`、`schemas.py` |
+| `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
+| `store/` | 项目落盘、状态机、断点续传、进度统计 | `project.py`（`ProjectStore`）、`schemas.py` |
+| `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
+| `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
+| `config.py` | 配置加载（YAML + 环境变量补 Key） | — |
+
+> 注意：README 旧文中提到的 `novel_gen/cli.py`、`__main__.py` 已不存在；当前产品入口为 Web 端 `run_web.py`。
+
+### 2.2 novel_gen/pipeline/（生成流水线，核心中的核心）
+
+| 文件 | 职责 |
+|---|---|
+| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑 |
+| `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
+| `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线 / 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
+| `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 |
+| `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |
+| `reviser.py` | 单章重写/审校入口 |
+| `repetition.py` | 防同质化常驻提示词、防重复 |
+| `templates.py` | 提示词模板组装 |
+
+### 2.3 webapp/（SaaS Web 服务）
+
+| 文件 | 职责 |
+|---|---|
+| `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
+| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑 |
+| `routers/` | 按域拆分路由（见 2.4） |
+| `db.py` | MySQL 数据层：连接池 + 全部 SQL（users/sessions/project_owner/recharges/commission_log/refund_requests/writing_skills/skill_market/style_roles/style_role_skills/user_skills） |
+| `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
+| `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
+| `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
+| `mailer.py` | 邮件通知（验证码/退款通知站长） |
+| `verify_code.py` | 邮箱验证码（6 位、10 分钟、60s 冷却、错 5 次作废） |
+| `outline_parser.py` | 上传大纲文档解析（.txt/.md/.docx → 结构化字段） |
+| `logger.py` | 统一日志（`logs/app.log`，5MB 轮转 ×3） |
+| `admin_cli.py` | 站长命令行管理（users/balance/recharge/agent/...） |
+
+### 2.4 webapp/routers/（9 个路由模块，共 96 路由）
+
+| 模块 | 域 | 说明 |
+|---|---|---|
+| `system.py` | 系统 | health、定价、解析、邮件状态等 |
+| `auth.py` | 账号 | 注册/登录/验证码/重置密码/绑定代理 |
+| `me.py` | 我的 | 个人资料、余额、返佣、我的技能 |
+| `skills.py` | Skills | 平台写作技能、技能市场 |
+| `style_roles.py` | 风格角色 | 风格师增删改 + 技能挂载（用户级 6 + 管理级 1） |
+| `projects_base.py` | 项目管理 | 列表/创建/详情/退费/归档/克隆/删除/下载（8） |
+| `projects_outline.py` | 大纲 | 三级大纲/快照/重生成（7） |
+| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13） |
+| `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
+| `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
+| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 |
+
+> 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
+
+### 2.5 前端 webapp/frontend/src/（Vue 3 + Element Plus + Vite）
+
+| 目录 | 职责 |
+|---|---|
+| `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools` 按域分文件 |
+| `router/index.js` | 路由表（登录/书案/详情/后台） |
+| `stores/` | Pinia：`auth.js`（登录态）、`project.js`（当前项目） |
+| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（8 板块后台） |
+| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`layouts/MainLayout` |
+| `style.css` | 全局样式（深夜书房 × AI 工坊视觉语言） |
+
+## 3. 核心类与接口（改代码先看这里）
+
+### 3.1 novel_gen
+- `NovelPipeline`（`pipeline/manager.py`）：整条流水线的唯一编排入口；webapp 通过 `core._open_pipeline(store)` 创建。
+- `ProjectStore`（`store/project.py`）：单项目门面——读/写产物文件、状态机推进、进度统计；**产物文件（JSON）是项目状态唯一权威来源**。
+- Agent 基类（`pipeline/agents/base.py`）：所有角色继承，统一实现"人设 + 挂载技能 → System Prompt"注入。
+- `llm/factory.py`：按 provider 字符串创建客户端；`core._resolve_llm` 决定用平台 Key 还是用户 BYOK Key。
+
+### 3.2 webapp（core.py 关键函数）
+- 鉴权链：`_require_user`（Header token）→ `_require_admin` → `_check_project_access`（项目归属/管理员全可见）。
+- 结算链：`_compute_settle`（统一口径：增量/整批）→ `_settle_incremental`（**先落盘结算基线再扣费**）→ `_grant_consume_commission`（返佣）。
+- 生成控制：`_acquire_slot`（全局信号量 3 并发）→ `_run_generation`/`_run_outline_only`/`_run_batch`（后台线程）→ `_mark_task`/`_clear_task`（task.json）。
+- 任务持久化：`_resume_interrupted_tasks`（lifespan 启动时重拾中断任务）。
+
+### 3.3 数据库（MySQL，库 `mozao`）
+| 表 | 用途 |
+|---|---|
+| `users` | 用户/余额/身份(is_admin)/折扣/邀请码 |
+| `sessions` | 登录会话 token |
+| `project_owner` | 项目归属（项目 ID ↔ 用户） |
+| `recharges` | 充值流水 |
+| `commission_log` | 代理返佣明细 |
+| `refund_requests` | 退款申请与处理 |
+| `writing_skills` / `skill_market` / `user_skills` | 平台写作技能 / 技能市场 / 用户挂载技能 |
+| `style_roles` / `style_role_skills` | 风格角色（人设）+ 挂载技能 |
+
+## 4. 关键数据流
+
+**创建项目**：前端表单（含费用预估）→ `POST /api/projects`（core 校验计费封顶）→ 落 `project_owner` + 创建 `projects/<id>/` 目录（config.json 快照，**不含 API Key**）。
+
+**生成**：`POST /api/projects/{id}/generate` → 鉴权/访问检查 → `_acquire_slot` → 落 `task.json` → 后台线程 `_run_generation`：`NovelPipeline` 逐阶段推进（调研→大纲→编辑质检→人物→逐章），每章完成写 `chapters/<n>.json` → 完成后结算 `_settle_incremental`（增量先落基线再扣费 + 返佣）→ `_clear_task`。
+
+**断点续传**：任何阶段中断，重启后 `_resume_interrupted_tasks` 扫描残留 `task.json` → 重新打开 pipeline → 逐阶段检查产物文件存在性 → 只补缺失部分（幂等）。
+
+**导出**：`projects/<id>/output/` 生成 TXT/EPUB/DOCX + 封面 PNG（限 5 次），同时拷到全局 `output/`。
+
+## 5. 关键机制（为什么这么设计）
+
+| 机制 | 设计 | 目的 |
+|---|---|---|
+| 产物文件 = 唯一权威 | 项目状态完全由 `projects/<id>/` 下 JSON 决定，DB 只存归属/订单 | 断点续传幂等、不重复扣 token |
+| 先落结算基线再扣费 | `_settle_incremental` 先写结算基线后扣余额 | 消除"扣费后崩溃重启重复扣费"窗口（宁可漏扣不重扣） |
+| 任务持久化 | 线程启动落 `task.json`，lifespan 重拾 | 服务重启不丢生成任务 |
+| `meta.json` 轻量缓存 | 项目列表页统计走 meta 缓存，章节未变化零文件读取 | 列表页性能 |
+| BYOK 加密落库 | Fernet，密文前缀 `enc:v1:`；`.llm_encrypt.key` 不入库 | DB 泄露不暴露用户自配 Key |
+| 登录限流 | `_LOGIN_MAX=8` / 5 分钟窗口 | 防爆破 |
+| 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
+
+## 6. 部署架构
+
+- 服务器：阿里云实例 `i-bp14oxtecrth3wbq6thc`，目录 `/opt/novel-gen`，`docker compose`（`mysql-mozao` + `novel-gen` 两个容器）。
+- 前端多阶段构建：Dockerfile 第一阶段 `node:20-alpine` 内 `npm ci && npm run build`，第二阶段拷 dist 进 Python 镜像（`python:3.13-slim`，内置 Noto CJK 字体、Asia/Shanghai）。**本地无需 build、dist 不入库**。
+- 数据卷：`projects`（中间产物）/ `output`（成品）/ `logs` / `data`（MySQL 数据，`NOVEL_DB_PATH=/data/novel_web.db` 由环境变量控制，容器实际走 mysql-mozao 服务）。
+- 反代：Caddy（`deploy/Caddyfile`，域名 https://mozao.click）。
+- 发版：`git archive master` → workbench upload → 解压 → `docker compose up -d --build`。详见 `AGENTS.md` §5。
+
+## 7. 改代码前的指引（防迷路）
+
+1. **新业务路由** → `webapp/routers/<对应域>.py`，数据操作走 `webapp/db.py` 已有函数或在其内新增。
+2. **改生成逻辑/提示词** → `novel_gen/pipeline/`（角色行为改 `agents/prompts/*.md`，编排改 `manager.py`）。
+3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core.py` 结算链。
+4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。
+5. 不确定某文件干什么 → 先查 `docs/filemap.md`；涉及历史决策 → 查 `docs/decisions.md`。

@@ -369,7 +369,6 @@ search:
 ```
 novel_gen/
 ├── config.py            # 配置层
-├── cli.py / __main__.py # 命令行入口
 ├── llm/                 # Provider 抽象（base/factory/providers）
 ├── research/            # 调研阶段（schemas/sources/research + 内置知识库）
 ├── pipeline/            # 生成流水线（templates/stages/memory/manager/editor）
@@ -388,6 +387,7 @@ webapp/
 ├── logger.py            # 统一日志（文件滚动 + 控制台）
 ├── admin_cli.py         # 站长命令行管理工具
 └── frontend/            # Vue 3 + Element Plus 前端（src/，产物 dist/）
+docs/                    # 架构/文件索引/决策记录（AI 助手知识库，见 AGENTS.md）
 tests/                   # 本地测试（已入库，见「测试」节说明）
 examples/config.yaml     # 示例配置
 projects/<项目>/         # 中间产物：调研/大纲/人物/章节json/摘要（断点续跑用）
@@ -418,6 +418,7 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
+- **2026-09-21**：第三次发版（master 08e8078）——① 生成提示词口头禅频次约束：`writer.md` 新增「同句口头禅每章最多 1-2 次、禁止章末机械复现」，`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（修复《我的地球Online日记》45 万字中"先记下来"出现 150 次的复读问题）；② dist 移出仓库（fix/dist-not-in-repo）：历史误提交的 `webapp/frontend/dist` 移除跟踪，Docker 多阶段构建在容器内自动 build，不依赖仓库 dist。部署验证：容器 healthy、域名 /api/health 200、主 JS 881KB 无白屏。
 - **2026-09-21**：第二次发版（master e89d563）——① 数据与代码隔离：新增 `novel_gen/utils/paths.py`（DATA_DIR 环境变量解析，默认代码根）+ `novel_gen/utils/migrate.py`（复制→校验→删源迁移工具），`webapp/core.py` / `logger.py` / `novel_gen/store/project.py` / `novel_gen/export/book_formats.py` 4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁移至 `D:\NovelData`（projects/output/logs），代码根零残留，新增 `tests/test_paths.py` 16 用例；② 前端导出按钮：项目详情页「导出 ▾」支持 TXT/EPUB/DOCX/MD（blob 下载），顺带修复 `/projects/{id}/download` 缺失 `import shutil` 的历史 bug（此前前端从未调用该接口，未暴露）；③ 新建目标字数下限修复：表单 `el-input-number :min=10000` 会把低于 1 万字的输入钳回 1 万，改为 min=0 允许短篇；④ 前端产物重建：index.html 与构建产物 hash 对齐，修复白屏报错。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
 - **2026-09-20**：部署加固（deploy/compose-projects-vol，commit e279eb5）——`docker-compose.yml` 补挂 `novel_projects:/app/projects` 命名卷：服务器容器实际已挂载该卷但 compose 漏写，任何 `docker compose up` 重建容器都会去掉挂载导致项目目录从新容器消失。补写后重建无缝。**同日完成首次服务器部署**（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen，docker compose：mysql-mozao + novel-gen），部署后验证：项目数据（projects 卷）无缝保留、域名 https://mozao.click 200、主 JS 881KB 无白屏、注册→登录→建书→详情→登出全链路冒烟通过、BYOK 加密列迁移生效（llm_provider/llm_api_key/llm_base_url/llm_model）、`.llm_encrypt.key` 已随部署放置服务器。
 - **2026-09-21**（feat/style-role-agent）：⑫ 写作风格抽象为 agent 角色（StylistAgent 风格师）——新增 `style_roles`（平台内置+用户自建，role_prompt 人设）/ `style_role_skills`（挂载 admin 平台技能 + user 我的技能）两张表与迁移，启动时从 skills_library/style-references 幂等种子化 4 个默认风格角色；NovelConfig/ProjectStore 持久化 style_role_id/style_role_prompt（创建项目快照）；写手 ChapterWriter 与扩写路径注入风格人设（manager._with_stylist）；新增 7 个风格角色路由（用户级 6 + 管理级 1）；前端建书可选风格角色、工具面板支持风格角色增删改与技能挂载；测试 29→44 全绿，端到端冒烟验证风格人设+挂载技能真实进入正文系统提示。

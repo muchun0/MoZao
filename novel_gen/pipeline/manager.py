@@ -22,7 +22,7 @@ from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         expand_outline_prompt, world_from_content_prompt,
                         verify_prompt)
 from .editor import EditorReviewer
-from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent
+from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent
 from webapp.logger import get_logger
 
 logger = get_logger("pipeline")
@@ -39,6 +39,8 @@ class NovelPipeline:
         self.architect = ArchitectAgent(cfg, llm, store)
         self.writer = WriterAgent(cfg, llm, store, self.memory)
         self.reviewer = ReviewerAgent(cfg, llm, store)
+        # 写作风格角色（风格师）：项目选了风格角色时承载其文风人设与挂载技能
+        self.stylist = StylistAgent(cfg, llm, store)
         # 兼容旧引用（现有方法继续用）
         self.outline_gen = OutlineGenerator(cfg, llm, store)
         self.world_gen = WorldGenerator(cfg, llm, store)
@@ -480,6 +482,14 @@ class NovelPipeline:
             print(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
         logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
 
+    def _with_stylist(self, system: str) -> str:
+        """正文生成统一叠加风格角色人设（项目选了风格角色时）。"""
+        if self.stylist.is_active:
+            persona = self.stylist.persona_prefix()
+            if persona:
+                return f"{persona}\n\n{system}"
+        return system
+
     def run_expand_existing(self, silent: bool = False) -> None:
         """扩写已有章节：对用户章节（或 expand_targets 指定章节）扩写到单章目标字数。
         保留原剧情/对话/人设，只扩充细节；扩写后覆盖正文并重生成摘要。"""
@@ -507,6 +517,7 @@ class NovelPipeline:
             logger.info("扩写章节: no=%d from=%d to=%d", ch.no, len(ch.content), target_words)
             try:
                 system, user = expand_chapter_prompt(self.cfg, ch.no, ch.title, ch.content, target_words)
+                system = self._with_stylist(system)
                 text = self.llm.chat(system, user, temperature=0.8)
                 text = _strip_html_tags(text)
                 if len(text) > len(ch.content) + 50:

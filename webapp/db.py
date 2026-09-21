@@ -221,6 +221,32 @@ _SKILL_MARKET = """CREATE TABLE IF NOT EXISTS skill_market (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
+_STYLE_ROLES = """CREATE TABLE IF NOT EXISTS style_roles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL DEFAULT 0,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(255) DEFAULT '',
+    role_prompt TEXT,
+    is_active INT NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL,
+    KEY idx_sr_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+_STYLE_ROLE_SKILLS = """CREATE TABLE IF NOT EXISTS style_role_skills (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    role_id INT NOT NULL,
+    skill_type VARCHAR(8) NOT NULL DEFAULT 'admin',
+    skill_id INT NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL,
+    UNIQUE KEY uk_srs_role_skill (role_id, skill_type, skill_id),
+    KEY idx_srs_role (role_id),
+    KEY idx_srs_skill (skill_type, skill_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
 _USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -237,7 +263,8 @@ _USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
 
 def init_db() -> None:
     with _connect() as conn:
-        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET):
+        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
+                    _STYLE_ROLES, _STYLE_ROLE_SKILLS):
             conn.execute(ddl)
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
@@ -276,6 +303,20 @@ def init_db() -> None:
         if "role" not in scol:
             conn.execute("ALTER TABLE writing_skills ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT ''")
             conn.execute("ALTER TABLE writing_skills ADD KEY idx_ws_role (role)")
+        # style_roles 加 user_id 归属：0=平台内置，>0=用户自建
+        sr_cols = _column_names(conn, "style_roles")
+        if "user_id" not in sr_cols:
+            conn.execute("ALTER TABLE style_roles ADD COLUMN user_id INT NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE style_roles ADD KEY idx_sr_user (user_id)")
+        # style_role_skills 加 skill_type：admin=writing_skills / user=user_skills
+        srs_cols = _column_names(conn, "style_role_skills")
+        if "skill_type" not in srs_cols:
+            conn.execute("ALTER TABLE style_role_skills ADD COLUMN skill_type VARCHAR(8) NOT NULL DEFAULT 'admin'")
+            try:
+                conn.execute("ALTER TABLE style_role_skills DROP INDEX uk_srs_role_skill")
+            except Exception:
+                pass
+            conn.execute("ALTER TABLE style_role_skills ADD UNIQUE KEY uk_srs_role_skill (role_id, skill_type, skill_id)")
         # 老用户补邀请码（无码则按 id 生成 INV+id）
         rows = conn.execute(
             "SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
@@ -294,6 +335,11 @@ def init_db() -> None:
                     conn.execute("UPDATE users SET llm_api_key=%s WHERE id=%s", (enc, r["id"]))
                 else:
                     logger.warning("BYOK Key 加密迁移跳过: user_id=%d", r["id"])
+        # 风格角色种子化（幂等：仅当表为空时从 skills_library/style-references 导入）
+        try:
+            _seed_style_roles()
+        except Exception as e:
+            logger.warning("风格角色种子化跳过（不影响启动）: %s", e)
 
 
 def _make_invite_code(user_id: int) -> str:
@@ -817,8 +863,10 @@ def handle_refund(request_id: int, action: str, admin_note: str = "") -> tuple[b
         return False, "未知操作"
 
 
-# 模块加载时初始化（建表 + 老数据补全）
-init_db()
+# 模块加载时初始化（建表 + 老数据补全）。
+# 注意：必须放在全部函数定义之后——init_db 内的 _seed_style_roles 等
+# 种子化函数定义在本文件尾部，若提前调用会因未定义而失败。
+# init_db() 见文件末尾。
 
 
 # ---------- 写作风格 Skill ----------
@@ -1007,3 +1055,222 @@ def unpublish_market_skill(market_id: int, author_id: int) -> bool:
     with _connect() as conn:
         conn.execute("DELETE FROM skill_market WHERE id=%s", (market_id,))
     return True
+
+
+# ---------- 写作风格角色（Style Role：把写作风格抽象为 agent 角色，可挂载技能） ----------
+
+def list_style_roles(only_active: bool = False, owner_id: int | None = None,
+                     with_skills: bool = True) -> list[dict]:
+    """列出风格角色。
+
+    owner_id=None：全部（管理后台）；
+    owner_id=N：平台内置（user_id=0）+ 该用户自建（user_id=N）。
+    with_skills=True 时附带每个角色挂载的技能名列表。
+    """
+    sql = "SELECT * FROM style_roles"
+    conds: list[str] = []
+    params: list = []
+    if only_active:
+        conds.append("is_active=1")
+    if owner_id is not None:
+        conds.append("(user_id=0 OR user_id=%s)")
+        params.append(owner_id)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY sort_order ASC, id ASC"
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        result = [dict(r) for r in rows]
+        if with_skills and result:
+            for r in result:
+                r["skills"] = [dict(s) for s in conn.execute(
+                    "SELECT rs.skill_type, rs.skill_id, "
+                    "CASE WHEN rs.skill_type='user' THEN us.name ELSE s.name END AS skill_name "
+                    "FROM style_role_skills rs "
+                    "LEFT JOIN writing_skills s ON rs.skill_type='admin' AND s.id=rs.skill_id "
+                    "LEFT JOIN user_skills us ON rs.skill_type='user' AND us.id=rs.skill_id "
+                    "WHERE rs.role_id=%s ORDER BY rs.sort_order ASC, rs.id ASC",
+                    (r["id"],)).fetchall()]
+    return result
+
+
+def get_style_role(role_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM style_roles WHERE id=%s", (role_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_style_role(user_id: int, name: str, description: str = "", role_prompt: str = "",
+                      is_active: int = 1, sort_order: int = 0) -> int:
+    """创建风格角色。user_id=0 表示平台内置（管理员创建/种子化）。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO style_roles (user_id, name, description, role_prompt, is_active, sort_order, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, name, description, role_prompt, is_active, sort_order, time.time()))
+        return cur.lastrowid
+
+
+def update_style_role(role_id: int, **fields) -> bool:
+    if not fields:
+        return False
+    allowed = {"name", "description", "role_prompt", "is_active", "sort_order"}
+    sets = []
+    vals = []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=%s")
+            vals.append(v)
+    if not sets:
+        return False
+    vals.append(role_id)
+    with _connect() as conn:
+        cur = conn.execute(f"UPDATE style_roles SET {','.join(sets)} WHERE id=%s", vals)
+        return cur.rowcount > 0
+
+
+def delete_style_role(role_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM style_role_skills WHERE role_id=%s", (role_id,))
+        conn.execute("DELETE FROM style_roles WHERE id=%s", (role_id,))
+
+
+def list_style_role_skills(role_id: int) -> list[dict]:
+    """某风格角色已挂载的技能（含 prompt_append，供组装提示词）。
+
+    返回 [{skill_type, skill_id, skill_name, prompt_append, sort_order}]。
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT rs.skill_type, rs.skill_id, rs.sort_order, "
+            "CASE WHEN rs.skill_type='user' THEN us.name ELSE s.name END AS skill_name, "
+            "CASE WHEN rs.skill_type='user' THEN us.prompt_append ELSE s.prompt_append END AS prompt_append "
+            "FROM style_role_skills rs "
+            "LEFT JOIN writing_skills s ON rs.skill_type='admin' AND s.id=rs.skill_id "
+            "LEFT JOIN user_skills us ON rs.skill_type='user' AND us.id=rs.skill_id "
+            "WHERE rs.role_id=%s ORDER BY rs.sort_order ASC, rs.id ASC",
+            (role_id,)).fetchall()
+    return [dict(r) for r in rows if r.get("skill_name")]
+
+
+def mount_skill_to_role(role_id: int, skill_type: str, skill_id: int) -> int:
+    """把技能挂载到风格角色。幂等：已挂载返回已有 id。
+
+    skill_type='admin' 指 writing_skills（平台技能）；'user' 指 user_skills（用户自建）。
+    """
+    role = get_style_role(role_id)
+    if not role:
+        raise RuntimeError("风格角色不存在")
+    skill_type = "user" if skill_type == "user" else "admin"
+    if skill_type == "admin":
+        if not get_skill(skill_id):
+            raise RuntimeError("写作技能不存在")
+    else:
+        # 用户技能必须存在且属于该角色所有者（平台角色只能由管理员挂用户技能的场景除外）
+        with _connect() as conn:
+            us = conn.execute(
+                "SELECT id FROM user_skills WHERE id=%s AND user_id=%s",
+                (skill_id, role["user_id"])).fetchone()
+        if not us:
+            raise RuntimeError("用户技能不存在或不属于你")
+    with _connect() as conn:
+        old = conn.execute(
+            "SELECT id FROM style_role_skills WHERE role_id=%s AND skill_type=%s AND skill_id=%s",
+            (role_id, skill_type, skill_id)).fetchone()
+        if old:
+            return old["id"]
+        cur = conn.execute(
+            "INSERT INTO style_role_skills (role_id, skill_type, skill_id, sort_order, created_at) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (role_id, skill_type, skill_id, 0, time.time()))
+        return cur.lastrowid
+
+
+def unmount_skill_from_role(role_id: int, skill_type: str, skill_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM style_role_skills WHERE role_id=%s AND skill_type=%s AND skill_id=%s",
+                     (role_id, skill_type, skill_id))
+
+
+def get_style_role_assembled(role_id: int) -> dict | None:
+    """组装风格角色完整提示词：角色人设 + 已挂载技能，供创建项目时快照进 config。
+
+    返回 {"id", "name", "description", "role_prompt", "skills_text", "assembled"}；
+    角色不存在或未启用返回 None。
+    """
+    role = get_style_role(role_id)
+    if not role or not role.get("is_active"):
+        return None
+    parts = [role.get("role_prompt") or ""]
+    blocks = []
+    for sk in list_style_role_skills(role_id):
+        if sk.get("prompt_append"):
+            tag = "用户技能" if sk.get("skill_type") == "user" else "技能"
+            blocks.append(f"【{tag}：{sk['skill_name']}】\n{sk['prompt_append']}")
+    skills_text = "\n\n".join(blocks)
+    if skills_text:
+        parts.append("## 本风格角色挂载技能（必须严格遵循）\n" + skills_text)
+    return {
+        "id": role["id"],
+        "name": role["name"],
+        "description": role.get("description", ""),
+        "role_prompt": role.get("role_prompt", ""),
+        "skills_text": skills_text,
+        "assembled": "\n\n".join(p for p in parts if p.strip()),
+    }
+
+
+def _seed_style_roles() -> None:
+    """幂等种子化：style_roles 为空时，把 skills_library/style-references/*.md
+    导入为平台内置风格角色（user_id=0，人设取文档全文，元信息取 frontmatter）。"""
+    with _connect() as conn:
+        cnt = conn.execute("SELECT COUNT(*) AS c FROM style_roles").fetchone()["c"]
+        if cnt:
+            return
+    from pathlib import Path
+    lib_dir = Path(__file__).resolve().parent.parent / "skills_library" / "style-references"
+    if not lib_dir.is_dir():
+        return
+    files = sorted(lib_dir.glob("*.md"))
+    if not files:
+        return
+    for f in files:
+        text = f.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        title, source = _parse_frontmatter(text)
+        # 名称：frontmatter title 优先，否则文件名去掉日期后缀
+        stem = f.stem
+        for suf in ("-20260916", "-20260917"):
+            if stem.endswith(suf):
+                stem = stem[: -len(suf)]
+                break
+        name = (title or stem).strip()[:80]
+        desc = f"来源：{source or 'skills_library'}"
+        create_style_role(user_id=0, name=name, description=desc[:255], role_prompt=text)
+        logger.info("种子化风格角色: %s <- %s", name, f.name)
+
+
+def _parse_frontmatter(text: str) -> tuple[str, str]:
+    """解析 Markdown 头部 YAML frontmatter，返回 (title, source)。"""
+    title = ""
+    source = ""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end > 0:
+            head = text[3:end]
+            for line in head.splitlines():
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    k = k.strip().lower()
+                    v = v.strip().strip("'\"")
+                    if k == "title" and not title:
+                        title = v
+                    elif k == "source" and not source:
+                        source = v
+    return title, source
+
+
+# 模块加载时初始化（建表 + 老数据补全 + 风格角色种子化）。
+# 必须在全部函数定义之后调用（_seed_style_roles 定义于本文件末尾）。
+init_db()

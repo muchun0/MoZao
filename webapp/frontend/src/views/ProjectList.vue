@@ -36,6 +36,16 @@
         <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
         <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="10000" :step="5000" /></el-form-item>
         <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
+        <el-form-item label="风格角色">
+          <el-select v-model="form.style_role_id" clearable placeholder="可选：一键套用写作风格角色（人设+技能）">
+            <el-option v-for="r in styleRoles" :key="r.id" :label="r.name" :value="r.id">
+              <div style="display:flex;justify-content:space-between;gap:12px">
+                <span>{{ r.name }}</span>
+                <small class="muted">{{ r.user_id ? '我的' : '平台' }}</small>
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
         <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
@@ -80,6 +90,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { listProjects, createProject, archiveProject, cloneProject, deleteProject } from '../api/project'
+import { listStyleRoles } from '../api/tools'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const list = ref([])
@@ -89,10 +100,11 @@ const filter = ref('')
 const sort = ref('created')
 const showCreate = ref(false)
 const creating = ref(false)
+const styleRoles = ref([])
 
 const form = ref({
   title: '', genre: '', total_words: 25000, style: '', premise: '',
-  mode: 'auto', high_quality_mode: false,
+  mode: 'auto', high_quality_mode: false, style_role_id: 0,
   existing_words: 0, user_content: '', expand_input: '',
 })
 const fileInput = ref(null)
@@ -123,6 +135,13 @@ async function load() {
   } catch (e) {
     ElMessage.error('加载失败')
   } finally { loading.value = false }
+}
+
+async function loadStyleRoles() {
+  try {
+    const res = await listStyleRoles()
+    styleRoles.value = res.roles || []
+  } catch (e) { /* 风格角色加载失败不阻塞建书 */ }
 }
 
 const filtered = computed(() => {
@@ -175,7 +194,7 @@ async function doDelete(p) {
   load()
 }
 
-onMounted(load)
+onMounted(() => { load(); loadStyleRoles() })
 </script>
 
 <style scoped>

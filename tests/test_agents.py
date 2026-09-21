@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from novel_gen.pipeline.agents import (
-    BaseAgent, ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent,
+    BaseAgent, ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent,
 )
 from novel_gen.pipeline.agents.base import _PROMPTS_DIR
 
@@ -35,6 +35,8 @@ def fake_cfg():
     cfg.custom_prompt = ""
     cfg.high_quality_mode = False
     cfg.memory_window = 5
+    cfg.style_role_id = 0
+    cfg.style_role_prompt = ""
     return cfg
 
 
@@ -57,6 +59,7 @@ def fake_store():
     (ArchitectAgent, "architect"),
     (WriterAgent, "writer"),
     (ReviewerAgent, "reviewer"),
+    (StylistAgent, "stylist"),
 ])
 def test_agent_role_name(agent_cls, expected_role, fake_cfg, fake_llm, fake_store):
     """每个 agent 的 role_name 必须和类名对应。"""
@@ -69,7 +72,7 @@ def test_agent_role_name(agent_cls, expected_role, fake_cfg, fake_llm, fake_stor
 
 def test_prompt_files_exist():
     """四个角色的 prompt 文件都必须存在。"""
-    for role in ("researcher", "architect", "writer", "reviewer"):
+    for role in ("researcher", "architect", "writer", "reviewer", "stylist"):
         p = _PROMPTS_DIR / f"{role}.md"
         assert p.exists(), f"缺少 prompts/{role}.md"
         assert p.stat().st_size > 50, f"{role}.md 内容太少，可能是空文件"
@@ -150,3 +153,52 @@ def test_manager_has_all_agents():
     assert "ArchitectAgent" in src
     assert "WriterAgent" in src
     assert "ReviewerAgent" in src
+    assert "StylistAgent" in src
+
+# ---------- 4. StylistAgent（写作风格角色） ----------
+
+def test_stylist_inactive_without_role(fake_cfg, fake_llm, fake_store):
+    """未选风格角色：is_active=False，persona 为 prompts/stylist.md 基础底色。"""
+    agent = StylistAgent(fake_cfg, fake_llm, fake_store)
+    assert not agent.is_active
+    persona = agent.persona_prefix()
+    assert "风格师" in persona or "Stylist" in persona
+
+
+def test_stylist_active_with_role(fake_cfg, fake_llm, fake_store):
+    """选了风格角色：is_active=True，role_prompt 叠加 DB 组装的人设（含挂载技能）。"""
+    fake_cfg.style_role_prompt = "## 人设\n叙事克制，多用感官细节。\n## 本风格角色挂载技能（必须严格遵循）\n【技能：短句流】多用短句"
+    agent = StylistAgent(fake_cfg, fake_llm, fake_store)
+    assert agent.is_active
+    prompt = agent.role_prompt
+    assert "人设" in prompt and "短句流" in prompt
+    # 基础底色仍在（叠加而非替换）
+    assert "风格师" in prompt or "Stylist" in prompt
+
+
+def test_writer_injects_stylist_persona(fake_cfg, fake_llm, fake_store):
+    """写手 ChapterWriter 的角色提示词必须包含风格角色人设（当选中时）。"""
+    fake_cfg.style_role_id = 1
+    fake_cfg.style_role_prompt = "人设A：克苏鲁悬疑克制风，多用氛围细节"
+    with patch.object(BaseAgent, "_role_skill_append", return_value=""):
+        writer = WriterAgent(fake_cfg, fake_llm, fake_store, MagicMock())
+    role_prompt = writer._writer.role_prompt
+    assert "人设A：克苏鲁悬疑克制风" in role_prompt
+    assert "风格师" in role_prompt or "Stylist" in role_prompt
+
+
+def test_manager_with_stylist(fake_cfg, fake_llm, fake_store):
+    """扩写正文路径：_with_stylist 在选中风格角色时把其人设拼到系统提示最前。"""
+    from novel_gen.pipeline.manager import NovelPipeline
+    fake_cfg.style_role_prompt = "人设X：克苏鲁悬疑克制风"
+    pl = NovelPipeline(fake_cfg, fake_llm, fake_store)
+    out = pl._with_stylist("原始系统提示")
+    assert "人设X：克苏鲁悬疑克制风" in out
+    assert "原始系统提示" in out
+
+
+def test_manager_without_stylist_unchanged(fake_cfg, fake_llm, fake_store):
+    """未选风格角色：_with_stylist 原样返回，不注入任何内容。"""
+    from novel_gen.pipeline.manager import NovelPipeline
+    pl = NovelPipeline(fake_cfg, fake_llm, fake_store)
+    assert pl._with_stylist("原始系统提示") == "原始系统提示"

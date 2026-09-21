@@ -1,4 +1,4 @@
-﻿# 墨造 · AI 小说创作平台 — 项目 Wiki
+# 墨造 · AI 小说创作平台 — 项目 Wiki
 
 > 项目长期知识库，记录产品、架构、业务、部署、流程与已知问题。
 > 密钥类信息一律不入库（见 .env，已被 .gitignore 排除）。
@@ -27,7 +27,7 @@
 | 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分） |
 | 封面 | 硅基流动 ERNIE-Image-Turbo 一体封面；每本限 5 次 |
 | 作品管理 | 章节阅读/编辑/重写、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
-| Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装） |
+| Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
 | 代理分销 | 一级代理：本人消费 8 折 + 下级消费 10% 返佣 |
 | 退款 | 用户申请余额退款 → 邮件通知站长 → 人工处理 |
@@ -60,11 +60,12 @@ D:\PythonProjects\DouBao\
 │   │   ├── stages.py           # 大纲/世界观/章节写作
 │   │   ├── reviser.py          # 自动修订 + Reader 审校
 │   │   ├── memory.py           # 章节记忆
-│   │   └── agents/             # 5 个角色
+│   │   └── agents/             # 6 个角色（含 StylistAgent 风格师）
 │   │       ├── base.py         # BaseAgent（按 role 挂 skill）
 │   │       ├── researcher.py   # 调研员
 │   │       ├── architect.py    # 架构师
 │   │       ├── writer.py       # 写手
+  │   │       ├── stylist.py     # 风格师（写作风格角色，可挂载技能）
 │   │       ├── reviewer.py    # 审校
 │   │       ├── reader.py       # 读者（追更体验）
 │   │       └── prompts/      # 各角色独立提示词
@@ -75,7 +76,7 @@ D:\PythonProjects\DouBao\
 └── webapp/
     ├── server.py               # FastAPI 组装壳（导入路由注册 + 静态托管 + 启动入口）
     ├── core.py                 # 核心层：共享状态/鉴权/项目工具/结算/生成线程/任务持久化
-    ├── routers/                # 按域拆分路由（90 个）：system/auth/me/skills/admin
+    ├── routers/                # 按域拆分路由（97 个）：system/auth/me/skills/admin/style_roles
     │                           #   + projects 域 5 子模块：base/outline/chapters/world/generation
     ├── db.py                   # MySQL 数据层 + 自动迁移
     ├── secret_encrypt.py       # 敏感配置加密（BYOK Key，Fernet）
@@ -99,6 +100,7 @@ D:\PythonProjects\DouBao\
 | Reader | reader.py | 追更读者视角审校（代入感/爽点/钩子） | reader |
 
 **Skill 挂载**：`writing_skills.role` 空=全局；填对应 role 只注入该角色；用户 `user_skills` 同理。
+**风格角色**：`style_roles`（user_id=0 平台内置 / >0 用户自建，role_prompt 人设）+ `style_role_skills`（role_id ↔ skill_type(admin/user)/skill_id 挂载关系）；建书选风格角色后组装人设+挂载技能快照进 config（style_role_prompt），由 StylistAgent 注入写手正文与扩写路径。
 
 ---
 
@@ -154,6 +156,8 @@ D:\PythonProjects\DouBao\
 | writing_skills | id, name, description, prompt_append, is_active, role, sort_order, created_at |
 | user_skills | id, user_id, name, description, prompt_append, role, is_active, **market_id**, created_at |
 | skill_market | id, author_id, name, description, prompt_append, role, downloads, created_at |
+| style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, is_active, sort_order, created_at |
+| style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头
 - `init_db()` 启动时自动建表 + 增量迁移
@@ -248,7 +252,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等：增量/整批均先落 settle 标记再扣费（宁可漏扣不重扣）
 - BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
-- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent 共 29 个用例，本地全绿）
+- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色共 44 个用例，本地全绿）
 
 ---
 

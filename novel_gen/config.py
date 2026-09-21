@@ -110,6 +110,8 @@ class NovelConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容
+    style_role_id: int = 0            # 写作风格角色（style_roles.id），0=不选
+    style_role_prompt: str = ""       # 风格角色人设+挂载技能组装后的提示词（创建项目时快照）
     high_quality_mode: bool = False   # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     # ---- 节奏控制参数 ----
     pacing_density: str = "medium"    # 爽点密度：low(慢热)/medium(适中)/high(密集)

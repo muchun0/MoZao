@@ -67,6 +67,12 @@
 | POST | /api/skills/market | 是 | 发布我的 Skill 到市场（body: source_id） |
 | POST | /api/skills/market/{id}/install | 是 | 安装市场 Skill 到我的（幂等） |
 | DELETE | /api/skills/market/{id} | 是 | 作者下架市场 Skill |
+| GET | /api/style-roles | 是 | 风格角色列表（平台内置 + 我的，建书时选） |
+| POST | /api/style-roles | 是 | 新建风格角色（name/description/role_prompt） |
+| PUT | /api/style-roles/{id} | 是 | 编辑我的风格角色 |
+| DELETE | /api/style-roles/{id} | 是 | 删除我的风格角色 |
+| POST | /api/style-roles/{id}/skills | 是 | 挂载技能到风格角色（body: skill_type=admin/user, skill_id） |
+| DELETE | /api/style-roles/{id}/skills/{skill_type}/{skill_id} | 是 | 卸载风格角色技能 |
 
 ---
 
@@ -185,6 +191,7 @@
 | POST | /api/admin/skills | 新建全局 Skill |
 | PUT | /api/admin/skills/{id} | 编辑全局 Skill |
 | DELETE | /api/admin/skills/{id} | 删除全局 Skill |
+| GET | /api/admin/style-roles | 全部风格角色（含用户自建） |
 
 ---
 

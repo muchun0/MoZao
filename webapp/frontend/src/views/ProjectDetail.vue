@@ -3,9 +3,10 @@
     <div class="detail-head">
       <div>
         <h2>{{ project?.config?.title || '加载中…' }}</h2>
-        <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px" :status="genDone?'success':''" />
+        <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px"
+          :status="genDone ? 'success' : ''" :indeterminate="!genDone && inPrePhase" :duration="2" />
         <span v-if="genError" class="gen-error">{{ genError }}</span>
-        <span v-else-if="generating && !genDone" class="gen-status">{{ genStatus }}</span>
+        <span v-else-if="generating && !genDone && genStatus" class="gen-status">{{ genStatus }}</span>
       </div>
       <div class="step-actions">
         <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
@@ -179,6 +180,21 @@ let genStartTs = 0
 const regenNo = ref(0)
 // 生成完成后自增，强制重新挂载 OutlineEditor（它只在 onMounted 时拉一次大纲）
 const outlineReloadKey = ref(0)
+// 当前后端阶段（research/outline/editor_review/world/writing）：前置阶段用动画进度条
+const currentPhase = ref('')
+const PRE_PHASES = ['research', 'outline', 'editor_review', 'world']
+const inPrePhase = computed(() => PRE_PHASES.includes(currentPhase.value))
+
+// 点击启动类按钮后立即给出进行中的进度条，不必等 3 秒后轮询
+function beginGenUI(statusText) {
+  generating.value = true
+  genDone.value = false
+  genError.value = ''
+  genPct.value = 0
+  genStatus.value = statusText
+  currentPhase.value = ''
+  genStartTs = 0  // 重新计时
+}
 
 // 按分卷分组的章节菜单：以 outline.volumes 为骨架，已生成章节按 no 合并状态
 const groupedChapters = computed(() => {
@@ -264,6 +280,7 @@ async function checkStatus() {
     const s = await getStatus(pid)
     generating.value = s.running
     genDone.value = !s.running && s.chapters_done > 0
+    currentPhase.value = (s.state && s.state.phase) || ''
     if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
     genError.value = s.error || ''
     genStatus.value = s.running && !s.error ? phaseText(s) : ''
@@ -279,6 +296,7 @@ function startPolling() {
     try {
       const s = await getStatus(pid)
       generating.value = s.running
+      currentPhase.value = (s.state && s.state.phase) || ''
       if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
       genError.value = s.error || ''
       genStatus.value = s.running && !s.error ? phaseText(s) : ''
@@ -310,7 +328,7 @@ async function refreshAfterGen() {
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     outlineReloadKey.value++
-    ElMessage.success('大纲与世界观已生成完成，可在「大纲」「人物/世界观」查看')
+    ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
     ElMessage.error('数据刷新失败，请手动刷新页面')
   }
@@ -350,25 +368,24 @@ async function saveEdit() {
 }
 
 async function runOutline() {
-  try { await genOutline(pid); ElMessage.success('已开始生成大纲与世界观，完成后可在「大纲」「人物/世界观」查看/编辑'); startPolling() }
+  try { await genOutline(pid); ElMessage.success('已开始生成大纲与世界观，完成后可在「大纲」「人物/世界观」查看/编辑'); beginGenUI('正在启动大纲生成…'); startPolling() }
   catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
 }
 async function doRegenOutline() {
   try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
-  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); startPolling() }
+  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); beginGenUI('正在启动重生成大纲…'); startPolling() }
   catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function doRegenWorld() {
   try { await ElMessageBox.confirm('重生成世界观会覆盖现有世界设定，已锁定内容不受影响。继续？', '重生成世界观', { type: 'warning' }) } catch { return }
-  try { await regenWorld(pid); ElMessage.success('已开始重生成世界观'); startPolling() }
+  try { await regenWorld(pid); ElMessage.success('已开始重生成世界观'); beginGenUI('正在启动重生成世界观…'); startPolling() }
   catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function startGen() {
   try {
     await startGenerate(pid, {})
     ElMessage.success('已开始生成')
-    generating.value = true
-    genDone.value = false
+    beginGenUI('正在启动写作…')
     startPolling()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '启动失败')

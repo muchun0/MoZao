@@ -18,6 +18,17 @@
           <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
             {{ generating && !genDone ? '生成中…' : '开始写章节' }}
           </el-button>
+          <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
+            <el-button :disabled="generating && !genDone" :loading="exporting">导出 ▾</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="txt">TXT 文本</el-dropdown-item>
+                <el-dropdown-item command="epub">EPUB 电子书</el-dropdown-item>
+                <el-dropdown-item command="docx">DOCX Word</el-dropdown-item>
+                <el-dropdown-item command="md">Markdown</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </div>
     </div>
@@ -118,7 +129,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, startGenerate, cancelGenerate, getStatus } from '../api/project'
+import { getProject, startGenerate, cancelGenerate, getStatus, downloadProject } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter } from '../api/novel'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -163,6 +174,7 @@ const genDone = ref(false)
 const genPct = ref(0)
 const genStatus = ref('')
 const genError = ref('')
+const exporting = ref(false)
 let genStartTs = 0
 const regenNo = ref(0)
 
@@ -344,6 +356,38 @@ async function cancelGen() {
     generating.value = false
     if (pollTimer) clearInterval(pollTimer)
   } catch (e) { ElMessage.error('取消失败') }
+}
+
+// blob 错误响应（如 404 detail 以 JSON 返回时，axios 会把它包成 Blob）转成可读信息
+async function blobErrorDetail(e) {
+  try {
+    const d = e?.response?.data
+    if (d && typeof d.text === 'function') {
+      const t = await d.text()
+      try { return JSON.parse(t)?.detail || t } catch { return t }
+    }
+    return e?.response?.data?.detail || e?.message || ''
+  } catch { return '' }
+}
+
+async function doDownload(fmt) {
+  exporting.value = true
+  try {
+    const blob = await downloadProject(pid, fmt)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const title = (project.value?.config?.title || pid).replace(/[\\/:*?"<>|]/g, '_')
+    a.href = url
+    a.download = `${title}.${fmt}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${fmt.toUpperCase()}`)
+  } catch (e) {
+    const detail = await blobErrorDetail(e)
+    ElMessage.error(detail || `导出 ${fmt.toUpperCase()} 失败，请确认已生成章节`)
+  } finally { exporting.value = false }
 }
 
 function statusType(s) {

@@ -1,9 +1,97 @@
 # -*- coding: utf-8 -*-
 """projects_base路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 import shutil  # noqa: F401  下载导出/删除/克隆均需复制与清理
+import re  # noqa: F401  用户大纲导入：标题/章节解析
 
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+
+
+def _import_user_outline(store, text: str) -> bool:
+    """把用户上传的大纲【原样导入】项目（以用户传入为准，不做 AI 重写）。
+
+    解析大纲文本为结构化 Outline（书名/总纲/章节），写入 outline.json，
+    让项目详情「大纲」tab 立即可见可编辑；AI 重写仅发生在用户显式点击
+    「重生成大纲」时（该按钮删除旧大纲后才走 LLM 扩写）。
+    识别不到任何章节标题时返回 False（不落盘，保留「生成大纲与世界观」入口）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # 书名：取首个非空行（去掉 markdown # 前缀与书名号）
+    title = re.sub(r"^#+\s*", "", lines[0]).strip("《》 \t") if lines else ""
+
+    intro = ""
+    plans = []
+    for ch in split_chapters(text):
+        body = (ch.get("content") or "").strip()
+        if not ch.get("title"):
+            # 无标题段落（通常是总纲/前导说明）归入总纲，不占章节
+            intro = (intro + "\n" + body).strip() if intro else body
+            continue
+        plans.append(ChapterPlan(
+            no=len(plans) + 1,
+            title=ch["title"],
+            goal=body,  # 章节正文完整保留（以用户传入为准），用户可继续编辑
+        ))
+    if not plans:
+        # 未识别到章节结构：不落盘，避免空大纲阻塞「生成大纲与世界观」
+        logger.info("用户大纲未识别到章节结构，跳过导入: project=%s", store.dir.name)
+        return False
+    outline = Outline(
+        title=title or store.load_config().effective_title(),
+        intro=intro,
+        chapters=plans,
+    )
+    store.save_outline(outline)
+    logger.info("导入用户大纲: project=%s title=%s chapters=%d",
+                store.dir.name, outline.title, len(outline.chapters))
+    return True
+
+
+def _auto_start_world(store) -> None:
+    """导入大纲成功后，后台自动生成世界观/人物（基于用户大纲派生，不改动大纲内容）。
+
+    与「重生成世界观」同一流程（run_world 复用已导入大纲，仅新增 world.json）；
+    并发槽满或已在运行则静默跳过，用户仍可在项目页手动触发。
+    """
+    project_id = store.dir.name
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            return
+        handle = _RunHandle()
+        _RUNS[project_id] = handle
+    if not _GEN_SEMAPHORE.acquire(blocking=False):
+        with _LOCK:
+            _RUNS.pop(project_id, None)
+        logger.info("创建后自动生成世界观跳过（并发槽满）: project=%s", project_id)
+        return
+
+    def _do():
+        try:
+            pipeline = _open_pipeline(store)
+            pipeline._mark_state("world")
+            pipeline.run_world()
+            pipeline._mark_state("outline_done")
+        except Exception as e:
+            handle.error = str(e)
+            logger.exception("创建后自动生成世界观失败: project=%s", project_id)
+        finally:
+            _GEN_SEMAPHORE.release()
+            with _LOCK:
+                _RUNS.pop(project_id, None)
+
+    try:
+        t = threading.Thread(target=_do, daemon=True)
+        handle.thread = t
+        t.start()
+        logger.info("创建后自动生成世界观启动: project=%s", project_id)
+    except Exception:
+        logger.exception("创建后自动生成世界观启动失败: project=%s", project_id)
+        _GEN_SEMAPHORE.release()
+        with _LOCK:
+            _RUNS.pop(project_id, None)
 
 
 @app.get("/api/projects")
@@ -116,6 +204,20 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         store.set_user_words(user_words)
     # 创建仅登记归属：price=0（未扣费），折扣快照留待结算
     db.claim_project(store.dir.name, user["id"], 0.0, discount)
+
+    # AI 扩写（提供大纲）模式：把用户上传的大纲【原样导入】项目（以用户传入为准，
+    # 不做 AI 重写），让「大纲」tab 立即可见可编辑；AI 重写只在用户点击「重生成大纲」时发生。
+    # 导入成功后后台自动生成世界观/人物（派生自用户大纲，不改动大纲内容），
+    # 让「人物/世界观」tab 也有内容可看。
+    imported_outline = False
+    if req.mode == "expand" and not req.content_type and req.expand_input.strip():
+        try:
+            imported_outline = _import_user_outline(store, req.expand_input)
+        except Exception:
+            logger.exception("导入用户大纲失败: project=%s", store.dir.name)
+    if imported_outline:
+        _auto_start_world(store)
+
     logger.info("创建项目(未扣费): uid=%d project=%s title=%s mode=%s content_type=%s "
                 "预估=%.2f(原价%.2f) total_words=%d user_words=%d ai_words=%d",
                 user["id"], store.dir.name, cfg.effective_title(), cfg.mode, cfg.content_type,

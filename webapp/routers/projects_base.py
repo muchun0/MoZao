@@ -112,6 +112,10 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
 
     # 扩写模式校验：纯扩写需大纲/简要内容；续写/扩写已有章节需已有正文
     user_content = (req.user_content or "").strip()
+    # 粘贴上限（需求确认）：单次粘贴不超过 10 万字，超出请拆分或改用文件上传
+    if len(req.expand_input) > MAX_PASTE_CHARS or len(user_content) > MAX_PASTE_CHARS:
+        raise HTTPException(status_code=400,
+                            detail="粘贴内容超过 10 万字上限，请拆分后分次粘贴，或改用文件上传（5MB 以内）")
     if req.mode == "expand":
         if req.content_type in ("chapters", "chapters_expand"):
             if not user_content:
@@ -164,9 +168,10 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     # AI 扩写（提供大纲）模式：把用户上传的大纲【原样导入】项目（以用户传入为准，
     # 不做 AI 重写），让「大纲」tab 立即可见可编辑；AI 重写只在用户点击「重生成大纲」时发生。
     # 世界观/人物不自动生成：用户需在项目页手动点「重生成世界观」触发。
+    outline_imported = False
     if req.mode == "expand" and not req.content_type and req.expand_input.strip():
         try:
-            _import_user_outline(store, req.expand_input)
+            outline_imported = _import_user_outline(store, req.expand_input)
         except Exception:
             logger.exception("导入用户大纲失败: project=%s", store.dir.name)
 
@@ -177,6 +182,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     return {
         "id": store.dir.name,
         "title": cfg.effective_title(),
+        "outline_imported": outline_imported,  # 用户大纲是否已识别导入（False=未识别，前端提示补格式重传）
         "price": price,          # 预估费用（生成完成后按实际结算）
         "base_price": base_price,
         "balance": db.get_user(user["id"])["balance"],
@@ -404,3 +410,32 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
         raise HTTPException(status_code=404, detail="尚未生成可下载的文件")
     logger.info("下载导出: uid=%d project=%s format=%s file=%s", user["id"], project_id, fmt, out.name)
     return FileResponse(str(out), filename=f"{name}.{fmt}", media_type=media)
+
+@app.post("/api/projects/{project_id}/outline/import")
+def import_user_outline(project_id: str, req: OutlineImportReq, user: dict = Depends(_require_user)):
+    """重新导入/覆盖用户大纲：以用户传入为准（原样入库，不 AI 重写）。
+
+    - 覆盖前自动备份当前大纲为快照（outline_snapshots/导入前_MMdd_HHmm.json），项目页可一键还原；
+    - 识别不到章节结构时返回 400 并提示补格式；用户选择不补格式时，
+      可点项目页「生成大纲与世界观」——按钮点击即用户确认，AI 才会生成。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中，请先停止再导入大纲")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="导入内容为空")
+    if len(text) > MAX_PASTE_CHARS:
+        raise HTTPException(status_code=400, detail="粘贴内容超过 10 万字上限，请拆分或改用文件上传")
+    # 覆盖前自动备份上一版（一键还原）
+    _backup_outline(store, "导入前")
+    imported = _import_user_outline(store, text)
+    if not imported:
+        raise HTTPException(
+            status_code=400,
+            detail="未能识别到章节结构：请补充格式后重新上传（如为每章添加「第X章」标题）；"
+                   "若不补格式，也可在项目页点『生成大纲与世界观』由 AI 生成（需你确认）。",
+        )
+    return {"ok": True, "imported": True, "chapters": len(store.load_outline().chapters)}

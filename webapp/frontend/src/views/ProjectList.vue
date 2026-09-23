@@ -59,10 +59,19 @@
             <span class="muted" style="margin-left:8px">按差值计费</span>
           </el-form-item>
           <el-form-item label="上传大纲">
-            <input type="file" ref="fileInput" accept=".txt,.md,.doc,.docx" @change="onFilePick" />
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <input type="file" ref="fileInput" accept=".txt,.md,.docx" @change="onFilePick" />
+              <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
+              <el-button link type="primary" size="small" @click="showFormat = true">查看大纲格式示例</el-button>
+            </div>
+            <div v-if="fileMsg" class="file-msg" :class="fileMsg.includes('识别') || fileMsg.includes('解析完成') ? 'file-ok' : 'file-err'">{{ fileMsg }}</div>
+          </el-form-item>
+          <el-form-item label="大纲内容">
+            <el-input v-model="form.expand_input" type="textarea" :rows="6"
+              placeholder="粘贴你的大纲（可选）。章节建议用「第X章」标题开头，便于识别章节结构；也可只写设定与主线，之后在项目页由 AI 生成大纲" />
           </el-form-item>
           <el-form-item label="手写内容">
-            <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的内容，AI将在此基础上续写" />
+            <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的正文（可选），AI将在此基础上续写" />
           </el-form-item>
         </template>
         <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
@@ -84,13 +93,21 @@
         <el-button type="primary" :loading="creating" @click="doCreate">创建</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showFormat" title="大纲格式示例" width="560px">
+      <pre class="format-sample">{{ formatSample }}</pre>
+      <template #footer>
+        <el-button @click="showFormat=false">关闭</el-button>
+        <el-button type="primary" @click="downloadFormat">下载示例（.txt）</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { listProjects, createProject, archiveProject, cloneProject, deleteProject } from '../api/project'
-import { listStyleRoles } from '../api/tools'
+import { listStyleRoles, parseContent } from '../api/tools'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const list = ref([])
@@ -101,6 +118,31 @@ const sort = ref('created')
 const showCreate = ref(false)
 const creating = ref(false)
 const styleRoles = ref([])
+const showFormat = ref(false)
+const fileMsg = ref('')
+
+const formatSample = [
+  '《示例书名》',
+  '',
+  '一句话简介：主角从都市穿越到修仙世界，凭借前世记忆逆天改命。',
+  '',
+  '背景设定：架空修仙世界，宗门林立，灵气复苏百年。',
+  '',
+  '主要人物：',
+  '主角：林川，前特种兵，冷静果决，目标是成为最强剑修。',
+  '配角：苏晚晴，药谷圣女，医术超绝，与主角互相扶持。',
+  '',
+  '剧情主线：主角拜入青云宗→秘境夺宝→宗门大比→复仇旧敌。',
+  '',
+  '第1章 初入青云',
+  '主角穿越醒来，发现自己躺在青云宗山门外，被守门弟子当作杂役收留。',
+  '',
+  '第2章 灵根觉醒',
+  '主角在杂役院测试灵根，意外觉醒极品雷灵根，引起长老注意。',
+  '',
+  '第3章 入门考核',
+  '主角参加入门考核，以弱胜强击败内门弟子，正式拜入青云宗。',
+].join('\n')
 
 const form = ref({
   title: '', genre: '', total_words: 25000, style: '', premise: '',
@@ -122,9 +164,37 @@ const estPrice = computed(() => {
 function onFilePick(e) {
   const f = e.target.files[0]
   if (!f) return
-  const reader = new FileReader()
-  reader.onload = () => { form.value.expand_input = reader.result; ElMessage.success('大纲已读取') }
-  reader.readAsText(f)
+  if (f.size > 5 * 1024 * 1024) {
+    fileMsg.value = '文件超过 5MB 限制，请精简后上传'
+    e.target.value = ''
+    return
+  }
+  const ext = ((f.name.match(/\.([^.]+)$/) || [])[1] || '').toLowerCase()
+  if (!['txt', 'md', 'docx'].includes(ext)) {
+    fileMsg.value = '仅支持 .txt / .md / .docx 格式'
+    e.target.value = ''
+    return
+  }
+  fileMsg.value = '正在解析…'
+  const fd = new FormData()
+  fd.append('file', f)
+  parseContent(fd).then(res => {
+    form.value.expand_input = res.full_text || ''
+    const n = res.chapters?.length || 0
+    fileMsg.value = n ? `已识别 ${n} 个章节，已填入「大纲内容」` : '解析完成，已填入「大纲内容」（未识别到章节标题）'
+  }).catch(err => {
+    fileMsg.value = err.response?.data?.detail || '解析失败，请检查文件格式'
+    e.target.value = ''
+  })
+}
+
+function downloadFormat() {
+  const blob = new Blob([formatSample], { type: 'text/plain;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = '大纲格式示例.txt'
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
 
 async function load() {
@@ -166,10 +236,17 @@ function pct(p) {
 
 async function doCreate() {
   if (!form.value.title.trim()) { ElMessage.warning('请输入书名'); return }
+  if (form.value.expand_input.length > 100000 || form.value.user_content.length > 100000) {
+    ElMessage.warning('粘贴内容超过 10 万字上限，请拆分后分次粘贴，或改用文件上传')
+    return
+  }
   creating.value = true
   try {
-    await createProject(form.value)
+    const res = await createProject(form.value)
     ElMessage.success('创建成功')
+    if (form.value.mode === 'expand' && res?.outline_imported === false) {
+      ElMessage.warning('已按你的大纲创建项目，但未识别到章节结构：可进入项目「大纲」页补充格式后重新导入，或点「生成大纲与世界观」由 AI 生成')
+    }
     showCreate.value = false
     load()
   } catch (e) {
@@ -208,4 +285,8 @@ onMounted(() => { load(); loadStyleRoles() })
 .price-hint { background: #f6f8fa; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.8; color: #606266; }
 .price-hint b { color: #c9a227; }
 .price-hint .muted { color: #909399; font-size: 12px; }
+.file-msg { font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.file-ok { color: #67c23a; }
+.file-err { color: #f56c6c; }
+.format-sample { background: #f6f8fa; border: 1px solid #e4e7ed; border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: #303133; white-space: pre-wrap; max-height: 420px; overflow: auto; }
 </style>

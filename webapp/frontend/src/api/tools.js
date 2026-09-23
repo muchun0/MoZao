@@ -1,5 +1,6 @@
 import request from './request'
 
+export const parseContent = (data) => request.post('/parse-content', data)
 export const verifyConsistency = (pid) => request.post(`/projects/${pid}/verify/consistency`)
 export const verifyLogic = (pid) => request.post(`/projects/${pid}/verify/logic`)
 export const verifyCompliance = (pid) => request.post(`/projects/${pid}/verify/compliance`)

@@ -114,6 +114,30 @@ def regen_outline(project_id: str, user: dict = Depends(_require_user)):
     return {"started": True}
 
 
+def _snap_display(name: str) -> str:
+    """把快照文件名转成可读时间文案：
+    snap_<epoch>（系统自动）→ 自动备份 MM-DD HH:MM:SS；
+    导入前_MMDD_HHMMSS / 重生成前_MMDD_HHMMSS（覆盖前自动备份）→ 前缀 + MM-DD HH:MM:SS；
+    手动命名的快照原样返回。
+    """
+    import datetime
+    import re as _re
+    m = _re.match(r"^snap_(\d+)$", name)
+    if m:
+        try:
+            dt = datetime.datetime.fromtimestamp(int(m.group(1)))
+            return "自动备份 " + dt.strftime("%m-%d %H:%M:%S")
+        except Exception:
+            return name
+    m = _re.match(r"^([\u4e00-\u9fa5]+)_(\d{4})_(\d{6})(?:_(\d+))?$", name)
+    if m:
+        try:
+            prefix, mmdd, hms = m.group(1), m.group(2), m.group(3)
+            return f"{prefix} {mmdd[:2]}-{mmdd[2:]} {hms[:2]}:{hms[2:4]}:{hms[4:]}"
+        except Exception:
+            return name
+    return name
+
 @app.get("/api/projects/{project_id}/outline/snapshots")
 def list_outline_snapshots(project_id: str, user: dict = Depends(_require_user)):
     """列出大纲快照。"""
@@ -129,6 +153,7 @@ def list_outline_snapshots(project_id: str, user: dict = Depends(_require_user))
             data = json.loads(f.read_text(encoding="utf-8"))
             snaps.append({
                 "name": f.stem,
+                "display": _snap_display(f.stem),
                 "created": f.stat().st_mtime,
                 "chapters": len(data.get("chapters", [])),
                 "title": data.get("title", ""),

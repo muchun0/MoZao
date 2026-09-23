@@ -14,7 +14,7 @@ Web 端为**多用户 SaaS**：注册登录、按 AI 实际生成字数计费（
 - **强制结局**：无论长短篇，最后一章必须是完整结局——完成人物弧光、收束核心冲突、给出情绪落点，并按结局写作规范落地（四类合格结局形态 / 开篇锚定对照 / 烂尾黑名单 / 尾声写法），结尾升维（技术→哲学 / 产品→人性 / 事件→时代）
 - **多格式导出**：TXT / EPUB / DOCX / Markdown，项目详情页「导出 ▾」一键下载，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
 - **单章人工编辑 + 继续生成**：可修改任意章节正文，后续章节基于修改继续生成；也可从某章重新生成
-- **上传大纲智能解析**：上传 .txt / .md / .docx 大纲文档，AI 自动解析出书名、题材、字数、主角、配角、背景、剧情走向等字段并填入新建表单（支持扩写模式直接生成）
+- **上传大纲智能解析**：上传 .txt / .md / .docx 大纲文档（≤10MB）或粘贴文本（≤10 万字），AI 自动解析出书名、题材、字数、主角、配角、背景、剧情走向等字段并填入新建表单；**创建项目默认原样采用用户大纲，不自动重写**（扩写模式下亦然），世界观需用户手动触发「重生成世界观」后才由 AI 派生；已建项目可**重导入大纲**，旧大纲自动备份为快照（可一键还原）
 - **长文一致性**：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填，杜绝前后矛盾
 - **断点续传**：以产物文件为唯一权威来源，中断后只补缺失部分，不重复生成、不浪费 token
 
@@ -418,6 +418,7 @@ python -m pytest tests/ -v
 
 ## 更新记录
 
+- **2026-09-23**：第四次发版（master e5b19f7）——① 用户自有内容导入：上传大纲支持 .txt/.md/.docx（≤10MB，`extract_text` 统一提取）与粘贴文本（≤10 万字）；创建项目默认**原样采用用户大纲不自动重写**（扩写模式同样在点击「重生成」时才重写），世界观不自动生成（手动触发「重生成世界观」后派生）；项目详情页新增「重新导入大纲」（POST /api/projects/{id}/outline/import），重导入自动备份旧大纲为快照并可还原；② 大纲快照体验收敛：快照列表新增 `display` 可读时间（自动备份/导入前/重生成前 → MM-DD HH:MM:SS），重生成大纲后立即刷新快照列表、生成完成也刷新；工具 tab 移除重复的「重新生成」（大纲/世界观）与「大纲快照」入口，统一到详情页顶部。部署：OSS 上传中途连续超时（4 次），重试第 5 次成功；MD5 校验一致后解压 → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200、主 JS 881KB 无白屏。
 - **2026-09-21**：第三次发版（master 08e8078）——① 生成提示词口头禅频次约束：`writer.md` 新增「同句口头禅每章最多 1-2 次、禁止章末机械复现」，`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（修复《我的地球Online日记》45 万字中"先记下来"出现 150 次的复读问题）；② dist 移出仓库（fix/dist-not-in-repo）：历史误提交的 `webapp/frontend/dist` 移除跟踪，Docker 多阶段构建在容器内自动 build，不依赖仓库 dist。部署验证：容器 healthy、域名 /api/health 200、主 JS 881KB 无白屏。
 - **2026-09-21**：第二次发版（master e89d563）——① 数据与代码隔离：新增 `novel_gen/utils/paths.py`（DATA_DIR 环境变量解析，默认代码根）+ `novel_gen/utils/migrate.py`（复制→校验→删源迁移工具），`webapp/core.py` / `logger.py` / `novel_gen/store/project.py` / `novel_gen/export/book_formats.py` 4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁移至 `D:\NovelData`（projects/output/logs），代码根零残留，新增 `tests/test_paths.py` 16 用例；② 前端导出按钮：项目详情页「导出 ▾」支持 TXT/EPUB/DOCX/MD（blob 下载），顺带修复 `/projects/{id}/download` 缺失 `import shutil` 的历史 bug（此前前端从未调用该接口，未暴露）；③ 新建目标字数下限修复：表单 `el-input-number :min=10000` 会把低于 1 万字的输入钳回 1 万，改为 min=0 允许短篇；④ 前端产物重建：index.html 与构建产物 hash 对齐，修复白屏报错。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
 - **2026-09-20**：部署加固（deploy/compose-projects-vol，commit e279eb5）——`docker-compose.yml` 补挂 `novel_projects:/app/projects` 命名卷：服务器容器实际已挂载该卷但 compose 漏写，任何 `docker compose up` 重建容器都会去掉挂载导致项目目录从新容器消失。补写后重建无缝。**同日完成首次服务器部署**（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen，docker compose：mysql-mozao + novel-gen），部署后验证：项目数据（projects 卷）无缝保留、域名 https://mozao.click 200、主 JS 881KB 无白屏、注册→登录→建书→详情→登出全链路冒烟通过、BYOK 加密列迁移生效（llm_provider/llm_api_key/llm_base_url/llm_model）、`.llm_encrypt.key` 已随部署放置服务器。

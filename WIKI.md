@@ -239,6 +239,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 | 白屏（主 JS 几百字节） | dist 未打进镜像，确认前端源码已提交后 rebuild |
 | 服务器无 unzip | 用 `python3 -m zipfile -e` |
 | workbench upload 显示 exit 1 | 看 `Upload complete` 即成功 |
+| workbench upload 中途 i/o timeout（8%-50% 断） | 本地网络到 OSS 链路不稳定，重试多次可成功（2026-09-23 第 5 次成功）；传输后服务器 `md5sum` 与本地比对校验完整性 |
 | 硅基流动 401 | 用 `api.siliconflow.cn` |
 | 前端改动不生效 | 必须 commit 进 git，容器内 build 才会用新代码 |
 | 改了 requirements.txt | 必须 `--build` rebuild |
@@ -259,6 +260,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 部署记录（2026-09-23）：第四次发版（合并 devtest → master，e5b19f7）。内容：① 用户自有内容导入——上传大纲支持 txt/md/docx（docx 解析章节/正文，上限 5MB），支持粘贴文本（上限 10 万字），创建项目默认原样采用用户大纲、不自动重写，世界观不自动生成（用户手动触发"重生成世界观"后才派生），重导入大纲自动备份旧大纲（`snap_<epoch>`，可还原）；② 大纲快照体验收敛——快照列表新增 `display` 可读时间（自动备份/导入前/重生成前 → "MM-DD HH:MM:SS"），重生成大纲后立即刷新快照列表、生成完成也刷新；工具 tab 移除重复的「重新生成」（大纲/世界观）与「大纲快照」入口，统一到详情页顶部（问题 1-4 全修复）。部署：OSS 上传中途连续超时（8%-50% i/o timeout，4 次），重试第 5 次成功（见 Upload complete 即成功）；MD5 校验一致后 `python3 -m zipfile -e` → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200、主 JS 881KB 无白屏。
 - 部署记录（2026-09-21）：第三次发版（合并 devtest → master，08e8078）。内容：① 生成提示词口头禅频次约束——`writer.md` 限同句口头禅每章 ≤2 次、禁止章末复现/连续多章复读；`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（如"以×××结束"）。背景：实测《我的地球Online日记》45 万字"先记下来"出现 150 次，口头禅退化为复读机，且 `repetition.py`（>5 次/万字才禁）拦不住刻意设计的短口头禅，故在提示词层约束。② dist 移出仓库（fix/dist-not-in-repo）。部署方式变更：本次 workbench OSS 上传通道连续超时，改走 `workbench exec` 分块传输（base64 45×24KB → 服务器解码），MD5 校验一致后 `python3 -m zipfile -e` 解压 → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200（本地+域名）、主 JS 881KB 无白屏。
 - 部署记录（2026-09-21）：第三次发版（master 3a16801）。内容：项目详情页两个前端 bug 修复——① 大纲生成完成后轮询只刷新章节列表，未重拉 outline/world 数据，导致进度条消失后切到「大纲」「人物/世界观」仍是空白；改为完成时静默重拉 outline/world/lock/chapters，并给 OutlineEditor 加 :key 强制重挂载。② 点「重生成大纲/重生成世界观」后无进度条：原代码启动后要等 3 秒首次轮询才渲染进度条，且已有章节项目 genDone 初始为 true 导致进度条呈绿色完成态、阶段文字不显示；新增 beginGenUI() 立即置进行中状态，前置阶段（research/outline/editor_review/world）用 indeterminate 流动动画条，writing 阶段回到按章数百分比实心条。部署：git archive master → workbench upload → python3 -m zipfile -e 解压 → docker compose up -d --build，主 JS 881KB/200。
 - 部署记录（2026-09-21）：第二次发版（合并 devtest → master，e89d563）。内容：① 数据与代码隔离（DATA_DIR 可配置，新增 `novel_gen/utils/paths.py` + `migrate.py`，4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁至 `D:\NovelData`，代码根无 projects/output/logs；服务器不设 DATA_DIR，容器内回退 `/app` 与卷挂载一致）② 前端导出按钮（项目详情页「导出 ▾」TXT/EPUB/DOCX/MD，blob 下载；顺带修复 `/download` 缺失 shutil import 的历史 bug——前端此前从未调用该接口）③ 新建目标字数下限修复（el-input-number `:min=10000` 钳制，改为 min=0，允许低于 1 万字的短篇）④ 前端产物重建修复白屏（index.html 与构建产物 hash 对齐）。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
@@ -268,4 +270,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-09-21*
+*最后更新：2026-09-23*

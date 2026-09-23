@@ -16,3 +16,4 @@ export const regenerateVolume = (pid, volNo) => request.post(`/projects/${pid}/v
 export const genOutline = (pid) => request.post(`/projects/${pid}/generate-outline`)
 export const regenOutline = (pid) => request.post(`/projects/${pid}/outline/regenerate`)
 export const regenWorld = (pid) => request.post(`/projects/${pid}/world/regenerate`)
+export const importOutline = (pid, data) => request.post(`/projects/${pid}/outline/import`, data)

@@ -170,6 +170,38 @@ class ProjectCreateReq(BaseModel):
     plot_speed: str = "medium"      # 剧情速度
     custom_prompt: str = ""         # 用户自定义提示词
     high_quality_mode: bool = False  # 高质量模式：场景级生成+动态模块+参数分层
+class OutlineImportReq(BaseModel):
+    """项目详情页「重新导入大纲」：以用户传入为准，覆盖前自动备份。"""
+    text: str = Field(..., min_length=1)
+
+
+# 用户内容粘贴上限（需求确认：单次粘贴不超过 10 万字）
+MAX_PASTE_CHARS = 100_000
+
+
+def _backup_outline(store, prefix: str) -> None:
+    """自动备份当前大纲为快照（outline_snapshots/），供覆盖/重生成后一键还原。
+
+    与项目页手动保存快照一致，名称自动加时间戳，避免覆盖同名快照。
+    """
+    try:
+        outline = store.load_outline()
+        if not outline:
+            return
+        import json
+        import datetime
+        snap_dir = store.dir / "outline_snapshots"
+        snap_dir.mkdir(exist_ok=True)
+        base = f"{prefix}_{datetime.datetime.now().strftime('%m%d_%H%M%S')}"
+        name = base
+        i = 1
+        while (snap_dir / f"{name}.json").exists():
+            name = f"{base}_{i}"
+            i += 1
+        (snap_dir / f"{name}.json").write_text(
+            json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("自动备份大纲失败: project=%s", store.dir.name)
 
 
 class RegisterReq(BaseModel):

@@ -99,6 +99,7 @@ def regen_outline(project_id: str, user: dict = Depends(_require_user)):
         # 删除旧大纲文件（而非写空壳）：否则 run_outline 检测到"已有大纲对象"会直接复用，永不重新生成
         _op = store.outline_path()
         if _op.exists():
+            _backup_outline(store, "重生成前")  # 覆盖前自动备份上一版（一键还原）
             _op.unlink()
         logger.info("重生成大纲启动: project=%s user=%s", project_id, user["username"])
         t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)

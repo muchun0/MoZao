@@ -16,7 +16,18 @@
         <template v-else>
           <el-button @click="doRegenOutline" :disabled="generating && !genDone" title="重生成总纲/分卷">重生成大纲</el-button>
           <el-button @click="doRegenWorld" :disabled="generating && !genDone" title="重生成世界观/人物">重生成世界观</el-button>
-          <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
+          <el-button @click="openImport" :disabled="generating && !genDone" title="重新导入你写的大纲（覆盖前自动备份）">重新导入大纲</el-button>
+          <el-dropdown trigger="click" @command="onSnapCmd">
+            <el-button :disabled="generating && !genDone">大纲快照 ▾</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
+                <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
+                  还原「{{ sn.name }}」（{{ sn.chapters }} 章）
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>          <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
             {{ generating && !genDone ? '生成中…' : '开始写章节' }}
           </el-button>
           <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
@@ -93,7 +104,10 @@
             </div>
           </el-card>
         </template>
-        <el-empty v-else description="暂无人物设定" />
+        <el-empty v-else>
+          <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
+          <el-button type="primary" @click="doRegenWorld" :disabled="generating && !genDone">重生成世界观</el-button>
+        </el-empty>
       </el-tab-pane>
 
       <el-tab-pane label="工具" name="tools">
@@ -124,6 +138,20 @@
       <div v-if="!editing" class="reader-content" :class="readerTheme" :style="{fontSize: fontSize + 'px'}" v-html="currentContent"></div>
       <el-input v-else v-model="editContent" type="textarea" :rows="22" class="editor-area" />
     </el-dialog>
+
+    <el-dialog v-model="importVisible" title="重新导入大纲" width="560px">
+      <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「大纲快照」中一键还原）。AI 不会改写你的内容。</p>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <input type="file" ref="importFileInput" accept=".txt,.md,.docx" @change="onImportFilePick" />
+        <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
+      </div>
+      <div v-if="importFileMsg" class="file-msg" :class="importFileMsg.includes('识别') || importFileMsg.includes('解析完成') ? 'file-ok' : 'file-err'">{{ importFileMsg }}</div>
+      <el-input v-model="importText" type="textarea" :rows="8" placeholder="或直接粘贴大纲内容（章节建议用「第X章」标题开头）" style="margin-top:8px" />
+      <template #footer>
+        <el-button @click="importVisible=false">取消</el-button>
+        <el-button type="primary" :loading="reimporting" @click="doImport">导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -131,7 +159,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline } from '../api/novel'
+import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
@@ -442,7 +471,71 @@ function statusType(s) {
 const STATUS_TEXT = { done: '已完成', generating: '生成中', pending: '待生成', failed: '失败' }
 function statusText(s) { return STATUS_TEXT[s] || s }
 
-onMounted(loadAll)
+const importVisible = ref(false)
+const importText = ref('')
+const importFileMsg = ref('')
+const importFileInput = ref(null)
+const reimporting = ref(false)
+const snapshots = ref([])
+
+function openImport() {
+  importText.value = ''
+  importFileMsg.value = ''
+  importVisible.value = true
+}
+
+function onImportFilePick(e) {
+  const f = e.target.files[0]
+  if (!f) return
+  if (f.size > 5 * 1024 * 1024) { importFileMsg.value = '文件超过 5MB 限制，请精简后上传'; e.target.value = ''; return }
+  const ext = ((f.name.match(/\.([^.]+)$/) || [])[1] || '').toLowerCase()
+  if (!['txt', 'md', 'docx'].includes(ext)) { importFileMsg.value = '仅支持 .txt / .md / .docx 格式'; e.target.value = ''; return }
+  importFileMsg.value = '正在解析…'
+  const fd = new FormData()
+  fd.append('file', f)
+  parseContent(fd).then(res => {
+    importText.value = res.full_text || ''
+    const n = res.chapters?.length || 0
+    importFileMsg.value = n ? `已识别 ${n} 个章节，已填入下方输入框` : '解析完成，已填入（未识别到章节标题）'
+  }).catch(err => {
+    importFileMsg.value = err.response?.data?.detail || '解析失败，请检查文件格式'
+    e.target.value = ''
+  })
+}
+
+async function doImport() {
+  const text = importText.value.trim()
+  if (!text) { ElMessage.warning('请粘贴或上传大纲内容'); return }
+  if (text.length > 100000) { ElMessage.warning('粘贴内容超过 10 万字上限，请拆分或改用文件上传'); return }
+  reimporting.value = true
+  try {
+    await importOutline(pid, { text })
+    ElMessage.success('已导入（以你的内容为准）')
+    importVisible.value = false
+    loadSnapshots()
+    loadAll()
+  } catch (e) {
+    ElMessage.warning(e.response?.data?.detail || '导入失败')
+  } finally { reimporting.value = false }
+}
+
+async function loadSnapshots() {
+  try { snapshots.value = (await listSnapshots(pid))?.snapshots || [] } catch (e) { snapshots.value = [] }
+}
+
+async function onSnapCmd(cmd) {
+  if (!cmd || !cmd.startsWith('restore:')) return
+  const name = cmd.slice(8)
+  try { await ElMessageBox.confirm(`从快照「${name}」恢复大纲？当前大纲将被该快照覆盖。`, '恢复大纲', { type: 'warning' }) } catch { return }
+  try {
+    await restoreSnapshot(pid, name)
+    ElMessage.success('已恢复')
+    loadSnapshots()
+    loadAll()
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '恢复失败') }
+}
+
+onMounted(() => { loadAll(); loadSnapshots() })
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
@@ -471,4 +564,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .reader-header { display: flex; justify-content: space-between; align-items: center; }
 .reader-tools { display: flex; gap: 8px; align-items: center; }
 .editor-area :deep(.el-textarea__inner) { font-family: inherit; line-height: 1.8; font-size: 15px; }
+.file-msg { font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.file-ok { color: #67c23a; }
+.file-err { color: #f56c6c; }
+.import-hint { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 8px; }
 </style>

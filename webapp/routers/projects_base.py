@@ -50,50 +50,6 @@ def _import_user_outline(store, text: str) -> bool:
     return True
 
 
-def _auto_start_world(store) -> None:
-    """导入大纲成功后，后台自动生成世界观/人物（基于用户大纲派生，不改动大纲内容）。
-
-    与「重生成世界观」同一流程（run_world 复用已导入大纲，仅新增 world.json）；
-    并发槽满或已在运行则静默跳过，用户仍可在项目页手动触发。
-    """
-    project_id = store.dir.name
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            return
-        handle = _RunHandle()
-        _RUNS[project_id] = handle
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        logger.info("创建后自动生成世界观跳过（并发槽满）: project=%s", project_id)
-        return
-
-    def _do():
-        try:
-            pipeline = _open_pipeline(store)
-            pipeline._mark_state("world")
-            pipeline.run_world()
-            pipeline._mark_state("outline_done")
-        except Exception as e:
-            handle.error = str(e)
-            logger.exception("创建后自动生成世界观失败: project=%s", project_id)
-        finally:
-            _GEN_SEMAPHORE.release()
-            with _LOCK:
-                _RUNS.pop(project_id, None)
-
-    try:
-        t = threading.Thread(target=_do, daemon=True)
-        handle.thread = t
-        t.start()
-        logger.info("创建后自动生成世界观启动: project=%s", project_id)
-    except Exception:
-        logger.exception("创建后自动生成世界观启动失败: project=%s", project_id)
-        _GEN_SEMAPHORE.release()
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-
-
 @app.get("/api/projects")
 def projects(user: dict = Depends(_require_user), sort: str = "created", show_archived: bool = False):
     return {"projects": _list_projects(user, sort=sort, show_archived=show_archived)}
@@ -207,16 +163,12 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
 
     # AI 扩写（提供大纲）模式：把用户上传的大纲【原样导入】项目（以用户传入为准，
     # 不做 AI 重写），让「大纲」tab 立即可见可编辑；AI 重写只在用户点击「重生成大纲」时发生。
-    # 导入成功后后台自动生成世界观/人物（派生自用户大纲，不改动大纲内容），
-    # 让「人物/世界观」tab 也有内容可看。
-    imported_outline = False
+    # 世界观/人物不自动生成：用户需在项目页手动点「重生成世界观」触发。
     if req.mode == "expand" and not req.content_type and req.expand_input.strip():
         try:
-            imported_outline = _import_user_outline(store, req.expand_input)
+            _import_user_outline(store, req.expand_input)
         except Exception:
             logger.exception("导入用户大纲失败: project=%s", store.dir.name)
-    if imported_outline:
-        _auto_start_world(store)
 
     logger.info("创建项目(未扣费): uid=%d project=%s title=%s mode=%s content_type=%s "
                 "预估=%.2f(原价%.2f) total_words=%d user_words=%d ai_words=%d",

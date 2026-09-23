@@ -26,7 +26,7 @@
 | 生成 | 生成前联网搜索热门小说参考文风（博查 API）；多 agent 流水线（调研员→架构师→写手→审校→读者） |
 | 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分） |
 | 封面 | 硅基流动 ERNIE-Image-Turbo 一体封面；每本限 5 次 |
-| 作品管理 | 章节阅读/编辑/重写、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
+| 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
 | Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
 | 代理分销 | 一级代理：本人消费 8 折 + 下级消费 10% 返佣 |
@@ -260,6 +260,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 部署记录（2026-09-23）：第五次发版（合并 devtest → master，e975b5d）。内容：恢复「选中段落扩写/续写」前端入口——该功能原在旧原生前端 webui（293773a 引入），随 c575fad 删除 webui 而丢失（后端 `/api/projects/{id}/expand-selection` 一直在）；移植回 Vue 版 `ProjectDetail.vue`：阅读器/编辑器选中 ≥5 字弹出「扩写|续写」浮动条（teleport 到 body），结果 ElMessageBox 预览确认后插入选中文本之后（编辑态取光标处），自动进入编辑态；`api/novel.js` 新增 `expandSelection`。后端零改动；注意该接口不参与计费结算（未走 `_settle_incremental`，原实现如此）。构建验证：npm run build 通过、dist 引用一致。
 - 部署记录（2026-09-23）：第四次发版（合并 devtest → master，e5b19f7）。内容：① 用户自有内容导入——上传大纲支持 txt/md/docx（docx 解析章节/正文，上限 5MB），支持粘贴文本（上限 10 万字），创建项目默认原样采用用户大纲、不自动重写，世界观不自动生成（用户手动触发"重生成世界观"后才派生），重导入大纲自动备份旧大纲（`snap_<epoch>`，可还原）；② 大纲快照体验收敛——快照列表新增 `display` 可读时间（自动备份/导入前/重生成前 → "MM-DD HH:MM:SS"），重生成大纲后立即刷新快照列表、生成完成也刷新；工具 tab 移除重复的「重新生成」（大纲/世界观）与「大纲快照」入口，统一到详情页顶部（问题 1-4 全修复）。部署：OSS 上传中途连续超时（8%-50% i/o timeout，4 次），重试第 5 次成功（见 Upload complete 即成功）；MD5 校验一致后 `python3 -m zipfile -e` → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200、主 JS 881KB 无白屏。
 - 部署记录（2026-09-21）：第三次发版（合并 devtest → master，08e8078）。内容：① 生成提示词口头禅频次约束——`writer.md` 限同句口头禅每章 ≤2 次、禁止章末复现/连续多章复读；`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（如"以×××结束"）。背景：实测《我的地球Online日记》45 万字"先记下来"出现 150 次，口头禅退化为复读机，且 `repetition.py`（>5 次/万字才禁）拦不住刻意设计的短口头禅，故在提示词层约束。② dist 移出仓库（fix/dist-not-in-repo）。部署方式变更：本次 workbench OSS 上传通道连续超时，改走 `workbench exec` 分块传输（base64 45×24KB → 服务器解码），MD5 校验一致后 `python3 -m zipfile -e` 解压 → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200（本地+域名）、主 JS 881KB 无白屏。
 - 部署记录（2026-09-21）：第三次发版（master 3a16801）。内容：项目详情页两个前端 bug 修复——① 大纲生成完成后轮询只刷新章节列表，未重拉 outline/world 数据，导致进度条消失后切到「大纲」「人物/世界观」仍是空白；改为完成时静默重拉 outline/world/lock/chapters，并给 OutlineEditor 加 :key 强制重挂载。② 点「重生成大纲/重生成世界观」后无进度条：原代码启动后要等 3 秒首次轮询才渲染进度条，且已有章节项目 genDone 初始为 true 导致进度条呈绿色完成态、阶段文字不显示；新增 beginGenUI() 立即置进行中状态，前置阶段（research/outline/editor_review/world）用 indeterminate 流动动画条，writing 阶段回到按章数百分比实心条。部署：git archive master → workbench upload → python3 -m zipfile -e 解压 → docker compose up -d --build，主 JS 881KB/200。

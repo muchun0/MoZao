@@ -23,7 +23,7 @@
               <el-dropdown-menu>
                 <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
                 <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
-                  还原「{{ sn.name }}」（{{ sn.chapters }} 章）
+                  还原「{{ sn.display || sn.name }}」（{{ sn.chapters }} 章）
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -357,6 +357,7 @@ async function refreshAfterGen() {
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     outlineReloadKey.value++
+    loadSnapshots()
     ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
     ElMessage.error('数据刷新失败，请手动刷新页面')
@@ -402,7 +403,7 @@ async function runOutline() {
 }
 async function doRegenOutline() {
   try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
-  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); beginGenUI('正在启动重生成大纲…'); startPolling() }
+  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); beginGenUI('正在启动重生成大纲…'); startPolling(); loadSnapshots() }
   catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function doRegenWorld() {

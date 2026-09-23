@@ -115,7 +115,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh">
+    <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh" @closed="hideSelFloat">
       <template #header>
         <div class="reader-header">
           <span>第{{ currentCh?.no }}章 {{ currentCh?.title }}</span>
@@ -135,9 +135,17 @@
           </div>
         </div>
       </template>
-      <div v-if="!editing" class="reader-content" :class="readerTheme" :style="{fontSize: fontSize + 'px'}" v-html="currentContent"></div>
-      <el-input v-else v-model="editContent" type="textarea" :rows="22" class="editor-area" />
+      <div v-if="!editing" class="reader-content" :class="readerTheme" :style="{fontSize: fontSize + 'px'}" v-html="currentContent" @mouseup="onReaderMouseup"></div>
+      <el-input v-else v-model="editContent" type="textarea" :rows="22" class="editor-area" @mouseup="onEditMouseup" />
     </el-dialog>
+
+    <teleport to="body">
+      <div v-show="selFloat.show" class="sel-float" :style="{ left: selFloat.x + 'px', top: selFloat.y + 'px' }">
+        <span class="sel-float-item" @click="doExpand('expand')">扩写</span>
+        <span class="sel-float-sep">|</span>
+        <span class="sel-float-item" @click="doExpand('continue')">续写</span>
+      </div>
+    </teleport>
 
     <el-dialog v-model="importVisible" title="重新导入大纲" width="560px">
       <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「大纲快照」中一键还原）。AI 不会改写你的内容。</p>
@@ -156,10 +164,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline, expandSelection } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -385,6 +393,72 @@ function startEdit() {
 function cancelEdit() {
   editing.value = false
 }
+
+// === 选中段落扩写/续写（恢复自旧版 webui 的浮动按钮入口） ===
+const selFloat = ref({ show: false, x: 0, y: 0, text: '', fromEdit: false, editPos: -1 })
+const expanding = ref(false)
+
+function hideSelFloat() { selFloat.value.show = false }
+
+function showSelFloat(e, text, fromEdit, editPos) {
+  const maxX = Math.max(8, window.innerWidth - 130)
+  const x = Math.min(Math.max(8, e.clientX), maxX)
+  const y = Math.max(8, e.clientY - 44)
+  selFloat.value = { show: true, x, y, text, fromEdit, editPos }
+}
+
+// 阅读模式：选中 v-html 渲染的正文
+function onReaderMouseup(e) {
+  const sel = window.getSelection()
+  const text = sel ? sel.toString().trim() : ''
+  if (!text || text.length < 5) { hideSelFloat(); return }
+  showSelFloat(e, text, false, -1)
+}
+
+// 编辑模式：选中 textarea 内的文字
+function onEditMouseup(e) {
+  const ta = e.target
+  if (!ta || ta.tagName !== 'TEXTAREA') { hideSelFloat(); return }
+  const text = ta.value.substring(ta.selectionStart, ta.selectionEnd).trim()
+  if (!text || text.length < 5) { hideSelFloat(); return }
+  showSelFloat(e, text, true, ta.selectionEnd)
+}
+
+// 点击浮动条之外的区域时收起
+function onDocMouseDown(e) {
+  if (selFloat.value.show && !(e.target && e.target.closest && e.target.closest('.sel-float'))) hideSelFloat()
+}
+
+async function doExpand(mode) {
+  if (expanding.value) return
+  const { text, fromEdit, editPos } = selFloat.value
+  hideSelFloat()
+  if (!text) return
+  expanding.value = true
+  try {
+    const res = await expandSelection(pid, { text, mode })
+    const action = mode === 'continue' ? '续写' : '扩写'
+    const ok = await ElMessageBox.confirm(
+      h('pre', { style: 'white-space:pre-wrap;margin:0;max-height:300px;overflow:auto;font-size:13px;line-height:1.7;' }, res.result),
+      `${action}结果`,
+      { confirmButtonText: '插入到文中', cancelButtonText: '放弃', type: 'info' }
+    ).then(() => true).catch(() => false)
+    if (!ok) return
+    // 插入位置：编辑态取光标处；阅读态取选中文本在原内容中的结束位置，找不到则追加到末尾
+    let pos = fromEdit && editPos >= 0 ? editPos : -1
+    if (pos < 0) {
+      const idx = editContent.value.indexOf(text)
+      pos = idx >= 0 ? idx + text.length : editContent.value.length
+    }
+    if (!editing.value) editing.value = true
+    const prefix = pos === 0 || editContent.value[pos - 1] === '\n' ? '' : '\n'
+    editContent.value = editContent.value.slice(0, pos) + prefix + res.result + editContent.value.slice(pos)
+    ElMessage.success(`${action}内容已插入，可继续编辑后保存`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '扩写/续写失败')
+  } finally { expanding.value = false }
+}
+
 async function saveEdit() {
   saving.value = true
   try {
@@ -536,8 +610,8 @@ async function onSnapCmd(cmd) {
   } catch (e) { ElMessage.error(e.response?.data?.detail || '恢复失败') }
 }
 
-onMounted(() => { loadAll(); loadSnapshots() })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+onMounted(() => { document.addEventListener('mousedown', onDocMouseDown); loadAll(); loadSnapshots() })
+onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <style scoped>
@@ -569,4 +643,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .file-ok { color: #67c23a; }
 .file-err { color: #f56c6c; }
 .import-hint { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 8px; }
+.sel-float { position: fixed; z-index: 9999; display: flex; align-items: center; gap: 10px; background: #5a4a3a; color: #f5f1e2; padding: 6px 12px; border-radius: 8px; font-size: 13px; box-shadow: 0 2px 12px rgba(0,0,0,.3); user-select: none; }
+.sel-float-item { cursor: pointer; }
+.sel-float-item:hover { color: #e6c98a; }
+.sel-float-sep { opacity: .4; }
 </style>

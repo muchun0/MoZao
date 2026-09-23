@@ -17,3 +17,4 @@ export const genOutline = (pid) => request.post(`/projects/${pid}/generate-outli
 export const regenOutline = (pid) => request.post(`/projects/${pid}/outline/regenerate`)
 export const regenWorld = (pid) => request.post(`/projects/${pid}/world/regenerate`)
 export const importOutline = (pid, data) => request.post(`/projects/${pid}/outline/import`, data)
+export const expandSelection = (pid, data) => request.post(`/projects/${pid}/expand-selection`, data)

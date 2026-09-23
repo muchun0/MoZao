@@ -96,32 +96,6 @@
       </el-space>
     </el-card>
 
-    <!-- 重新生成 -->
-    <el-card class="tool-card">
-      <template #header><b>重新生成</b></template>
-      <p class="muted">对已生成内容不满意可重新生成</p>
-      <el-space wrap>
-        <el-button size="small" type="warning" @click="regenOutline" :loading="regenLoading">重新生成大纲</el-button>
-        <el-button size="small" type="warning" @click="regenWorld" :loading="regenLoading2">重新生成世界观</el-button>
-      </el-space>
-    </el-card>
-
-    <!-- 大纲快照 -->
-    <el-card class="tool-card">
-      <template #header><b>大纲快照</b></template>
-      <p class="muted">保存/回滚大纲版本</p>
-      <el-space>
-        <el-input v-model="snapName" placeholder="版本名（选填）" style="width:140px" />
-        <el-button size="small" @click="saveSnap">保存</el-button>
-      </el-space>
-      <div class="result-area">
-        <div v-for="(s, i) in snaps" :key="i" class="snap-row">
-          <span>{{ s.name }} <small class="muted">{{ s.created }}</small></span>
-          <el-button size="small" link @click="restoreSnap(s.name)">回滚</el-button>
-        </div>
-      </div>
-    </el-card>
-
     <!-- 伏笔管理 -->
     <el-card class="tool-card">
       <template #header><b>伏笔管理</b></template>
@@ -281,7 +255,7 @@ import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
 import { getProject } from '../../api/project'
 import { listMarketSkills, publishToMarket, installMarketSkill } from '../../api/tools'
-import { batchGenerate, regenOutline as apiRegenOutline, regenWorld as apiRegenWorld } from '../../api/novel'
+import { batchGenerate } from '../../api/novel'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({ pid: String })
@@ -332,32 +306,11 @@ const altLoading = ref(false)
 const alts = ref([])
 const batchStart = ref(1)
 const batchEnd = ref(1)
-const snapName = ref('')
-const snaps = ref([])
+
 const fsInput = ref('')
 const foreshadowing = ref([])
 const lkInput = ref('')
 const locked = ref([])
-const regenLoading = ref(false)
-const regenLoading2 = ref(false)
-
-async function regenOutline() {
-  try { await ElMessageBox.confirm('重新生成大纲将删除现有大纲和章节，确定？', '重新生成大纲', { type: 'warning' }) } catch { return }
-  regenLoading.value = true
-  try {
-    await apiRegenOutline(props.pid)
-    ElMessage.success('已开始重新生成大纲，请稍候几分钟')
-    setTimeout(() => location.reload(), 2000)
-  } catch (e) { ElMessage.error('操作失败') } finally { regenLoading.value = false }
-}
-async function regenWorld() {
-  regenLoading2.value = true
-  try {
-    await apiRegenWorld(props.pid)
-    ElMessage.success('已开始重新生成世界观，请稍候')
-    setTimeout(() => location.reload(), 2000)
-  } catch (e) { ElMessage.error('操作失败') } finally { regenLoading2.value = false }
-}
 
 async function runVerify(kind, label) {
   verifyResult.value = [{ text: `正在检查${label}…`, ok: false }]
@@ -402,21 +355,6 @@ async function doBatch() {
     await batchGenerate(props.pid, { start: batchStart.value, end: batchEnd.value })
     ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
   } catch (e) { ElMessage.error('批量生成失败') }
-}
-
-async function loadSnaps() {
-  try { const r = await toolsApi.listSnapshots(props.pid); snaps.value = r.snapshots || [] } catch {}
-}
-async function saveSnap() {
-  await toolsApi.saveSnapshot(props.pid, snapName.value || undefined)
-  ElMessage.success('快照已保存')
-  snapName.value = ''
-  loadSnaps()
-}
-async function restoreSnap(name) {
-  try { await ElMessageBox.confirm(`回滚到「${name}」？`, '恢复快照', { type: 'warning' }) } catch { return }
-  await toolsApi.restoreSnapshot(props.pid, name)
-  ElMessage.success('已回滚')
 }
 
 async function loadFs() {
@@ -538,7 +476,7 @@ async function delMySkill(id) {
 }
 
 onMounted(() => {
-  loadCover(); loadSnaps(); loadFs(); loadLk(); loadMySkills(); loadMarket()
+  loadCover(); loadFs(); loadLk(); loadMySkills(); loadMarket()
   loadStyleRoles(); loadPlatformSkills()
 })
 

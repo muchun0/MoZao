@@ -15,7 +15,7 @@ from pathlib import Path
 from novel_gen.config import LLMConfig
 
 ALLOWED_EXTENSIONS = {".txt", ".md", ".docx"}
-MAX_SIZE = 2 * 1024 * 1024  # 2MB
+MAX_SIZE = 5 * 1024 * 1024  # 5MB（需求确认：文件上限 5MB）
 
 _SYSTEM = (
     "你是资深小说编辑助手。用户会给你一份小说大纲/设定文档，请把它提炼成结构化字段，"
@@ -50,7 +50,7 @@ def extract_text(filename: str, data: bytes) -> str:
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(f"不支持的文件格式 {ext or '(无扩展名)'}，请上传 .txt / .md / .docx")
     if len(data) > MAX_SIZE:
-        raise ValueError("文件超过 2MB 限制，请精简后上传")
+        raise ValueError("文件超过 5MB 限制，请精简后上传")
     if ext == ".docx":
         return _extract_docx(data)
     for enc in ("utf-8-sig", "utf-8", "gb18030"):

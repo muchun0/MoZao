@@ -41,11 +41,13 @@ pytestmark = pytest.mark.skipif(not _db_ok(), reason="本机 MySQL 不可用")
 
 @pytest.fixture
 def clean_teardowns():
-    """清掉测试期间创建的拆书条目：调研沉淀（source_project=td_test_*）与测试种子（题材=测试种子*）。"""
+    """清掉测试期间创建的拆书条目：调研沉淀（source_project=td_test_*）、测试种子（题材=测试种子*）与手动拆解（td_manual 标记）。"""
     yield
     with db._connect() as conn:
         conn.execute("DELETE FROM book_teardown WHERE source_project LIKE 'td_test_%'")
         conn.execute("DELETE FROM book_teardown WHERE genre LIKE '测试种子%'")
+        conn.execute("DELETE FROM book_teardown WHERE genre LIKE 'td_test_%'")
+        conn.execute("DELETE FROM book_teardown WHERE summary LIKE 'td_manual%' OR title LIKE 'td_manual%'")
 
 
 class _FakeReport:
@@ -233,3 +235,107 @@ def test_with_research_persisted_in_config_file(tmp_path):
     data.pop("with_research", None)   # 模拟历史项目
     (store2.dir / "config.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert store2.load_config().with_research is False
+
+
+# ---------------- P1：手动拆解（用户粘贴/上传爆款作品 → AI 拆解入库） ----------------
+
+class _FakeLLM:
+    """假 LLM：返回固定拆解 JSON，绕开真实 API（关键词 td_manual 前缀便于隔离断言）。"""
+
+    def __init__(self, data=None):
+        self.data = data or {
+            "genre": "都市",
+            "summary": "td_manual 开篇即冲突，三章一反转，情绪密度高",
+            "opening": "td_manual 开头直接抛出主角困境与金手指",
+            "hooks": ["td_manual 悬念A", "td_manual 冲突B"],
+            "plot_patterns": ["td_manual 开局打脸-逆袭"],
+            "characters": ["td_manual 主角身份反差"],
+            "styles": ["td_manual 短句快节奏"],
+            "pacing": "td_manual 两章一小高潮",
+            "dialogue": ["td_manual 用对话推进冲突"],
+            "avoid": ["td_manual 平铺直叙"],
+            "takeaways": ["td_manual 黄金三章模板"],
+            "excerpts": ["td_manual 原文片段"],
+        }
+
+    def chat_json(self, system, user, **kw):
+        return self.data
+
+
+def _long_text(n: int = 600) -> str:
+    return "很久很久以前，有一座城池。" * (n // 11 + 1)
+
+
+@pytest.mark.p1
+def test_analyze_manuscript_inserts(clean_teardowns):
+    td = teardown_lib.analyze_manuscript(_long_text(), genre="都市",
+                                         title="td_manual 作品", user_id=42, llm=_FakeLLM())
+    assert td is not None
+    row = db.get_teardown(td["id"])
+    assert row["source_type"] == "manual"
+    assert row["source_project"] == ""
+    assert row["user_id"] == 42
+    import json as _json
+    content = _json.loads(row["content"])
+    assert content["genre"] == "都市"
+    assert content["takeaways"][0].startswith("td_manual")
+    assert content["excerpts"]
+    lst = db.list_teardowns(q="td_manual")
+    assert lst["total"] >= 1
+
+
+@pytest.mark.p1
+def test_analyze_manuscript_genre_priority(clean_teardowns):
+    # 用户指定题材优先于 LLM 判断
+    fake = _FakeLLM(data={**_FakeLLM().data, "genre": "玄幻"})
+    td = teardown_lib.analyze_manuscript(_long_text(), genre="都市", llm=fake)
+    assert td["genre"] == "都市"
+    # 未指定题材且 LLM 未给 → 通用
+    td2 = teardown_lib.analyze_manuscript(_long_text(), genre="", llm=_FakeLLM(data={"summary": "s"}))
+    assert td2["genre"] == "通用"
+    assert td2["title"] == "通用 · 用户投稿拆解"
+
+
+@pytest.mark.p2
+def test_analyze_manuscript_invalid(clean_teardowns):
+    with pytest.raises(ValueError):
+        teardown_lib.analyze_manuscript("", llm=_FakeLLM())
+    with pytest.raises(ValueError):
+        teardown_lib.analyze_manuscript("太短了", llm=_FakeLLM())
+    with pytest.raises(ValueError):
+        teardown_lib.analyze_manuscript("长" * (teardown_lib._MANUAL_MAX_WORDS + 1), llm=_FakeLLM())
+    # 未入库任何条目
+    assert db.list_teardowns(q="td_manual")["total"] == 0
+
+
+@pytest.mark.p1
+def test_analyze_requires_login(clean_teardowns):
+    from fastapi.testclient import TestClient
+    from webapp.server import app  # server 触发全部路由注册（含 /api/teardowns/analyze）
+    c = TestClient(app)
+    r = c.post("/api/teardowns/analyze", json={"text": _long_text()})
+    assert r.status_code == 401
+
+
+@pytest.mark.p1
+def test_analyze_api_ok(clean_teardowns, monkeypatch):
+    from fastapi.testclient import TestClient
+    from webapp.server import app
+    monkeypatch.setattr(teardown_lib, "_default_llm", lambda: _FakeLLM())
+    admin = db.get_user_by_name("admin")
+    token = db.create_session(admin["id"])
+    try:
+        c = TestClient(app)
+        r = c.post("/api/teardowns/analyze",
+                   headers={"Authorization": f"Bearer {token}"},
+                   json={"text": _long_text(), "genre": "都市", "title": "td_manual API作品"})
+        assert r.status_code == 200
+        td = r.json()["td"]
+        assert td["source_type"] == "manual"
+        # 参数错误 → 400
+        r2 = c.post("/api/teardowns/analyze",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"text": "太短"})
+        assert r2.status_code == 400
+    finally:
+        db.delete_session(token)

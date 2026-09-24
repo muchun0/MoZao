@@ -19,7 +19,7 @@
 6. 任务持久化：生成任务落盘 task.json，服务重启自动重拾中断任务
 """
 from .core import *  # noqa: F401,F403  触发 app 创建与核心状态初始化
-from .routers import (system, auth, me, skills, admin, style_roles,
+from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       projects_base, projects_outline, projects_chapters,
                       projects_world, projects_generation)  # noqa: F401  触发路由注册
 

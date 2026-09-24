@@ -48,6 +48,7 @@ from novel_gen.store.project import ProjectStore, _safe_name
 from . import db
 from . import mailer
 from . import verify_code
+from . import teardown_lib
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
 from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tiers
@@ -65,11 +66,15 @@ WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 @asynccontextmanager
 async def _lifespan(_app):
-    """服务启动：重拾崩溃残留的生成任务。"""
+    """服务启动：重拾崩溃残留的生成任务 + 导入拆书库种子。"""
     try:
         _resume_interrupted_tasks()
     except Exception:
         logger.exception("启动重拾异常")
+    try:
+        teardown_lib.seed_from_knowledge_base()
+    except Exception:
+        logger.exception("拆书库种子导入异常")
     yield
 
 
@@ -735,6 +740,8 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     try:
         pipeline = _open_pipeline(store)
         pipeline.run_research()
+        # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
+        teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
         if handle.stop_event.is_set():
             return
         pipeline.run_outline()
@@ -787,6 +794,8 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             has_outline = bool(existing_outline and existing_outline.chapters)
             if not has_outline:
                 pipeline.run_research()
+                # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
+                teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=research", store.dir.name)
                     return

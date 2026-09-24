@@ -107,6 +107,7 @@ class NovelConfig:
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
     content_type: str = ""          # expand 模式下的输入类型：""=大纲/梗概（纯扩写）；"chapters"=已有分章正文（续写）；"chapters_expand"=扩写已有章节
     expand_targets: list = field(default_factory=list)  # 扩写范围：章节号列表，空=全部已有章节
+    with_research: bool = False     # expand 模式可选项：生成前先做一次爆款共性调研（产出 research.json + 沉淀拆书库，并作为扩写参考）；auto 模式始终调研，此字段忽略
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容

@@ -13,6 +13,7 @@ const routes = [
     children: [
       { path: '', name: 'ProjectList', component: () => import('../views/ProjectList.vue') },
       { path: 'project/:id', name: 'ProjectDetail', component: () => import('../views/ProjectDetail.vue'), props: true },
+      { path: 'teardowns', name: 'TeardownLibrary', component: () => import('../views/TeardownLibrary.vue') },
       { path: 'admin', name: 'Admin', component: () => import('../views/Admin.vue'), meta: { requiresAdmin: true } },
     ],
   },

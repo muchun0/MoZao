@@ -8,6 +8,7 @@
       <div class="right">
         <span v-if="auth.user" class="balance">余额 ¥{{ (balance || 0).toFixed(2) }}</span>
         <el-button v-if="auth.user" text @click="rechargeRef.open()">充值</el-button>
+        <el-button v-if="auth.user" text @click="$router.push('/teardowns')">拆书库</el-button>
         <el-button v-if="auth.isAdmin" text @click="$router.push('/admin')">管理后台</el-button>
         <el-dropdown v-if="auth.user" @command="onCommand">
           <span class="username">{{ auth.user.username }}<el-icon><arrow-down /></el-icon></span>

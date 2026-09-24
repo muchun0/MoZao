@@ -6,6 +6,29 @@
 """
 from ..core import *  # noqa: F401,F403  (app / _require_user / _require_admin / HTTPException / json)
 from .. import db  # noqa: F401
+from .. import teardown_lib
+from pydantic import BaseModel
+
+
+class TeardownAnalyzeReq(BaseModel):
+    """手动拆解入参：粘贴/上传的爆款作品文本（必填），作品名与题材可选。"""
+    text: str
+    genre: str = ""
+    title: str = ""
+
+
+@app.post("/api/teardowns/analyze")
+def teardown_analyze(req: TeardownAnalyzeReq, user: dict = Depends(_require_user)):
+    """用户手动拆解爆款作品文本 → AI 结构化拆解 → 沉淀拆书库（source_type=manual）。"""
+    try:
+        td = teardown_lib.analyze_manuscript(req.text, genre=req.genre, title=req.title,
+                                             user_id=user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if td is None:
+        raise HTTPException(status_code=500, detail="拆解失败，请稍后重试")
+    logger.info("手动拆解接口完成: user=%d td_id=%d", user["id"], td["id"])
+    return {"ok": True, "td": td}
 
 
 @app.get("/api/teardowns/genres")

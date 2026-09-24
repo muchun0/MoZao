@@ -3,10 +3,11 @@
     <div class="toolbar">
       <h2 class="title">爆款拆书库</h2>
       <el-input v-model="q" placeholder="搜索题材共性、套路…" clearable style="width:260px" @keyup.enter="reload" @clear="reload" />
-      <el-button type="primary" @click="reload">搜索</el-button>
+      <el-button @click="reload">搜索</el-button>
+      <el-button type="primary" style="margin-left:auto" @click="openAnalyze">+ 拆解爆款作品</el-button>
     </div>
     <p class="hint">
-      每次项目调研的题材共性会自动沉淀到这里（同题材合并更新）；浏览后可复用为写作参考。库中内容来自生成前的联网调研与内置知识库。
+      项目调研的题材共性会自动沉淀（同题材合并更新）；你也可以粘贴/上传看到的爆款作品文本，由 AI 拆解入库。内容来自生成前的联网调研、内置知识库与手动拆解。
     </p>
 
     <el-radio-group v-model="genre" size="small" class="genres" @change="reload">
@@ -20,7 +21,7 @@
       <el-card v-for="t in items" :key="t.id" class="tcard" @click="openDetail(t)">
         <div class="thead">
           <span class="tgenre">{{ t.genre }}</span>
-          <span class="tsrc">{{ t.source_type === 'seed' ? '内置知识库' : '调研沉淀' }}</span>
+          <span class="tsrc">{{ srcLabel(t.source_type) }}</span>
         </div>
         <div class="ttitle">{{ t.title }}</div>
         <div class="tsummary">{{ t.summary || '暂无摘要' }}</div>
@@ -41,6 +42,34 @@
       v-model:current-page="page"
       @current-change="reload"
     />
+
+    <el-dialog v-model="showAnalyze" title="拆解爆款作品" width="620px">
+      <el-form :model="anaForm" label-width="90px">
+        <el-form-item label="作品名"><el-input v-model="anaForm.title" placeholder="可选，如《大王饶命》第一章" /></el-form-item>
+        <el-form-item label="题材">
+          <el-select v-model="anaForm.genre" clearable filterable allow-create default-first-option
+            placeholder="可选；不填则由 AI 判断">
+            <el-option v-for="g in genreOptions" :key="g" :label="g" :value="g" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="作品文本">
+          <div style="width:100%">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+              <input type="file" ref="anaFileInput" accept=".txt,.md,.docx" @change="onAnaFile" />
+              <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
+            </div>
+            <el-input v-model="anaForm.text" type="textarea" :rows="9"
+              placeholder="粘贴爆款作品的核心章节（≥50 字，≤20000 字）。AI 将拆解开篇钩子、情节套路、人设亮点、文风节奏、可借用手法并沉淀入库" />
+            <div class="word-count">已输入 {{ anaWords }} 字（{{ anaWords < 50 ? '至少 50 字' : anaWords > 20000 ? '超过 20000 字上限' : '可提交' }}）</div>
+            <div v-if="anaFileMsg" class="file-msg" :class="anaFileMsg.includes('识别') || anaFileMsg.includes('解析完成') ? 'file-ok' : 'file-err'">{{ anaFileMsg }}</div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAnalyze=false">取消</el-button>
+        <el-button type="primary" :loading="analyzing" :disabled="!canAnalyze" @click="doAnalyze">拆解并入库</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer v-model="drawer" size="520px" :title="current?.title || '拆书详情'">
       <div v-if="obj" class="detail">
@@ -80,8 +109,34 @@
           <div class="dlabel">平台要点</div>
           <ul class="dlist"><li v-for="(v,i) in listOf(obj.platform_notes)" :key="i">{{ v }}</li></ul>
         </div>
+        <template v-if="current?.source_type === 'manual'">
+          <div v-if="obj.opening" class="dsec">
+            <div class="dlabel">开篇钩子拆解</div>
+            <div class="dtext">{{ obj.opening }}</div>
+          </div>
+          <div v-if="listOf(obj.hooks).length" class="dsec">
+            <div class="dlabel">悬念 / 冲突钩子</div>
+            <ul class="dlist"><li v-for="(v,i) in listOf(obj.hooks)" :key="i">{{ v }}</li></ul>
+          </div>
+          <div v-if="listOf(obj.characters).length" class="dsec">
+            <div class="dlabel">人设亮点</div>
+            <ul class="dlist"><li v-for="(v,i) in listOf(obj.characters)" :key="i">{{ v }}</li></ul>
+          </div>
+          <div v-if="listOf(obj.dialogue).length" class="dsec">
+            <div class="dlabel">对话 / 描写技巧</div>
+            <ul class="dlist"><li v-for="(v,i) in listOf(obj.dialogue)" :key="i">{{ v }}</li></ul>
+          </div>
+          <div v-if="listOf(obj.takeaways).length" class="dsec highlight">
+            <div class="dlabel">可直接借用的手法（核心交付）</div>
+            <ul class="dlist"><li v-for="(v,i) in listOf(obj.takeaways)" :key="i">{{ v }}</li></ul>
+          </div>
+          <div v-if="listOf(obj.excerpts).length" class="dsec">
+            <div class="dlabel">原文关键片段（回溯核对）</div>
+            <div v-for="(v,i) in listOf(obj.excerpts)" :key="i" class="dtext quote">{{ v }}</div>
+          </div>
+        </template>
         <div v-if="!Object.keys(obj).length" class="dtext">暂无详细内容</div>
-        <div class="dmeta">来源：{{ current?.source_type === 'seed' ? '内置知识库' : '项目调研沉淀' }} · 浏览 {{ current?.view_count }}</div>
+        <div class="dmeta">来源：{{ srcLabel(current?.source_type) }} · 浏览 {{ current?.view_count }}</div>
         <el-button v-if="auth.isAdmin" type="danger" plain size="small" style="margin-top:10px" @click="doDelete(current)">
           删除该条目（管理员）
         </el-button>
@@ -91,10 +146,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
-import { getTeardownGenres, getTeardowns, getTeardownDetail, deleteTeardown } from '../api/teardown'
+import { getTeardownGenres, getTeardowns, getTeardownDetail, deleteTeardown, analyzeTeardown } from '../api/teardown'
+import { parseContent } from '../api/tools'
 
 const auth = useAuthStore()
 const loading = ref(false)
@@ -109,6 +165,74 @@ const pageSize = 12
 const drawer = ref(false)
 const current = ref(null)
 const obj = ref({})
+
+const showAnalyze = ref(false)
+const analyzing = ref(false)
+const anaFileMsg = ref('')
+const anaFileInput = ref(null)
+const anaForm = ref({ title: '', genre: '', text: '' })
+
+const genreOptions = computed(() => {
+  const set = new Set(['通用', ...genres.value.map(g => g.genre)])
+  return [...set]
+})
+const anaWords = computed(() => (anaForm.value.text || '').length)
+const canAnalyze = computed(() => anaWords.value >= 50 && anaWords.value <= 20000 && !analyzing.value)
+
+function srcLabel(st) {
+  if (st === 'seed') return '内置知识库'
+  if (st === 'manual') return '手动拆解'
+  return '调研沉淀'
+}
+
+function openAnalyze() {
+  anaForm.value = { title: '', genre: '', text: '' }
+  anaFileMsg.value = ''
+  if (anaFileInput.value) anaFileInput.value.value = ''
+  showAnalyze.value = true
+}
+
+function onAnaFile(e) {
+  const f = e.target.files[0]
+  if (!f) return
+  if (f.size > 5 * 1024 * 1024) {
+    anaFileMsg.value = '文件超过 5MB 限制，请精简后上传'
+    e.target.value = ''
+    return
+  }
+  const ext = ((f.name.match(/\.([^.]+)$/) || [])[1] || '').toLowerCase()
+  if (!['txt', 'md', 'docx'].includes(ext)) {
+    anaFileMsg.value = '仅支持 .txt / .md / .docx 格式'
+    e.target.value = ''
+    return
+  }
+  anaFileMsg.value = '正在解析…'
+  const fd = new FormData()
+  fd.append('file', f)
+  parseContent(fd).then(res => {
+    anaForm.value.text = res.full_text || ''
+    anaFileMsg.value = res.full_text ? `解析完成，已填入（${res.full_text.length} 字）` : '解析结果为空，请检查文件内容'
+  }).catch(err => {
+    anaFileMsg.value = err.response?.data?.detail || '解析失败，请检查文件格式'
+    e.target.value = ''
+  })
+}
+
+async function doAnalyze() {
+  analyzing.value = true
+  try {
+    const res = await analyzeTeardown(anaForm.value)
+    const td = res.td || {}
+    ElMessage.success(`拆解完成，已入库「${td.title || '作品拆解'}」`)
+    showAnalyze.value = false
+    reload()
+    loadGenres()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '拆解失败，请稍后重试')
+  } finally {
+    analyzing.value = false
+  }
+}
 
 function listOf(v) {
   if (Array.isArray(v)) return v
@@ -198,4 +322,11 @@ onMounted(() => {
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { background: #eef2f8; color: #3d5a86; font-size: 12px; padding: 3px 10px; border-radius: 10px; }
 .dmeta { color: #9aa5b5; font-size: 12px; border-top: 1px solid #eef1f5; padding-top: 10px; }
+.dsec.highlight { background: #f7f2e4; border: 1px solid #eadfbe; border-radius: 8px; padding: 10px 12px; }
+.dtext.quote { border-left: 3px solid #e3c55d; padding: 6px 10px; margin-bottom: 8px; background: #faf8f1; color: #5f6b7a; }
+.word-count { font-size: 12px; color: #909399; margin-top: 6px; }
+.muted { color: #909399; }
+.file-msg { font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.file-ok { color: #67c23a; }
+.file-err { color: #f56c6c; }
 </style>

@@ -283,6 +283,7 @@ def init_db() -> None:
         for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
                     _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN):
             conn.execute(ddl)
+        _ensure_teardown_user_id()
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
         if "email" not in cols:
@@ -1287,6 +1288,29 @@ def _parse_frontmatter(text: str) -> tuple[str, str]:
                         source = v
     return title, source
 
+
+
+def _ensure_teardown_user_id() -> None:
+    """幂等迁移：book_teardown 增加 user_id（记录手动拆解投稿人，历史数据默认 0）。"""
+    try:
+        with _connect() as conn:
+            row = conn.execute("SHOW COLUMNS FROM book_teardown LIKE 'user_id'").fetchone()
+            if row is None:
+                conn.execute("ALTER TABLE book_teardown ADD COLUMN user_id INT NOT NULL DEFAULT 0")
+    except Exception:
+        # 表尚未创建/连接失败时静默（init_db 已建表；此处仅兜底）
+        pass
+
+
+def insert_manual_teardown(genre: str, title: str, summary: str, content: str,
+                           user_id: int) -> int:
+    """用户手动拆解入库（source_type=manual，无关联项目）。返回条目 id。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO book_teardown (genre,title,summary,content,source_project,source_type,view_count,status,created_at,updated_at,user_id) "
+            "VALUES (%s,%s,%s,%s,'','manual',0,1,%s,%s,%s)",
+            (genre, title, summary, content, time.time(), time.time(), user_id))
+        return cur.lastrowid
 
 # ---------- 爆款拆书库（book_teardown：调研成果/内置知识库的沉淀与浏览） ----------
 

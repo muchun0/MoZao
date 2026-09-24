@@ -73,6 +73,10 @@
           <el-form-item label="手写内容">
             <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的正文（可选），AI将在此基础上续写" />
           </el-form-item>
+          <el-form-item label="附带题材调研">
+            <el-switch v-model="form.with_research" />
+            <span class="muted" style="margin-left:8px;font-size:12px">生成前先做一次爆款共性调研：结果沉淀到拆书库，并作为扩写参考（耗时略增、不额外计费）</span>
+          </el-form-item>
         </template>
         <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
         <el-form-item label="费用估算">
@@ -147,7 +151,7 @@ const formatSample = [
 const form = ref({
   title: '', genre: '', total_words: 25000, style: '', premise: '',
   mode: 'auto', high_quality_mode: false, style_role_id: 0,
-  existing_words: 0, user_content: '', expand_input: '',
+  existing_words: 0, user_content: '', expand_input: '', with_research: false,
 })
 const fileInput = ref(null)
 

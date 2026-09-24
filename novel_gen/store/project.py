@@ -93,6 +93,7 @@ class ProjectStore:
             "expand_input": cfg.expand_input,
             "content_type": cfg.content_type,
             "expand_targets": list(cfg.expand_targets),
+            "with_research": getattr(cfg, "with_research", False),
             "user_words": getattr(cfg, "_user_words", 0),
             # P0 修复：补全落盘字段，否则重新读取时全部丢失（高质量模式/技能/节奏参数失效）
             "character_depth": getattr(cfg, "character_depth", True),
@@ -146,6 +147,7 @@ class ProjectStore:
             expand_input=d.get("expand_input", ""),
             content_type=d.get("content_type", ""),
             expand_targets=[int(x) for x in (d.get("expand_targets") or [])],
+            with_research=bool(d.get("with_research", False)),
             character_depth=bool(d.get("character_depth", True)),
             fanqie_style=bool(d.get("fanqie_style", True)),
             high_quality_mode=bool(d.get("high_quality_mode", False)),

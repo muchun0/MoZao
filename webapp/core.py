@@ -175,6 +175,7 @@ class ProjectCreateReq(BaseModel):
     plot_speed: str = "medium"      # 剧情速度
     custom_prompt: str = ""         # 用户自定义提示词
     high_quality_mode: bool = False  # 高质量模式：场景级生成+动态模块+参数分层
+    with_research: bool = False     # expand 模式可选：生成前先做一次题材调研（产出 research.json + 沉淀拆书库）；auto 模式始终调研，此字段忽略
 class OutlineImportReq(BaseModel):
     """项目详情页「重新导入大纲」：以用户传入为准，覆盖前自动备份。"""
     text: str = Field(..., min_length=1)
@@ -274,6 +275,7 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
         "memory_window": cfg.memory_window,
         "mode": cfg.mode,
         "expand_input": cfg.expand_input,
+        "with_research": bool(getattr(cfg, "with_research", False)),
         "llm": {
             "provider": cfg.llm.provider,
             "model": cfg.llm.model,
@@ -772,6 +774,17 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         _clear_task(store)
 
 
+def _research_needed(cfg, has_outline: bool) -> bool:
+    """是否需要执行题材调研：无大纲必跑（auto 全自动）；expand 模式勾选「附带调研」也跑。
+
+    expand 勾选调研时只补调研（research.json + 拆书库沉淀），用户已导入的大纲不被重写——
+    是否生成大纲仍由 has_outline 单独决定。
+    """
+    if not has_outline:
+        return True
+    return cfg.mode == "expand" and bool(getattr(cfg, "with_research", False))
+
+
 def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0) -> None:
     """后台线程：从断点续跑整条流水线，结束后自动导出。
 
@@ -792,13 +805,14 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             # 已有大纲则复用，不重新生成（用户上传大纲/之前已生成过的情况）
             existing_outline = store.load_outline()
             has_outline = bool(existing_outline and existing_outline.chapters)
-            if not has_outline:
+            if _research_needed(cfg, has_outline):
                 pipeline.run_research()
                 # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
                 teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=research", store.dir.name)
                     return
+            if not has_outline:
                 pipeline.run_outline()
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=outline", store.dir.name)

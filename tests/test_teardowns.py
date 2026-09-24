@@ -136,11 +136,12 @@ def test_seed_idempotent(clean_teardowns):
 
 @pytest.mark.p2
 def test_search_keyword(clean_teardowns):
-    teardown_lib.sink_research(_FakeReport(summary="含关键字：金手指逆袭"), "td_test_proj_g")
+    teardown_lib.sink_research(_FakeReport(summary="tdq_kw_金手指逆袭"), "td_test_proj_g")
     # 用不同题材避免同题材合并覆盖上一条
-    teardown_lib.sink_research(_FakeReport(genre="玄幻", summary="无关内容"), "td_test_proj_h")
-    assert db.list_teardowns(q="金手指")["total"] == 1
-    assert db.list_teardowns(q="不存在的词")["total"] == 0
+    teardown_lib.sink_research(_FakeReport(genre="玄幻", summary="tdq_kw_无关内容"), "td_test_proj_h")
+    # 用测试独有关键词前缀，避免命中库内正式数据（如已沉淀的玄幻调研含"金手指"）
+    assert db.list_teardowns(q="tdq_kw_金手指")["total"] == 1
+    assert db.list_teardowns(q="tdq_不存在的词")["total"] == 0
 
 
 @pytest.mark.p2
@@ -180,3 +181,55 @@ def test_genres_aggregate(clean_teardowns):
     m = {g["genre"]: g["count"] for g in genres}
     assert m.get("都市") == 1                          # 同题材合并
     assert m.get("历史") == 1
+
+
+# ---------------- 方案 A：expand 模式可选附带调研 ----------------
+
+def _mk_cfg(mode: str = "auto", with_research: bool = False):
+    from novel_gen.config import NovelConfig
+    return NovelConfig(mode=mode, with_research=with_research)
+
+
+@pytest.mark.p1
+def test_research_needed_auto():
+    from webapp.core import _research_needed
+    # auto 模式：无大纲必跑；有大纲（复用/续写）不跑
+    assert _research_needed(_mk_cfg("auto"), has_outline=False) is True
+    assert _research_needed(_mk_cfg("auto"), has_outline=True) is False
+
+
+@pytest.mark.p1
+def test_research_needed_expand_option():
+    from webapp.core import _research_needed
+    # expand 模式：无大纲必跑；有大纲时由 with_research 开关决定
+    assert _research_needed(_mk_cfg("expand"), has_outline=False) is True
+    assert _research_needed(_mk_cfg("expand", False), has_outline=True) is False
+    assert _research_needed(_mk_cfg("expand", True), has_outline=True) is True
+
+
+@pytest.mark.p2
+def test_with_research_config_roundtrip():
+    import dataclasses
+    from novel_gen.config import NovelConfig
+    # 默认关闭（向后兼容），显式开启可序列化持久化
+    assert NovelConfig().with_research is False
+    d = dataclasses.asdict(_mk_cfg("expand", True))
+    assert d["with_research"] is True
+    assert d["mode"] == "expand"
+
+
+@pytest.mark.p1
+def test_with_research_persisted_in_config_file(tmp_path):
+    """config.json 落盘往返不丢 with_research（save_config/load_config 白名单字段）。"""
+    from novel_gen.store.project import ProjectStore
+    store = ProjectStore.create(tmp_path, _mk_cfg("expand", True))
+    reloaded = store.load_config()
+    assert reloaded.with_research is True
+    assert reloaded.mode == "expand"
+    # 旧配置（无该字段）兼容：默认 False
+    store2 = ProjectStore.create(tmp_path / "legacy", _mk_cfg("expand", False))
+    import json
+    data = json.loads((store2.dir / "config.json").read_text(encoding="utf-8"))
+    data.pop("with_research", None)   # 模拟历史项目
+    (store2.dir / "config.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert store2.load_config().with_research is False

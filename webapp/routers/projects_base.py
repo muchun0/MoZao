@@ -91,6 +91,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         plot_speed=req.plot_speed,
         custom_prompt=req.custom_prompt,
         high_quality_mode=req.high_quality_mode,
+        with_research=req.with_research,
     )
 
     # 注入写作风格 skill（单技能，向后兼容）

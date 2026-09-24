@@ -12,9 +12,10 @@ Web 端为**多用户 SaaS**：注册登录、按 AI 实际生成字数计费（
 - **写作风格 Skill**：站长可在管理后台配置多套写作模板（番茄爽文 / 晋江细腻 / 西幻史诗 / 悬疑冷峻 / 轻小说日常等），用户创建小说时可选，prompt 自动注入 System Prompt
 - **风格角色（StylistAgent）**：写作风格抽象为独立 agent 角色——平台内置（爱潜水的乌贼·克苏鲁悬疑克制风 / 烽火戏诸侯·新古典江湖风 / 番茄爆款·短句快节奏风 / 辰东·洪荒史诗苍凉风，来自 skills_library 蒸馏）+ 用户自建；每个风格角色含人设（role_prompt）并**可挂载多个技能**（平台写作技能 + 我的 Skills），建书时一键套用，人设与技能由风格师注入写手正文与扩写路径
 - **强制结局**：无论长短篇，最后一章必须是完整结局——完成人物弧光、收束核心冲突、给出情绪落点，并按结局写作规范落地（四类合格结局形态 / 开篇锚定对照 / 烂尾黑名单 / 尾声写法），结尾升维（技术→哲学 / 产品→人性 / 事件→时代）
-- **多格式导出**：TXT / EPUB / DOCX，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
+- **多格式导出**：TXT / EPUB / DOCX / Markdown，项目详情页「导出 ▾」一键下载，另附 **ERNIE-Image-Turbo AI 生成的小说封面（PNG，每本限 5 次）**
 - **单章人工编辑 + 继续生成**：可修改任意章节正文，后续章节基于修改继续生成；也可从某章重新生成
-- **上传大纲智能解析**：上传 .txt / .md / .docx 大纲文档，AI 自动解析出书名、题材、字数、主角、配角、背景、剧情走向等字段并填入新建表单（支持扩写模式直接生成）
+- **上传大纲智能解析**：上传 .txt / .md / .docx 大纲文档（≤10MB）或粘贴文本（≤10 万字），AI 自动解析出书名、题材、字数、主角、配角、背景、剧情走向等字段并填入新建表单；**创建项目默认原样采用用户大纲，不自动重写**（扩写模式下亦然），世界观需用户手动触发「重生成世界观」后才由 AI 派生；已建项目可**重导入大纲**，旧大纲自动备份为快照（可一键还原）
+- **爆款拆书库**：调研成果自动沉淀（同题材合并更新）+ 内置知识库种子 + **手动拆解爆款作品入库**（拆书库页「+ 拆解爆款作品」粘贴/上传 .txt/.md/.docx，AI 拆解开篇钩子/悬念钩子/情节套路/人设亮点/文风/节奏/对话技巧/可借用手法清单）；按题材筛选/关键词搜索/详情浏览数自增；expand 模式建书可选「附带题材调研」（先调研沉淀再扩写，不重写已导入大纲），拆解与调研均不计费、失败不阻塞主流程
 - **长文一致性**：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填，杜绝前后矛盾
 - **断点续传**：以产物文件为唯一权威来源，中断后只补缺失部分，不重复生成、不浪费 token
 
@@ -96,6 +97,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 - **前端多阶段构建**：`docker build` 时第一阶段用 `node:20-alpine` 在容器内自动 `npm ci && npm run build`，第二阶段把 `dist` 拷进 Python 镜像。**无需在宿主机提前 build 前端、也无需单独上传 dist**。
 - **镜像**：基于 `python:3.13-slim`，已内置中文字体（Noto CJK，封面绘制必须）、时区（Asia/Shanghai）、健康检查
 - **数据持久化**：四个命名卷——`projects`（中间产物）/ `output`（成品）/ `logs`（日志）/ `data`（数据库）。容器重建不丢数据；数据库通过环境变量 `NOVEL_DB_PATH=/data/novel_web.db` 落到卷内
+- **数据与代码隔离**：`projects/output/logs` 的根目录由 `DATA_DIR` 环境变量指定（默认代码根，见下方 .env 配置）；服务器不设时容器内回退 `/app`，与既有卷挂载点一致，零影响
 - **密钥安全**：`.env` 被 `.dockerignore` 排除、**不写入镜像**，通过 compose 的 `env_file` 从宿主机注入；`run_web.py` 遵循"环境变量优先"（`.env` 里的值不会覆盖已存在的环境变量）
 - **访问**：默认映射宿主 `8000` 端口（`ports` 左侧可改，如 `8001:8000`）；首次注册用户自动成为站长
 - **静态文件 / 封面 / 大纲上传** 均为纯 Python 实现，无外部系统服务依赖
@@ -135,6 +137,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 ```
 DEEPSEEK_API_KEY=sk-你的Key
 BOCHA_API_KEY=sk-你的Key      # 可选，联网调研用
+DATA_DIR=D:\NovelData         # 可选：数据目录根（projects/output/logs 的父级），默认代码根
 ```
 
 - **邮件通知**（退款申请通知站长 + 注册/重置验证码发用户邮箱）：
@@ -367,7 +370,6 @@ search:
 ```
 novel_gen/
 ├── config.py            # 配置层
-├── cli.py / __main__.py # 命令行入口
 ├── llm/                 # Provider 抽象（base/factory/providers）
 ├── research/            # 调研阶段（schemas/sources/research + 内置知识库）
 ├── pipeline/            # 生成流水线（templates/stages/memory/manager/editor）
@@ -386,6 +388,7 @@ webapp/
 ├── logger.py            # 统一日志（文件滚动 + 控制台）
 ├── admin_cli.py         # 站长命令行管理工具
 └── frontend/            # Vue 3 + Element Plus 前端（src/，产物 dist/）
+docs/                    # 架构/文件索引/决策记录（AI 助手知识库，见 AGENTS.md）
 tests/                   # 本地测试（已入库，见「测试」节说明）
 examples/config.yaml     # 示例配置
 projects/<项目>/         # 中间产物：调研/大纲/人物/章节json/摘要（断点续跑用）
@@ -404,7 +407,7 @@ python -m pytest tests/ -v
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗等。
 
-> 注意：`tests/` 已入库随仓库提交（第二批起）；改动结算/权限/加密/路由拆分等关键路径时，请先在本地跑通测试再发版（当前 29 个用例全绿）。
+> 注意：`tests/` 已入库随仓库提交（第二批起）；改动结算/权限/加密/路由拆分等关键路径时，请先在本地跑通测试再发版（当前 80 个用例全绿）。
 
 ## 说明与边界
 
@@ -415,7 +418,12 @@ python -m pytest tests/ -v
 - 本工具用于个人创作辅助，请勿用于批量生产侵权或违反平台规则的内容。
 
 ## 更新记录
+- **2026-09-24**：第六次发版（master 75725e3）——**爆款拆书库三件套**：① 基础沉淀——新表 `book_teardown` + `teardown_lib.sink_research`（调研成果自动入库：同项目更新/同题材合并，异常只记日志不阻塞生成）+ `seed_from_knowledge_base`（启动导入内置知识库「通用」种子幂等）+ 4 个拆书库接口（题材聚合/列表搜索/详情浏览数自增/管理员删除）+ 前端拆书库页；② expand 模式可选「附带题材调研」——`NovelConfig.with_research` + `_research_needed`（expand 勾选先调研、沉淀拆书库并作扩写参考、不重写用户已导入大纲；修复 config 白名单漏落盘字段缺陷）；③ 手动拆解爆款作品入库——粘贴/上传 .txt/.md/.docx（≥50 字、≤20000 字）→ AI 拆解 12 项写法清单 → `source_type=manual` 入库（`book_teardown` 幂等迁移加 `user_id`），参数错误 400、未登录 401、失败 500 不写坏数据。回归：全量 80 pytest 全绿、真实 DeepSeek 拆解冒烟通过；部署 workbench upload（MD5 校验）→ 解压 → `docker compose up -d --build`；验证：容器均 healthy、域名 /api/health 200、主 JS 881KB 无白屏。
 
+- **2026-09-23**：第五次发版（master e975b5d）——恢复「选中段落扩写/续写」前端入口：该功能原在旧原生前端 webui（293773a 引入），随 c575fad 删除 webui 而丢失（后端 `/api/projects/{id}/expand-selection` 一直在）；现移植回 Vue 版 `ProjectDetail.vue` 阅读器/编辑器（选中 ≥5 字弹出「扩写|续写」浮动条，结果确认后插入选中文本之后，自动进入编辑态），后端零改动。构建验证：npm run build 通过、dist 引用一致。
+- **2026-09-23**：第四次发版（master e5b19f7）——① 用户自有内容导入：上传大纲支持 .txt/.md/.docx（≤10MB，`extract_text` 统一提取）与粘贴文本（≤10 万字）；创建项目默认**原样采用用户大纲不自动重写**（扩写模式同样在点击「重生成」时才重写），世界观不自动生成（手动触发「重生成世界观」后派生）；项目详情页新增「重新导入大纲」（POST /api/projects/{id}/outline/import），重导入自动备份旧大纲为快照并可还原；② 大纲快照体验收敛：快照列表新增 `display` 可读时间（自动备份/导入前/重生成前 → MM-DD HH:MM:SS），重生成大纲后立即刷新快照列表、生成完成也刷新；工具 tab 移除重复的「重新生成」（大纲/世界观）与「大纲快照」入口，统一到详情页顶部。部署：OSS 上传中途连续超时（4 次），重试第 5 次成功；MD5 校验一致后解压 → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200、主 JS 881KB 无白屏。
+- **2026-09-21**：第三次发版（master 08e8078）——① 生成提示词口头禅频次约束：`writer.md` 新增「同句口头禅每章最多 1-2 次、禁止章末机械复现」，`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（修复《我的地球Online日记》45 万字中"先记下来"出现 150 次的复读问题）；② dist 移出仓库（fix/dist-not-in-repo）：历史误提交的 `webapp/frontend/dist` 移除跟踪，Docker 多阶段构建在容器内自动 build，不依赖仓库 dist。部署验证：容器 healthy、域名 /api/health 200、主 JS 881KB 无白屏。
+- **2026-09-21**：第二次发版（master e89d563）——① 数据与代码隔离：新增 `novel_gen/utils/paths.py`（DATA_DIR 环境变量解析，默认代码根）+ `novel_gen/utils/migrate.py`（复制→校验→删源迁移工具），`webapp/core.py` / `logger.py` / `novel_gen/store/project.py` / `novel_gen/export/book_formats.py` 4 处路径硬编码统一改为读 DATA_DIR；本地数据已迁移至 `D:\NovelData`（projects/output/logs），代码根零残留，新增 `tests/test_paths.py` 16 用例；② 前端导出按钮：项目详情页「导出 ▾」支持 TXT/EPUB/DOCX/MD（blob 下载），顺带修复 `/projects/{id}/download` 缺失 `import shutil` 的历史 bug（此前前端从未调用该接口，未暴露）；③ 新建目标字数下限修复：表单 `el-input-number :min=10000` 会把低于 1 万字的输入钳回 1 万，改为 min=0 允许短篇；④ 前端产物重建：index.html 与构建产物 hash 对齐，修复白屏报错。回归：pytest 60 全绿、导出接口冒烟（4 格式 200 + 非法 400 + 未登录 401）通过。
 - **2026-09-20**：部署加固（deploy/compose-projects-vol，commit e279eb5）——`docker-compose.yml` 补挂 `novel_projects:/app/projects` 命名卷：服务器容器实际已挂载该卷但 compose 漏写，任何 `docker compose up` 重建容器都会去掉挂载导致项目目录从新容器消失。补写后重建无缝。**同日完成首次服务器部署**（实例 i-bp14oxtecrth3wbq6thc，/opt/novel-gen，docker compose：mysql-mozao + novel-gen），部署后验证：项目数据（projects 卷）无缝保留、域名 https://mozao.click 200、主 JS 881KB 无白屏、注册→登录→建书→详情→登出全链路冒烟通过、BYOK 加密列迁移生效（llm_provider/llm_api_key/llm_base_url/llm_model）、`.llm_encrypt.key` 已随部署放置服务器。
 - **2026-09-21**（feat/style-role-agent）：⑫ 写作风格抽象为 agent 角色（StylistAgent 风格师）——新增 `style_roles`（平台内置+用户自建，role_prompt 人设）/ `style_role_skills`（挂载 admin 平台技能 + user 我的技能）两张表与迁移，启动时从 skills_library/style-references 幂等种子化 4 个默认风格角色；NovelConfig/ProjectStore 持久化 style_role_id/style_role_prompt（创建项目快照）；写手 ChapterWriter 与扩写路径注入风格人设（manager._with_stylist）；新增 7 个风格角色路由（用户级 6 + 管理级 1）；前端建书可选风格角色、工具面板支持风格角色增删改与技能挂载；测试 29→44 全绿，端到端冒烟验证风格人设+挂载技能真实进入正文系统提示。
 - **2026-09-20**：第四批优化（feat/optimization-batch4）——⑪ 项目域再拆分：`routers/projects.py`（1150 行/43 路由）拆为 5 个功能子模块——`projects_base`（列表/创建/详情/退费/归档/克隆/删除/下载，8）、`projects_outline`（大纲/快照，7）、`projects_chapters`（章节/审校/扩写/批量，13）、`projects_world`（世界观/锁定/调研/伏笔/封面，10）、`projects_generation`（生成控制，5）。路由路径/方法/返回体不变，回归：路由集合 96=96 一致、29 pytest 绿、端到端 + 业务冒烟通过。

@@ -20,7 +20,7 @@
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| POST | /api/parse-outline | 是 | 上传大纲文件（.txt/.md），AI 解析成结构化大纲 |
+| POST | /api/parse-outline | 是 | 上传大纲文档（.txt/.md/.docx，≤10MB），AI 解析成结构化大纲 |
 | POST | /api/parse-content | 是 | 上传/粘贴已有正文，自动切分章节预览 |
 
 ---
@@ -98,6 +98,7 @@
 | PUT | /api/projects/{id}/outline | 是 | 保存大纲（章节带 volume_no） |
 | GET | /api/projects/{id}/outline/diff | 是 | 大纲改动检测 |
 | POST | /api/projects/{id}/outline/regenerate | 是 | 重新生成大纲 |
+| POST | /api/projects/{id}/outline/import | 是 | 重导入用户大纲（txt/md/docx/粘贴，自动备份旧大纲为快照，可还原） |
 | POST | /api/projects/{id}/volumes/{no}/regenerate | 是 | 重新生成分卷 |
 | GET | /api/projects/{id}/outline/snapshots | 是 | 大纲快照列表 |
 | POST | /api/projects/{id}/outline/snapshots | 是 | 保存快照 |
@@ -214,4 +215,4 @@
 
 ---
 
-*最后更新：2026-09-20*
+*最后更新：2026-09-23*

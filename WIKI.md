@@ -256,10 +256,11 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等：增量/整批均先落 settle 标记再扣费（宁可漏扣不重扣）
 - BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
-- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色共 44 个用例，本地全绿）
+- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库共 80 个用例，本地全绿）
 
 ---
 
+- 部署记录（2026-09-24）：第六次发版（合并 devtest → master，75725e3）。内容：**爆款拆书库三件套**——① 基础沉淀：新表 `book_teardown`（genre/title/summary/content JSON/source_project/source_type=research|seed/view_count/status）+ `webapp/teardown_lib.py`（`sink_research` 调研成果自动沉淀：同项目更新、同题材合并、异常只记日志不阻塞生成；`seed_from_knowledge_base` 启动导入「通用」种子幂等）+ `routers/teardowns.py` 4 接口（题材聚合/列表搜索/详情自增浏览数/管理员删除）+ 前端拆书库页（/teardowns，顶栏入口）；② 方案 A：expand 模式可选「附带题材调研」——`NovelConfig.with_research` + `_research_needed(cfg, has_outline)`，expand 勾选时先跑调研（产出 research.json + 沉淀拆书库并作扩写参考）且**不重写用户已导入大纲**；修复 `save_config/load_config` 手写白名单漏落盘 with_research 的缺陷；③ P1 手动拆解：拆书库页「+ 拆解爆款作品」粘贴/上传 .txt/.md/.docx（≥50 字、≤20000 字）→ AI 拆解 12 项写法清单（开篇钩子/悬念钩子/情节套路/人设亮点/文风/节奏/对话技巧/雷区/可借用手法/原文片段）→ `source_type=manual` 入库（`book_teardown` 幂等迁移加 `user_id` 记录投稿人）；参数错误 400、未登录 401、失败 500 不写坏数据，拆解与调研一致不计费。背景：用户主力创作是 expand 模式，expand 因 has_outline=True 跳过调研 → 拆书库长期只有 8 月内置种子。回归：全量 80 pytest 全绿、真实 DeepSeek 手动拆解冒烟通过、前端构建 dist 引用一致。部署：git archive master → workbench upload（MD5 校验一致）→ python3 -m zipfile -e 解压 → docker compose up -d --build；验证：容器 mysql-mozao/novel-gen 均 healthy、域名 200、/api/health 200、主 JS 881KB 无白屏、/api/teardowns 未登录 401。
 - 部署记录（2026-09-23）：第五次发版（合并 devtest → master，e975b5d）。内容：恢复「选中段落扩写/续写」前端入口——该功能原在旧原生前端 webui（293773a 引入），随 c575fad 删除 webui 而丢失（后端 `/api/projects/{id}/expand-selection` 一直在）；移植回 Vue 版 `ProjectDetail.vue`：阅读器/编辑器选中 ≥5 字弹出「扩写|续写」浮动条（teleport 到 body），结果 ElMessageBox 预览确认后插入选中文本之后（编辑态取光标处），自动进入编辑态；`api/novel.js` 新增 `expandSelection`。后端零改动；注意该接口不参与计费结算（未走 `_settle_incremental`，原实现如此）。构建验证：npm run build 通过、dist 引用一致。
 - 部署记录（2026-09-23）：第四次发版（合并 devtest → master，e5b19f7）。内容：① 用户自有内容导入——上传大纲支持 txt/md/docx（docx 解析章节/正文，上限 5MB），支持粘贴文本（上限 10 万字），创建项目默认原样采用用户大纲、不自动重写，世界观不自动生成（用户手动触发"重生成世界观"后才派生），重导入大纲自动备份旧大纲（`snap_<epoch>`，可还原）；② 大纲快照体验收敛——快照列表新增 `display` 可读时间（自动备份/导入前/重生成前 → "MM-DD HH:MM:SS"），重生成大纲后立即刷新快照列表、生成完成也刷新；工具 tab 移除重复的「重新生成」（大纲/世界观）与「大纲快照」入口，统一到详情页顶部（问题 1-4 全修复）。部署：OSS 上传中途连续超时（8%-50% i/o timeout，4 次），重试第 5 次成功（见 Upload complete 即成功）；MD5 校验一致后 `python3 -m zipfile -e` → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200、主 JS 881KB 无白屏。
 - 部署记录（2026-09-21）：第三次发版（合并 devtest → master，08e8078）。内容：① 生成提示词口头禅频次约束——`writer.md` 限同句口头禅每章 ≤2 次、禁止章末复现/连续多章复读；`architect.md` 禁止把口头禅写进章节 `core_event`/`transition` 作"每章复现"指令（如"以×××结束"）。背景：实测《我的地球Online日记》45 万字"先记下来"出现 150 次，口头禅退化为复读机，且 `repetition.py`（>5 次/万字才禁）拦不住刻意设计的短口头禅，故在提示词层约束。② dist 移出仓库（fix/dist-not-in-repo）。部署方式变更：本次 workbench OSS 上传通道连续超时，改走 `workbench exec` 分块传输（base64 45×24KB → 服务器解码），MD5 校验一致后 `python3 -m zipfile -e` 解压 → `docker compose up -d --build`；验证：容器 healthy、`/api/health` 200（本地+域名）、主 JS 881KB 无白屏。
@@ -271,4 +272,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-09-23*
+*最后更新：2026-09-24*

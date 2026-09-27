@@ -47,6 +47,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "memory_direct_read_chars", 2000, "每章直读正文最大字符数（取章节尾部；P0-1）"),
     FeatureFlag("memory", "character_state_tracking", True, "每章正文落盘后更新人物动态状态快照（P0-2）"),
     FeatureFlag("memory", "character_state_llm", True, "是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）"),
+    FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -55,8 +56,12 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "high_quality_mode", False, "高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字"),
     FeatureFlag("writing", "pacing_density", "medium", "爽点密度：low(慢热)/medium(适中)/high(密集)"),
     FeatureFlag("writing", "plot_speed", "medium", "剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)"),
+    FeatureFlag("writing", "action_plan_first", True, "正文前先生成人物行动表，写手必须落实（P1-1）"),
+    FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
+    FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
+    FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -219,6 +224,7 @@ class NovelConfig:
     memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
     character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照
     character_state_llm: bool = feature_default("character_state_llm")                 # 是否用 LLM 抽取状态细节（False=仅确定性出场记录）
+    lorebook_trim: bool = feature_default("lorebook_trim")                             # 按章触发注入（Lorebook 式裁剪，P1-3）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -233,6 +239,10 @@ class NovelConfig:
     # ---- 节奏控制参数（默认值见 FEATURE_FLAGS）----
     pacing_density: str = feature_default("pacing_density")      # 爽点密度：low(慢热)/medium(适中)/high(密集)
     plot_speed: str = feature_default("plot_speed")              # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
+    action_plan_first: bool = feature_default("action_plan_first")  # 正文前先生成人物行动表，写手必须落实（P1-1）
+    scene_split: bool = feature_default("scene_split")              # 场景级生成下沉普通模式（单章≥2000字自动拆；P1-2）
+    ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
+    ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

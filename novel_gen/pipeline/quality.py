@@ -110,6 +110,20 @@ class QualityChecker:
             issues.extend(dup)
             score -= 20
 
+        # 2.5 AI 痕迹量化检测（P1-4，确定性规则，只扣分不单独阻断）
+        if getattr(self.cfg, "ai_taste_check", True):
+            try:
+                from .ai_taste import ai_taste_issues
+                taste_issues = ai_taste_issues(
+                    content,
+                    threshold=int(getattr(self.cfg, "ai_taste_threshold", 60) or 60),
+                )
+                if taste_issues:
+                    issues.extend(taste_issues)
+                    score -= 20
+            except Exception:
+                pass
+
         # 3. 输出合规（模块3 基础合规校验）
         if getattr(self.cfg.agent_guard, "output_check", True):
             bad = self._content_check(content)

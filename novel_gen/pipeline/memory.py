@@ -51,6 +51,22 @@ class Memory:
             if w_lines:
                 parts.append("[L1·全局设定·全书记忆]\n" + "\n".join(w_lines))
 
+        # L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态
+        try:
+            from .character_state import format_state_line
+            cs = self.store.load_character_states()
+            if cs:
+                items = sorted(
+                    cs.items(),
+                    key=lambda kv: int(kv[1].get("last_seen", 0) or 0),
+                    reverse=True,
+                )[:8]
+                lines = [format_state_line(name, st) for name, st in items if st.get("last_seen")]
+                if lines:
+                    parts.append("[L1.5·人物当前状态·最近更新]\n" + "\n".join(lines))
+        except Exception:
+            pass
+
         # L2 卷级摘要：当前所在分卷
         try:
             outline = self.store.load_outline()
@@ -91,6 +107,29 @@ class Memory:
             parts.append(
                 f"[L4·前章剧情摘要·最近 {len(recent)} 章]\n" + "\n".join(lines)
             )
+
+        # L4.5 近章正文直读（P0-1）：一句话摘要丢细节（对话/动作/物品/位置），
+        # 直读最近 N 章正文尾部作为细节锚点；长度受 memory_direct_read_* 配置约束，
+        # 0=关闭（行为与旧版一致）。
+        try:
+            cfg_d = self.store.load_config()
+            n_direct = int(getattr(cfg_d, "memory_direct_read_chapters", 0) or 0)
+            chars_d = int(getattr(cfg_d, "memory_direct_read_chars", 2000) or 0)
+            if n_direct > 0 and chars_d > 0:
+                direct_lines = []
+                for dno in range(up_to_chapter - 1, max(0, up_to_chapter - 1 - n_direct), -1):
+                    ch = self.store.load_chapter(dno)
+                    if ch and ch.content:
+                        tail = ch.content.strip()[-chars_d:]
+                        if tail:
+                            direct_lines.append(f"第{dno}章《{ch.title}》：{tail}")
+                if direct_lines:
+                    parts.append(
+                        "[L4.5·近章正文直读·细节锚点（以直读正文为准，摘要仅供快速回顾）]\n"
+                        + "\n\n".join(direct_lines)
+                    )
+        except Exception:
+            pass
 
         # 一致性校验 issues（高质量模式）：提醒后续章节注意修正
         try:

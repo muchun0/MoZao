@@ -32,27 +32,48 @@
     <!-- 改稿建议 -->
     <el-card class="tool-card">
       <template #header><b>改稿建议</b></template>
-      <p class="muted">自动改稿记录与待人工处理的中改问题</p>
+      <p class="muted">自动改稿记录与待人工处理的中改问题（含全书质量汇总）</p>
       <el-button size="small" @click="loadReview">查看改稿建议</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
-        <div v-else-if="!reviewItems.length" class="ok-box">暂无改稿记录</div>
-        <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
-          <div class="review-head">
-            <b>第{{ r.chapter }}章</b>
-            <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
-            <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
-            <span v-else class="tag-ok">无问题</span>
-            <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
+        <template v-else>
+          <div v-if="!reviewItems.length && !reviewSummary.chapter_count" class="ok-box">暂无改稿记录</div>
+          <div v-if="reviewSummary.chapter_count" class="summary-box">
+            <b>全书质量汇总</b>
+            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
+              <span v-if="reviewSummary.score_avg">｜平均质检分 {{ reviewSummary.score_avg }}/100</span>
+            </div>
+            <div v-if="Object.keys(reviewSummary.issue_by_type||{}).length" class="summary-line">
+              问题类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
+            </div>
+            <div v-if="reviewSummary.verify_issue_total" class="summary-line">
+              一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
+            </div>
           </div>
-          <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
-          <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
-            <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
-            <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
-            <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
-            <span>{{ it.detail }}</span>
+          <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
+            <div class="review-head">
+              <b>第{{ r.chapter }}章</b>
+              <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
+              <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
+              <span v-else class="tag-ok">无问题</span>
+              <span v-if="r.quality_check && r.quality_check.score !== undefined && r.quality_check.score !== null" class="tag-score">质检 {{ r.quality_check.score }}</span>
+              <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
+            </div>
+            <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
+            <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
+              <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
+              <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
+              <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
+              <span>{{ it.detail }}</span>
+            </div>
           </div>
-        </div>
+          <div v-if="verifyIssues.length" class="verify-block">
+            <b>一致性校验 / 读者自检 / 编辑审稿问题</b>
+            <div v-for="(it, i) in verifyIssues" :key="i" class="review-issue">
+              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+            </div>
+          </div>
+        </template>
       </div>
     </el-card>
 
@@ -262,6 +283,8 @@ const props = defineProps({ pid: String })
 
 const verifyResult = ref([])
 const reviewItems = ref([])
+const reviewSummary = ref({})
+const verifyIssues = ref([])
 const reviewLoaded = ref(false)
 const coverUrl = ref('')
 const coverLoading = ref(false)
@@ -329,6 +352,8 @@ async function loadReview() {
   try {
     const r = await toolsApi.getReview(props.pid)
     reviewItems.value = r.items || []
+    reviewSummary.value = r.summary || {}
+    verifyIssues.value = r.verify_issues || []
     reviewLoaded.value = true
   } catch (e) { ElMessage.error('改稿记录加载失败') }
 }
@@ -525,6 +550,10 @@ const installSkill = async (m) => {
 .tag-auto { background: #e1f3d8; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .tag-todo { background: #fdf6ec; color: #e6a23c; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .tag-ok { background: #f0f9eb; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.tag-score { background: #ecf5ff; color: #409eff; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.summary-box { background: #eef2ff; border: 1px solid #d8e0ff; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+.summary-line { margin-top: 4px; color: #33415c; }
+.verify-block { margin-top: 8px; }
 .review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }
 .review-feeling { font-size: 12px; color: #e6a23c; padding: 2px 0 4px; font-style: italic; }
 .lv-small { color: #909399; }

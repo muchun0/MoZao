@@ -292,6 +292,20 @@ class NovelPipeline:
 
         return chapter
 
+    def _update_character_states(self, no: int, silent: bool = False) -> None:
+        """P0-2：每章正文落盘后更新人物动态状态快照（失败降级，不阻塞生成）。"""
+        try:
+            from .character_state import extract_character_states
+            world = self.store.load_world()
+            ch = self.store.load_chapter(no)
+            if not world or not ch or not ch.content:
+                return
+            old = self.store.load_character_states()
+            new = extract_character_states(self.llm, self.cfg, world, ch, no, old)
+            self.store.save_character_states(new)
+        except Exception:
+            logger.exception("人物状态更新失败（降级跳过）: no=%d", no)
+
     def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
         """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
         try:
@@ -428,6 +442,9 @@ class NovelPipeline:
         for no in range(done + 1, total + 1):
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
+            # P0-2：每章正文落盘后更新人物动态状态快照（可开关，失败降级不阻塞）
+            if getattr(self.cfg, "character_state_tracking", True):
+                self._update_character_states(no, silent=silent)
             # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
             if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
                 self._run_verify(no, silent=silent)

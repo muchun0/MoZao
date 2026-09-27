@@ -54,7 +54,9 @@
 | `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
 | `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线 / 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
-| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2） |
+| `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取，失败静默降级，写入 character_states.json |
+| `review_summary.py` | 全书质量汇总（P0-3）：改稿问题类型分布 / 质检平均分 / 校验问题统计（纯函数，供 /review 接口聚合） |
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |
 | `reviser.py` | 单章重写/审校入口 |
 | `repetition.py` | 防同质化常驻提示词、防重复 |

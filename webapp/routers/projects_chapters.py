@@ -82,19 +82,26 @@ def rhythm_stats(project_id: str, user: dict = Depends(_require_user)):
 
 @app.get("/api/projects/{project_id}/review")
 def list_review(project_id: str, user: dict = Depends(_require_user)):
-    """读取改稿记录 review.json，按章返回问题与改稿情况。"""
+    """读取改稿记录 review.json，按章返回问题与改稿情况（P0-3：合并校验问题与全书汇总）。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     path = store.dir / "review.json"
     if not path.exists():
-        return {"items": []}
+        return {"items": [], "verify_issues": [], "summary": {}}
     try:
         import json as _json
         data = _json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         data = []
+    if not isinstance(data, list):
+        data = []
     data.sort(key=lambda r: int(r.get("chapter", 0)))
-    return {"items": data}
+
+    # P0-3：合并每 3 章一致性校验/读者自检/编辑审稿问题 + 全书汇总
+    from novel_gen.pipeline.review_summary import build_review_summary
+    verify_issues = store.load_verify_issues()
+    summary = build_review_summary(data, verify_issues)
+    return {"items": data, "verify_issues": verify_issues, "summary": summary}
 
 
 @app.post("/api/projects/{project_id}/verify/consistency")

@@ -89,6 +89,10 @@ class ProjectStore:
             "anti_similarity": cfg.anti_similarity,
             "confirm": cfg.confirm,
             "memory_window": cfg.memory_window,
+            "memory_direct_read_chapters": int(getattr(cfg, "memory_direct_read_chapters", 1)),
+            "memory_direct_read_chars": int(getattr(cfg, "memory_direct_read_chars", 2000)),
+            "character_state_tracking": bool(getattr(cfg, "character_state_tracking", True)),
+            "character_state_llm": bool(getattr(cfg, "character_state_llm", True)),
             "mode": cfg.mode,
             "expand_input": cfg.expand_input,
             "content_type": cfg.content_type,
@@ -152,6 +156,10 @@ class ProjectStore:
             anti_similarity=bool(d.get("anti_similarity", True)),
             confirm=bool(d.get("confirm", False)),
             memory_window=int(d.get("memory_window", 5)),
+            memory_direct_read_chapters=int(d.get("memory_direct_read_chapters", 1)),
+            memory_direct_read_chars=int(d.get("memory_direct_read_chars", 2000)),
+            character_state_tracking=bool(d.get("character_state_tracking", True)),
+            character_state_llm=bool(d.get("character_state_llm", True)),
             mode=d.get("mode", "auto"),
             expand_input=d.get("expand_input", ""),
             content_type=d.get("content_type", ""),
@@ -368,7 +376,6 @@ class ProjectStore:
     # ---------- 一致性校验（高质量模式） ----------
     def verify_issues_path(self) -> Path:
         return self.dir / "verify_issues.json"
-
     def load_verify_issues(self) -> list[dict]:
         """返回 [{chapter, problem, suggestion}, ...]，按章节号升序。"""
         items = self._read_json(self.verify_issues_path(), [])
@@ -384,6 +391,19 @@ class ProjectStore:
             it["chapter"] = chapter
             all_issues.append(it)
         self.save_verify_issues(all_issues)
+
+    # ---------- 人物动态状态快照（P0-2） ----------
+    def character_states_path(self) -> Path:
+        return self.dir / "character_states.json"
+
+    def load_character_states(self) -> dict:
+        """返回 {人物名: {last_seen, location, body, emotion, relations, new_info, goal}, ...}。"""
+        d = self._read_json(self.character_states_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_character_states(self, states: dict) -> None:
+        """整体覆盖保存（每章更新后写入最新快照）。"""
+        self._write_json(self.character_states_path(), states)
 
     # ---------- 导出 TXT ----------
     def export_txt(self) -> Path:

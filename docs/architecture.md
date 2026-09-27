@@ -50,7 +50,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑 |
+| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace |
 | `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
 | `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线 / 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
@@ -62,9 +62,9 @@
 | `repetition.py` | 防同质化常驻提示词、防重复 |
 | `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
-| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写；含 P1-4 AI 痕迹扣分项 |
+| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4） |
 | `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
-| `templates.py` | 提示词模板组装 |
+| `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |
 
 ### 2.3 webapp/（SaaS Web 服务）
 
@@ -73,7 +73,7 @@
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
 | `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑 |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + 聚合统计）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色，reference_text 透传）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -91,13 +91,13 @@
 | `auth.py` | 账号 | 注册/登录/验证码/重置密码/绑定代理 |
 | `me.py` | 我的 | 个人资料、余额、返佣、我的技能 |
 | `skills.py` | Skills | 平台写作技能、技能市场 |
-| `style_roles.py` | 风格角色 | 风格师增删改 + 技能挂载（用户级 6 + 管理级 1） |
-| `projects_base.py` | 项目管理 | 列表/创建/详情/退费/归档/克隆/删除/下载（8） |
+| `style_roles.py` | 风格角色 | 风格师增删改 + 技能挂载 + `reference_text` 范文透传（P2-1） |
+| `projects_base.py` | 项目管理 | 列表/创建/详情/退费/归档/克隆/删除/下载（8）；建书快照 `style_role_reference` 进 config（P2-1） |
 | `projects_outline.py` | 大纲 | 三级大纲/快照/重生成（7） |
-| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13） |
+| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2） |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
-| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 |
+| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4） |
 
 > 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
 
@@ -108,8 +108,8 @@
 | `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools` 按域分文件 |
 | `router/index.js` | 路由表（登录/书案/详情/后台） |
 | `stores/` | Pinia：`auth.js`（登录态）、`project.js`（当前项目） |
-| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（8 板块后台） |
-| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`layouts/MainLayout` |
+| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
+| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`layouts/MainLayout` |
 | `style.css` | 全局样式（深夜书房 × AI 工坊视觉语言） |
 
 ## 3. 核心类与接口（改代码先看这里）
@@ -136,8 +136,8 @@
 | `commission_log` | 代理返佣明细 |
 | `refund_requests` | 退款申请与处理 |
 | `writing_skills` / `skill_market` / `user_skills` | 平台写作技能 / 技能市场 / 用户挂载技能 |
-| `style_roles` / `style_role_skills` | 风格角色（人设）+ 挂载技能 |
-| `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析） |
+| `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
+| `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险 |
 
 ## 4. 关键数据流
 

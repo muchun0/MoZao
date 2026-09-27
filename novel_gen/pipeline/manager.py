@@ -21,7 +21,7 @@ from .memory import Memory
 from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
 from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         expand_outline_prompt, world_from_content_prompt,
-                        verify_prompt)
+                        verify_prompt, final_review_prompt)
 from .trace import TraceRecorder
 from .editor import EditorReviewer
 from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent
@@ -382,6 +382,8 @@ class NovelPipeline:
                 if not silent:
                     print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
                 logger.info("编辑审稿: 第%d章 score=%d churn=%s", chapter_no, score, churn)
+                # P2-4：编辑审稿结果落 trace，供质量报表聚合弃书风险分布
+                self._trace_step(f"第{chapter_no}章编辑审稿", {"score": score, "churn": churn})
                 # 评分低于5或弃书风险高，记录问题
                 if score < 5 or churn == "高":
                     e_issues = e_data.get("issues", [])
@@ -389,6 +391,50 @@ class NovelPipeline:
                         self.store.append_verify_issues(chapter_no, e_issues)
         except Exception as e:
             logger.warning("一致性校验失败（不阻塞生成）: %s", e)
+
+
+    def _run_final_review(self, silent: bool = False) -> None:
+        """P2-2 全书终审：整本书写完后的终审编辑（final_review 开关或高质量模式开启时）。
+        结果写 final_review.json；失败降级不阻塞导出与结算。"""
+        try:
+            final_on = getattr(self.cfg, "final_review", False) or getattr(self.cfg, "high_quality_mode", False)
+            if not final_on:
+                return
+            outline = self.store.load_outline()
+            chapters = self.store.list_chapters()
+            if not outline or not chapters:
+                return
+            import time as _time
+            summaries = self.store.load_summaries()
+            by_no = {c.no: c.title for c in chapters}
+            seen = {int(s.get("no", 0)) for s in summaries}
+            lines = [f"第{s.get('no','')}章《{by_no.get(s.get('no'), '')}》：{s.get('summary','')}" for s in summaries]
+            for c in chapters:
+                if c.no not in seen:
+                    lines.append(f"第{c.no}章《{c.title}》：")
+            lines.sort(key=lambda x: int(x.split("章", 1)[0].replace("第", "")) if x.startswith("第") else 0)
+            block = "\n".join(lines)
+            world = self.store.load_world()
+            world_text = ""
+            if world is not None:
+                world_text = (world.world_view or "") + "\n人物：" + "; ".join(
+                    f"{c.name}（{c.role}）——{c.desc}" for c in (world.characters or []) if c.name
+                )
+            sys_f, user_f = final_review_prompt(self.cfg, outline, block, world_text)
+            data = self.llm.chat_json(sys_f, user_f, temperature=0.3)
+            issues = data.get("issues", []) if isinstance(data, dict) else []
+            ok = bool(data.get("ok", not issues))
+            self.store.save_final_review({
+                "checked_at": _time.time(),
+                "ok": ok,
+                "issues": issues[:30],
+                "summary": f"全书终审：发现 {len(issues)} 个整本层面问题（{'通过' if ok else '建议修复'}）",
+            })
+            if not silent:
+                print(f"[全书终审] 完成：{len(issues)} 个整本层面问题（不阻塞导出）")
+            self._trace_step("全书终审完成", {"issues": len(issues)})
+        except Exception as e:
+            logger.warning("全书终审失败（降级跳过，不阻塞导出）: %s", e)
 
     # ---------- 进度查询 ----------
     def progress(self) -> tuple[int, int]:
@@ -450,6 +496,7 @@ class NovelPipeline:
                 self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)
+        self._run_final_review(silent=silent)
         if not silent:
             print(f"\n全部 {total} 章生成完毕。")
         logger.info("流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
@@ -542,6 +589,7 @@ class NovelPipeline:
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
         self._mark_state("done", last_chapter=total)
+        self._run_final_review(silent=silent)
         if not silent:
             print(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
         logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)

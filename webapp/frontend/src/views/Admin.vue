@@ -87,6 +87,53 @@
         </el-table>
       </el-tab-pane>
 
+      <!-- 质量报表 -->
+      <el-tab-pane label="质量报表" name="quality">
+        <el-form inline size="small" style="margin-bottom:10px">
+          <el-form-item label="项目ID"><el-input v-model="qualityFilter.project_id" placeholder="留空=全部" style="width:200px" /></el-form-item>
+          <el-form-item label="近N天"><el-input-number v-model="qualityFilter.days" :min="0" :max="365" /></el-form-item>
+          <el-form-item><el-button type="primary" @click="loadQualityReport">查询</el-button></el-form-item>
+        </el-form>
+        <div v-if="qualityReport && qualityReport.report" class="stat-row">
+          <el-row :gutter="16">
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.task_count ?? '-' }}</div><div class="stat-label">任务数</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.call_count ?? '-' }}</div><div class="stat-label">LLM 调用</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ (qualityReport.report.token_total ?? 0).toLocaleString() }}</div><div class="stat-label">总 Token</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.fail_count ?? 0 }}</div><div class="stat-label">失败次数</div></el-card></el-col>
+          </el-row>
+          <el-row :gutter="16" style="margin-top:10px">
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.quality_checks ?? 0 }}</div><div class="stat-label">质检次数</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.score_avg ?? '-' }}</div><div class="stat-label">平均质检分</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ Math.round((qualityReport.report.rewrite_rate ?? 0) * 100) }}%</div><div class="stat-label">重写率</div></el-card></el-col>
+            <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ qualityReport.report.per_chapter_avg_tokens ?? 0 }}</div><div class="stat-label">单章平均 Token</div></el-card></el-col>
+          </el-row>
+        </div>
+        <div v-if="qualityReport && qualityReport.report" style="margin-top:10px">
+          <el-card>
+            <template #header><b>质检得分分布</b></template>
+            <el-progress v-for="(n, k) in (qualityReport.report.score_buckets||{})" :key="k" :percentage="pct(n)" :format="() => `${k}：${n} 章`" :stroke-width="14" style="margin-bottom:8px" />
+          </el-card>
+          <el-card style="margin-top:10px">
+            <template #header><b>问题类型 TopN</b></template>
+            <div v-if="(qualityReport.report.issue_top_types||[]).length">
+              <el-tag v-for="it in qualityReport.report.issue_top_types" :key="it[0]" type="warning" style="margin:0 6px 6px 0">{{ it[0] }} × {{ it[1] }}</el-tag>
+            </div>
+            <div v-else class="muted">暂无质检问题数据</div>
+          </el-card>
+          <el-card style="margin-top:10px">
+            <template #header><b>弃书风险分布（编辑审稿）</b></template>
+            <el-tag v-for="(n, k) in (qualityReport.report.churn_risk_dist||{})" :key="k" :type="k === '高' ? 'danger' : (k === '中' ? 'warning' : 'success')" style="margin:0 6px 6px 0">{{ k }}：{{ n }}</el-tag>
+          </el-card>
+          <el-card style="margin-top:10px">
+            <template #header><b>各阶段成本（Token）</b></template>
+            <div v-for="(v, k) in (qualityReport.report.scenes||{})" :key="k" class="muted" style="margin:2px 0">
+              {{ k }}：{{ v.tokens.toLocaleString() }} Token / {{ v.calls }} 次（均 {{ Math.round(v.avg_duration_ms) }}ms）
+            </div>
+          </el-card>
+        </div>
+        <div v-else class="muted" style="padding:16px 0">输入筛选条件后查询（无数据时显示空态，不报错）</div>
+      </el-tab-pane>
+
       <!-- 系统日志 -->
       <el-tab-pane label="系统日志" name="logs">
         <el-button size="small" @click="loadLogs">刷新</el-button>
@@ -151,6 +198,8 @@ const refundFilter = ref('')
 const transactions = ref([])
 const skills = ref([])
 const logs = ref('')
+const qualityReport = ref(null)
+const qualityFilter = ref({ project_id: '', days: 7 })
 
 const rechargeDialog = ref(false)
 const rechargeUser = ref(null)
@@ -186,6 +235,19 @@ async function loadRefunds() {
 async function loadLogs() {
   const r = await adminApi.getLogs({ lines: 200 })
   logs.value = r.logs || ''
+}
+
+async function loadQualityReport() {
+  qualityReport.value = null
+  try {
+    const r = await adminApi.getQualityReport({ project_id: qualityFilter.value.project_id, days: qualityFilter.value.days })
+    qualityReport.value = r
+  } catch (e) { ElMessage.error('报表加载失败：' + (e?.response?.data?.detail || e.message)) }
+}
+
+function pct(n) {
+  const total = Object.values(qualityReport.value?.report?.score_buckets || {}).reduce((a, b) => a + b, 0)
+  return total ? Math.round((n / total) * 100) : 0
 }
 
 async function loadSkills() {

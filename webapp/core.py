@@ -1066,6 +1066,7 @@ class StyleRoleReq(BaseModel):
     role_prompt: str = ""
     is_active: int = 1
     sort_order: int = 0
+    reference_text: str = ""   # P2-1 参考文风片段（few-shot 文风锚定，2-3 段样例）
 
 
 class StyleRoleSkillReq(BaseModel):

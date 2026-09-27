@@ -31,7 +31,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `config.py` | 配置加载（YAML + 环境变量补 Key）、题材/字数/Provider 校验 |
+| `config.py` | 配置加载（YAML + 环境变量补 Key）、题材/字数/Provider 校验；**功能开关注册表 `FEATURE_FLAGS`**（默认值唯一来源，按 memory/writing/review/guard 模块分组，`python -m novel_gen.config` 可查看清单） |
 | `llm/base.py` | LLM Provider 抽象基类（chat 模板方法：自动埋点 + 成本防护挂载） |
 | `llm/factory.py` | Provider 工厂（deepseek/doubao/openai/mock） |
 | `llm/usage.py` | Token 用量统计（模块1/2：累计 + 最近一次调用） |

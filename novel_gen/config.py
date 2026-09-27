@@ -19,6 +19,92 @@ from typing import Optional
 # 内置题材列表（题材可选：允许自定义，不在此列表内也放行）
 GENRES = ["玄幻", "仙侠", "都市", "科幻", "历史", "悬疑", "言情", "游戏", "奇幻", "体育", "军事", "自定义"]
 
+
+# =====================================================================
+# 功能开关注册表（唯一事实来源）
+# ---------------------------------------------------------------------
+# 所有功能开关/可调参数的默认值集中在这里，按功能模块分组。
+# 新增开关：1) 在 FEATURE_FLAGS 注册一行；2) NovelConfig 加同名字段（默认值引用
+# feature_default(key)）。save_config / load_config 会自动遍历注册表落盘与读取，
+# 无需再手改 store 两处持久化逻辑。
+# 模块约定：memory=记忆 / writing=正文生成 / review=审校质检 / guard=成本防护
+#（guard 子项由 AgentGuardConfig 承载，落盘在 config.json 的 agent_guard 段，不进顶层）
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class FeatureFlag:
+    module: str          # 功能模块：memory / writing / review / guard
+    key: str             # NovelConfig 字段名
+    default: object      # 默认值
+    desc: str            # 说明
+
+
+FEATURE_FLAGS: list[FeatureFlag] = [
+    # ---- memory：记忆与长文一致性 ----
+    FeatureFlag("memory", "memory_window", 5, "生成当前章时回填最近 N 章摘要，控制上下文成本"),
+    FeatureFlag("memory", "memory_direct_read_chapters", 1, "前文直读：直读最近 N 章正文（0=关闭，保持纯摘要；P0-1）"),
+    FeatureFlag("memory", "memory_direct_read_chars", 2000, "每章直读正文最大字符数（取章节尾部；P0-1）"),
+    FeatureFlag("memory", "character_state_tracking", True, "每章正文落盘后更新人物动态状态快照（P0-2）"),
+    FeatureFlag("memory", "character_state_llm", True, "是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）"),
+    # ---- writing：正文生成质量 ----
+    FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
+    FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
+    FeatureFlag("writing", "character_depth", True, "人物立体化：角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度"),
+    FeatureFlag("writing", "fanqie_style", True, "番茄节奏：黄金三章 + 爽点闭环 + 断章 + 移动端排版"),
+    FeatureFlag("writing", "high_quality_mode", False, "高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字"),
+    FeatureFlag("writing", "pacing_density", "medium", "爽点密度：low(慢热)/medium(适中)/high(密集)"),
+    FeatureFlag("writing", "plot_speed", "medium", "剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)"),
+    # ---- review：审校质检 ----
+    FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
+    # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
+    FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
+    FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
+    FeatureFlag("guard", "max_tokens", 2_000_000, "单任务累计 Token 上限"),
+    FeatureFlag("guard", "input_check", True, "输入注入检测"),
+    FeatureFlag("guard", "output_check", True, "输出基础合规校验"),
+    FeatureFlag("guard", "quality_check", True, "章级 ReaderAgent 结果自校验（agent_guard.quality_check）"),
+]
+
+
+def feature_default(key: str) -> object:
+    """按 key 取开关默认值（NovelConfig 字段默认值引用，保证单一事实来源）。"""
+    for f in FEATURE_FLAGS:
+        if f.key == key:
+            return f.default
+    raise KeyError(f"FEATURE_FLAGS 中未注册开关: {key}（新增开关请先在 config.py 注册）")
+
+
+def feature_modules() -> list[str]:
+    """返回已注册的功能模块（保持注册顺序、去重）。"""
+    seen: list[str] = []
+    for f in FEATURE_FLAGS:
+        if f.module not in seen:
+            seen.append(f.module)
+    return seen
+
+
+def list_feature_flags(module: str | None = None) -> list[FeatureFlag]:
+    """按模块筛选开关清单（module=None 返回全部）。"""
+    return [f for f in FEATURE_FLAGS if module is None or f.module == module]
+
+
+def _coerce_feature(raw, default):
+    """把 config.json 里的原始值按默认值类型转换；缺失/None 用默认值。"""
+    if raw is None:
+        return default
+    if isinstance(default, bool):
+        return bool(raw)
+    if isinstance(default, int):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+    if isinstance(default, str):
+        return str(raw) or default
+    return raw
+
+
 # 各 Provider 的默认模型与默认 base_url（OpenAI 兼容协议）
 PROVIDER_DEFAULTS: dict[str, dict] = {
     "deepseek": {
@@ -120,18 +206,19 @@ class NovelConfig:
     characters: list[str] = field(default_factory=list)  # 配角/反派预设（强约束，可留空让 AI 补）
     plot_direction: str = ""        # 剧情走向/关键情节/必须出现的桥段（参考方向，AI 可细化）
     forbidden: list[str] = field(default_factory=list)   # 避雷/不想出现的元素（强约束）
-    # ---- 质量增强开关 ----
-    editor_review: bool = True       # 大纲生成后执行编辑视角质检，不通过则自动修正一次
-    de_ai: bool = True               # 正文生成时注入去AI味写作约束
-    anti_similarity: bool = True     # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
-    character_depth: bool = True     # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
-    fanqie_style: bool = True        # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系
+    # ---- 质量增强开关（默认值见 FEATURE_FLAGS 注册表；新增开关先注册）----
+    editor_review: bool = feature_default("editor_review")       # 大纲生成后执行编辑视角质检，不通过则自动修正一次
+    de_ai: bool = feature_default("de_ai")                       # 正文生成时注入去AI味写作约束
+    anti_similarity: bool = feature_default("anti_similarity")   # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
+    character_depth: bool = feature_default("character_depth")   # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
+    fanqie_style: bool = feature_default("fanqie_style")         # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系
     confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
-    memory_window: int = 5          # 生成当前章时回填最近 N 章摘要，控制上下文成本
-    memory_direct_read_chapters: int = 1    # 前文直读：直读最近 N 章正文（0=关闭，保持纯摘要；P0-1）
-    memory_direct_read_chars: int = 2000    # 每章直读正文最大字符数（取章节尾部；P0-1）
-    character_state_tracking: bool = True   # P0-2：每章正文落盘后更新人物动态状态快照
-    character_state_llm: bool = True        # 是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）
+    # ---- memory：记忆与长文一致性（P0-1/P0-2，默认值见 FEATURE_FLAGS）----
+    memory_window: int = feature_default("memory_window")        # 生成当前章时回填最近 N 章摘要，控制上下文成本
+    memory_direct_read_chapters: int = feature_default("memory_direct_read_chapters")  # 前文直读：直读最近 N 章正文（0=关闭，保持纯摘要）
+    memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
+    character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照
+    character_state_llm: bool = feature_default("character_state_llm")                 # 是否用 LLM 抽取状态细节（False=仅确定性出场记录）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -143,10 +230,10 @@ class NovelConfig:
     skill_prompt_append: str = ""     # 管理员配置的写作风格 skill 追加内容
     style_role_id: int = 0            # 写作风格角色（style_roles.id），0=不选
     style_role_prompt: str = ""       # 风格角色人设+挂载技能组装后的提示词（创建项目时快照）
-    high_quality_mode: bool = False   # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
-    # ---- 节奏控制参数 ----
-    pacing_density: str = "medium"    # 爽点密度：low(慢热)/medium(适中)/high(密集)
-    plot_speed: str = "medium"        # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
+    # ---- 节奏控制参数（默认值见 FEATURE_FLAGS）----
+    pacing_density: str = feature_default("pacing_density")      # 爽点密度：low(慢热)/medium(适中)/high(密集)
+    plot_speed: str = feature_default("plot_speed")              # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
+    high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
@@ -225,4 +312,14 @@ def apply_guard_env_overrides(guard: AgentGuardConfig) -> AgentGuardConfig:
     for scene in list(guard.scene_limits):
         guard.scene_limits[scene] = _int_env(f"AGENT_GUARD_SCENE_{scene.upper()}", guard.scene_limits[scene])
     return guard
+
+
+if __name__ == "__main__":
+    # python -m novel_gen.config：按功能模块打印开关清单（集中查看/排查用）
+    print("功能开关注册表（FEATURE_FLAGS）· 按模块分组\n")
+    for _mod in feature_modules():
+        print(f"[{_mod}]")
+        for _f in list_feature_flags(_mod):
+            print(f"  {_f.key:36s} = {_f.default!r:<8s} {_f.desc}")
+        print()
 

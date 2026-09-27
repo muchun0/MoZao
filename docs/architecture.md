@@ -66,7 +66,7 @@
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
 | `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑 |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db.py` | MySQL 数据层：连接池 + 全部 SQL（users/sessions/project_owner/recharges/commission_log/refund_requests/writing_skills/skill_market/style_roles/style_role_skills/user_skills） |
+| `db/` | MySQL 数据层包（拆分自原 `db.py` 1409 行）：`base.py`（连接池/事务/表结构/init_db）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色）、`teardowns.py`（拆书库）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -163,7 +163,7 @@
 
 ## 7. 改代码前的指引（防迷路）
 
-1. **新业务路由** → `webapp/routers/<对应域>.py`，数据操作走 `webapp/db.py` 已有函数或在其内新增。
+1. **新业务路由** → `webapp/routers/<对应域>.py`，数据操作走 `webapp/db/` 对应域子模块已有函数，或在该域子模块内新增（禁止回写 base.py 堆 SQL）。
 2. **改生成逻辑/提示词** → `novel_gen/pipeline/`（角色行为改 `agents/prompts/*.md`，编排改 `manager.py`）。
 3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core.py` 结算链。
 4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。

@@ -30,8 +30,8 @@
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
-          </el-dropdown>          <el-button type="primary" @click="startGen" :disabled="generating && !genDone">
-            {{ generating && !genDone ? '生成中…' : (resumable || chapters.length ? '继续写章节' : '开始写章节') }}
+          </el-dropdown>          <el-button type="primary" @click="genPhase === 'done' ? regenAllChapters() : startGen()" :disabled="generating && !genDone">
+            {{ generating && !genDone ? '生成中…' : (genPhase === 'done' ? '重新生成' : (genPhase === 'partial' ? '继续生成' : '开始生成')) }}
           </el-button>
           <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
             <el-button :disabled="generating && !genDone" :loading="exporting">导出 ▾</el-button>
@@ -169,7 +169,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, startGenerate, cancelGenerate, getStatus, downloadProject } from '../api/project'
+import { getProject, startGenerate, regenerateChapters, cancelGenerate, getStatus, downloadProject } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline, expandSelection } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
@@ -227,6 +227,18 @@ const inPrePhase = computed(() => PRE_PHASES.includes(currentPhase.value))
 // 成本防护/异常终止后可断点继续：后端提示含「可从断点继续」时，展示醒目的「继续生成」入口
 const resumable = computed(() =>
   genError.value.includes('可从断点继续') || genError.value.includes('成本防护'))
+// 章节生成进度（总章节数 / 已生成数），驱动主按钮三态：开始生成 → 继续生成 → 重新生成
+const genTotal = ref(0)
+const genDoneCount = ref(0)
+const genPhase = computed(() => {
+  if (generating.value && !genDone.value) return 'running'
+  const total = genTotal.value || (outline.value?.chapters?.length) || 0
+  const done = genDoneCount.value || chapters.value.length || 0
+  if (!total) return 'none'
+  if (done >= total) return 'done'
+  if (done > 0) return 'partial'
+  return 'none'
+})
 
 // 点击启动类按钮后立即给出进行中的进度条，不必等 3 秒后轮询
 function beginGenUI(statusText) {
@@ -291,6 +303,8 @@ async function loadAll() {
     project.value = await getProject(pid)
     outline.value = await getOutline(pid)
     chapters.value = (await getChapters(pid)).chapters || []
+    genTotal.value = outline.value?.chapters?.length || 0
+    genDoneCount.value = chapters.value.length
     world.value = await getWorld(pid)
     worldDraft.value = JSON.parse(JSON.stringify(world.value))
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
@@ -324,7 +338,11 @@ async function checkStatus() {
     generating.value = s.running
     genDone.value = !s.running && s.chapters_done > 0
     currentPhase.value = (s.state && s.state.phase) || ''
-    if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+    if (s.chapters_total) {
+      genTotal.value = s.chapters_total
+      genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+    }
+    genDoneCount.value = s.chapters_done ?? genDoneCount.value
     genError.value = s.error || ''
     genStatus.value = s.running && !s.error ? phaseText(s) : ''
     if (s.running) startPolling()
@@ -340,7 +358,11 @@ function startPolling() {
       const s = await getStatus(pid)
       generating.value = s.running
       currentPhase.value = (s.state && s.state.phase) || ''
-      if (s.chapters_total) genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+      if (s.chapters_total) {
+        genTotal.value = s.chapters_total
+        genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
+      }
+      genDoneCount.value = s.chapters_done ?? genDoneCount.value
       genError.value = s.error || ''
       genStatus.value = s.running && !s.error ? phaseText(s) : ''
       // 每生成完一章就刷新章节列表，让用户实时看到进度
@@ -370,6 +392,7 @@ async function refreshAfterGen() {
     worldDraft.value = JSON.parse(JSON.stringify(world.value))
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
+    genDoneCount.value = chapters.value.length
     outlineReloadKey.value++
     loadSnapshots()
     ElMessage.success('任务已完成，数据已刷新')
@@ -496,6 +519,18 @@ async function startGen() {
     await startGenerate(pid, {})
     ElMessage.success('已开始生成')
     beginGenUI('正在启动写作…')
+    startPolling()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '启动失败')
+  }
+}
+
+async function regenAllChapters() {
+  try { await ElMessageBox.confirm('将重新生成全部章节正文（保留大纲/世界观，已锁定章节自动跳过，未锁定章节内容将被覆盖）。继续？', '重新生成全部章节', { type: 'warning' }) } catch { return }
+  try {
+    await regenerateChapters(pid)
+    ElMessage.success('已开始重新生成全部章节')
+    beginGenUI('正在启动整本重写…')
     startPolling()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '启动失败')

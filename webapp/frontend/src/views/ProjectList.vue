@@ -30,11 +30,15 @@
       <el-empty v-if="!loading && !filtered.length" description="还没有小说，点右上角新建" />
     </div>
 
-    <el-dialog v-model="showCreate" title="新建小说" width="640px">
-      <el-form :model="form" label-width="100px">
-        <el-form-item label="书名"><el-input v-model="form.title" /></el-form-item>
+    <el-dialog v-model="showCreate" title="新建小说" width="780px">
+      <el-form :model="form" label-width="110px">
+        <div class="fg-title">基础信息</div>
+        <el-form-item label="书名"><el-input v-model="form.title" placeholder="给你的小说起个名字" /></el-form-item>
         <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
-        <el-form-item label="目标字数"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
+        <div class="fg-row">
+          <el-form-item label="目标字数" style="flex:1"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
+          <el-form-item label="每章字数" style="flex:1"><el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" /></el-form-item>
+        </div>
         <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
         <el-form-item label="风格角色">
           <el-select v-model="form.style_role_id" clearable placeholder="可选：一键套用写作风格角色（人设+技能）">
@@ -46,7 +50,55 @@
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="写作技能">
+          <el-select v-model="form.skill_id" clearable placeholder="可选：套用平台写作技能（网文实战技巧）">
+            <el-option v-for="s in skills" :key="s.id" :label="s.name" :value="s.id">
+              <div style="display:flex;justify-content:space-between;gap:12px">
+                <span>{{ s.name }}</span>
+                <small class="muted">{{ s.scope }}</small>
+              </div>
+            </el-option>
+          </el-select>
+          <span class="muted fg-tip">可与风格角色叠加：风格角色定人设，技能注入具体写作手法</span>
+        </el-form-item>
+
+        <div class="fg-title">故事设定</div>
+        <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" placeholder="一句话讲清故事核心创意（如：社畜穿越到修真界，靠内卷法则证道）" /></el-form-item>
+        <el-form-item label="故事背景"><el-input v-model="form.background" type="textarea" :rows="3" placeholder="时代背景 / 世界规则 / 主要地点等（强约束，AI 不得违背）" /></el-form-item>
+        <el-form-item label="主角设定"><el-input v-model="form.hero" type="textarea" :rows="2" placeholder="主角身份 / 性格 / 目标 / 金手指等（强约束）" /></el-form-item>
+        <el-form-item label="预设人物">
+          <div class="tag-wrap">
+            <el-tag v-for="(c, i) in form.characters" :key="i" closable @close="form.characters.splice(i, 1)" style="margin:0 6px 6px 0">{{ c }}</el-tag>
+            <el-input v-model="charInput" size="small" style="width:220px" placeholder="输入配角设定，回车添加" @keyup.enter="addTag(form.characters, charInput)" />
+          </div>
+        </el-form-item>
+        <el-form-item label="剧情走向"><el-input v-model="form.plot_direction" type="textarea" :rows="2" placeholder="主线脉络 / 必须出现的桥段 / 关键冲突（参考方向，AI 在此基础上细化）" /></el-form-item>
+        <el-form-item label="避雷元素">
+          <div class="tag-wrap">
+            <el-tag v-for="(f, i) in form.forbidden" :key="i" closable type="danger" @close="form.forbidden.splice(i, 1)" style="margin:0 6px 6px 0">{{ f }}</el-tag>
+            <el-input v-model="forbidInput" size="small" style="width:220px" placeholder="输入后回车添加" @keyup.enter="addTag(form.forbidden, forbidInput)" />
+          </div>
+          <span class="muted fg-tip">不想出现的元素/情节（强约束，如：主角不圣母、拒绝悲剧结局）</span>
+        </el-form-item>
+
+        <div class="fg-title">节奏与文风</div>
+        <el-form-item label="爽点密度">
+          <el-radio-group v-model="form.pacing_density">
+            <el-radio value="low">慢热铺垫</el-radio>
+            <el-radio value="medium">适中</el-radio>
+            <el-radio value="high">密集爽点</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="剧情速度">
+          <el-radio-group v-model="form.plot_speed">
+            <el-radio value="slow">细腻展开</el-radio>
+            <el-radio value="medium">适中</el-radio>
+            <el-radio value="fast">快节奏</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="自定义提示词"><el-input v-model="form.custom_prompt" type="textarea" :rows="2" placeholder="额外的创作要求（可选），将原样追加到生成指令" /></el-form-item>
+
+        <div class="fg-title">生成模式</div>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
             <el-radio value="auto">全自动生成</el-radio>
@@ -79,6 +131,32 @@
           </el-form-item>
         </template>
         <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
+
+        <el-collapse v-model="advOpen" class="adv-collapse">
+          <el-collapse-item title="高级选项（生成质量开关，推荐默认全开）" name="adv">
+            <el-form-item label="编辑质检">
+              <el-switch v-model="form.editor_review" />
+              <span class="muted fg-tip">大纲生成后执行编辑视角 9 维质检，不通过自动修正一次</span>
+            </el-form-item>
+            <el-form-item label="去 AI 味">
+              <el-switch v-model="form.de_ai" />
+              <span class="muted fg-tip">正文生成时注入去 AI 味写作约束</span>
+            </el-form-item>
+            <el-form-item label="防同质化">
+              <el-switch v-model="form.anti_similarity" />
+              <span class="muted fg-tip">拒绝套路、人物内在矛盾、有代价的抉择，结局必须完整</span>
+            </el-form-item>
+            <el-form-item label="人物立体化">
+              <el-switch v-model="form.character_depth" />
+              <span class="muted fg-tip">角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度</span>
+            </el-form-item>
+            <el-form-item label="记忆窗口">
+              <el-input-number v-model="form.memory_window" :min="0" :max="20" />
+              <span class="muted fg-tip">生成当前章时回填最近 N 章摘要（越大越连贯、成本越高）</span>
+            </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
+
         <el-form-item label="费用估算">
           <div class="price-hint">
             <span v-if="form.mode === 'expand'">
@@ -111,7 +189,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { listProjects, createProject, archiveProject, cloneProject, deleteProject } from '../api/project'
-import { listStyleRoles, parseContent } from '../api/tools'
+import { listStyleRoles, parseContent, listPlatformSkills, listMySkills } from '../api/tools'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const list = ref([])
@@ -122,8 +200,12 @@ const sort = ref('created')
 const showCreate = ref(false)
 const creating = ref(false)
 const styleRoles = ref([])
+const skills = ref([])
 const showFormat = ref(false)
 const fileMsg = ref('')
+const charInput = ref('')
+const forbidInput = ref('')
+const advOpen = ref([])
 
 const formatSample = [
   '《示例书名》',
@@ -149,7 +231,11 @@ const formatSample = [
 ].join('\n')
 
 const form = ref({
-  title: '', genre: '', total_words: 25000, style: '', premise: '',
+  title: '', genre: '', total_words: 25000, chapter_words: 2500, style: '', premise: '',
+  background: '', hero: '', characters: [], plot_direction: '', forbidden: [],
+  pacing_density: 'medium', plot_speed: 'medium', custom_prompt: '',
+  editor_review: true, de_ai: true, anti_similarity: true, character_depth: true,
+  memory_window: 5, skill_id: 0,
   mode: 'auto', high_quality_mode: false, style_role_id: 0,
   existing_words: 0, user_content: '', expand_input: '', with_research: false,
 })
@@ -218,6 +304,26 @@ async function loadStyleRoles() {
   } catch (e) { /* 风格角色加载失败不阻塞建书 */ }
 }
 
+async function loadSkills() {
+  try {
+    const [pl, mine] = await Promise.all([listPlatformSkills(), listMySkills()])
+    const map = new Map()
+    ;(pl.skills || pl || []).forEach(s => map.set(s.id, { ...s, scope: '平台' }))
+    ;(mine.skills || mine || []).forEach(s => {
+      if (!map.has(s.id)) map.set(s.id, { ...s, scope: '我的' })
+    })
+    skills.value = [...map.values()]
+  } catch (e) { /* 技能加载失败不阻塞建书 */ }
+}
+
+function addTag(arr, input) {
+  const v = (input.value || '').trim()
+  if (!v) return
+  if (arr.includes(v)) return
+  arr.push(v)
+  input.value = ''
+}
+
 const filtered = computed(() => {
   let arr = list.value
   if (filter.value === 'archived') arr = arr.filter(p => p.archived)
@@ -275,7 +381,7 @@ async function doDelete(p) {
   load()
 }
 
-onMounted(() => { load(); loadStyleRoles() })
+onMounted(() => { load(); loadStyleRoles(); loadSkills() })
 </script>
 
 <style scoped>
@@ -293,4 +399,13 @@ onMounted(() => { load(); loadStyleRoles() })
 .file-ok { color: #67c23a; }
 .file-err { color: #f56c6c; }
 .format-sample { background: #f6f8fa; border: 1px solid #e4e7ed; border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: #303133; white-space: pre-wrap; max-height: 420px; overflow: auto; }
+.fg-title { font-size: 14px; font-weight: 600; color: #303133; margin: 18px 0 10px; padding-left: 8px; border-left: 3px solid #c9a227; line-height: 1.2; }
+.fg-title:first-of-type { margin-top: 0; }
+.fg-row { display: flex; gap: 16px; }
+.fg-tip { margin-left: 10px; font-size: 12px; }
+.tag-wrap { display: flex; align-items: center; flex-wrap: wrap; width: 100%; }
+.adv-collapse { margin-bottom: 14px; border-top: none; }
+.adv-collapse :deep(.el-collapse-item__header) { font-size: 13px; color: #606266; }
+.adv-collapse :deep(.el-collapse-item__content) { padding-bottom: 8px; }
+.adv-collapse :deep(.el-form-item) { margin-bottom: 14px; }
 </style>

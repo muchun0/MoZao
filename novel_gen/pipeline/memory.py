@@ -51,6 +51,22 @@ class Memory:
             if w_lines:
                 parts.append("[L1·全局设定·全书记忆]\n" + "\n".join(w_lines))
 
+        # L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态
+        try:
+            from .character_state import format_state_line
+            cs = self.store.load_character_states()
+            if cs:
+                items = sorted(
+                    cs.items(),
+                    key=lambda kv: int(kv[1].get("last_seen", 0) or 0),
+                    reverse=True,
+                )[:8]
+                lines = [format_state_line(name, st) for name, st in items if st.get("last_seen")]
+                if lines:
+                    parts.append("[L1.5·人物当前状态·最近更新]\n" + "\n".join(lines))
+        except Exception:
+            pass
+
         # L2 卷级摘要：当前所在分卷
         try:
             outline = self.store.load_outline()

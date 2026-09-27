@@ -130,6 +130,8 @@ class NovelConfig:
     memory_window: int = 5          # 生成当前章时回填最近 N 章摘要，控制上下文成本
     memory_direct_read_chapters: int = 1    # 前文直读：直读最近 N 章正文（0=关闭，保持纯摘要；P0-1）
     memory_direct_read_chars: int = 2000    # 每章直读正文最大字符数（取章节尾部；P0-1）
+    character_state_tracking: bool = True   # P0-2：每章正文落盘后更新人物动态状态快照
+    character_state_llm: bool = True        # 是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）

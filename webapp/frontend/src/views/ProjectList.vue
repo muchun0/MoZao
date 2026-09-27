@@ -69,14 +69,14 @@
         <el-form-item label="预设人物">
           <div class="tag-wrap">
             <el-tag v-for="(c, i) in form.characters" :key="i" closable @close="form.characters.splice(i, 1)" style="margin:0 6px 6px 0">{{ c }}</el-tag>
-            <el-input v-model="charInput" size="small" style="width:220px" placeholder="输入配角设定，回车添加" @keyup.enter="addTag(form.characters, charInput)" />
+            <el-input v-model="charInput" size="small" style="width:220px" placeholder="输入配角设定，回车添加" @keyup.enter="addCharacter" />
           </div>
         </el-form-item>
         <el-form-item label="剧情走向"><el-input v-model="form.plot_direction" type="textarea" :rows="2" placeholder="主线脉络 / 必须出现的桥段 / 关键冲突（参考方向，AI 在此基础上细化）" /></el-form-item>
         <el-form-item label="避雷元素">
           <div class="tag-wrap">
             <el-tag v-for="(f, i) in form.forbidden" :key="i" closable type="danger" @close="form.forbidden.splice(i, 1)" style="margin:0 6px 6px 0">{{ f }}</el-tag>
-            <el-input v-model="forbidInput" size="small" style="width:220px" placeholder="输入后回车添加" @keyup.enter="addTag(form.forbidden, forbidInput)" />
+            <el-input v-model="forbidInput" size="small" style="width:220px" placeholder="输入后回车添加" @keyup.enter="addForbidden" />
           </div>
           <span class="muted fg-tip">不想出现的元素/情节（强约束，如：主角不圣母、拒绝悲剧结局）</span>
         </el-form-item>
@@ -130,7 +130,10 @@
             <span class="muted" style="margin-left:8px;font-size:12px">生成前先做一次爆款共性调研：结果沉淀到拆书库，并作为扩写参考（耗时略增、不额外计费）</span>
           </el-form-item>
         </template>
-        <el-form-item label="高质量模式"><el-switch v-model="form.high_quality_mode" /></el-form-item>
+        <el-form-item label="高质量模式">
+          <el-switch v-model="form.high_quality_mode" />
+          <span class="muted fg-tip">场景级生成 + 动态模块轮换 + 每章自动改稿与读者视角审校，文笔与连贯性更好；单价 3 元/万字（普通 2 元/万字）</span>
+        </el-form-item>
 
         <el-collapse v-model="advOpen" class="adv-collapse">
           <el-collapse-item title="高级选项（生成质量开关，推荐默认全开）" name="adv">
@@ -316,12 +319,18 @@ async function loadSkills() {
   } catch (e) { /* 技能加载失败不阻塞建书 */ }
 }
 
-function addTag(arr, input) {
-  const v = (input.value || '').trim()
-  if (!v) return
-  if (arr.includes(v)) return
-  arr.push(v)
-  input.value = ''
+function addCharacter() {
+  const v = (charInput.value || '').trim()
+  if (!v || form.value.characters.includes(v)) return
+  form.value.characters.push(v)
+  charInput.value = ''
+}
+
+function addForbidden() {
+  const v = (forbidInput.value || '').trim()
+  if (!v || form.value.forbidden.includes(v)) return
+  form.value.forbidden.push(v)
+  forbidInput.value = ''
 }
 
 const filtered = computed(() => {

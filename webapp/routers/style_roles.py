@@ -31,6 +31,8 @@ def list_style_roles(user: dict = Depends(_require_user)):
 
 @app.post("/api/style-roles", status_code=201)
 def create_style_role(req: StyleRoleReq, user: dict = Depends(_require_user)):
+    _guard_user_input(req.name, "风格角色名称")
+    _guard_user_input(req.role_prompt, "风格角色人设")
     name = (req.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="名称不能为空")

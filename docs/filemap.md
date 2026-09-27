@@ -32,8 +32,9 @@
 | 路径 | 职责 |
 |---|---|
 | `config.py` | 配置加载（YAML + 环境变量补 Key）、题材/字数/Provider 校验 |
-| `llm/base.py` | LLM Provider 抽象基类 |
+| `llm/base.py` | LLM Provider 抽象基类（chat 模板方法：自动埋点 + 成本防护挂载） |
 | `llm/factory.py` | Provider 工厂（deepseek/doubao/openai/mock） |
+| `llm/usage.py` | Token 用量统计（模块1/2：累计 + 最近一次调用） |
 | `llm/providers.py` | 各 Provider 实现 |
 | `research/research.py` | 调研编排：内置知识库 + 可选联网搜索 → LLM 提炼共性报告 |
 | `research/sources.py` | 搜索源（博查/Serper） |
@@ -48,6 +49,9 @@
 | `pipeline/editor.py` | 编辑质检（9 维审稿，<7 分自动修正） |
 | `pipeline/reviser.py` | 章节重写/审校 |
 | `pipeline/repetition.py` | 防重复/防同质化 |
+| `pipeline/trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder |
+| `pipeline/guard.py` | 成本防护（模块2）：AgentGuard 循环/Token 阈值 |
+| `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写 |
 | `pipeline/templates.py` | 提示词模板组装 |
 | `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计 |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |
@@ -65,7 +69,7 @@
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
 | `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流 |
-| `db.py` | MySQL 数据层：连接池 + 全部 SQL（11 张表） |
+| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 平台技能/用户技能/技能市场；`style_roles.py` 风格角色/挂载/种子化；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计） |
 | `secret_encrypt.py` | BYOK Key Fernet 加密（`enc:v1:` 前缀） |
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
 | `referral.py` | 代理参数（AGENT_DISCOUNT/COMMISSION_RATE/COMMISSION_BASE/REFERRAL_BONUS） |
@@ -117,7 +121,7 @@
 |---|---|
 | 某接口的路径/参数/返回 | `API.md` |
 | 计费/返佣/退款/封面规则 | `WIKI.md` §4、`README.md` 计费节 |
-| 数据库表结构 | `WIKI.md` §5、`webapp/db.py` |
+| 数据库表结构 | `WIKI.md` §5、`webapp/db/base.py`（含 agent_trace） |
 | 部署/发版/已知问题 | `WIKI.md` §7-9、`AGENTS.md` §5 |
 | 为什么这么设计/踩过的坑 | `docs/decisions.md` |
 | 模块职责/依赖/改哪里 | `docs/architecture.md` |

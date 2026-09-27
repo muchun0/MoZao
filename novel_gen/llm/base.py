@@ -5,12 +5,20 @@ LLM 抽象基类：所有 Provider 统一实现 chat / chat_json 两个能力。
 为什么要抽象：
 - 生成流水线只依赖这两个方法，不关心底层是 DeepSeek 还是豆包
 - chat_json 负责「让模型输出结构化 JSON」（人物卡/世界观用），统一在这里做解析与失败重试
+
+生产级加固（阶段1）：
+- chat 改为模板方法：自动为**每一次** LLM 调用埋点（Prompt/返回/Token/耗时/错误栈），
+  写入 TraceRecorder（模块1）；调用方零改动。
+- 挂载 AgentGuard（模块2）：每次调用前检查循环上限，调用后累计 Token 并检查阈值。
 """
 from __future__ import annotations
 
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
+
+from .usage import Usage
 
 
 class LLMError(Exception):
@@ -22,7 +30,14 @@ class LLMClient(ABC):
 
     name: str = "base"
 
-    @abstractmethod
+    def __init__(self):
+        # 阶段1：调用统计（Token 防护与监控用）
+        self.usage = Usage()
+        self.call_count = 0
+        # 阶段1：埋点与防护挂载点（由 NovelPipeline 注入）
+        self.recorder = None   # TraceRecorder | None
+        self.guard = None      # AgentGuard | None
+
     def chat(
         self,
         system: str,
@@ -32,7 +47,72 @@ class LLMClient(ABC):
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
     ) -> str:
-        """单轮对话，返回纯文本。temperature/max_tokens 不传时用配置默认值。"""
+        """单轮对话，返回纯文本。模板方法：包装 _chat_impl 做埋点与成本防护。"""
+        # 模块2：循环上限检查（调用前）
+        if self.guard is not None:
+            self.guard.before_call()
+        start = time.monotonic()
+        try:
+            text = self._chat_impl(
+                system, user,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+        except Exception as exc:
+            self._after_call(system, user, None, exc, start)
+            raise
+        self._after_call(system, user, text, None, start)
+        return text
+
+    @abstractmethod
+    def _chat_impl(
+        self,
+        system: str,
+        user: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> str:
+        """子类实现：真正调用 Provider。"""
+
+    # ---------- 阶段1：埋点 + Token 统计 ----------
+    def _after_call(self, system: str, user: str, text: Optional[str],
+                    exc: Optional[Exception], start: float) -> None:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        self.call_count += 1
+        tok_in = self.usage.last_prompt_tokens
+        tok_out = self.usage.last_completion_tokens
+        # 模块2：Token 阈值检查（调用后，按真实消耗累计）
+        if self.guard is not None and text is not None:
+            self.guard.after_call(self.usage)
+        # 模块1：LLM 调用级埋点
+        if self.recorder is not None:
+            try:
+                self.recorder.record(
+                    step_type="llm_call",
+                    step_name=f"{self.name} {self.model_label()}",
+                    system=system,
+                    user=user,
+                    output=text or "",
+                    token_in=tok_in,
+                    token_out=tok_out,
+                    duration_ms=duration_ms,
+                    success=exc is None,
+                    error=f"{type(exc).__name__}: {exc}" if exc else "",
+                    model=self.model_label(),
+                    extra={"call_index": self.call_count},
+                )
+            except Exception:
+                pass
+
+    def model_label(self) -> str:
+        return getattr(self, "model", self.name)
+
+    def close(self) -> None:
+        """子类按需关闭底层客户端。"""
 
     def chat_json(
         self,

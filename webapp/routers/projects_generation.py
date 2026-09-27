@@ -130,6 +130,32 @@ def start_generation(project_id: str, user: dict = Depends(_require_user)):
     return {"started": True, "project_id": project_id}
 
 
+@app.post("/api/projects/{project_id}/chapters/regenerate")
+def regenerate_all_chapters(project_id: str, user: dict = Depends(_require_user)):
+    """整本重写全部章节正文（重新生成）：保留大纲与世界观，已锁定章节自动跳过。
+
+    语义：复用批量生成（_run_batch 1..total），逐章覆盖重写；成本防护/余额耗尽时
+    保留已生成产物，可从断点继续。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.load_outline()
+    if not outline or not outline.chapters:
+        raise HTTPException(status_code=400, detail="尚无大纲章节，无法重写")
+    handle = _acquire_slot(project_id)
+    try:
+        t = threading.Thread(target=_run_batch,
+                             args=(store, handle, 1, len(outline.chapters)), daemon=True)
+        handle.thread = t
+        t.start()
+    except Exception:
+        _release_slot(project_id)
+        raise
+    logger.info("整本重写启动: project=%s chapters=%d user=%s",
+                project_id, len(outline.chapters), user["username"])
+    return {"started": True, "project_id": project_id, "start": 1, "end": len(outline.chapters)}
+
+
 @app.post("/api/projects/{project_id}/stop")
 def stop_generation(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)

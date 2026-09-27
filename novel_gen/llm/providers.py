@@ -32,6 +32,7 @@ class OpenAICompatibleClient(LLMClient):
         max_tokens: int = 4096,
         timeout: float = 180.0,
     ):
+        super().__init__()
         if not api_key:
             raise LLMError(f"provider[{provider}] 缺少 api_key，无法创建客户端")
         self.provider = provider
@@ -46,7 +47,7 @@ class OpenAICompatibleClient(LLMClient):
             max_retries=3,  # SDK 内置指数退避重试
         )
 
-    def chat(
+    def _chat_impl(
         self,
         system: str,
         user: str,
@@ -76,6 +77,14 @@ class OpenAICompatibleClient(LLMClient):
             content = resp.choices[0].message.content
             if not content:
                 raise LLMError("模型返回空内容")
+            # 阶段1：Token 用量统计（部分网关不返回 usage，缺省 0 不误统计）
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                self.usage.note(
+                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                )
             return content
         except LLMError:
             raise
@@ -95,11 +104,12 @@ class MockClient(LLMClient):
     name: str = "mock"
 
     def __init__(self, temperature: float = 0.8, max_tokens: int = 4096, delay: float = 0.0):
+        super().__init__()
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._delay = delay
 
-    def chat(
+    def _chat_impl(
         self,
         system: str,
         user: str,

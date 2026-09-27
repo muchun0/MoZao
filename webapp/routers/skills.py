@@ -16,6 +16,8 @@ def my_skills(user: dict = Depends(_require_user)):
 
 @app.post("/api/my-skills")
 def create_my_skill(req: dict, user: dict = Depends(_require_user)):
+    _guard_user_input(req.get("name"), "技能名称")
+    _guard_user_input(req.get("prompt_append"), "技能内容")
     name = (req.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="名称不能为空")

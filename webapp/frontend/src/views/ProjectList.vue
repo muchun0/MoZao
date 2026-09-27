@@ -32,6 +32,39 @@
 
     <el-dialog v-model="showCreate" title="新建小说" width="780px">
       <el-form :model="form" label-width="110px">
+        <div class="fg-title">生成模式</div>
+        <el-form-item label="模式">
+          <el-radio-group v-model="form.mode">
+            <el-radio value="auto">全自动生成</el-radio>
+            <el-radio value="expand">AI扩写（我提供大纲）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="form.mode === 'expand'">
+          <el-form-item label="现有字数">
+            <el-input-number v-model="form.existing_words" :min="0" :step="10000" />
+            <span class="muted" style="margin-left:8px">按差值计费</span>
+          </el-form-item>
+          <el-form-item label="上传大纲">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <input type="file" ref="fileInput" accept=".txt,.md,.docx" @change="onFilePick" />
+              <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
+              <el-button link type="primary" size="small" @click="showFormat = true">查看大纲格式示例</el-button>
+            </div>
+            <div v-if="fileMsg" class="file-msg" :class="fileMsg.includes('识别') || fileMsg.includes('解析完成') ? 'file-ok' : 'file-err'">{{ fileMsg }}</div>
+          </el-form-item>
+          <el-form-item label="大纲内容">
+            <el-input v-model="form.expand_input" type="textarea" :rows="6"
+              placeholder="粘贴你的大纲（可选）。章节建议用「第X章」标题开头，便于识别章节结构；也可只写设定与主线，之后在项目页由 AI 生成大纲" />
+          </el-form-item>
+          <el-form-item label="手写内容">
+            <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的正文（可选），AI将在此基础上续写" />
+          </el-form-item>
+          <el-form-item label="附带题材调研">
+            <el-switch v-model="form.with_research" />
+            <span class="muted" style="margin-left:8px;font-size:12px">生成前先做一次爆款共性调研：结果沉淀到拆书库，并作为扩写参考（耗时略增、不额外计费）</span>
+          </el-form-item>
+        </template>
+
         <div class="fg-title">基础信息</div>
         <el-form-item label="书名"><el-input v-model="form.title" placeholder="给你的小说起个名字" /></el-form-item>
         <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
@@ -98,45 +131,14 @@
         </el-form-item>
         <el-form-item label="自定义提示词"><el-input v-model="form.custom_prompt" type="textarea" :rows="2" placeholder="额外的创作要求（可选），将原样追加到生成指令" /></el-form-item>
 
-        <div class="fg-title">生成模式</div>
-        <el-form-item label="模式">
-          <el-radio-group v-model="form.mode">
-            <el-radio value="auto">全自动生成</el-radio>
-            <el-radio value="expand">AI扩写（我提供大纲）</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="form.mode === 'expand'">
-          <el-form-item label="现有字数">
-            <el-input-number v-model="form.existing_words" :min="0" :step="10000" />
-            <span class="muted" style="margin-left:8px">按差值计费</span>
-          </el-form-item>
-          <el-form-item label="上传大纲">
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-              <input type="file" ref="fileInput" accept=".txt,.md,.docx" @change="onFilePick" />
-              <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
-              <el-button link type="primary" size="small" @click="showFormat = true">查看大纲格式示例</el-button>
-            </div>
-            <div v-if="fileMsg" class="file-msg" :class="fileMsg.includes('识别') || fileMsg.includes('解析完成') ? 'file-ok' : 'file-err'">{{ fileMsg }}</div>
-          </el-form-item>
-          <el-form-item label="大纲内容">
-            <el-input v-model="form.expand_input" type="textarea" :rows="6"
-              placeholder="粘贴你的大纲（可选）。章节建议用「第X章」标题开头，便于识别章节结构；也可只写设定与主线，之后在项目页由 AI 生成大纲" />
-          </el-form-item>
-          <el-form-item label="手写内容">
-            <el-input v-model="form.user_content" type="textarea" :rows="4" placeholder="粘贴你已写好的正文（可选），AI将在此基础上续写" />
-          </el-form-item>
-          <el-form-item label="附带题材调研">
-            <el-switch v-model="form.with_research" />
-            <span class="muted" style="margin-left:8px;font-size:12px">生成前先做一次爆款共性调研：结果沉淀到拆书库，并作为扩写参考（耗时略增、不额外计费）</span>
-          </el-form-item>
-        </template>
+        <div class="fg-title">质量选项</div>
         <el-form-item label="高质量模式">
           <el-switch v-model="form.high_quality_mode" />
           <span class="muted fg-tip">场景级生成 + 动态模块轮换 + 每章自动改稿与读者视角审校，文笔与连贯性更好；单价 3 元/万字（普通 2 元/万字）</span>
         </el-form-item>
 
         <el-collapse v-model="advOpen" class="adv-collapse">
-          <el-collapse-item title="高级选项（生成质量开关，推荐默认全开）" name="adv">
+          <el-collapse-item title="更多质量开关（编辑质检 / 去AI味 / 防同质化 / 人物立体化 / 记忆窗口，推荐全开）" name="adv">
             <el-form-item label="编辑质检">
               <el-switch v-model="form.editor_review" />
               <span class="muted fg-tip">大纲生成后执行编辑视角 9 维质检，不通过自动修正一次</span>

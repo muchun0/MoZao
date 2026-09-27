@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import random as _random
+
 from ..config import NovelConfig
 from ..store.schemas import Outline
 
@@ -766,12 +768,35 @@ _RANDOM_VARS_BY_GENRE = {
 }
 
 
-def _pick_dynamic_module(chapter_no: int, genre: str) -> str:
-    vp = _VIEWPOINT_MODULES[chapter_no % len(_VIEWPOINT_MODULES)]
-    sense = _SENSE_MODULES[chapter_no % len(_SENSE_MODULES)]
-    rhythm = _RHYTHM_MODULES[chapter_no % len(_RHYTHM_MODULES)]
+_LAST_DYNAMIC: dict[str, str] = {}
+
+
+def _pick_no_repeat(pool: list[str], key: str, rng) -> str:
+    """P2-3：随机选一个动态模块，且与上一章同类选择不同（key 按 题材+模块类型 区分）。"""
+    prev = _LAST_DYNAMIC.get(key)
+    cands = [c for c in pool if c != prev] or pool
+    pick = rng.choice(cands)
+    _LAST_DYNAMIC[key] = pick
+    return pick
+
+
+def _pick_dynamic_module(chapter_no: int, genre: str, seed: int | None = None) -> str:
+    """P2-3：动态模块按章随机 + 相邻章节去重（打破轮询规律，模型不可预测套路）。
+
+    seed 非 None 时走固定随机序列（可复现调试，不参与相邻去重缓存）。
+    """
+    rng = _random.Random(seed) if seed is not None else _random
     pool = _RANDOM_VARS_BY_GENRE.get(genre, _RANDOM_VARS_BY_GENRE["default"])
-    var = pool[chapter_no % len(pool)]
+    if seed is not None:
+        vp = rng.choice(_VIEWPOINT_MODULES)
+        sense = rng.choice(_SENSE_MODULES)
+        rhythm = rng.choice(_RHYTHM_MODULES)
+        var = rng.choice(pool)
+    else:
+        vp = _pick_no_repeat(_VIEWPOINT_MODULES, f"{genre}|vp", rng)
+        sense = _pick_no_repeat(_SENSE_MODULES, f"{genre}|sense", rng)
+        rhythm = _pick_no_repeat(_RHYTHM_MODULES, f"{genre}|rhythm", rng)
+        var = _pick_no_repeat(pool, f"{genre}|var", rng)
     lines = [
         "【本章动态模块】",
         f"- 视角：{vp}",
@@ -781,6 +806,17 @@ def _pick_dynamic_module(chapter_no: int, genre: str) -> str:
         "注意：动态模块只做微调，不颠覆整体叙事底色；不要在正文中提及这些指令。",
     ]
     return "\n".join(lines)
+
+
+def _style_reference(cfg: NovelConfig) -> str:
+    """P2-1 few-shot 文风锚定：风格角色携带的参考文风片段（模仿选词/句式/节奏/语感，严禁抄袭内容）。"""
+    ref = (getattr(cfg, "style_role_reference", "") or "").strip()
+    if not ref:
+        return ""
+    return (
+        "【参考文风样例（只模仿选词、句式、节奏与语感，严禁抄袭具体内容与情节）】\n"
+        + ref[:3000]
+    )
 
 
 def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_context):
@@ -842,6 +878,9 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         system += "\n\n" + _fanqie_rules("chapter")
     if dynamic_module:
         system += "\n\n" + dynamic_module
+    ref = _style_reference(cfg)
+    if ref:
+        system += "\n\n" + ref
     system += _skill_append(cfg)
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
@@ -1062,6 +1101,9 @@ def chapter_prompt(
         f"{'6' if cfg.anti_similarity else '5'}. 输出格式（必须严格遵循，不要省略）：先输出正文，正文结束后【必须】另起一行"
         f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
     )
+    ref = _style_reference(cfg)
+    if ref:
+        system += "\n\n" + ref
     system += _skill_append(cfg)
     return system, user
 
@@ -1176,4 +1218,34 @@ def expand_chapter_prompt(
         f"4. 只输出正文本身，不要输出摘要、不要输出任何前后缀说明\n"
     )
     system += _skill_append(cfg)
+    return system, user
+
+
+def final_review_prompt(cfg: NovelConfig, outline: Outline, chapters_block: str,
+                        world_text: str) -> tuple[str, str]:
+    """P2-2 全书终审：整本书写完后的终审编辑，只查整本层面的结构性问题。
+
+    输入全书章节标题+摘要脉络与设定库；输出全书级 issues（剧情连贯/伏笔回收/
+    人物弧光/节奏结构/结局完整性）。不阻塞导出，问题先交付后呈现。
+    """
+    system = (
+        "你是一位资深出版编辑，负责一本书付印前的最后终审。"
+        "你通读全书章节脉络与设定，只找整本层面的结构性问题，不改写正文。"
+        "按 JSON 格式输出终审结果。"
+    )
+    user = (
+        f"【书名/简介】{outline.title}｜{outline.intro}\n"
+        f"【题材】{cfg.genre}\n"
+        f"【全书章节数】{len(outline.chapters)}\n\n"
+        f"【全书章节脉络（每章一行：章节号·标题·摘要）】\n{chapters_block}\n\n"
+        f"【世界观/人物设定】\n{world_text[:2500]}\n\n"
+        "请从全书层面终审以下维度（聚焦整本结构，不要逐章挑细节）：\n"
+        "1. 剧情连贯：章节衔接有无断裂、跳跃或前后矛盾\n"
+        "2. 伏笔回收：前文埋设的关键伏笔是否全部回收，有无明显遗忘\n"
+        "3. 人物弧光：主角与重要配角是否有完整、合理的成长/变化轨迹\n"
+        "4. 节奏结构：全书节奏是否失衡（前紧后松/中期拖沓/高潮缺失）\n"
+        "5. 结局完整性：结局是否完整收束主线与核心冲突，有无烂尾或强行团圆\n\n"
+        '输出 JSON：{"issues": [{"type": "剧情连贯/伏笔回收/人物弧光/节奏结构/结局完整性", '
+        '"problem": "具体问题（对应章节）", "suggestion": "改进建议"}], "ok": true/false}'
+    )
     return system, user

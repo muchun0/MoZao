@@ -129,14 +129,20 @@ class TraceRecorder:
             extra=extra,
         )
 
-    def record_quality(self, chapter_no: int, result: dict, issues: list) -> None:
-        """记录结果自校验事件（模块4）。"""
+    def record_quality(self, chapter_no: int, result: dict, issues: list,
+                        auto_revised: bool = False) -> None:
+        """记录结果自校验事件（模块4）。P2-4：extra 附带 score/issue_count/auto_revised 供报表聚合。"""
         self.record(
             step_type="quality_check",
             step_name=f"第{chapter_no}章自校验",
             output=result.get("summary", "")[:2000] if result else "",
             success=bool(result and result.get("passed")),
-            extra={"issues": issues[:50]},
+            extra={
+                "issues": issues[:50],
+                "score": int(result.get("score", 0)) if result else 0,
+                "issue_count": len(issues),
+                "auto_revised": bool(auto_revised),
+            },
         )
 
     def record_agent_step(self, step_name: str, extra: Optional[dict] = None) -> None:

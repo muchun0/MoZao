@@ -95,6 +95,7 @@ class ProjectStore:
             "skill_prompt_append": getattr(cfg, "skill_prompt_append", ""),
             "style_role_id": getattr(cfg, "style_role_id", 0),
             "style_role_prompt": getattr(cfg, "style_role_prompt", ""),
+            "style_role_reference": getattr(cfg, "style_role_reference", ""),
             "agent_guard": {
                 "enabled": bool(getattr(cfg.agent_guard, "enabled", True)),
                 "max_loops": int(getattr(cfg.agent_guard, "max_loops", 80)),
@@ -154,6 +155,7 @@ class ProjectStore:
             "skill_prompt_append": d.get("skill_prompt_append", ""),
             "style_role_id": int(d.get("style_role_id", 0) or 0),
             "style_role_prompt": d.get("style_role_prompt", ""),
+            "style_role_reference": d.get("style_role_reference", ""),
         }
         # 功能开关（FEATURE_FLAGS 注册表驱动：旧项目缺字段自动用注册表默认值）
         from ..config import FEATURE_FLAGS, _coerce_feature
@@ -391,6 +393,17 @@ class ProjectStore:
     def save_character_states(self, states: dict) -> None:
         """整体覆盖保存（每章更新后写入最新快照）。"""
         self._write_json(self.character_states_path(), states)
+
+    # ---------- 全书终审（P2-2） ----------
+    def final_review_path(self) -> Path:
+        return self.dir / "final_review.json"
+
+    def load_final_review(self) -> Optional[dict]:
+        """返回 {checked_at, ok, issues, summary}；未终审过返回 None。"""
+        return self._read_json(self.final_review_path(), None)
+
+    def save_final_review(self, review: dict) -> None:
+        self._write_json(self.final_review_path(), review)
 
     # ---------- 导出 TXT ----------
     def export_txt(self) -> Path:

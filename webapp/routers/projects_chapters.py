@@ -87,7 +87,7 @@ def list_review(project_id: str, user: dict = Depends(_require_user)):
     store = _find_project(project_id)
     path = store.dir / "review.json"
     if not path.exists():
-        return {"items": [], "verify_issues": [], "summary": {}}
+        return {"items": [], "verify_issues": [], "summary": {}, "final_review": None}
     try:
         import json as _json
         data = _json.loads(path.read_text(encoding="utf-8"))
@@ -101,7 +101,9 @@ def list_review(project_id: str, user: dict = Depends(_require_user)):
     from novel_gen.pipeline.review_summary import build_review_summary
     verify_issues = store.load_verify_issues()
     summary = build_review_summary(data, verify_issues)
-    return {"items": data, "verify_issues": verify_issues, "summary": summary}
+    final_review = store.load_final_review()
+    return {"items": data, "verify_issues": verify_issues, "summary": summary,
+            "final_review": final_review}
 
 
 @app.post("/api/projects/{project_id}/verify/consistency")

@@ -53,6 +53,7 @@ class QualityChecker:
         """
         result = self.check(chapter_no, plan_title, plan_goal, content)
         issues = result["issues"]
+        rewritten_occurred = False
 
         # 不通过 → 触发 1 次自动重写
         if not result["passed"]:
@@ -64,17 +65,18 @@ class QualityChecker:
             if rewritten and len(rewritten) > len(content) * 0.5:
                 content = rewritten
                 content, summary = _split_summary(content)
+                rewritten_occurred = True
                 # 复检
                 result = self.check(chapter_no, plan_title, plan_goal, content)
                 issues = result["issues"]
                 if not silent:
                     print(f"  [自校验] 重写后复检：{'通过' if result['passed'] else '仍存在问题（已标记）'}")
 
-        # 结果落库（review.json 兼容既有格式）
-        self._save_review(chapter_no, issues, result)
-        # 结果入 trace（模块1 快照）
+        # 结果落库（review.json 兼容既有格式，P2-4：记录实际是否触发重写）
+        self._save_review(chapter_no, issues, result, auto_revised=rewritten_occurred)
+        # 结果入 trace（模块1 快照，P2-4：extra 带 score/issue_count/auto_revised 供报表聚合）
         if self.trace is not None:
-            self.trace.record_quality(chapter_no, result, issues)
+            self.trace.record_quality(chapter_no, result, issues, auto_revised=rewritten_occurred)
 
         return Chapter(no=chapter_no, title=plan_title, content=content,
                        summary=summary, goal=plan_goal), result
@@ -254,7 +256,8 @@ class QualityChecker:
             return ""
 
     # ---------- 落库与工具 ----------
-    def _save_review(self, chapter_no: int, issues: list[dict], result: dict) -> None:
+    def _save_review(self, chapter_no: int, issues: list[dict], result: dict,
+                      auto_revised: bool = False) -> None:
         """与既有 review.json 格式兼容：该章记录合并校验问题。"""
         try:
             path = self.store.dir / "review.json"
@@ -268,7 +271,7 @@ class QualityChecker:
             existing.append({
                 "chapter": chapter_no,
                 "issues": issues,
-                "auto_revised": False,
+                "auto_revised": bool(auto_revised),
                 "quality_check": {
                     "passed": bool(result.get("passed")),
                     "score": int(result.get("score", 0)),

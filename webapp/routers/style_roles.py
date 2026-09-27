@@ -43,6 +43,7 @@ def create_style_role(req: StyleRoleReq, user: dict = Depends(_require_user)):
         role_prompt=req.role_prompt or "",
         is_active=1 if req.is_active else 0,
         sort_order=req.sort_order,
+        reference_text=(req.reference_text or ""),
     )
     logger.info("创建风格角色: uid=%d rid=%d name=%s", user["id"], rid, name)
     return {"ok": True, "id": rid}
@@ -60,6 +61,8 @@ def update_style_role(role_id: int, req: StyleRoleReq, user: dict = Depends(_req
         fields["description"] = (req.description or "")[:255]
     if req.role_prompt is not None:
         fields["role_prompt"] = req.role_prompt or ""
+    if req.reference_text is not None:
+        fields["reference_text"] = req.reference_text or ""
     if req.is_active is not None:
         fields["is_active"] = 1 if req.is_active else 0
     if req.sort_order is not None:

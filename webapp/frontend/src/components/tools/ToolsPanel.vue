@@ -50,6 +50,15 @@
               一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
             </div>
           </div>
+          <div v-if="finalReview" class="final-review-box">
+            <b>全书终审</b>
+            <div class="summary-line">{{ finalReview.summary || '' }}</div>
+            <div v-if="(finalReview.issues||[]).length">
+              <div v-for="(it, i) in finalReview.issues" :key="i" class="review-issue">
+                <span class="review-type">[{{ it.type }}]</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+              </div>
+            </div>
+          </div>
           <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
             <div class="review-head">
               <b>第{{ r.chapter }}章</b>
@@ -221,6 +230,10 @@
           <el-input v-model="roleForm.role_prompt" type="textarea" :rows="6"
             placeholder="写给AI的文风总纲：叙事视角、句式节奏、氛围营造、克制边界…" />
         </el-form-item>
+        <el-form-item label="参考文风">
+          <el-input v-model="roleForm.reference_text" type="textarea" :rows="4"
+            placeholder="贴 2-3 段你喜欢的范文片段（同题材最佳），AI 会模仿其选词、句式与节奏，不抄袭内容（P2-1）" />
+        </el-form-item>
         <el-form-item label="挂载技能">
           <div v-for="(sk, i) in roleForm.skills" :key="i" class="fs-row">
             <span>{{ sk.skill_type === 'user' ? '📝' : '⭐' }} {{ sk.skill_name }}
@@ -284,6 +297,7 @@ const props = defineProps({ pid: String })
 const verifyResult = ref([])
 const reviewItems = ref([])
 const reviewSummary = ref({})
+const finalReview = ref(null)
 const verifyIssues = ref([])
 const reviewLoaded = ref(false)
 const coverUrl = ref('')
@@ -354,6 +368,7 @@ async function loadReview() {
     reviewItems.value = r.items || []
     reviewSummary.value = r.summary || {}
     verifyIssues.value = r.verify_issues || []
+    finalReview.value = r.final_review || null
     reviewLoaded.value = true
   } catch (e) { ElMessage.error('改稿记录加载失败') }
 }
@@ -417,7 +432,7 @@ const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' }
 const styleRoles = ref([])
 const platformSkills = ref([])
 const showRoleDlg = ref(false)
-const roleForm = ref({ id: 0, name: '', description: '', role_prompt: '', skills: [] })
+const roleForm = ref({ id: 0, name: '', description: '', role_prompt: '', reference_text: '', skills: [] })
 const newMount = ref('')
 
 async function loadStyleRoles() {
@@ -428,8 +443,8 @@ async function loadPlatformSkills() {
 }
 function openRoleDlg(r) {
   roleForm.value = r
-    ? { id: r.id, name: r.name, description: r.description || '', role_prompt: r.role_prompt || '', skills: [...(r.skills || [])] }
-    : { id: 0, name: '', description: '', role_prompt: '', skills: [] }
+    ? { id: r.id, name: r.name, description: r.description || '', role_prompt: r.role_prompt || '', reference_text: r.reference_text || '', skills: [...(r.skills || [])] }
+    : { id: 0, name: '', description: '', role_prompt: '', reference_text: '', skills: [] }
   newMount.value = ''
   showRoleDlg.value = true
 }
@@ -445,7 +460,7 @@ function addMount() {
 async function saveRole() {
   if (!roleForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
   try {
-    const base = { name: roleForm.value.name, description: roleForm.value.description, role_prompt: roleForm.value.role_prompt, is_active: 1, sort_order: 0 }
+    const base = { name: roleForm.value.name, description: roleForm.value.description, role_prompt: roleForm.value.role_prompt, reference_text: roleForm.value.reference_text || '', is_active: 1, sort_order: 0 }
     let rid = roleForm.value.id
     if (rid) {
       await toolsApi.updateStyleRole(rid, base)
@@ -554,6 +569,7 @@ const installSkill = async (m) => {
 .summary-box { background: #eef2ff; border: 1px solid #d8e0ff; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
 .summary-line { margin-top: 4px; color: #33415c; }
 .verify-block { margin-top: 8px; }
+.final-review-box { background: #f0f9eb; border: 1px solid #d4ecc9; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
 .review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }
 .review-feeling { font-size: 12px; color: #e6a23c; padding: 2px 0 4px; font-style: italic; }
 .lv-small { color: #909399; }

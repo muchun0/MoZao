@@ -41,13 +41,15 @@ pytestmark = pytest.mark.skipif(not _db_ok(), reason="本机 MySQL 不可用")
 
 @pytest.fixture
 def clean_teardowns():
-    """清掉测试期间创建的拆书条目：调研沉淀（source_project=td_test_*）、测试种子（题材=测试种子*）与手动拆解（td_manual 标记）。"""
+    """清掉测试期间创建的拆书条目：调研沉淀（source_project=td_test_*）、测试种子（题材=测试种子*）、
+    手动拆解（td_manual 标记），以及兜底清理 user_id=0 的 manual 残留（真实线上手动拆解 user_id 必为真实用户 id）。"""
     yield
     with db._connect() as conn:
         conn.execute("DELETE FROM book_teardown WHERE source_project LIKE 'td_test_%'")
         conn.execute("DELETE FROM book_teardown WHERE genre LIKE '测试种子%'")
         conn.execute("DELETE FROM book_teardown WHERE genre LIKE 'td_test_%'")
         conn.execute("DELETE FROM book_teardown WHERE summary LIKE 'td_manual%' OR title LIKE 'td_manual%'")
+        conn.execute("DELETE FROM book_teardown WHERE source_type='manual' AND user_id=0")
 
 
 class _FakeReport:
@@ -290,8 +292,8 @@ def test_analyze_manuscript_genre_priority(clean_teardowns):
     fake = _FakeLLM(data={**_FakeLLM().data, "genre": "玄幻"})
     td = teardown_lib.analyze_manuscript(_long_text(), genre="都市", llm=fake)
     assert td["genre"] == "都市"
-    # 未指定题材且 LLM 未给 → 通用
-    td2 = teardown_lib.analyze_manuscript(_long_text(), genre="", llm=_FakeLLM(data={"summary": "s"}))
+    # 未指定题材且 LLM 未给 → 通用（summary 带 td_manual 前缀便于 fixture 清理）
+    td2 = teardown_lib.analyze_manuscript(_long_text(), genre="", llm=_FakeLLM(data={"summary": "td_manual 通用兜底s"}))
     assert td2["genre"] == "通用"
     assert td2["title"] == "通用 · 用户投稿拆解"
 

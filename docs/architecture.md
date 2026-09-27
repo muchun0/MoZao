@@ -35,13 +35,14 @@
 
 | 模块 | 职责 | 关键文件 |
 |---|---|---|
-| `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建 | `base.py`（抽象基类）、`factory.py`、`providers.py` |
+| `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计 | `base.py`、`factory.py`、`providers.py`、`usage.py` |
 | `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告 | `research.py`、`sources.py`、`schemas.py` |
 | `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
 | `store/` | 项目落盘、状态机、断点续传、进度统计 | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
 | `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
-| `config.py` | 配置加载（YAML + 环境变量补 Key） | — |
+| `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0） | — |
+| `safety.py` | 输入防护（模块3）：Prompt 注入检测/System 清洗/输出合规校验（纯函数） | — |
 
 > 注意：README 旧文中提到的 `novel_gen/cli.py`、`__main__.py` 已不存在；当前产品入口为 Web 端 `run_web.py`。
 
@@ -57,6 +58,9 @@
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |
 | `reviser.py` | 单章重写/审校入口 |
 | `repetition.py` | 防同质化常驻提示词、防重复 |
+| `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
+| `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
+| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写 |
 | `templates.py` | 提示词模板组装 |
 
 ### 2.3 webapp/（SaaS Web 服务）
@@ -66,7 +70,7 @@
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
 | `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑 |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包（拆分自原 `db.py` 1409 行）：`base.py`（连接池/事务/表结构/init_db）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色）、`teardowns.py`（拆书库）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + 聚合统计）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -130,6 +134,7 @@
 | `refund_requests` | 退款申请与处理 |
 | `writing_skills` / `skill_market` / `user_skills` | 平台写作技能 / 技能市场 / 用户挂载技能 |
 | `style_roles` / `style_role_skills` | 风格角色（人设）+ 挂载技能 |
+| `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析） |
 
 ## 4. 关键数据流
 
@@ -151,6 +156,10 @@
 | `meta.json` 轻量缓存 | 项目列表页统计走 meta 缓存，章节未变化零文件读取 | 列表页性能 |
 | BYOK 加密落库 | Fernet，密文前缀 `enc:v1:`；`.llm_encrypt.key` 不入库 | DB 泄露不暴露用户自配 Key |
 | 登录限流 | `_LOGIN_MAX=8` / 5 分钟窗口 | 防爆破 |
+| 全链路 trace（模块1） | LLM 层模板方法自动埋点（Prompt/返回/Token/耗时/错误栈）→ MySQL `agent_trace`；trace_id 串联单次任务；pipeline 阶段级 `agent_step` 语义记录 | 问题回溯、阶段2 监控/成本报表数据底座；sink 失败自动降级不阻塞 |
+| 成本防护（模块2） | LLM 调用计数 + 累计 Token 阈值，超限抛 `AgentGuardError`；生成线程捕获后保留产物 + 超限提示（可断点继续）；事件写 trace | 防死循环/成本爆炸；mock 不挂 guard；`agent_guard.*` 可开关 |
+| 输入/输出防护（模块3） | API 输入注入检测（命中 400）+ 拼 system 前清洗（custom_prompt/skill/用户技能）+ 输出基础合规校验 | 防 Prompt 注入篡改系统约束；正常创作输入零误报 |
+| 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace | 减少人工返工；异常降级不阻塞 |
 | 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
 
 ## 6. 部署架构

@@ -227,6 +227,8 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     ch = store.load_chapter(no)
     if not ch:
         raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    _guard_user_input(req.title, "章节标题")
+    _guard_user_input(req.content, "章节正文")
 
     if req.title:
         ch.title = req.title

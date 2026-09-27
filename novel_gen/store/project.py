@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from ..config import LLMConfig, NovelConfig, SearchConfig
+from ..config import AgentGuardConfig, LLMConfig, NovelConfig, SearchConfig
 from ..utils.paths import get_output_dir
 from .schemas import Chapter, Outline, ProjectState, World
 
@@ -105,6 +105,15 @@ class ProjectStore:
             "skill_prompt_append": getattr(cfg, "skill_prompt_append", ""),
             "style_role_id": getattr(cfg, "style_role_id", 0),
             "style_role_prompt": getattr(cfg, "style_role_prompt", ""),
+            "agent_guard": {
+                "enabled": bool(getattr(cfg.agent_guard, "enabled", True)),
+                "max_loops": int(getattr(cfg.agent_guard, "max_loops", 80)),
+                "max_tokens": int(getattr(cfg.agent_guard, "max_tokens", 2_000_000)),
+                "input_check": bool(getattr(cfg.agent_guard, "input_check", True)),
+                "output_check": bool(getattr(cfg.agent_guard, "output_check", True)),
+                "quality_check": bool(getattr(cfg.agent_guard, "quality_check", True)),
+                "scene_limits": dict(getattr(cfg.agent_guard, "scene_limits", {}) or {}),
+            },
             "search": {
                 "provider": cfg.search.provider,
                 "api_url": cfg.search.api_url,
@@ -157,6 +166,15 @@ class ProjectStore:
             skill_prompt_append=d.get("skill_prompt_append", ""),
             style_role_id=int(d.get("style_role_id", 0) or 0),
             style_role_prompt=d.get("style_role_prompt", ""),
+            agent_guard=AgentGuardConfig(
+                enabled=bool((d.get("agent_guard") or {}).get("enabled", True)),
+                max_loops=int((d.get("agent_guard") or {}).get("max_loops", 80)),
+                max_tokens=int((d.get("agent_guard") or {}).get("max_tokens", 2_000_000)),
+                input_check=bool((d.get("agent_guard") or {}).get("input_check", True)),
+                output_check=bool((d.get("agent_guard") or {}).get("output_check", True)),
+                quality_check=bool((d.get("agent_guard") or {}).get("quality_check", True)),
+                scene_limits=dict((d.get("agent_guard") or {}).get("scene_limits", {}) or {}),
+            ),
             search=SearchConfig(
                 provider=(d.get("search") or {}).get("provider", ""),
                 api_key="",

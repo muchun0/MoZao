@@ -235,6 +235,8 @@ class ChapterWriter:
         role_prompt: str = "",
         reviewer_role_prompt: str = "",
         reader_role_prompt: str = "",
+        trace=None,
+        guard=None,
     ):
         self.cfg = cfg
         self.llm = llm
@@ -244,6 +246,9 @@ class ChapterWriter:
         #: 审校角色底色，供 write() 内部的自动改稿使用
         self.reviewer_role_prompt = reviewer_role_prompt
         self.reader_role_prompt = reader_role_prompt
+        #: 模块1/2：埋点与成本防护（由 NovelPipeline 注入）
+        self.trace = trace
+        self.guard = guard
 
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
@@ -354,6 +359,21 @@ class ChapterWriter:
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 print(f'  [读者审校] 跳过: {e}')
+
+        # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
+        guard_cfg = getattr(self.cfg, "agent_guard", None)
+        if guard_cfg is not None and guard_cfg.quality_check and content:
+            try:
+                from .quality import QualityChecker
+                qc = QualityChecker(self.cfg, self.llm, self.store,
+                                    trace=self.trace, guard=self.guard)
+                chapter, _qc = qc.ensure_quality(
+                    chapter_no, plan_title, plan_goal, content, summary, silent=silent
+                )
+                content, summary = chapter.content, chapter.summary
+            except Exception as qe:
+                if not silent:
+                    print(f"  [自校验] 跳过: {qe}")
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)

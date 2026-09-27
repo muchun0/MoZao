@@ -16,11 +16,13 @@ from ..research.research import ResearchEngine
 from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, ProjectState, World
+from .guard import AgentGuard, AgentGuardError
 from .memory import Memory
 from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
 from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         expand_outline_prompt, world_from_content_prompt,
                         verify_prompt)
+from .trace import TraceRecorder
 from .editor import EditorReviewer
 from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent
 from webapp.logger import get_logger
@@ -29,10 +31,24 @@ logger = get_logger("pipeline")
 
 
 class NovelPipeline:
-    def __init__(self, cfg: NovelConfig, store: ProjectStore, llm: LLMClient):
+    def __init__(self, cfg: NovelConfig, store: ProjectStore, llm: LLMClient,
+                 trace: TraceRecorder | None = None):
         self.cfg = cfg
         self.store = store
         self.llm = llm
+        self.trace = trace
+        # 模块1/2：把全链路埋点与成本防护挂到 LLM 客户端——LLM 层模板方法
+        # 自动覆盖所有调用（正文/大纲/审校/校验/重试），调用方零改动。
+        if trace is not None:
+            llm.recorder = trace
+        # 成本防护只针对真实第三方成本：mock provider（离线测试/无 Key 冒烟）不挂 guard，
+        # 避免本地假模型流程被阈值误拦，也保持离线测试行为与改造前一致。
+        if str(cfg.llm.provider).lower() == "mock":
+            from ..config import AgentGuardConfig
+            self.guard = AgentGuard(AgentGuardConfig(enabled=False), recorder=trace)
+        else:
+            self.guard = AgentGuard(cfg.agent_guard, recorder=trace)
+        llm.guard = self.guard
         self.memory = Memory(store, cfg.memory_window)
         # 多智能体角色（v2 架构）
         self.researcher = ResearcherAgent(cfg, llm, store)
@@ -46,6 +62,24 @@ class NovelPipeline:
         self.world_gen = WorldGenerator(cfg, llm, store)
         self.chapter_writer = ChapterWriter(cfg, llm, store, self.memory)
         self.editor = EditorReviewer(llm)
+        # 模块4：把埋点/防护透传给章内自校验节点（WriterAgent 内部创建的 ChapterWriter）
+        try:
+            if hasattr(self.writer, "_writer"):
+                self.writer._writer.trace = trace
+                self.writer._writer.guard = self.guard
+        except Exception:
+            pass
+        self.chapter_writer.trace = trace
+        self.chapter_writer.guard = self.guard
+
+    def _trace_step(self, name: str, extra: dict | None = None) -> None:
+        """阶段业务语义埋点（agent_step）。"""
+        if self.trace is not None:
+            self.trace.record_agent_step(name, extra=extra)
+
+    def _enter_scene(self, scene: str) -> None:
+        if self.guard is not None:
+            self.guard.enter_scene(scene)
 
     # ---------- 各阶段（幂等：已存在则直接返回） ----------
     def is_expand_mode(self) -> bool:
@@ -54,9 +88,12 @@ class NovelPipeline:
 
     def run_research(self, silent: bool = False) -> ResearchReport | None:
         """题材调研阶段（委托 ResearcherAgent）。"""
+        self._enter_scene("research")
+        self._trace_step("调研开始")
         return self.researcher.run(silent=silent)
 
     def run_outline(self, silent: bool = False) -> Outline:
+        self._enter_scene("outline")
         existing = self.store.load_outline()
         if existing is not None:
             if not silent:
@@ -66,9 +103,11 @@ class NovelPipeline:
         if self.is_expand_mode():
             return self._run_expand_outline(silent=silent)
         logger.info("阶段开始: 大纲 outline（架构师）")
+        self._trace_step("大纲生成开始")
         research = self.run_research(silent=True)
         result = self.architect.run_outline(research, silent=silent)
         logger.info("阶段完成: 大纲 outline（%s，%d 章）", result.title, len(result.chapters))
+        self._trace_step("大纲生成完成", {"chapters": len(result.chapters)})
         return result
 
     def _run_expand_outline(self, silent: bool = False) -> Outline:
@@ -168,6 +207,7 @@ class NovelPipeline:
             logger.warning("副本结构设计失败（不阻塞）: %s", e)
 
     def run_world(self, silent: bool = False) -> World:
+        self._enter_scene("world")
         existing = self.store.load_world()
         if existing is not None:
             if not silent:
@@ -178,8 +218,10 @@ class NovelPipeline:
         self.run_units(silent=silent)
         research = self.store.load_research() or self.run_research(silent=True)
         logger.info("阶段开始: 人物/世界观 world（架构师）")
+        self._trace_step("人物/世界观生成开始")
         result = self.architect.run_world(silent=silent)
         logger.info("阶段完成: 人物/世界观 world（%d 个人物）", len(result.characters))
+        self._trace_step("人物/世界观生成完成", {"characters": len(result.characters)})
         return result
 
     def run_editor_review(self, silent: bool = False) -> None:
@@ -199,6 +241,8 @@ class NovelPipeline:
         if not silent:
             print("[编辑质检] 正在审阅大纲...")
         logger.info("阶段开始: 编辑质检 editor_review")
+        self._enter_scene("review")
+        self._trace_step("编辑质检开始")
         review = self.editor.review(self.cfg, outline, research_block)
         self.store.save_editor_review(review.to_dict())
         if not silent:
@@ -220,6 +264,7 @@ class NovelPipeline:
                 logger.info("大纲修正完成（%s，%d 章）", revised.title, len(revised.chapters))
 
     def write_chapter(self, no: int, silent: bool = False) -> Chapter:
+        self._enter_scene("chapter")
         outline = self.store.load_outline()
         if outline is None or no > len(outline.chapters):
             raise RuntimeError(f"大纲不存在或章节号越界（{no}/{len(outline.chapters) if outline else 0}）")
@@ -234,6 +279,7 @@ class NovelPipeline:
         if not self.is_expand_mode():
             research = self.store.load_research() or self.run_research(silent=True)
         logger.info("章节开始: 第 %d 章「%s」（写手）is_final=%s", no, plan.title, is_final)
+        self._trace_step(f"第{no}章正文生成开始", {"title": plan.title, "is_final": is_final})
         try:
             chapter = self.writer.write_chapter(no, plan.title, plan.goal, research,
                                                 silent=silent, is_final=is_final)
@@ -242,6 +288,7 @@ class NovelPipeline:
             raise
         logger.info("章节完成: 第 %d 章「%s」（%d 字）", no, plan.title,
                     len(chapter.content) if chapter else 0)
+        self._trace_step(f"第{no}章正文生成完成", {"words": len(chapter.content) if chapter else 0})
 
         return chapter
 

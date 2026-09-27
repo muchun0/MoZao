@@ -45,7 +45,9 @@
 | `pipeline/agents/base.py` | Agent 基类（人设+技能 → System Prompt） |
 | `pipeline/agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色实现（调研/大纲/正文/审校/读者/风格师） |
 | `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**） |
-| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 |
+| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物状态注入（P0-2） |
+| `pipeline/character_state.py` | 人物动态状态快照（P0-2）：确定性出场记录 + 可选 LLM 状态细节抽取，失败降级 |
+| `pipeline/review_summary.py` | 全书质量汇总（P0-3）：改稿问题/质检均分/校验问题统计（纯函数） |
 | `pipeline/editor.py` | 编辑质检（9 维审稿，<7 分自动修正） |
 | `pipeline/reviser.py` | 章节重写/审校 |
 | `pipeline/repetition.py` | 防重复/防同质化 |

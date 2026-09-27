@@ -783,6 +783,28 @@ def _pick_dynamic_module(chapter_no: int, genre: str) -> str:
     return "\n".join(lines)
 
 
+def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_context):
+    """P1-1 人物行动表先行：正文生成前先规划本章人物行动，写手必须落实。"""
+    system = (
+        "你是一位小说分镜策划。用户给你一章的目标与前情记忆，"
+        "你的任务是规划本章人物的行动表，让人物言行有动机、剧情不空转。"
+        "严格按 JSON 格式输出，不要额外解释。"
+    )
+    user = (
+        f"【第{chapter_no}章《{chapter_title}》】\n"
+        f"【本章目标】{chapter_goal}\n\n"
+        f"【前情记忆（含人物动态状态）】\n{memory_context if memory_context else '（首章）'}\n\n"
+        "请为本章出场人物规划行动表，每人包含：\n"
+        "- name: 人物名\n"
+        "- goal: 本章目标（具体、可行动）\n"
+        "- key_actions: 2-4 个关键行动（动词驱动，能推进剧情或冲突）\n"
+        "- emotion: 情绪状态（结合前情，用一句话描述）\n"
+        "- dialogue_intent: 对话意图（这一章他想通过对话达成什么/试探什么/隐瞒什么）\n\n"
+        '输出 JSON：{"characters": [{"name": "...", "goal": "...", "key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
+    )
+    return system, user
+
+
 def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal):
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
@@ -818,7 +840,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         system += "\n\n" + _character_depth_rules("chapter")
     if cfg.fanqie_style:
         system += "\n\n" + _fanqie_rules("chapter")
-    system += "\n\n" + dynamic_module
+    if dynamic_module:
+        system += "\n\n" + dynamic_module
     system += _skill_append(cfg)
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"

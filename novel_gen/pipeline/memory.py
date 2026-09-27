@@ -14,42 +14,103 @@ from ..store.project import ProjectStore
 from ..store.schemas import World
 
 
+def predict_appearing_chars(world: World | None, goal: str, recent_summaries: list[str],
+                            char_states: dict | None, up_to_chapter: int, limit: int = 8) -> list[str]:
+    """预测本章出场人物（P1-3 Lorebook 式裁剪）。
+
+    依据：本章目标 + 近章摘要里命中的人物名；再并入近 3 章出场记录（P0-2 数据）。
+    预测为空（如首章 goal 未提人名）→ 返回全部人物（兜底，保证不裁关键信息）。
+    """
+    if world is None or not world.characters:
+        return []
+    names = [c.name for c in world.characters if c.name]
+    if not names:
+        return []
+    text = f"{goal or ''} " + " ".join(recent_summaries)
+    hit = [n for n in names if n and n in text]
+    for name, st in (char_states or {}).items():
+        if name in names and int(st.get("last_seen", 0) or 0) >= up_to_chapter - 3:
+            if name not in hit:
+                hit.append(name)
+    if hit:
+        return hit[:limit]
+    return names  # 预测失败 → 全量注入
+
+
 class Memory:
     def __init__(self, store: ProjectStore, memory_window: int = 5):
         self.store = store
         self.memory_window = max(0, memory_window)
 
-    def build_context(self, world: World | None, up_to_chapter: int) -> str:
-        """为第 up_to_chapter 章构建四层记忆上下文。
+    def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "") -> str:
+        """为第 up_to_chapter 章构建记忆上下文。
 
-        L1 全局设定库：世界观+人物卡+伏笔（全书，永不遗忘）
+        L1 全局设定库：按章触发注入（P1-3）——只注入预测出场人物卡与相关伏笔；
+            用户强约束 / 锁定项 / 核心世界观永不裁剪，置于 prompt 末尾。
+        L1.5 人物动态状态：最近出场人物的当前状态（P0-2）
         L2 卷级摘要：当前所在卷的卷目标+高潮+人物成长
         L3 近章大纲：当前章前后各2章的剧情节点
         L4 前章尾文：最近N章一句话摘要（短期）
+        L4.5 近章正文直读：最近 N 章正文尾部（P0-1）
         """
         parts: list[str] = []
+        key_parts: list[str] = []   # 强约束区：放 prompt 末尾（权重最高）
 
-        # L1 全局设定库
+        # L1 全局设定库（P1-3 Lorebook 式裁剪）
+        cfg_d = None
+        lorebook_on = True
+        try:
+            cfg_d = self.store.load_config()
+            lorebook_on = bool(getattr(cfg_d, "lorebook_trim", True))
+        except Exception:
+            pass
         if world is not None:
-            w_lines = []
+            w_normal = []
+            hit: list[str] = []
             if world.world_view:
-                w_lines.append(f"世界观：{world.world_view}")
+                key_parts.append(f"世界观：{world.world_view}")
             if world.characters:
-                chars = "；".join(
-                    f"{c.name}（{c.role}）——{c.desc}" for c in world.characters if c.name
-                )
-                if chars:
-                    w_lines.append(f"人物卡：{chars}")
+                def _char_line(c):
+                    return f"{c.name}（{c.role}）——{c.desc}"
+                hit = [c.name for c in world.characters if c.name]
+                trimmed = False
+                if lorebook_on and len(world.characters) > 4:
+                    # 预测本章出场人物；预测失败回退全量注入（不裁关键信息）
+                    try:
+                        summaries = [s.get("summary", "") for s in self.store.load_summaries()[-3:]]
+                        cand = predict_appearing_chars(
+                            world, chapter_goal, summaries,
+                            self.store.load_character_states() or {}, up_to_chapter,
+                        )
+                        if cand and len(cand) < len(hit):
+                            hit, trimmed = cand, True
+                    except Exception:
+                        pass
+                chars = "；".join(_char_line(c) for c in world.characters if c.name in hit)
+                w_normal.append(f"本章相关人物卡：{chars}" if trimmed else f"人物卡：{chars}")
             if world.foreshadowing:
                 def _fs(x):
                     if isinstance(x, dict):
                         return " ".join(str(v) for v in x.values())
                     return str(x)
-                w_lines.append("已埋伏笔：" + "；".join(_fs(x) for x in world.foreshadowing))
+                if trimmed:
+                    related = [x for x in world.foreshadowing if any(n in _fs(x) for n in hit)]
+                    if related:
+                        w_normal.append("相关伏笔：" + "；".join(_fs(x) for x in related))
+                else:
+                    w_normal.append("已埋伏笔：" + "；".join(_fs(x) for x in world.foreshadowing))
+            # 用户强约束（永不裁剪，进关键区）
+            if cfg_d is not None:
+                if getattr(cfg_d, "background", ""):
+                    key_parts.append(f"故事背景（强约束）：{cfg_d.background}")
+                if getattr(cfg_d, "hero", ""):
+                    key_parts.append(f"主角设定（强约束）：{cfg_d.hero}")
+                if getattr(cfg_d, "forbidden", None):
+                    key_parts.append("避雷（强约束）：" + "；".join(cfg_d.forbidden))
             if getattr(world, "locked_settings", None):
-                w_lines.append("【核心设定锁定·绝对不可违背】：" + "；".join(world.locked_settings))
-            if w_lines:
-                parts.append("[L1·全局设定·全书记忆]\n" + "\n".join(w_lines))
+                key_parts.append("【核心设定锁定·绝对不可违背】：" + "；".join(world.locked_settings))
+            if w_normal:
+                parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 
         # L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态
         try:
@@ -172,6 +233,10 @@ class Memory:
                 parts.append(banned_hint)
         except Exception:
             pass
+
+        # 强约束区（P1-3）：用户锁定 / 强约束 / 核心世界观，置于 prompt 末尾（模型权重最高）
+        if key_parts:
+            parts.append("[L1·核心锁定·强约束（最高优先级，必须严格遵守）]\n" + "\n".join(key_parts))
 
         if not parts:
             return ""

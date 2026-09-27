@@ -54,7 +54,7 @@
 | `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
 | `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线 / 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
-| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2） |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2）+ 按章触发注入 L1 裁剪（P1-3，强约束置 prompt 末尾） |
 | `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取，失败静默降级，写入 character_states.json |
 | `review_summary.py` | 全书质量汇总（P0-3）：改稿问题类型分布 / 质检平均分 / 校验问题统计（纯函数，供 /review 接口聚合） |
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |
@@ -62,7 +62,8 @@
 | `repetition.py` | 防同质化常驻提示词、防重复 |
 | `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
-| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写 |
+| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写；含 P1-4 AI 痕迹扣分项 |
+| `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
 | `templates.py` | 提示词模板组装 |
 
 ### 2.3 webapp/（SaaS Web 服务）

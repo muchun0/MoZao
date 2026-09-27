@@ -54,6 +54,7 @@
 | `pipeline/trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder |
 | `pipeline/guard.py` | 成本防护（模块2）：AgentGuard 循环/Token 阈值 |
 | `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写 |
+| `pipeline/ai_taste.py` | AI 痕迹量化检测（P1-4）：连接词堆砌/情绪词直白/句式排比/段落雷同（纯函数，供质检扣分） |
 | `pipeline/templates.py` | 提示词模板组装 |
 | `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计 |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |

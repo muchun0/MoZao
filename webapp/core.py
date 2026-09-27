@@ -38,6 +38,7 @@ from novel_gen.config import (
 from novel_gen.export.cover import generate_best_cover
 from novel_gen.export.book_formats import export_epub, export_docx
 from novel_gen.llm.factory import create_llm
+from novel_gen.pipeline.guard import AgentGuardError
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
 from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, World, Character
@@ -348,7 +349,7 @@ def _project_use_user_llm(store: ProjectStore) -> bool:
     return _user_llm_cfg(uid) is not None
 
 
-def _open_pipeline(store: ProjectStore) -> NovelPipeline:
+def _open_pipeline(store: ProjectStore, trace_id: str = "") -> NovelPipeline:
     cfg = store.load_config()
     uid = db.project_owner(store.dir.name)
     user_llm = _user_llm_cfg(uid)
@@ -367,8 +368,49 @@ def _open_pipeline(store: ProjectStore) -> NovelPipeline:
         from novel_gen.config import SEARCH_PROVIDER_DEFAULTS
         cfg.search.api_key = os.environ.get(
             SEARCH_PROVIDER_DEFAULTS.get(cfg.search.provider, {}).get("env_key", ""), "")
+    # 模块0：Agent 加固配置支持 .env 覆盖（生产动态调阈值，不改代码）
+    try:
+        from novel_gen.config import apply_guard_env_overrides
+        apply_guard_env_overrides(cfg.agent_guard)
+    except Exception:
+        pass
     llm = create_llm(cfg.llm)
-    return NovelPipeline(cfg, store, llm)
+    # 模块1：注入全链路 trace（MySQL sink 自身吞异常；任何失败不影响生成）
+    from novel_gen.pipeline.trace import TraceRecorder
+    from webapp.db.traces import MysqlTraceSink
+    try:
+        recorder = TraceRecorder(
+            sink=MysqlTraceSink(),
+            trace_id=trace_id,
+            project_id=store.dir.name,
+            user_id=int(uid or 0),
+        )
+    except Exception:
+        recorder = TraceRecorder(project_id=store.dir.name, user_id=int(uid or 0))
+    return NovelPipeline(cfg, store, llm, trace=recorder)
+
+
+def _guard_user_input(text, field: str) -> None:
+    """API 输入注入检测（模块3）：命中典型攻击话术抛 400，拒绝写入。
+
+    覆盖创建项目/导入大纲/编辑章节/技能与风格角色等所有用户可写输入点。
+    """
+    if not text or not str(text).strip():
+        return
+    try:
+        from novel_gen.safety import detect_prompt_injection
+        hits = detect_prompt_injection(str(text))
+        if hits:
+            logger.warning("输入注入拦截: field=%s hits=%s", field, hits)
+            raise HTTPException(
+                status_code=400,
+                detail=f"输入内容包含异常指令（{field}），已被安全策略拦截，请修改后重试",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # 检测器自身异常不阻断业务（降级放行）
+        pass
 
 
 # ---------- 鉴权 ----------
@@ -736,11 +778,14 @@ def _settle_price(store: ProjectStore) -> None:
 def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     """只跑 research → outline → editor_review → world，不写正文。
     完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
+    import uuid
     cfg = store.load_config()
+    trace_id = uuid.uuid4().hex
     _mark_task(store, "outline")
-    logger.info("大纲生成线程启动: project=%s title=%s", store.dir.name, cfg.effective_title())
+    logger.info("大纲生成线程启动: project=%s title=%s trace=%s",
+                store.dir.name, cfg.effective_title(), trace_id)
     try:
-        pipeline = _open_pipeline(store)
+        pipeline = _open_pipeline(store, trace_id=trace_id)
         pipeline.run_research()
         # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
         teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
@@ -758,6 +803,16 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         # 标记阶段完成
         pipeline._mark_state("outline_done")
         logger.info("大纲生成完成: project=%s chapters=%d", store.dir.name, len(pipeline.store.load_outline().chapters))
+    except AgentGuardError as exc:
+        # 模块2：成本防护超限——返回已生成的有效结果 + 超限提示，不抛 500
+        handle.error = f"{exc}（已保留当前已生成内容，可从断点继续）"
+        logger.warning("大纲生成被成本防护终止: project=%s %s", store.dir.name, exc)
+        try:
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
+        except Exception:
+            pass
     except Exception as exc:
         handle.error = f"{type(exc).__name__}: {exc}"
         logger.exception("大纲生成失败: project=%s error=%s", store.dir.name, exc)
@@ -792,12 +847,14 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
     start_from > 0 时：跳过 research/outline/world，直接从 start_from 章开始生成
     （用于「从某章重新生成」，此时这些前置产物已存在）。
     """
+    import uuid
     cfg = store.load_config()
+    trace_id = uuid.uuid4().hex
     _mark_task(store, "generation", start_from=start_from)
-    logger.info("生成线程启动: project=%s title=%s start_from=%d",
-                store.dir.name, cfg.effective_title(), start_from)
+    logger.info("生成线程启动: project=%s title=%s start_from=%d trace=%s",
+                store.dir.name, cfg.effective_title(), start_from, trace_id)
     try:
-        pipeline = _open_pipeline(store)
+        pipeline = _open_pipeline(store, trace_id=trace_id)
 
         if start_from > 0:
             done = start_from - 1
@@ -870,6 +927,20 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             except Exception:
                 pass
         logger.info("生成完成: project=%s title=%s", store.dir.name, cfg.effective_title())
+    except AgentGuardError as exc:
+        # 模块2：成本防护超限——不抛 500，保留已生成产物 + 超限提示（可从断点继续）
+        handle.error = f"{exc}（已保留当前已生成内容，可从断点继续）"
+        logger.warning("生成被成本防护终止: project=%s %s", store.dir.name, exc)
+        try:
+            store.dir.joinpath("failed.json").write_text(
+                json.dumps({"error": handle.error, "title": cfg.effective_title(),
+                            "guard": True}, ensure_ascii=False),
+                encoding="utf-8")
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
+        except Exception:
+            pass
     except Exception as exc:  # noqa: BLE001
         handle.error = f"{type(exc).__name__}: {exc}"
         # P1 修复：失败落盘标记，前端可展示 failed 状态与原因
@@ -898,10 +969,12 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
 
     独立成模块级函数，便于启动重拾复用（task.json 记录 start/end）。
     """
+    import uuid
     project_id = store.dir.name
+    trace_id = uuid.uuid4().hex
     _mark_task(store, "batch", start=start, end=end)
     try:
-        pipeline = _open_pipeline(store)
+        pipeline = _open_pipeline(store, trace_id=trace_id)
         outline = store.load_outline()
         research = store.load_research()
         for no in range(start, end + 1):
@@ -919,6 +992,10 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
                 logger.warning("批量生成余额耗尽: project=%s 第 %d 章后 %s", project_id, no, why)
                 break
         _settle_price(store)
+    except AgentGuardError as exc:
+        # 模块2：成本防护超限——保留已生成产物 + 超限提示
+        handle.error = f"{exc}（已保留当前已生成内容，可从断点继续）"
+        logger.warning("批量生成被成本防护终止: project=%s %s", project_id, exc)
     except Exception as e:
         handle.error = f"{type(e).__name__}: {e}"
         logger.exception("批量生成失败: %s", project_id)

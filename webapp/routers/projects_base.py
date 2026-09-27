@@ -57,6 +57,19 @@ def projects(user: dict = Depends(_require_user), sort: str = "created", show_ar
 
 @app.post("/api/projects", status_code=201)
 def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
+    # 模块3：输入注入检测（所有用户可控文本字段，命中抛 400）
+    _guard_user_input(req.title, "书名")
+    _guard_user_input(req.premise, "核心创意")
+    _guard_user_input(req.background, "故事背景")
+    _guard_user_input(req.hero, "主角设定")
+    for _i, _c in enumerate(req.characters):
+        _guard_user_input(_c, f"预设人物[{_i}]")
+    _guard_user_input(req.plot_direction, "剧情走向")
+    for _i, _f in enumerate(req.forbidden):
+        _guard_user_input(_f, f"避雷元素[{_i}]")
+    _guard_user_input(req.expand_input, "扩写输入")
+    _guard_user_input(req.user_content, "已有内容")
+    _guard_user_input(req.custom_prompt, "自定义提示词")
     cfg = NovelConfig(
         title=req.title,
         genre=req.genre,
@@ -430,6 +443,7 @@ def import_user_outline(project_id: str, req: OutlineImportReq, user: dict = Dep
         raise HTTPException(status_code=400, detail="导入内容为空")
     if len(text) > MAX_PASTE_CHARS:
         raise HTTPException(status_code=400, detail="粘贴内容超过 10 万字上限，请拆分或改用文件上传")
+    _guard_user_input(text, "大纲导入")
     # 覆盖前自动备份上一版（一键还原）
     _backup_outline(store, "导入前")
     imported = _import_user_outline(store, text)

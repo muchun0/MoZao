@@ -268,6 +268,37 @@ _TEARDOWN = """CREATE TABLE IF NOT EXISTS book_teardown (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
+# Agent 全链路中间状态（模块1）：单次用户请求（trace_id）下所有 Agent 动作明细。
+# 覆盖每轮 LLM 调用的 Prompt/原始返回/Token 消耗/耗时/错误栈，支撑问题回溯、
+# 阶段2 监控仪表盘（成功率/单步耗时按 scene 聚合）、用户维度行为与质量分析。
+_AGENT_TRACE = """CREATE TABLE IF NOT EXISTS agent_trace (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trace_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(200) NOT NULL DEFAULT '',
+    user_id INT NOT NULL DEFAULT 0,
+    scene VARCHAR(50) NOT NULL DEFAULT '',
+    step_type VARCHAR(30) NOT NULL DEFAULT '',
+    step_order INT NOT NULL DEFAULT 0,
+    step_name VARCHAR(200) DEFAULT '',
+    system_prompt MEDIUMTEXT,
+    user_input MEDIUMTEXT,
+    raw_output MEDIUMTEXT,
+    token_in INT NOT NULL DEFAULT 0,
+    token_out INT NOT NULL DEFAULT 0,
+    token_total INT NOT NULL DEFAULT 0,
+    duration_ms INT NOT NULL DEFAULT 0,
+    success INT NOT NULL DEFAULT 1,
+    error_info TEXT,
+    model VARCHAR(100) DEFAULT '',
+    extra JSON,
+    created_at DOUBLE NOT NULL,
+    KEY idx_at_trace (trace_id, step_order),
+    KEY idx_at_project (project_id, id),
+    KEY idx_at_user (user_id, id),
+    KEY idx_at_scene (scene, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
 
 def init_db() -> None:
     # 延迟导入：避免 base <-> 业务子模块的循环依赖；
@@ -278,7 +309,7 @@ def init_db() -> None:
 
     with _connect() as conn:
         for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
-                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN):
+                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE):
             conn.execute(ddl)
         _ensure_teardown_user_id()
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）

@@ -60,12 +60,18 @@ class BaseAgent(ABC):
                     blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
             # 用户自定义 skill（通过项目owner反查user_id）
             try:
+                from ...safety import sanitize_system_text
                 pid = self.store.dir.name
                 for usk in db.list_user_skills_by_project(pid):
+                    raw = usk.get("prompt_append") or ""
+                    # 模块3：用户可写内容拼入 System Prompt 前做注入过滤兜底
+                    clean = sanitize_system_text(raw)
+                    if not clean:
+                        continue
                     if usk.get("prompt_append"):
                         # role为空=所有角色生效；role匹配=只对该角色生效
                         if not usk.get("role") or usk["role"] == self.role_name:
-                            blocks.append(f"【用户自定义：{usk['name']}】\n{usk['prompt_append']}")
+                            blocks.append(f"【用户自定义：{usk['name']}】\n{clean}")
             except Exception as ue:
                 self.logger.warning("加载用户skill失败（忽略）: %s", ue)
             return "\n\n".join(blocks)

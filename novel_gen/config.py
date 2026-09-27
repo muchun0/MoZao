@@ -81,6 +81,32 @@ class SearchConfig:
 
 
 @dataclass
+class AgentGuardConfig:
+    """Agent 生产级加固配置（阶段1）。
+
+    - enabled=False 时本模块全部防护关闭（等同改造前行为），用于紧急降级。
+    - input_check / output_check / quality_check 独立开关，可分别关闭。
+    - max_loops / max_tokens 为单任务级兜底阈值；scene_limits 按业务场景细化。
+    - 阈值可从环境变量覆盖：AGENT_GUARD_MAX_LOOPS / AGENT_GUARD_MAX_TOKENS / AGENT_GUARD_ENABLED 等。
+    """
+
+    enabled: bool = True            # 总开关
+    max_loops: int = 80             # 单任务最大 LLM 调用次数（全局兜底，防死循环）
+    max_tokens: int = 2_000_000     # 单任务累计 Token 消耗上限（防成本爆炸）
+    input_check: bool = True        # 模块3：输入注入检测
+    output_check: bool = True       # 模块3：输出基础合规校验
+    quality_check: bool = True      # 模块4：ReaderAgent 结果自校验
+    scene_limits: dict = field(default_factory=lambda: {
+        "research": 30,    # 调研
+        "outline": 40,     # 大纲（含分批）
+        "world": 25,       # 人物/世界观
+        "chapter": 60,     # 单章正文（含扩写/摘要兜底）
+        "revise": 12,      # 单章改稿/重写
+        "review": 10,      # 单章审校/校验
+    })
+
+
+@dataclass
 class NovelConfig:
     title: str = "未命名小说"
     genre: str = "玄幻"             # 题材，可自定义
@@ -118,6 +144,7 @@ class NovelConfig:
     pacing_density: str = "medium"    # 爽点密度：low(慢热)/medium(适中)/high(密集)
     plot_speed: str = "medium"        # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
+    agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property
     def num_chapters(self) -> int:
@@ -157,5 +184,37 @@ def validate_config(cfg: NovelConfig) -> list[str]:
     if cfg.llm.provider != "mock" and not cfg.llm.api_key:
         issues.append(f"provider[{cfg.llm.provider}] 缺少 api_key：请设置环境变量 "
                       f"{PROVIDER_DEFAULTS.get(cfg.llm.provider, {}).get('env_key', '')}")
+    guard = getattr(cfg, "agent_guard", None)
+    if guard is not None:
+        if guard.max_loops < 1:
+            issues.append("agent_guard.max_loops 必须 >= 1")
+        if guard.max_tokens < 1:
+            issues.append("agent_guard.max_tokens 必须 >= 1")
     return issues
+
+
+def apply_guard_env_overrides(guard: AgentGuardConfig) -> AgentGuardConfig:
+    """用环境变量覆盖 AgentGuardConfig（生产可按 .env 动态调阈值，不改代码）。
+
+    支持：AGENT_GUARD_ENABLED / AGENT_GUARD_MAX_LOOPS / AGENT_GUARD_MAX_TOKENS
+        / AGENT_GUARD_INPUT_CHECK / AGENT_GUARD_OUTPUT_CHECK / AGENT_GUARD_QUALITY_CHECK
+    """
+    def _bool_env(name: str, default: bool) -> bool:
+        v = os.environ.get(name, "")
+        return {"1": True, "true": True, "0": False, "false": False}.get(v.strip().lower(), default)
+
+    def _int_env(name: str, default: int) -> int:
+        v = os.environ.get(name, "").strip()
+        try:
+            return int(v) if v else default
+        except ValueError:
+            return default
+
+    guard.enabled = _bool_env("AGENT_GUARD_ENABLED", guard.enabled)
+    guard.max_loops = _int_env("AGENT_GUARD_MAX_LOOPS", guard.max_loops)
+    guard.max_tokens = _int_env("AGENT_GUARD_MAX_TOKENS", guard.max_tokens)
+    guard.input_check = _bool_env("AGENT_GUARD_INPUT_CHECK", guard.input_check)
+    guard.output_check = _bool_env("AGENT_GUARD_OUTPUT_CHECK", guard.output_check)
+    guard.quality_check = _bool_env("AGENT_GUARD_QUALITY_CHECK", guard.quality_check)
+    return guard
 

@@ -35,7 +35,7 @@ _INJECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"(输出|显示|打印|泄露|公开|透露|复述)(你的|您的|系统)?\s*(系统提示词|system\s*prompt|提示词|prompt|系统指令|系统提示|指令集)",
         re.IGNORECASE)),
     ("jailbreak", re.compile(
-        r"(进入|开启|打开|切换|激活)(开发者模式|开发模式|越狱模式|god mode|developer mode|dan模式)?",
+        r"(进入|开启|打开|切换|激活)(开发者模式|开发模式|越狱模式|god mode|developer mode|dan模式)",
         re.IGNORECASE)),
     ("no_restriction", re.compile(
         r"(不受任何限制|没有任何限制|无限制地|无视所有规则|不遵守任何规则|打破所有规则|可以违反规则)",

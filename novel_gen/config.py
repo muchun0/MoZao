@@ -91,7 +91,7 @@ class AgentGuardConfig:
     """
 
     enabled: bool = True            # 总开关
-    max_loops: int = 80             # 单任务最大 LLM 调用次数（全局兜底，防死循环）
+    max_loops: int = 200            # 单任务最大 LLM 调用次数（全局兜底，防死循环）
     max_tokens: int = 2_000_000     # 单任务累计 Token 消耗上限（防成本爆炸）
     input_check: bool = True        # 模块3：输入注入检测
     output_check: bool = True       # 模块3：输出基础合规校验
@@ -100,9 +100,9 @@ class AgentGuardConfig:
         "research": 30,    # 调研
         "outline": 40,     # 大纲（含分批）
         "world": 25,       # 人物/世界观
-        "chapter": 60,     # 单章正文（含扩写/摘要兜底）
-        "revise": 12,      # 单章改稿/重写
-        "review": 10,      # 单章审校/校验
+        "chapter": 150,    # 单章正文（含扩写/摘要兜底）——11章高质量模式每章约4-6次调用，留重试余量
+        "revise": 30,      # 单章改稿/重写（高质量模式按章触发）
+        "review": 25,      # 单章审校/校验（高质量模式按章触发）
     })
 
 
@@ -198,6 +198,7 @@ def apply_guard_env_overrides(guard: AgentGuardConfig) -> AgentGuardConfig:
 
     支持：AGENT_GUARD_ENABLED / AGENT_GUARD_MAX_LOOPS / AGENT_GUARD_MAX_TOKENS
         / AGENT_GUARD_INPUT_CHECK / AGENT_GUARD_OUTPUT_CHECK / AGENT_GUARD_QUALITY_CHECK
+        / AGENT_GUARD_SCENE_<SCENE>（如 AGENT_GUARD_SCENE_CHAPTER=150，覆盖场景限额）
     """
     def _bool_env(name: str, default: bool) -> bool:
         v = os.environ.get(name, "")
@@ -216,5 +217,8 @@ def apply_guard_env_overrides(guard: AgentGuardConfig) -> AgentGuardConfig:
     guard.input_check = _bool_env("AGENT_GUARD_INPUT_CHECK", guard.input_check)
     guard.output_check = _bool_env("AGENT_GUARD_OUTPUT_CHECK", guard.output_check)
     guard.quality_check = _bool_env("AGENT_GUARD_QUALITY_CHECK", guard.quality_check)
+    # 场景级限额：AGENT_GUARD_SCENE_<SCENE>，如 AGENT_GUARD_SCENE_CHAPTER=150
+    for scene in list(guard.scene_limits):
+        guard.scene_limits[scene] = _int_env(f"AGENT_GUARD_SCENE_{scene.upper()}", guard.scene_limits[scene])
     return guard
 

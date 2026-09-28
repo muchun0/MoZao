@@ -109,6 +109,12 @@ class Memory:
                     key_parts.append("避雷（强约束）：" + "；".join(cfg_d.forbidden))
             if getattr(world, "locked_settings", None):
                 key_parts.append("【核心设定锁定·绝对不可违背】：" + "；".join(world.locked_settings))
+            # 金手指机制卡（强约束区，永不裁剪）：机制语义/数字结算/代价递增/终局，全文必须自洽兑现
+            mechanism = getattr(world, "mechanism_rules", "") or ""
+            if mechanism:
+                key_parts.append(
+                    "【金手指机制卡·绝对不可违背，数字与规则全文必须自洽，首章要实际用起来并兑现标题】\n" + mechanism
+                )
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 

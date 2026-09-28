@@ -220,6 +220,7 @@ class World:
     characters: list[Character] = field(default_factory=list)
     foreshadowing: list[str] = field(default_factory=list)
     locked_settings: list[str] = field(default_factory=list)  # 核心设定锁定，AI不得违背
+    mechanism_rules: str = ""  # 金手指机制卡：机制语义/数字结算/代价递增/终局，AI 不得违背且必须自洽
 
     def to_dict(self) -> dict:
         return {
@@ -227,6 +228,7 @@ class World:
             "characters": [c.to_dict() for c in self.characters],
             "foreshadowing": list(self.foreshadowing),
             "locked_settings": list(self.locked_settings),
+            "mechanism_rules": self.mechanism_rules,
         }
 
     @classmethod
@@ -248,6 +250,7 @@ class World:
             characters=[Character.from_dict(c) for c in (d.get("characters", []) or [])],
             foreshadowing=foreshadowing,
             locked_settings=locked,
+            mechanism_rules=_norm_str(d.get("mechanism_rules", "")),
         )
 
 

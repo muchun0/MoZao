@@ -115,6 +115,26 @@ def _output_discipline() -> str:
     )
 
 
+def _writing_constraints() -> str:
+    """正文写作约束（内容/写作类，防止「金手指不自洽、细节漂移、钩子太晚、母题口癖」）。
+
+    注入整章正文输出提示词（chapter/scene）。对应批注三/四/五的根因：
+    ① 人物一致性——左右手/旧疤/习惯等物理细节全文只允许一种口径；
+    ② 开篇锚点前置——首章 500 字内建立读者共情锚点，不让最有温度的内容沉底；
+    ③ 母题密度——同一动作/短句/意象单章出现 ≤2 次，防「母题」退化为「口癖」。
+    """
+    return (
+        "【正文写作约束】\n"
+        "1. 人物一致性：人物外貌与身体细节（左右手、旧疤、习惯动作、衣着、发型）必须前后一致，"
+        "同一物理事实全文只允许一种口径，严禁左右手/细节在段落间漂移。\n"
+        "2. 开篇锚点前置（尤其第1章）：开篇 500 字内必须建立让读者共情的人物锚点"
+        "（一个具体的人、一件具体的痛或牵挂）；不得把唯一有温度、有情绪落点的内容埋到章节末尾。"
+        "主角对'重要他人的遭遇'的反应，应优先于对'自身处境'的冷漠叙述。\n"
+        "3. 母题密度：同一动作/表情/手势/短句/意象在单章内出现不超过 2 次，"
+        "避免从'母题'退化为'口癖'；重复必须有递进，不能原样复读。"
+    )
+
+
 def _ending_requirements() -> str:
     """结局硬要求：无论长篇短篇，全书必须有完整结局。
 
@@ -739,6 +759,10 @@ def world_prompt(
         f"- characters：3-8 个人物对象数组，每项含字段：name(姓名), role(定位主角/主角团/反派/关键配角), desc(一句话概括), appearance(外貌特征), personality(性格核心), desire(核心欲望), wound(软肋/创伤), arc(人物弧光), speech_style(说话方式/口头禅), relations(与其他角色关系)；"
         f"用户预设的主角与人物必须包含在内且描述符合设定，可补充其他角色；描述要具体，能支撑剧情行为逻辑\n"
         f"- foreshadowing：2-5 条贯穿全文的伏笔/悬念（每条一句）\n"
+        f"- mechanism_rules：金手指/核心机制的规则卡（本书有金手指/系统/独特设定则必填，否则空字符串）。"
+        f"必须写到无歧义、可自洽，至少覆盖：①机制名称与语义（每个数字/状态的确切含义，如'可死次数=今日剩余复活次数，不是已死次数'）；"
+        f"②结算规则（何时增减、何时重置、与历史状态如何衔接，杜绝自相矛盾）；③代价/成长（每次使用代价递增、上限/终局条件）；"
+        f"④正文要求（首章必须把机制实际用起来、兑现标题，数字与规则全书一致）\n"
         f"设定要求：与大纲严格一致，人物动机清晰，伏笔在后期能回收，避雷元素不得出现。"
         f"{('每个重要人物的 desc 必须按「人物立体化·角色卡要求」写全：身份标签/经历背景/性格核心/欲望软肋/行为范式/压力反应，保证人物有辨识度、行为有依据。' if cfg.character_depth else '')}"
     )
@@ -920,6 +944,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         system += "\n\n" + ref
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
+    system += "\n\n" + _writing_constraints()
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
     user = (
@@ -1158,6 +1183,7 @@ def chapter_prompt(
         system += "\n\n" + ref
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
+    system += "\n\n" + _writing_constraints()
     return system, user
 
 
@@ -1191,6 +1217,9 @@ def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[st
         f"- characters：3-8 个人物对象数组，每项 {{\"name\":姓名,\"role\":定位,\"desc\":性格与背景}}；"
         f"主角与已出场人物必须包含，描述要与正文言行一致\n"
         f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念（每条一句；正文没有悬念时提炼潜在冲突）\n"
+        f"- mechanism_rules：从正文提炼的金手指/核心机制规则卡（正文有金手指/系统/独特设定则必填，否则空字符串）。"
+        f"必须无歧义、与正文一致，覆盖：机制语义（每个数字/状态的确切含义）、结算规则（何时增减/重置/衔接历史）、"
+        f"代价与终局（代价递增/上限）、正文要求（首章兑现标题，数字与规则全书一致）\n"
         f"要求：与用户正文严格一致，人物动机有据可查，避免凭空新增与正文矛盾的世界观。"
     )
     system += _skill_append(cfg)

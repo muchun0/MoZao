@@ -218,6 +218,7 @@ _STYLE_ROLES = """CREATE TABLE IF NOT EXISTS style_roles (
     name VARCHAR(80) NOT NULL,
     description VARCHAR(255) DEFAULT '',
     role_prompt TEXT,
+    reference_text TEXT,
     is_active INT NOT NULL DEFAULT 1,
     sort_order INT NOT NULL DEFAULT 0,
     created_at DOUBLE NOT NULL,
@@ -354,6 +355,9 @@ def init_db() -> None:
         if "user_id" not in sr_cols:
             conn.execute("ALTER TABLE style_roles ADD COLUMN user_id INT NOT NULL DEFAULT 0")
             conn.execute("ALTER TABLE style_roles ADD KEY idx_sr_user (user_id)")
+        # style_roles 加 reference_text（P2-1 few-shot 风格范文，可空；存量数据兼容）
+        if "reference_text" not in _column_names(conn, "style_roles"):
+            conn.execute("ALTER TABLE style_roles ADD COLUMN reference_text TEXT")
         # style_role_skills 加 skill_type：admin=writing_skills / user=user_skills
         srs_cols = _column_names(conn, "style_role_skills")
         if "skill_type" not in srs_cols:

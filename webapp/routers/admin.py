@@ -28,6 +28,14 @@ def admin_stats(user: dict = Depends(_require_admin)):
     return {"stats": db.admin_stats()}
 
 
+@app.get("/api/admin/quality-report")
+def admin_quality_report(project_id: str = "", days: int = 0,
+                         user: dict = Depends(_require_admin)):
+    """P2-4 质量指标报表（只读）：按项目/时间维度聚合 agent_trace（质检得分/重写/问题/弃书/成本）。"""
+    from ..db.traces import quality_report as _quality_report
+    return _quality_report(project_id=project_id, days=int(days or 0))
+
+
 @app.get("/api/admin/skills")
 def admin_list_skills(user: dict = Depends(_require_admin)):
     return {"skills": db.list_skills()}

@@ -90,6 +90,127 @@ def list_trace_by_user(user_id: int, limit: int = 200) -> list[dict]:
     )
 
 
+def _aggregate_quality(rows: list[dict]) -> dict:
+    """纯函数：把 quality_check 快照行聚合为质量指标（可单测，不依赖 MySQL）。
+
+    依赖 trace.record_quality 写入的 extra：{issues, score, issue_count, auto_revised}。
+    """
+    import json as _json
+    scores: list[int] = []
+    rewrites = 0
+    issue_types: dict[str, int] = {}
+    checks = 0
+    for r in rows:
+        checks += 1
+        raw = r.get("extra")
+        if isinstance(raw, str):
+            try:
+                extra = _json.loads(raw)
+            except Exception:
+                extra = {}
+        elif isinstance(raw, dict):
+            extra = raw
+        else:
+            extra = {}
+        sc = extra.get("score")
+        if isinstance(sc, (int, float)):
+            scores.append(int(sc))
+        if extra.get("auto_revised"):
+            rewrites += 1
+        for it in (extra.get("issues") or []):
+            if not isinstance(it, dict):
+                continue
+            t = str(it.get("type") or "")
+            if not t:
+                continue
+            key = t.split("-", 1)[0] if "-" in t else t
+            issue_types[key] = issue_types.get(key, 0) + 1
+    buckets = {"0-59": 0, "60-79": 0, "80-100": 0}
+    for s in scores:
+        if s < 60:
+            buckets["0-59"] += 1
+        elif s < 80:
+            buckets["60-79"] += 1
+        else:
+            buckets["80-100"] += 1
+    n = len(scores) or 1
+    return {
+        "quality_checks": checks,
+        "score_avg": round(sum(scores) / n, 1) if scores else None,
+        "score_buckets": buckets,
+        "rewrite_count": rewrites,
+        "rewrite_rate": round(rewrites / n, 3) if checks else 0,
+        "issue_top_types": sorted(issue_types.items(), key=lambda x: -x[1])[:10],
+    }
+
+
+def quality_report(project_id: str = "", days: int = 0) -> dict:
+    """P2-4 质量指标报表（只读）：按项目/时间维度聚合 agent_trace。
+
+    返回 {"filter": {...}, "report": {任务/调用/成本总览, 质检得分分布, 重写率,
+    问题类型 TopN, 弃书风险分布, scene 成本分布}}。
+    数字与 agent_trace 明细同源（可对账）。
+    """
+    conds: list[str] = []
+    params: list = []
+    if project_id:
+        conds.append("project_id=%s")
+        params.append(project_id)
+    if days and days > 0:
+        conds.append("created_at>=%s")
+        params.append(time.time() - days * 86400)
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    with _connect() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(DISTINCT trace_id) AS task_count, COUNT(*) AS call_count, "
+            f"COALESCE(SUM(token_total),0) AS token_total, "
+            f"COALESCE(AVG(duration_ms),0) AS avg_duration_ms, "
+            f"COALESCE(SUM(success=0),0) AS fail_count "
+            f"FROM agent_trace{where}", tuple(params)).fetchone()
+        qc_where = "step_type='quality_check'"
+        if conds:
+            qc_where += " AND " + " AND ".join(conds)
+        qc_rows = conn.execute(
+            f"SELECT extra FROM agent_trace WHERE {qc_where}", tuple(params)).fetchall()
+        churn_where = "step_type='agent_step' AND step_name LIKE '%编辑审稿%'"
+        if conds:
+            churn_where += " AND " + " AND ".join(conds)
+        churn_rows = conn.execute(
+            f"SELECT extra FROM agent_trace WHERE {churn_where}", tuple(params)).fetchall()
+        scenes = conn.execute(
+            f"SELECT scene, COUNT(*) AS n, COALESCE(SUM(token_total),0) AS tokens, "
+            f"COALESCE(AVG(duration_ms),0) AS avg_ms "
+            f"FROM agent_trace{where} GROUP BY scene", tuple(params)).fetchall()
+    report = dict(total)
+    report.update(_aggregate_quality([dict(r) for r in qc_rows]))
+    churn_dist = {"低": 0, "中": 0, "高": 0}
+    for r in churn_rows:
+        raw = r["extra"]
+        if isinstance(raw, str):
+            try:
+                import json as _json
+                extra = _json.loads(raw)
+            except Exception:
+                extra = {}
+        elif isinstance(raw, dict):
+            extra = raw
+        else:
+            extra = {}
+        c = extra.get("churn")
+        if c in churn_dist:
+            churn_dist[c] += 1
+    report["churn_risk_dist"] = churn_dist
+    report["scenes"] = {
+        r["scene"]: {"calls": r["n"], "tokens": r["tokens"],
+                     "avg_duration_ms": round(r["avg_ms"], 1)}
+        for r in scenes
+    }
+    ch_tokens = report["scenes"].get("chapter", {}).get("tokens", 0)
+    ch_calls = report["scenes"].get("chapter", {}).get("calls", 0)
+    report["per_chapter_avg_tokens"] = round(ch_tokens / ch_calls, 1) if ch_calls else 0
+    return {"filter": {"project_id": project_id, "days": int(days or 0)}, "report": report}
+
+
 def trace_stats_by_project(project_id: str) -> dict:
     """按项目聚合统计（阶段2监控仪表盘预留）：
     {task_count, call_count, token_total, avg_duration_ms, fail_count, scenes:{...}}

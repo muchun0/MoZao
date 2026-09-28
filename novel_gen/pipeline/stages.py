@@ -263,7 +263,9 @@ class ChapterWriter:
         is_final: bool = False,
     ) -> Chapter:
         world = self.store.load_world()
-        memory_context = self.memory.build_context(world, up_to_chapter=chapter_no)
+        memory_context = self.memory.build_context(
+            world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
+        )
         prev_tail = self._prev_tail(chapter_no)
 
         # 注入时间线提示
@@ -309,10 +311,26 @@ class ChapterWriter:
         except Exception:
             pass
 
-        if getattr(self.cfg, "high_quality_mode", False):
-            text = self._generate_chapter_hq(
+        # P1-1 人物行动表先行：正文生成前先规划本章人物行动（解析失败自动回退原流程）
+        if getattr(self.cfg, "action_plan_first", True):
+            try:
+                action_plan = self._gen_action_plan(
+                    chapter_no, plan_title, plan_goal, memory_context,
+                )
+                if action_plan:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
+                        "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan
+            except Exception as e:
+                print(f"  [行动表] 跳过: {e}")
+
+        # 场景级生成：高质量模式始终启用；普通模式单章目标 ≥2000 字自动拆场景（P1-2）
+        hq_mode = getattr(self.cfg, "high_quality_mode", False)
+        scene_split = getattr(self.cfg, "scene_split", True)
+        if hq_mode or (scene_split and self.cfg.chapter_words >= 2000):
+            text = self._generate_chapter_scenes(
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
+                dynamic_module_used=hq_mode,
             )
             system = ""
         else:
@@ -385,9 +403,14 @@ class ChapterWriter:
         return chapter
 
 
-    def _generate_chapter_hq(self, chapter_no, plan_title, plan_goal,
-                             memory_context, prev_tail, is_final):
-        """高质量模式：场景级生成 + 动态模块 + 参数分层。"""
+    def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
+                                 memory_context, prev_tail, is_final,
+                                 dynamic_module_used: bool = True):
+        """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
+
+        高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
+        普通模式只启用拆场景→逐场景→润色基础链路。拆场景失败自动回退整章生成。
+        """
         import json
         from .templates import (
             split_scenes_prompt, scene_prompt, polish_chapter_prompt,
@@ -419,7 +442,7 @@ class ChapterWriter:
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
-        dynamic = _pick_dynamic_module(chapter_no, genre)
+        dynamic = _pick_dynamic_module(chapter_no, genre) if dynamic_module_used else ""
         scene_texts = []
         running_tail = prev_tail
         for idx, sc in enumerate(scenes, start=1):
@@ -441,7 +464,7 @@ class ChapterWriter:
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
             except Exception as e:
-                print(f"    [HQ] 场景 {idx} 生成失败: {e}")
+                print(f"    [场景] 第{idx}个场景生成失败: {e}")
                 scene_texts.append("")
 
         chapter_text = "\n\n".join(t for t in scene_texts if t)
@@ -469,6 +492,33 @@ class ChapterWriter:
             chapter_text = chapter_text + "\n\n【摘要】" + summary
 
         return chapter_text
+
+    def _gen_action_plan(self, chapter_no, plan_title, plan_goal, memory_context) -> str:
+        """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。"""
+        try:
+            import json
+            from .templates import action_plan_prompt
+            sys_a, user_a = action_plan_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal, memory_context,
+            )
+            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=800)
+            data = json.loads(_strip_json_block(raw))
+            chars = data.get("characters") or []
+            lines = []
+            for c in chars:
+                if not isinstance(c, dict) or not c.get("name"):
+                    continue
+                actions = c.get("key_actions") or []
+                if isinstance(actions, str):
+                    actions = [actions]
+                lines.append(
+                    f"- {c['name']}：目标『{c.get('goal','')}』；关键行动：{'、'.join(str(a) for a in actions)}；"
+                    f"情绪：{c.get('emotion','')}；对话意图：{c.get('dialogue_intent','')}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"  [行动表] 生成失败，回退原流程: {e}")
+            return ""
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
         """字数兜底：正文不足目标 90% 时，让模型扩写一次到目标字数。

@@ -84,27 +84,18 @@ class ProjectStore:
             "characters": list(cfg.characters),
             "plot_direction": cfg.plot_direction,
             "forbidden": list(cfg.forbidden),
-            "editor_review": cfg.editor_review,
-            "de_ai": cfg.de_ai,
-            "anti_similarity": cfg.anti_similarity,
             "confirm": cfg.confirm,
-            "memory_window": cfg.memory_window,
             "mode": cfg.mode,
             "expand_input": cfg.expand_input,
             "content_type": cfg.content_type,
             "expand_targets": list(cfg.expand_targets),
             "with_research": getattr(cfg, "with_research", False),
             "user_words": getattr(cfg, "_user_words", 0),
-            # P0 修复：补全落盘字段，否则重新读取时全部丢失（高质量模式/技能/节奏参数失效）
-            "character_depth": getattr(cfg, "character_depth", True),
-            "fanqie_style": getattr(cfg, "fanqie_style", True),
-            "high_quality_mode": getattr(cfg, "high_quality_mode", False),
-            "pacing_density": getattr(cfg, "pacing_density", "medium"),
-            "plot_speed": getattr(cfg, "plot_speed", "medium"),
             "custom_prompt": getattr(cfg, "custom_prompt", ""),
             "skill_prompt_append": getattr(cfg, "skill_prompt_append", ""),
             "style_role_id": getattr(cfg, "style_role_id", 0),
             "style_role_prompt": getattr(cfg, "style_role_prompt", ""),
+            "style_role_reference": getattr(cfg, "style_role_reference", ""),
             "agent_guard": {
                 "enabled": bool(getattr(cfg.agent_guard, "enabled", True)),
                 "max_loops": int(getattr(cfg.agent_guard, "max_loops", 80)),
@@ -130,67 +121,73 @@ class ProjectStore:
                 # 注意：不落盘 api_key，避免密钥明文留在项目目录
             },
         }
+        # 功能开关（FEATURE_FLAGS 注册表驱动：新增开关自动落盘，无需手改此处；
+        # guard 子项在 agent_guard 段，不进顶层）
+        from ..config import FEATURE_FLAGS
+        for _f in FEATURE_FLAGS:
+            if _f.module == "guard":
+                continue
+            data[_f.key] = getattr(cfg, _f.key)
         self._write_json(self.config_path(), data)
 
     def load_config(self) -> NovelConfig:
         d = self._read_json(self.config_path(), {})
         llm_d = d.get("llm", {}) or {}
-        return NovelConfig(
-            title=d.get("title", ""),
-            genre=d.get("genre", "玄幻"),
-            total_words=int(d.get("total_words", 100_000)),
-            chapter_words=int(d.get("chapter_words", 2500)),
-            style=d.get("style", ""),
-            premise=d.get("premise", ""),
-            background=d.get("background", ""),
-            hero=d.get("hero", ""),
-            characters=[str(x) for x in (d.get("characters") or [])],
-            plot_direction=d.get("plot_direction", ""),
-            forbidden=[str(x) for x in (d.get("forbidden") or [])],
-            editor_review=bool(d.get("editor_review", True)),
-            de_ai=bool(d.get("de_ai", True)),
-            anti_similarity=bool(d.get("anti_similarity", True)),
-            confirm=bool(d.get("confirm", False)),
-            memory_window=int(d.get("memory_window", 5)),
-            mode=d.get("mode", "auto"),
-            expand_input=d.get("expand_input", ""),
-            content_type=d.get("content_type", ""),
-            expand_targets=[int(x) for x in (d.get("expand_targets") or [])],
-            with_research=bool(d.get("with_research", False)),
-            character_depth=bool(d.get("character_depth", True)),
-            fanqie_style=bool(d.get("fanqie_style", True)),
-            high_quality_mode=bool(d.get("high_quality_mode", False)),
-            pacing_density=d.get("pacing_density", "medium"),
-            plot_speed=d.get("plot_speed", "medium"),
-            custom_prompt=d.get("custom_prompt", ""),
-            skill_prompt_append=d.get("skill_prompt_append", ""),
-            style_role_id=int(d.get("style_role_id", 0) or 0),
-            style_role_prompt=d.get("style_role_prompt", ""),
-            agent_guard=AgentGuardConfig(
-                enabled=bool((d.get("agent_guard") or {}).get("enabled", True)),
-                max_loops=int((d.get("agent_guard") or {}).get("max_loops", 80)),
-                max_tokens=int((d.get("agent_guard") or {}).get("max_tokens", 2_000_000)),
-                input_check=bool((d.get("agent_guard") or {}).get("input_check", True)),
-                output_check=bool((d.get("agent_guard") or {}).get("output_check", True)),
-                quality_check=bool((d.get("agent_guard") or {}).get("quality_check", True)),
-                scene_limits=dict((d.get("agent_guard") or {}).get("scene_limits", {}) or {}),
-            ),
-            search=SearchConfig(
-                provider=(d.get("search") or {}).get("provider", ""),
-                api_key="",
-                api_url=(d.get("search") or {}).get("api_url", ""),
-                count=int((d.get("search") or {}).get("count", 5)),
-            ),
-            llm=LLMConfig(
-                provider=llm_d.get("provider", "deepseek"),
-                model=llm_d.get("model", ""),
-                api_key=llm_d.get("api_key", ""),
-                base_url=llm_d.get("base_url", ""),
-                temperature=float(llm_d.get("temperature", 0.8)),
-                top_p=float(llm_d.get("top_p", 0.0)),
-                max_tokens=int(llm_d.get("max_tokens", 4096)),
-            ),
+        kwargs: dict = {
+            "title": d.get("title", ""),
+            "genre": d.get("genre", "玄幻"),
+            "total_words": int(d.get("total_words", 100_000)),
+            "chapter_words": int(d.get("chapter_words", 2500)),
+            "style": d.get("style", ""),
+            "premise": d.get("premise", ""),
+            "background": d.get("background", ""),
+            "hero": d.get("hero", ""),
+            "characters": [str(x) for x in (d.get("characters") or [])],
+            "plot_direction": d.get("plot_direction", ""),
+            "forbidden": [str(x) for x in (d.get("forbidden") or [])],
+            "confirm": bool(d.get("confirm", False)),
+            "mode": d.get("mode", "auto"),
+            "expand_input": d.get("expand_input", ""),
+            "content_type": d.get("content_type", ""),
+            "expand_targets": [int(x) for x in (d.get("expand_targets") or [])],
+            "with_research": bool(d.get("with_research", False)),
+            "custom_prompt": d.get("custom_prompt", ""),
+            "skill_prompt_append": d.get("skill_prompt_append", ""),
+            "style_role_id": int(d.get("style_role_id", 0) or 0),
+            "style_role_prompt": d.get("style_role_prompt", ""),
+            "style_role_reference": d.get("style_role_reference", ""),
+        }
+        # 功能开关（FEATURE_FLAGS 注册表驱动：旧项目缺字段自动用注册表默认值）
+        from ..config import FEATURE_FLAGS, _coerce_feature
+        for _f in FEATURE_FLAGS:
+            if _f.module == "guard":
+                continue
+            kwargs[_f.key] = _coerce_feature(d.get(_f.key), _f.default)
+        kwargs["agent_guard"] = AgentGuardConfig(
+            enabled=bool((d.get("agent_guard") or {}).get("enabled", True)),
+            max_loops=int((d.get("agent_guard") or {}).get("max_loops", 80)),
+            max_tokens=int((d.get("agent_guard") or {}).get("max_tokens", 2_000_000)),
+            input_check=bool((d.get("agent_guard") or {}).get("input_check", True)),
+            output_check=bool((d.get("agent_guard") or {}).get("output_check", True)),
+            quality_check=bool((d.get("agent_guard") or {}).get("quality_check", True)),
+            scene_limits=dict((d.get("agent_guard") or {}).get("scene_limits", {}) or {}),
         )
+        kwargs["search"] = SearchConfig(
+            provider=(d.get("search") or {}).get("provider", ""),
+            api_key="",
+            api_url=(d.get("search") or {}).get("api_url", ""),
+            count=int((d.get("search") or {}).get("count", 5)),
+        )
+        kwargs["llm"] = LLMConfig(
+            provider=llm_d.get("provider", "deepseek"),
+            model=llm_d.get("model", ""),
+            api_key=llm_d.get("api_key", ""),
+            base_url=llm_d.get("base_url", ""),
+            temperature=float(llm_d.get("temperature", 0.8)),
+            top_p=float(llm_d.get("top_p", 0.0)),
+            max_tokens=int(llm_d.get("max_tokens", 4096)),
+        )
+        return NovelConfig(**kwargs)
 
     # ---------- 用户手写内容 ----------
     def user_content_path(self) -> Path:
@@ -368,7 +365,6 @@ class ProjectStore:
     # ---------- 一致性校验（高质量模式） ----------
     def verify_issues_path(self) -> Path:
         return self.dir / "verify_issues.json"
-
     def load_verify_issues(self) -> list[dict]:
         """返回 [{chapter, problem, suggestion}, ...]，按章节号升序。"""
         items = self._read_json(self.verify_issues_path(), [])
@@ -384,6 +380,30 @@ class ProjectStore:
             it["chapter"] = chapter
             all_issues.append(it)
         self.save_verify_issues(all_issues)
+
+    # ---------- 人物动态状态快照（P0-2） ----------
+    def character_states_path(self) -> Path:
+        return self.dir / "character_states.json"
+
+    def load_character_states(self) -> dict:
+        """返回 {人物名: {last_seen, location, body, emotion, relations, new_info, goal}, ...}。"""
+        d = self._read_json(self.character_states_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_character_states(self, states: dict) -> None:
+        """整体覆盖保存（每章更新后写入最新快照）。"""
+        self._write_json(self.character_states_path(), states)
+
+    # ---------- 全书终审（P2-2） ----------
+    def final_review_path(self) -> Path:
+        return self.dir / "final_review.json"
+
+    def load_final_review(self) -> Optional[dict]:
+        """返回 {checked_at, ok, issues, summary}；未终审过返回 None。"""
+        return self._read_json(self.final_review_path(), None)
+
+    def save_final_review(self, review: dict) -> None:
+        self._write_json(self.final_review_path(), review)
 
     # ---------- 导出 TXT ----------
     def export_txt(self) -> Path:

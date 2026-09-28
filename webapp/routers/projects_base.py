@@ -119,6 +119,10 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         if _sr:
             cfg.style_role_id = _sr["id"]
             cfg.style_role_prompt = _sr["assembled"]
+            # P2-1 few-shot 文风锚定：参考文风片段随建书快照进配置
+            _role = db.get_style_role(req.style_role_id)
+            if _role:
+                cfg.style_role_reference = _role.get("reference_text") or ""
 
     # 配置校验（非硬约束问题仅警告）
     issues = validate_config(cfg)

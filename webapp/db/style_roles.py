@@ -58,20 +58,20 @@ def get_style_role(role_id: int) -> dict | None:
 
 
 def create_style_role(user_id: int, name: str, description: str = "", role_prompt: str = "",
-                      is_active: int = 1, sort_order: int = 0) -> int:
+                      reference_text: str = "", is_active: int = 1, sort_order: int = 0) -> int:
     """创建风格角色。user_id=0 表示平台内置（管理员创建/种子化）。"""
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO style_roles (user_id, name, description, role_prompt, is_active, sort_order, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, name, description, role_prompt, is_active, sort_order, time.time()))
+            "INSERT INTO style_roles (user_id, name, description, role_prompt, reference_text, is_active, sort_order, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, name, description, role_prompt, reference_text, is_active, sort_order, time.time()))
         return cur.lastrowid
 
 
 def update_style_role(role_id: int, **fields) -> bool:
     if not fields:
         return False
-    allowed = {"name", "description", "role_prompt", "is_active", "sort_order"}
+    allowed = {"name", "description", "role_prompt", "reference_text", "is_active", "sort_order"}
     sets = []
     vals = []
     for k, v in fields.items():

@@ -32,27 +32,57 @@
     <!-- 改稿建议 -->
     <el-card class="tool-card">
       <template #header><b>改稿建议</b></template>
-      <p class="muted">自动改稿记录与待人工处理的中改问题</p>
+      <p class="muted">自动改稿记录与待人工处理的中改问题（含全书质量汇总）</p>
       <el-button size="small" @click="loadReview">查看改稿建议</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
-        <div v-else-if="!reviewItems.length" class="ok-box">暂无改稿记录</div>
-        <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
-          <div class="review-head">
-            <b>第{{ r.chapter }}章</b>
-            <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
-            <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
-            <span v-else class="tag-ok">无问题</span>
-            <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
+        <template v-else>
+          <div v-if="!reviewItems.length && !reviewSummary.chapter_count" class="ok-box">暂无改稿记录</div>
+          <div v-if="reviewSummary.chapter_count" class="summary-box">
+            <b>全书质量汇总</b>
+            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
+              <span v-if="reviewSummary.score_avg">｜平均质检分 {{ reviewSummary.score_avg }}/100</span>
+            </div>
+            <div v-if="Object.keys(reviewSummary.issue_by_type||{}).length" class="summary-line">
+              问题类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
+            </div>
+            <div v-if="reviewSummary.verify_issue_total" class="summary-line">
+              一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
+            </div>
           </div>
-          <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
-          <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
-            <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
-            <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
-            <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
-            <span>{{ it.detail }}</span>
+          <div v-if="finalReview" class="final-review-box">
+            <b>全书终审</b>
+            <div class="summary-line">{{ finalReview.summary || '' }}</div>
+            <div v-if="(finalReview.issues||[]).length">
+              <div v-for="(it, i) in finalReview.issues" :key="i" class="review-issue">
+                <span class="review-type">[{{ it.type }}]</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+              </div>
+            </div>
           </div>
-        </div>
+          <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
+            <div class="review-head">
+              <b>第{{ r.chapter }}章</b>
+              <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
+              <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
+              <span v-else class="tag-ok">无问题</span>
+              <span v-if="r.quality_check && r.quality_check.score !== undefined && r.quality_check.score !== null" class="tag-score">质检 {{ r.quality_check.score }}</span>
+              <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
+            </div>
+            <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
+            <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
+              <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
+              <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
+              <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
+              <span>{{ it.detail }}</span>
+            </div>
+          </div>
+          <div v-if="verifyIssues.length" class="verify-block">
+            <b>一致性校验 / 读者自检 / 编辑审稿问题</b>
+            <div v-for="(it, i) in verifyIssues" :key="i" class="review-issue">
+              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+            </div>
+          </div>
+        </template>
       </div>
     </el-card>
 
@@ -128,125 +158,6 @@
       </div>
     </el-card>
 
-    <!-- 我的Skills -->
-    <el-card class="tool-card">
-      <template #header><b>我的Skills</b></template>
-      <p class="muted">自定义写作风格，生成时自动注入对应角色</p>
-      <el-button size="small" type="primary" @click="showSkillDlg = true">+ 新建Skill</el-button>
-      <div class="result-area">
-        <div v-for="s in mySkills" :key="s.id" class="fs-row">
-          <span>📝 {{ s.name }} <small v-if="s.role" class="muted">({{ s.role }})</small></span>
-          <span style="display:flex;gap:6px">
-            <el-button size="small" link type="primary" @click="publishSkill(s)">发布到市场</el-button>
-            <el-button size="small" link type="danger" @click="delMySkill(s.id)">删</el-button>
-          </span>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- Skill 市场 -->
-    <el-card class="tool-card">
-      <template #header>
-        <b>Skill 市场</b>
-        <el-button size="small" link @click="loadMarket" style="float:right">刷新</el-button>
-      </template>
-      <p class="muted">安装别人分享的写作技能，或把你的技能分享给所有人</p>
-      <div class="result-area">
-        <div v-for="m in marketSkills" :key="m.id" class="fs-row">
-          <div>
-            <b>{{ m.name }}</b> <small v-if="m.role" class="muted">({{ m.role }})</small>
-            <div class="muted" style="font-size:12px">{{ m.description }}</div>
-            <div class="muted" style="font-size:12px">by {{ m.author_name || '匿名' }} · 下载 {{ m.downloads }}</div>
-          </div>
-          <el-button v-if="m.installed" size="small" disabled>已安装</el-button>
-          <el-button v-else size="small" type="primary" @click="installSkill(m)">安装</el-button>
-        </div>
-        <div v-if="!marketSkills.length" class="muted">市场还没有技能，快把你的第一个 Skill 发布上来</div>
-      </div>
-    </el-card>
-
-    <!-- 风格角色：写作风格抽象为 agent 角色，可挂载技能 -->
-    <el-card class="tool-card">
-      <template #header><b>风格角色</b></template>
-      <p class="muted">把写作风格存成一个角色（人设+挂载技能），建书时一键套用</p>
-      <el-button size="small" type="primary" @click="openRoleDlg()">+ 新建风格角色</el-button>
-      <div class="result-area">
-        <div v-for="r in styleRoles" :key="r.id" class="fs-row">
-          <div>
-            <b>{{ r.name }}</b>
-            <small class="muted">{{ r.user_id ? '（我的）' : '（平台）' }}</small>
-            <div v-if="(r.skills || []).length" style="margin-top:4px">
-              <el-tag v-for="s in r.skills" :key="s.skill_type + '-' + s.skill_id" size="small" type="info" style="margin-right:4px">
-                {{ s.skill_name }}
-              </el-tag>
-            </div>
-            <div v-else class="muted" style="font-size:12px">未挂载技能</div>
-          </div>
-          <span v-if="r.user_id" style="display:flex;gap:6px">
-            <el-button size="small" link type="primary" @click="openRoleDlg(r)">编辑</el-button>
-            <el-button size="small" link type="danger" @click="delRole(r)">删</el-button>
-          </span>
-        </div>
-        <div v-if="!styleRoles.length" class="muted">还没有风格角色，点「新建」创建你的第一个</div>
-      </div>
-    </el-card>
-
-    <!-- 新建/编辑风格角色弹窗 -->
-    <el-dialog v-model="showRoleDlg" :title="roleForm.id ? '编辑风格角色' : '新建风格角色'" width="620px" append-to-body>
-      <el-form :model="roleForm" label-width="80px">
-        <el-form-item label="名称"><el-input v-model="roleForm.name" placeholder="如：乌贼·克苏鲁悬疑克制风" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="roleForm.description" placeholder="一句话说明这个风格的调性" /></el-form-item>
-        <el-form-item label="人设提示词">
-          <el-input v-model="roleForm.role_prompt" type="textarea" :rows="6"
-            placeholder="写给AI的文风总纲：叙事视角、句式节奏、氛围营造、克制边界…" />
-        </el-form-item>
-        <el-form-item label="挂载技能">
-          <div v-for="(sk, i) in roleForm.skills" :key="i" class="fs-row">
-            <span>{{ sk.skill_type === 'user' ? '📝' : '⭐' }} {{ sk.skill_name }}
-              <small class="muted">{{ sk.skill_type === 'user' ? '我的技能' : '平台技能' }}</small>
-            </span>
-            <el-button size="small" link type="danger" @click="roleForm.skills.splice(i, 1)">卸载</el-button>
-          </div>
-          <el-select v-model="newMount" placeholder="选择要挂载的技能" clearable filterable style="width:100%;margin-top:6px">
-            <el-option-group label="我的Skills">
-              <el-option v-for="s in mySkills" :key="'user-' + s.id" :label="s.name" :value="'user:' + s.id" />
-            </el-option-group>
-            <el-option-group label="平台技能">
-              <el-option v-for="s in platformSkills" :key="'admin-' + s.id" :label="s.name" :value="'admin:' + s.id" />
-            </el-option-group>
-          </el-select>
-          <el-button size="small" style="margin-top:6px" @click="addMount">挂载</el-button>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showRoleDlg = false">取消</el-button>
-        <el-button type="primary" @click="saveRole">保存</el-button>
-      </template>
-    </el-dialog>
-    <!-- 新建Skill弹窗 -->
-    <el-dialog v-model="showSkillDlg" title="新建自定义Skill" width="560px" append-to-body>
-      <el-form :model="skillForm" label-width="80px">
-        <el-form-item label="名称"><el-input v-model="skillForm.name" placeholder="如：克制冷峻风格" /></el-form-item>
-        <el-form-item label="适用角色">
-          <el-select v-model="skillForm.role" placeholder="全部角色" clearable style="width:100%">
-            <el-option label="全部角色" value="" />
-            <el-option label="调研(Researcher)" value="researcher" />
-            <el-option label="架构师(Architect)" value="architect" />
-            <el-option label="写手(Writer)" value="writer" />
-            <el-option label="审校(Reviewer)" value="reviewer" />
-            <el-option label="读者(Reader)" value="reader" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="描述"><el-input v-model="skillForm.description" placeholder="一句话说明这个Skill的作用" /></el-form-item>
-        <el-form-item label="提示词内容">
-          <el-input v-model="skillForm.prompt_append" type="textarea" :rows="6" placeholder="写给AI的写作要求，如：叙事克制，多用动作细节和感官描写传递情绪，少直接抒情" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showSkillDlg = false">取消</el-button>
-        <el-button type="primary" @click="saveMySkill">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -254,14 +165,16 @@
 import { ref, onMounted } from 'vue'
 import * as toolsApi from '../../api/tools'
 import { getProject } from '../../api/project'
-import { listMarketSkills, publishToMarket, installMarketSkill } from '../../api/tools'
 import { batchGenerate } from '../../api/novel'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({ pid: String })
 
 const verifyResult = ref([])
 const reviewItems = ref([])
+const reviewSummary = ref({})
+const finalReview = ref(null)
+const verifyIssues = ref([])
 const reviewLoaded = ref(false)
 const coverUrl = ref('')
 const coverLoading = ref(false)
@@ -329,6 +242,9 @@ async function loadReview() {
   try {
     const r = await toolsApi.getReview(props.pid)
     reviewItems.value = r.items || []
+    reviewSummary.value = r.summary || {}
+    verifyIssues.value = r.verify_issues || []
+    finalReview.value = r.final_review || null
     reviewLoaded.value = true
   } catch (e) { ElMessage.error('改稿记录加载失败') }
 }
@@ -385,125 +301,7 @@ async function delLk(i) {
   loadLk()
 }
 
-const mySkills = ref([])
-const marketSkills = ref([])
-const showSkillDlg = ref(false)
-const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' })
-const styleRoles = ref([])
-const platformSkills = ref([])
-const showRoleDlg = ref(false)
-const roleForm = ref({ id: 0, name: '', description: '', role_prompt: '', skills: [] })
-const newMount = ref('')
 
-async function loadStyleRoles() {
-  try { const r = await toolsApi.listStyleRoles(); styleRoles.value = r.roles || [] } catch {}
-}
-async function loadPlatformSkills() {
-  try { const r = await toolsApi.listPlatformSkills(); platformSkills.value = r.skills || [] } catch {}
-}
-function openRoleDlg(r) {
-  roleForm.value = r
-    ? { id: r.id, name: r.name, description: r.description || '', role_prompt: r.role_prompt || '', skills: [...(r.skills || [])] }
-    : { id: 0, name: '', description: '', role_prompt: '', skills: [] }
-  newMount.value = ''
-  showRoleDlg.value = true
-}
-function addMount() {
-  if (!newMount.value) return
-  const [type, id] = newMount.value.split(':')
-  const list = type === 'user' ? mySkills.value : platformSkills.value
-  const sk = list.find(x => x.id == id)
-  if (!sk || roleForm.value.skills.some(x => x.skill_type === type && x.skill_id == id)) return
-  roleForm.value.skills.push({ skill_type: type, skill_id: sk.id, skill_name: sk.name })
-  newMount.value = ''
-}
-async function saveRole() {
-  if (!roleForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
-  try {
-    const base = { name: roleForm.value.name, description: roleForm.value.description, role_prompt: roleForm.value.role_prompt, is_active: 1, sort_order: 0 }
-    let rid = roleForm.value.id
-    if (rid) {
-      await toolsApi.updateStyleRole(rid, base)
-      const old = styleRoles.value.find(x => x.id === rid)?.skills || []
-      for (const o of old) {
-        if (!roleForm.value.skills.some(x => x.skill_type === o.skill_type && x.skill_id === o.skill_id)) {
-          await toolsApi.unmountStyleRoleSkill(rid, o.skill_type, o.skill_id)
-        }
-      }
-      for (const n of roleForm.value.skills) {
-        if (!old.some(x => x.skill_type === n.skill_type && x.skill_id === n.skill_id)) {
-          await toolsApi.mountStyleRoleSkill(rid, { skill_type: n.skill_type, skill_id: n.skill_id })
-        }
-      }
-    } else {
-      const r = await toolsApi.createStyleRole(base)
-      rid = r.id
-      for (const n of roleForm.value.skills) {
-        await toolsApi.mountStyleRoleSkill(rid, { skill_type: n.skill_type, skill_id: n.skill_id })
-      }
-    }
-    ElMessage.success('已保存')
-    showRoleDlg.value = false
-    loadStyleRoles()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '保存失败') }
-}
-async function delRole(r) {
-  try { await ElMessageBox.confirm(`确定删除风格角色「${r.name}」？`, '删除', { type: 'warning' }) } catch { return }
-  await toolsApi.deleteStyleRole(r.id)
-  loadStyleRoles()
-}
-
-async function loadMySkills() {
-  try {
-    const data = await toolsApi.listMySkills()
-    mySkills.value = data.skills || []
-  } catch {}
-}
-async function saveMySkill() {
-  if (!skillForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
-  try {
-    await toolsApi.saveMySkill(skillForm.value)
-    ElMessage.success('Skill已保存')
-    showSkillDlg.value = false
-    skillForm.value = { name: '', role: '', description: '', prompt_append: '' }
-    loadMySkills()
-  } catch { ElMessage.error('保存失败') }
-}
-async function delMySkill(id) {
-  try { await ElMessageBox.confirm('确定删除？', '删除 Skill', { type: 'warning' }) } catch { return }
-  await toolsApi.delMySkill(id)
-  loadMySkills()
-}
-
-onMounted(() => {
-  loadCover(); loadFs(); loadLk(); loadMySkills(); loadMarket()
-  loadStyleRoles(); loadPlatformSkills()
-})
-
-const loadMarket = async () => {
-  try {
-    const r = await listMarketSkills()
-    marketSkills.value = r.skills || []
-  } catch (e) { console.warn(e) }
-}
-const publishSkill = async (s) => {
-  try {
-    await publishToMarket(s.id)
-    ElMessage.success('已发布到市场')
-    loadMarket()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '发布失败')
-  }
-}
-const installSkill = async (m) => {
-  try {
-    await installMarketSkill(m.id)
-    ElMessage.success('已安装到我的Skills')
-    m.installed = true
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '安装失败')
-  }
-}
 
 </script>
 
@@ -525,6 +323,11 @@ const installSkill = async (m) => {
 .tag-auto { background: #e1f3d8; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .tag-todo { background: #fdf6ec; color: #e6a23c; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .tag-ok { background: #f0f9eb; color: #67c23a; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.tag-score { background: #ecf5ff; color: #409eff; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+.summary-box { background: #eef2ff; border: 1px solid #d8e0ff; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+.summary-line { margin-top: 4px; color: #33415c; }
+.verify-block { margin-top: 8px; }
+.final-review-box { background: #f0f9eb; border: 1px solid #d4ecc9; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
 .review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }
 .review-feeling { font-size: 12px; color: #e6a23c; padding: 2px 0 4px; font-style: italic; }
 .lv-small { color: #909399; }

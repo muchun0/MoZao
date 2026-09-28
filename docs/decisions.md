@@ -37,6 +37,7 @@
 | 持续 | 改 `requirements.txt` 或前端依赖/源码 | 必须 rebuild 镜像（`--build`），不能只 restart |
 | 2026-09-28 | pymysql 参数化 SQL 中 LIKE 字面量 `%` 未转义（如 `LIKE '管理员手动充值%'`），被误当作参数占位符，抛 `TypeError: not enough arguments for format string`，导致退款/质量报表接口 500（master 5f532c5 修复） | 字面量 `%` 必须写 `%%`（mogrify 时还原为单 `%`）：`projects.py` refundable_amount/create_refund_request、`traces.py` quality_report churn 查询 3 处已修；新增 test_refund.py（P0）+ quality_report 2 个 P2 回归（模拟 mogrify 验证），全量 190 全绿。**同类隐患**：`users.py` admin_stats、`base.py` BYOK 迁移的 LIKE 目前无参数执行（pymysql 不传参不格式化 `%`）安全，将来加参数前必须转义 |
 | 2026-09-28 | 大纲/世界观生成 JSON 被 max_tokens=4096 截断导致 `Unterminated string` 解析失败 | 根因：`chat_json` 调用未传 max_tokens，走 client 默认 4096，但完整大纲 JSON（总纲+分卷+每章 8 字段）轻松超限，重试 3 次每次都在同一 token 上限处截断。修复：① 大纲/世界观/扩写/续写共 7 处 `chat_json` 调用显式传 `max_tokens=8192`；② `chat_json` 重试逻辑增加截断检测（`_is_json_truncation`：pos>0 且错误消息含 Unterminated/Expecting 等信号），自动 +4096 增大 token 上限（封顶 16384）并重试；③ pos==0 的自然语言开头错误不增大 token（属格式问题非截断）。新增 test_chat_json_truncation.py 15 用例，全量 205 全绿 |
+| 2026-09-28 | server.py 拆 core+routers（e1c68d1）把 `REGEN_DAILY_LIMIT = 10` 常量定义弄丢、仅保留使用处 → `_check_regen_limit` 每次调用抛 NameError（位于 try 块外、无日志），单章重写 rewrite / 从第 N 章重生成 regenerate-from 两个接口稳定 500，且 regen_count.json 永不落盘 | 已在 `webapp/core.py` 恢复常量定义；新增 tests/test_regen_limit.py 5 个 P1 用例（正常计数/超限 429/损坏容错/跨天重置），全量 210 pytest 全绿 + 真实接口重写 200。**教训：路由拆分回归不能只比对 openapi 路由集合，必须覆盖受影响接口的真实调用路径** |
 
 ## 三、文档漂移记录
 

@@ -854,7 +854,7 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
     return system, user
 
 
-def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=""):
+def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event=""):
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
         "你的任务是把它拆成 3-5 个连续场景，每个场景 1000-1500 字。"
@@ -863,6 +863,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
+        f"【本章核心事件（场景拆分必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n"
         f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
         f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
@@ -879,7 +880,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -908,6 +909,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【情绪目标】{scene.get('emotion', '')}\n"
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
+        f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n\n"
         f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
         "写作要求：\n"
@@ -1080,6 +1082,7 @@ def chapter_prompt(
     memory_context: str,
     prev_tail: str,
     is_final: bool = False,
+    chapter_core_event: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1106,6 +1109,7 @@ def chapter_prompt(
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
+        f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{chapter_core_event if chapter_core_event else '（无）'}\n"
         f"{('【全书结局章】本章是本书最后一章，必须给出完整结局。\n' + ending_block + '\n') if is_final else ''}"
         f"【单章字数·硬指标】本章正文（不含【摘要】行）必须达到 {cfg.chapter_words} 字以上。"
         f"若正文不足，必须通过增加场景细节、人物对话交锋、心理挣扎与行动过程来充实，"

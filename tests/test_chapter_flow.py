@@ -107,3 +107,41 @@ def test_prev_tail_length_300(store):
     tail = writer._prev_tail(2)
     assert len(tail) == 300
     assert "承前启后" in tail
+
+
+@pytest.mark.p1
+def test_scene_prompt_injects_core_event():
+    """scene_prompt 注入本章核心事件，正文不得偏离大纲。"""
+    cfg = NovelConfig(title="测试", total_words=10000, genre="玄幻")
+    _, user = templates.scene_prompt(
+        cfg, 1, "第一章", 1,
+        {"location": "墟口", "event": "醒来", "emotion": "麻木",
+         "anchors": [], "target_words": 1200},
+        "前情", "", "",
+        core_event="陆沉在墟口外碎石堆醒来，混入逃出的人群",
+    )
+    assert "【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】" in user
+    assert "陆沉在墟口外碎石堆醒来" in user
+
+
+@pytest.mark.p1
+def test_split_scenes_prompt_injects_core_event():
+    """split_scenes_prompt 注入核心事件，场景拆分必须覆盖。"""
+    cfg = NovelConfig(title="测试", total_words=10000, genre="玄幻")
+    _, user = templates.split_scenes_prompt(
+        cfg, 1, "第一章", "目标", core_event="灰卒咬穿喉咙，墟口外复活")
+    assert "【本章核心事件" in user
+    assert "灰卒咬穿喉咙，墟口外复活" in user
+
+
+@pytest.mark.p1
+def test_chapter_prompt_injects_core_event():
+    """chapter_prompt（整章路径）注入核心事件。"""
+    cfg = NovelConfig(title="测试", total_words=10000, genre="玄幻")
+    _, user = templates.chapter_prompt(
+        cfg, chapter_no=1, chapter_title="第一章", chapter_goal="目标",
+        research_block="", memory_context="", prev_tail="",
+        chapter_core_event="跟随临时队下墟，灰卒群溃散",
+    )
+    assert "【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】" in user
+    assert "跟随临时队下墟，灰卒群溃散" in user

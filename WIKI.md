@@ -24,11 +24,12 @@
 | 大纲 | 上传大纲智能解析自动填表；三级大纲编辑器（总纲→分卷→章节）；章节跨分卷拖拽、分卷增删；大纲快照保存/回滚；单独生成大纲/世界观/分卷 |
 | 内容解析 | 上传/粘贴已有正文自动切分章节预览 |
 | 生成 | 生成前联网搜索热门小说参考文风（博查 API）；多 agent 流水线（调研员→架构师→写手→审校→读者）；**章节生成按钮三态**（无章节=开始生成 / 有章节未完成=继续生成，成本防护/余额耗尽终止后同样可从断点继续 / 全部完成=重新生成整本重写）；**整本重写** `POST /api/projects/{id}/chapters/regenerate`（保留大纲世界观、锁定章节跳过） |
-| 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分） |
+| 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分）；**生成质量升级 P0-P2**：前文直读/人物动态状态/全书质量汇总（P0）、行动表先行/场景级下沉/Lorebook 裁剪/AI痕迹评分（P1）、动态模块随机化/风格范文锚定/全书终审/质量指标报表（P2），见 §4 生成质量升级 |
 | 封面 | 硅基流动 ERNIE-Image-Turbo 一体封面；每本限 5 次 |
 | 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
-| Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用） |
+| Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用）；技能与风格角色管理入口已从项目工具面板迁至**用户工作台**（/workspace） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
+| 用户工作台 | `/workspace` 6 tab：概览（余额/可退/返佣/下级指标）/ 账户与账单（充值流水/退款申请）/ 推广返佣（邀请码绑定/下级列表/返佣明细）/ 模型配置（BYOK）/ 我的技能（新建/市场发布安装）/ 风格角色（增删改/挂载技能/参考文风） |
 | 代理分销 | 一级代理：本人消费 8 折 + 下级消费 10% 返佣 |
 | 退款 | 用户申请余额退款 → 邮件通知站长 → 人工处理 |
 | 站长后台 | 用户/充值/代理/退款/日志/统计/设置/Skills 管理 |
@@ -60,6 +61,13 @@ D:\PythonProjects\DouBao\
 │   │   ├── stages.py           # 大纲/世界观/章节写作
 │   │   ├── reviser.py          # 自动修订 + Reader 审校
 │   │   ├── memory.py           # 章节记忆
+│   │   ├── character_state.py  # 人物动态状态（P0-2，逐章出场/状态追踪）
+│   │   ├── review_summary.py   # 全书质量汇总（P0-3）
+│   │   ├── ai_taste.py         # AI 痕迹评分（P1-4）
+│   │   ├── stages/             # 章节写作阶段（含行动表先行 P1-1）
+│   │   ├── templates/          # 提示词模板（场景级下沉 P1-2/Lorebook 裁剪 P1-3/范文锚定 P2-1）
+│   │   ├── quality/            # 质量指标聚合（P2-4，trace 底座）
+│   │   └── trace.py            # 生成轨迹（P2-4 数据底座）
 │   │   └── agents/             # 6 个角色（含 StylistAgent 风格师）
 │   │       ├── base.py         # BaseAgent（按 role 挂 skill）
 │   │       ├── researcher.py   # 调研员
@@ -148,6 +156,13 @@ D:\PythonProjects\DouBao\
 - `GET /api/projects/{id}/cover` 是 `<img>` 标签直接引用，鉴权用 query 参数 `?token=xxx`（不是 Authorization header）
 - 计数存在项目目录 `_cover_count.txt`
 
+### 生成质量升级（P0/P1/P2，2026-09-28）
+
+- **P0 基础质量**：① 前文直读——逐章注入前文关键内容替代纯摘要；② 人物动态状态——`character_state.json` 逐章追踪人物出场/动机/关系/状态，跨章一致性；③ 全书质量汇总——review.json 沉淀全部质检问题 + 工具面板「改稿建议」展示（含全书终审块）
+- **P1 生成控制**：① 行动表先行——先列章节行动表再写作；② 场景级下沉——提示词模板细化到场景；③ Lorebook 裁剪——按章节人物/场景/伏笔裁剪设定库注入（前文直读+动态人物状态数据源）；④ AI 痕迹评分——`ai_taste` 对正文打分并附改进建议
+- **P2 收尾增强**：① 动态模块随机化——`_pick_dynamic_module` 随机+相邻去重+seed 可复现；② 风格范文锚定——`style_roles.reference_text` 迁移透传+快照进 config，`_style_reference` 注入（空则不注入）；③ 全书终审——`final_review` 开关（高质量模式默认开），落 final_review.json，异常降级不阻塞导出结算；④ 质量指标报表——`auto_revised` 真值落库，`traces._aggregate_quality/quality_report` 聚合，`GET /api/admin/quality-report`（站长专属，8 指标卡+得分分布+问题 TopN+弃书风险+阶段成本，无数据空态不报错）
+- **开关注册表**：所有功能开关集中到 `novel_gen/config.py` 的 `FEATURE_FLAGS` 注册表管理（如 `review/final_review` 等），按功能模块分组
+
 ---
 
 ## 5. 数据库结构（MySQL）
@@ -165,6 +180,7 @@ D:\PythonProjects\DouBao\
 | skill_market | id, author_id, name, description, prompt_append, role, downloads, created_at |
 | style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, is_active, sort_order, created_at |
 | style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
+| traces | id, user_id, project_id, event, payload(JSON), created_at（生成轨迹，质量报表聚合底座 P2-4） |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头
 - `init_db()` 启动时自动建表 + 增量迁移
@@ -261,10 +277,11 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等：增量/整批均先落 settle 标记再扣费（宁可漏扣不重扣）
 - BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
-- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库共 80 个用例，本地全绿）
+- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库/生成质量升级共 186 个用例，本地全绿）
 
 ---
 
+- 部署记录（2026-09-28）：第八次发版（合并 devtest → master，9a7d417）。内容：**生成质量升级 P0/P1/P2 全量 + 用户工作台 + 导航收敛**。① P0——前文直读（逐章注入前文关键内容）/ 人物动态状态（character_state 跨章一致性）/ 全书质量汇总（review.json + 工具面板改稿建议含终审块）；② P1——行动表先行 / 场景级下沉 / Lorebook 裁剪 / AI 痕迹评分（FEATURE_FLAGS 注册表集中管理开关）；③ P2——动态模块随机化（seed 可复现）/ 风格范文锚定（reference_text 迁移透传+快照）/ 全书终审（final_review，高质量模式默认开）/ 质量指标报表（/api/admin/quality-report，站长后台新增质量报表 tab，8 指标卡+得分分布+问题 TopN+弃书风险+阶段成本）；④ **用户工作台** `/workspace`（6 tab：概览/账户账单/推广返佣/模型配置/我的技能/风格角色，复用 /api/me/* 后端零改动），并修复 RechargeDialog 退款路径 404（/api/refund/request → /api/me/refund-request）；⑤ **导航收敛**——工具面板移除「我的Skills/Skill市场/风格角色」统一入口工作台（剩 8 张项目级工具卡），顶栏移除余额/充值/模型配置与下拉工作台项（收敛工作台）；⑥ skills_library「AI小说防同质化规则」改版为「去AI味·套路改编规则」（套路黑名单→改编红线）。回归：全量 186 pytest 全绿、npm build 通过 dist hash 一致。
 - 部署记录（2026-09-27）：第七次发版（合并 devtest → master，a04124e）。内容（前端体验 + 稳定性一批）：① **新建小说弹窗输入项完善**（`ProjectList.vue` 重写）——新增每章字数、故事背景、主角设定、预设人物/避雷元素动态标签（回车添加）、剧情走向、爽点密度、剧情速度、自定义提示词、写作技能（平台+我的合并）、风格角色、高质量模式、更多质量开关；默认值与后端一致（chapter_words=2500、pacing=medium、plot_speed=medium、memory_window=5、质量开关全开）；② 修复标签回车无法添加（Vue3 模板 ref 自动解包，改独立函数直接读 ref）；高质量模式补功能说明；③ **大纲导入格式整理**（产出《穿成外婆的纸扎系统_导入大纲.md》11 章可直接导入）；④ **成本防护终止后可继续**——错误提示旁加「继续生成」入口；⑤ **agent_guard 场景限额调大**（max_loops 80→200；chapter 60→150、revise 12→30、review 10→25）+ 补 `AGENT_GUARD_SCENE_<SCENE>` 环境变量覆盖；⑥ **章节生成按钮三态 + 整本重写接口**——无章节「开始生成」/未完成「继续生成」/完成「重新生成」；新增 `POST /api/projects/{id}/chapters/regenerate`（保留大纲/世界观、锁定章节跳过）；⑦ **弹窗布局重排**——生成模式优先、高质量模式与高级选项合并为「质量选项」。另修复 `safety.py` jailbreak 正则第二组可选导致正常文本「系统激活」误判 prompt 注入、创建接口 400 拦截（改必选，新增正反用例）。回归：44 pytest 全绿（P0+P1）、三个冒烟脚本（建表单 19 字段落盘/大纲导入/整本重写 11 章）通过。
 - 部署记录（2026-09-24）：第六次发版（合并 devtest → master，75725e3）。内容：**爆款拆书库三件套**——① 基础沉淀：新表 `book_teardown`（genre/title/summary/content JSON/source_project/source_type=research|seed/view_count/status）+ `webapp/teardown_lib.py`（`sink_research` 调研成果自动沉淀：同项目更新、同题材合并、异常只记日志不阻塞生成；`seed_from_knowledge_base` 启动导入「通用」种子幂等）+ `routers/teardowns.py` 4 接口（题材聚合/列表搜索/详情自增浏览数/管理员删除）+ 前端拆书库页（/teardowns，顶栏入口）；② 方案 A：expand 模式可选「附带题材调研」——`NovelConfig.with_research` + `_research_needed(cfg, has_outline)`，expand 勾选时先跑调研（产出 research.json + 沉淀拆书库并作扩写参考）且**不重写用户已导入大纲**；修复 `save_config/load_config` 手写白名单漏落盘 with_research 的缺陷；③ P1 手动拆解：拆书库页「+ 拆解爆款作品」粘贴/上传 .txt/.md/.docx（≥50 字、≤20000 字）→ AI 拆解 12 项写法清单（开篇钩子/悬念钩子/情节套路/人设亮点/文风/节奏/对话技巧/雷区/可借用手法/原文片段）→ `source_type=manual` 入库（`book_teardown` 幂等迁移加 `user_id` 记录投稿人）；参数错误 400、未登录 401、失败 500 不写坏数据，拆解与调研一致不计费。背景：用户主力创作是 expand 模式，expand 因 has_outline=True 跳过调研 → 拆书库长期只有 8 月内置种子。回归：全量 80 pytest 全绿、真实 DeepSeek 手动拆解冒烟通过、前端构建 dist 引用一致。部署：git archive master → workbench upload（MD5 校验一致）→ python3 -m zipfile -e 解压 → docker compose up -d --build；验证：容器 mysql-mozao/novel-gen 均 healthy、域名 200、/api/health 200、主 JS 881KB 无白屏、/api/teardowns 未登录 401。
 - 部署记录（2026-09-23）：第五次发版（合并 devtest → master，e975b5d）。内容：恢复「选中段落扩写/续写」前端入口——该功能原在旧原生前端 webui（293773a 引入），随 c575fad 删除 webui 而丢失（后端 `/api/projects/{id}/expand-selection` 一直在）；移植回 Vue 版 `ProjectDetail.vue`：阅读器/编辑器选中 ≥5 字弹出「扩写|续写」浮动条（teleport 到 body），结果 ElMessageBox 预览确认后插入选中文本之后（编辑态取光标处），自动进入编辑态；`api/novel.js` 新增 `expandSelection`。后端零改动；注意该接口不参与计费结算（未走 `_settle_incremental`，原实现如此）。构建验证：npm run build 通过、dist 引用一致。
@@ -278,4 +295,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-09-27*
+*最后更新：2026-09-28*

@@ -176,6 +176,7 @@
 |---|---|---|
 | POST | /api/admin/login | 站长登录 |
 | GET | /api/admin/stats | 全站统计 |
+| GET | /api/admin/quality-report?project_id=&days= | 是 | 生成质量指标报表（P2-4，8 指标卡+得分分布+问题 TopN+弃书风险+阶段成本，站长专属） |
 | GET | /api/admin/users | 用户列表 |
 | POST | /api/admin/users/{id}/recharge | 手动充值 |
 | POST | /api/admin/users/{id}/agent | 设为代理 |

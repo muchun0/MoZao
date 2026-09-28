@@ -102,10 +102,11 @@
 | `stores/auth.js` | 登录态 Pinia store |
 | `stores/project.js` | 当前项目 Pinia store |
 | `api/request.js` | axios 封装（token 注入/错误处理） |
-| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` | 按域接口封装 |
+| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款） |
 | `views/Login.vue` | 登录/注册页 |
 | `views/ProjectList.vue` | 书案（作品列表/搜索/筛选） |
 | `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制） |
+| `views/Workspace.vue` | 用户工作台（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
 | `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |

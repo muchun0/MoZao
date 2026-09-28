@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-封面生成：优先调用硅基流动（SiliconFlow）ERNIE-Image-Turbo 生成 AI 封面，
+封面生成：优先调用硅基流动（SiliconFlow）Tongyi-MAI/Z-Image-Turbo 生成 AI 封面，
 失败或未配置 Key 时回退到程序化绘制（Pillow，零成本）。
 
 AI 封面策略：
@@ -30,8 +30,9 @@ SILICONFLOW_API_URLS = [
     "https://api.siliconflow.cn/v1/images/generations",
     "https://api.siliconflow.com/v1/images/generations",
 ]
-# 封面模型 ID（生产可经 COVER_MODEL 环境变量指定；默认硅基流动 ERNIE-Image-Turbo）
-AI_MODEL = os.getenv("COVER_MODEL", "baidu/ERNIE-Image-Turbo")
+# 封面模型 ID（生产可经 COVER_MODEL 环境变量指定；默认硅基流动 Tongyi-MAI/Z-Image-Turbo，
+# 原 baidu/ERNIE-Image-Turbo 已于 2026-09-30 在硅基流动下线）
+AI_MODEL = os.getenv("COVER_MODEL", "Tongyi-MAI/Z-Image-Turbo")
 
 # 生产严格模式：=1 时 AI 封面失败直接抛异常（不回退程序化封面），便于暴露生成问题
 COVER_AI_STRICT = os.getenv("COVER_AI_STRICT", "0") == "1"
@@ -254,7 +255,7 @@ def generate_ai_cover(
     out_path: Optional[Path] = None,
     extra: str = "",
 ) -> Optional[Path]:
-    """调用硅基流动 ERNIE-Image-Turbo 生成 AI 封面。
+    """调用硅基流动 Tongyi-MAI/Z-Image-Turbo 生成 AI 封面。
 
     任一步失败（未配 Key/开关关闭/网络/接口异常）都返回 None，由调用方回退。
     """

@@ -79,7 +79,7 @@ class OutlineGenerator:
         else:
             system, user = outline_prompt(self.cfg, research_block)
             system = self._sys(system)
-            data = self.llm.chat_json(system, user, temperature=0.7)
+            data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
             outline = Outline.from_dict(data)
         outline.title = outline.title or self.cfg.effective_title()
         outline = self._normalize(outline)
@@ -120,7 +120,7 @@ class OutlineGenerator:
             f"- volumes：分卷数组，将全书按剧情阶段分为3-5卷，每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章号), end_ch(结束章号)\n"
         )
         head_system = self._sys(head_system)
-        head = self.llm.chat_json(head_system, head_user, temperature=0.7)
+        head = self.llm.chat_json(head_system, head_user, temperature=0.7, max_tokens=8192)
 
         title = head.get("title") or self.cfg.effective_title()
         intro = head.get("intro", "")
@@ -140,7 +140,7 @@ class OutlineGenerator:
                 batch=(start, end, prev_summary),
             )
             system = self._sys(system)
-            data = self.llm.chat_json(system, user, temperature=0.7)
+            data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
             batch_chapters = [ChapterPlan.from_dict(c) for c in data.get("chapters", [])]
             # 校验并修复序号（模型可能漂移，强制从 start 连续编号）
             for i, c in enumerate(batch_chapters):
@@ -215,7 +215,7 @@ class WorldGenerator:
     def run(self, outline: Outline, research: ResearchReport | None, silent: bool = False) -> World:
         system, user = world_prompt(self.cfg, outline, research.to_prompt_block() if research else "")
         system = self._sys(system)
-        data = self.llm.chat_json(system, user, temperature=0.7)
+        data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
         world = World.from_dict(data)
         if not world.world_view:
             world.world_view = f"{self.cfg.genre}题材原创世界观"

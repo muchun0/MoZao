@@ -28,7 +28,7 @@ def gen_cover(project_id: str, user: dict = Depends(_require_user)):
     if getattr(cfg, "background", "").strip():
         cover_parts.append("世界观：" + cfg.background.strip()[:120])
     cover_extra = "；".join(cover_parts)
-    # AI 封面优先（硅基流动 ERNIE-Image-Turbo），失败自动回退程序化封面
+    # AI 封面优先（硅基流动 Tongyi-MAI/Z-Image-Turbo），失败自动回退程序化封面
     generate_best_cover(
         title=cfg.effective_title(),
         genre=cfg.genre,

@@ -128,18 +128,22 @@ class LLMClient(ABC):
 
         实现方式：向模型强调输出为合法 JSON，收到文本后用 json.loads 解析；
         失败则把「解析错误信息」回传给模型要求修正，最多重试 retries 次。
+        若判定错误是输出被 max_tokens 截断（Unterminated string 等），
+        重试时自动增大 token 上限（+4096，封顶 16384），避免反复在同一上限处截断。
         """
         parse_tip = (
             "你的回复必须是单个合法的 JSON 对象，不要输出任何解释、代码块标记或额外文字。"
         )
         last_err: Optional[Exception] = None
+        # 记录本次调用实际使用的 max_tokens，截断时自动增大
+        cur_max_tokens = max_tokens
         for attempt in range(retries + 1):
             try:
                 text = self.chat(
                     system=f"{system}\n\n{parse_tip}",
                     user=user,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=cur_max_tokens,
                     frequency_penalty=frequency_penalty,
                     presence_penalty=presence_penalty,
                 )
@@ -147,11 +151,22 @@ class LLMClient(ABC):
             except (json.JSONDecodeError, LLMError) as exc:
                 last_err = exc
                 if attempt < retries:
-                    # 把错误回传给模型，要求它只输出修正后的 JSON
-                    user = (
-                        f"{user}\n\n上一次输出无法解析为 JSON，错误：{exc}\n"
-                        f"请重新输出，只返回一个合法的 JSON 对象。"
-                    )
+                    if _is_json_truncation(exc):
+                        # 输出被 max_tokens 截断：自动增大上限重试
+                        if cur_max_tokens is None:
+                            cur_max_tokens = 8192
+                        else:
+                            cur_max_tokens = min(cur_max_tokens + 4096, 16384)
+                        user = (
+                            f"{user}\n\n上一次输出在中途被截断了（JSON 不完整），"
+                            f"错误：{exc}\n"
+                            f"请输出完整的 JSON 对象，确保所有字段都填写完整，不要省略任何内容。"
+                        )
+                    else:
+                        user = (
+                            f"{user}\n\n上一次输出无法解析为 JSON，错误：{exc}\n"
+                            f"请重新输出，只返回一个合法的 JSON 对象。"
+                        )
         raise LLMError(f"模型输出无法解析为 JSON，已重试 {retries} 次。原因：{last_err}")
 
 
@@ -170,3 +185,27 @@ def _parse_json_strict(text: str) -> dict:
     if not isinstance(obj, dict):
         raise json.JSONDecodeError("期望 JSON 对象", t, 0)
     return obj
+
+
+def _is_json_truncation(exc: Exception) -> bool:
+    """判断 JSONDecodeError 是否由输出被 max_tokens 截断导致（而非格式错误）。
+
+    截断类错误的典型特征：JSON 在中途断开，字符串/数组/对象未闭合。
+    pos == 0 说明输出根本不是以 JSON 开头（如模型输出了自然语言前缀），
+    属于格式问题而非 token 截断。
+    """
+    if not isinstance(exc, json.JSONDecodeError):
+        return False
+    if exc.pos == 0:
+        return False
+    msg = str(exc)
+    truncation_signals = (
+        "Unterminated string",
+        "Unterminated array",
+        "Unterminated object",
+        "Expecting value",
+        "Expecting ',' delimiter",
+        "Expecting property name",
+        "Expecting ':' delimiter",
+    )
+    return any(sig in msg for sig in truncation_signals)

@@ -111,14 +111,53 @@ class NovelPipeline:
         return result
 
     def _run_expand_outline(self, silent: bool = False) -> Outline:
-        """扩写模式：把用户提供的大纲/简要内容拆解为结构化章节大纲。"""
+        """扩写模式：把用户提供的大纲/简要内容拆解为结构化章节大纲。
+
+        分批生成：先出总纲（书名/简介/冲突/主线/分卷），再按 8 章一批生成章节，
+        避免一次性输出过长 JSON 被 max_tokens 截断（DeepSeek 上限 8192）。
+        """
         if not self.cfg.expand_input.strip():
             raise RuntimeError("AI 扩写模式需要提供大纲或简要内容（expand_input 为空）")
-        system, user = expand_outline_prompt(self.cfg, self.cfg.expand_input.strip())
-        logger.info("阶段开始: 扩写大纲（expand_input %d 字）", len(self.cfg.expand_input.strip()))
-        data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
-        outline = Outline.from_dict(data)
-        outline.title = outline.title or self.cfg.effective_title()
+        user_input = self.cfg.expand_input.strip()
+        target = self.cfg.num_chapters
+        batch_size = self.outline_gen._BATCH_SIZE
+        logger.info("阶段开始: 扩写大纲（expand_input %d 字，目标 %d 章，分批 %d 章/批）",
+                    len(user_input), target, batch_size)
+
+        # 第一批：总纲（不含章节）
+        head_system, head_user = expand_outline_prompt(self.cfg, user_input, batch=None)
+        head = self.llm.chat_json(head_system, head_user, temperature=0.7, max_tokens=8192)
+        title = head.get("title") or self.cfg.effective_title()
+        intro = head.get("intro", "")
+        core_conflict = head.get("core_conflict", "")
+        main_line = head.get("main_line", "")
+        from ..store.schemas import Volume
+        volumes = [Volume.from_dict(v) for v in (head.get("volumes") or []) if isinstance(v, dict)]
+
+        # 分批生成章节
+        chapters: list[ChapterPlan] = []
+        prev_summary = ""
+        for start in range(1, target + 1, batch_size):
+            end = min(start + batch_size - 1, target)
+            if not silent:
+                print(f"  [扩写大纲分批] 第 {start}—{end} 章 ...")
+            sys_p, usr_p = expand_outline_prompt(
+                self.cfg, user_input, batch=(start, end, prev_summary),
+            )
+            data = self.llm.chat_json(sys_p, usr_p, temperature=0.7, max_tokens=8192)
+            batch_chapters = [ChapterPlan.from_dict(c) for c in data.get("chapters", [])]
+            for i, c in enumerate(batch_chapters):
+                c.no = start + i
+            chapters.extend(batch_chapters)
+            recent = batch_chapters[-3:]
+            prev_summary = "；".join(
+                f"第{c.no}章《{c.title}》：{c.goal}" for c in recent
+            )
+
+        outline = Outline(
+            title=title, intro=intro, core_conflict=core_conflict,
+            main_line=main_line, volumes=volumes, chapters=chapters,
+        )
         outline = self.outline_gen._normalize(outline)
         self.store.save_outline(outline)
         if not silent:

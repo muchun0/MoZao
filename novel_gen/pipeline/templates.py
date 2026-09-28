@@ -346,11 +346,13 @@ def _fanqie_rules(stage: str = "chapter") -> str:
 def expand_outline_prompt(
     cfg: NovelConfig,
     user_input: str,
+    batch: tuple[int, int, str] | None = None,
 ) -> tuple[str, str]:
     """AI 扩写模式：把用户提供的大纲/简要内容拆解为结构化章节大纲。
 
-    - 用户给了分章大纲：AI 整理并规范为 chapters
-    - 用户只给了简要内容/梗概：AI 按目标章节数自动拆分扩写
+    - batch=None：只生成总纲（title/intro/core_conflict/main_line/volumes，不含 chapters）
+    - batch=(start_no, end_no, prev_summary)：分批生成该区间章节，输出 {"chapters": [...]}
+    分批是为了避免一次性输出过长 JSON 被 max_tokens 截断（DeepSeek 上限 8192）。
     """
     system = (
         "你是一位擅长「扩写」的小说主编。用户会给你一段故事大纲或简要内容，"
@@ -364,29 +366,40 @@ def expand_outline_prompt(
         system += "\n\n" + _fanqie_rules("outline")
     hard = _hard_constraints(cfg)
     soft = _soft_direction(cfg)
-    user = (
+    common_head = (
         f"【目标】把下面的用户内容扩写为一部 {cfg.genre} 题材小说"
         f"（全书约 {cfg.total_words} 字，共 {cfg.num_chapters} 章，每章约 {cfg.chapter_words} 字）\n"
         f"【书名】{cfg.effective_title()}\n"
         f"【用户提供的核心创意/简介】{cfg.premise or '（未提供）'}\n\n"
         f"{hard}\n\n{soft}\n\n"
         f"【用户提供的大纲或简要内容】\n{user_input}\n\n"
-        f"请输出 JSON：\n"
-        f"- title：最终书名（沿用给定书名或从内容提炼）\n"
-        f"- intro：作品简介（3-5 句）\n"
-        f"- core_conflict：全书核心冲突（一句话）\n"
-        f"- main_line：全书主线脉络（3-5 句）\n"
-        f"- volumes：分卷数组，按用户大纲中的「第X卷」或剧情阶段归纳为3-5卷；若用户大纲未分卷则按起承转合划分。每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章号), end_ch(结束章号)\n"
-        f"- chapters：恰好 {cfg.num_chapters} 个章节对象的数组，每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签)，章节标题必须互不相同、全书唯一，严禁重名章\n"
-        f"拆分与扩写要求：\n"
-        f"1. 若用户内容已分章，则按其剧情脉络整理为连续章节，补充每章 goal；不足目标章数时按剧情自然延展补足\n"
-        f"2. 若用户只给了简要内容/梗概（未分章），按起承转合自动拆分为 {cfg.num_chapters} 章，每章承接上一章\n"
-        f"3. 每章 goal 一句话说清「本章发生什么、达成什么情绪/爽点、留下什么钩子」；core_event/conflict/character_moves 必须写具体剧情细节，禁止留空或套话\n"
-        f"4. 用户预设的人物必须出现且符合设定；避雷元素绝对不得出现\n"
-        f"5. 章节剧情必须忠实于用户提供的内容脉络，只做细化与合理延展，不得偏离用户核心创意\n"
-        f"6. 全书最后一章必须是完整结局章：收束主线、伏笔与人物命运，并以「结尾升维」（技术→哲学/产品→人性/事件→时代）收尾；"
-        f"除非用户内容明确要求开放或系列化结尾，否则禁止烂尾/未完待续\n"
     )
+    if batch is not None:
+        start_no, end_no, prev_summary = batch
+        user = (
+            common_head
+            + f"【本次分批范围】你现在只设计全书第 {start_no}—{end_no} 章（共 {end_no - start_no + 1} 章）。\n"
+            + (f"【前情提要（已规划章节的剧情摘要）】\n{prev_summary}\n\n" if prev_summary else "")
+            + f"请注意：本章段是全书的一部分，要忠实于用户提供的内容脉络，与前情连贯、伏笔呼应。\n"
+            + f"请输出 JSON：\n"
+            + f"- chapters：恰好 {end_no - start_no + 1} 个章节对象的数组，每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签)，章节标题必须互不相同、全书唯一，严禁重名章\n"
+            + f"（本次只输出本区间章节，序号必须从 {start_no} 连续编号到 {end_no}，不要输出其他章节。）\n"
+            + f"要求：\n"
+            + f"1. 每章 goal 一句话说清「本章发生什么、达成什么情绪/爽点、留下什么钩子」；core_event/conflict/character_moves 必须写具体剧情细节，禁止留空或套话\n"
+            + f"2. 用户预设的人物必须出现且符合设定；避雷元素绝对不得出现\n"
+            + f"3. 章节剧情必须忠实于用户提供的内容脉络，只做细化与合理延展\n"
+            + (f"4. 本批包含全书第 {cfg.num_chapters} 章（最后一章），它必须是完整的结局章：收束主线、伏笔与人物命运，并以「结尾升维」收尾；禁止烂尾/未完待续\n" if end_no >= cfg.num_chapters else "")
+        )
+    else:
+        user = (
+            common_head
+            + f"请输出 JSON（只输出总纲结构，不生成具体章节）：\n"
+            + f"- title：最终书名（沿用给定书名或从内容提炼）\n"
+            + f"- intro：作品简介（3-5 句）\n"
+            + f"- core_conflict：全书核心冲突（一句话）\n"
+            + f"- main_line：全书主线脉络（3-5 句）\n"
+            + f"- volumes：分卷数组，按用户大纲中的「第X卷」或剧情阶段归纳为3-5卷；若用户大纲未分卷则按起承转合划分。每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章号), end_ch(结束章号)\n"
+        )
     system += _skill_append(cfg)
     return system, user
 

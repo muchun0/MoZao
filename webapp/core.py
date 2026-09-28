@@ -1103,6 +1103,9 @@ class OutlineSaveReq(BaseModel):
     chapters: list[OutlineChapterReq] = []
 
 
+REGEN_DAILY_LIMIT = 10  # 每项目每日重生成次数上限（重生成免费，防滥用）
+
+
 def _regen_limit_path(store: ProjectStore) -> Path:
     return store.dir / "regen_count.json"
 

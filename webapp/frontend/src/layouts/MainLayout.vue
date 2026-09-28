@@ -13,7 +13,6 @@
           <span class="username">{{ auth.user.username }}<el-icon><arrow-down /></el-icon></span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="workspace">工作台</el-dropdown-item>
               <el-dropdown-item command="logout">退出</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -38,7 +37,6 @@ const auth = useAuthStore()
 const router = useRouter()
 
 function onCommand(cmd) {
-  if (cmd === 'workspace') { router.push('/workspace'); return; }
   if (cmd === 'logout') {
     auth.logout()
     router.push('/login')

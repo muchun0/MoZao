@@ -96,6 +96,25 @@ def _de_ai_rules() -> str:
     )
 
 
+def _output_discipline() -> str:
+    """正文输出纪律（硬约束）：防止同章多稿拼接、版本并列、元文字开头与中途截断。
+
+    注入到所有「整章正文输出」提示词（整章生成/逐场景/润色/改稿/扩写/质检重写）。
+    背景：曾出现一次 LLM 返回把同一章多个起笔草稿首尾拼接（入墟→突袭→睁眼→营地），
+    并在句子中途截断，被原样落盘。此块在提示词源头规避同类问题。
+    """
+    return (
+        "【输出纪律·硬约束】\n"
+        "1. 只输出【一个】完整连贯的正文版本。严禁并列输出多个起笔、多个改写方案或多稿拼接"
+        "（禁止出现'方案一/方案二''第一版/第二版''另一种写法''或者这样开头'等并列形式）；"
+        "同一事件不得重复叙述两遍。\n"
+        "2. 正文开头不得重复章节标题或场景编号（禁止以'【第X章《…》】'等元文字开头）。\n"
+        "3. 全文必须写完整并自然收尾：末句完整、以句末标点（。！？…”）结束，"
+        "禁止在句子中途截断或停在半句话上。\n"
+        "4. 章节内场景/段落只作自然推进，禁止返回开头重述、或换一个起笔再写一遍。"
+    )
+
+
 def _ending_requirements() -> str:
     """结局硬要求：无论长篇短篇，全书必须有完整结局。
 
@@ -900,6 +919,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     if ref:
         system += "\n\n" + ref
     system += _skill_append(cfg)
+    system += "\n\n" + _output_discipline()
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
     user = (
@@ -939,6 +959,7 @@ def polish_chapter_prompt(cfg, chapter_no, chapter_title, chapter_text):
         "绝对不要改变情节、不要增删剧情、不要改人物对话含义。"
         "只输出润色后的完整正文。"
     )
+    system += "\n\n" + _output_discipline()
     user = (
         f"【第{chapter_no}章《{chapter_title}》】\n"
         f"{chapter_text}\n\n"
@@ -996,6 +1017,7 @@ def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
         "你的任务是只改清单里列出的问题，不改剧情走向、不改人物对话含义。"
         "保持原文字数基本不变（±10%）。只输出润色后的完整正文。"
     )
+    system += "\n\n" + _output_discipline()
     issues_text = chr(10).join(
         f"- [{it.get('type','')}] {it.get('pos','')}：{it.get('detail','')}"
         for it in small_issues
@@ -1135,6 +1157,7 @@ def chapter_prompt(
     if ref:
         system += "\n\n" + ref
     system += _skill_append(cfg)
+    system += "\n\n" + _output_discipline()
     return system, user
 
 
@@ -1237,6 +1260,7 @@ def expand_chapter_prompt(
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:
         system += "\n\n" + _fanqie_rules("chapter")
+    system += "\n\n" + _output_discipline()
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【目标字数】扩写后正文（不含任何标记）应达到约 {target_words} 字\n"

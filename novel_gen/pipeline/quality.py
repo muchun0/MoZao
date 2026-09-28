@@ -22,7 +22,7 @@ from ..config import NovelConfig
 from ..llm.base import LLMClient
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter
-from .templates import reader_review_prompt
+from .templates import reader_review_prompt, _output_discipline
 from .trace import TraceRecorder
 
 # 校验阈值（确定性规则）
@@ -30,6 +30,21 @@ _MIN_WORDS_RATIO = 0.3        # 字数 < 目标 30% 视为严重不足（触发�
 _NGRAM = 8                    # 重复检测 n-gram 长度
 _DUP_RATIO = 0.25             # 与任一近章重叠率 > 25% 视为明显重复
 _MAX_RECENT = 3               # 参与重复检测的最近章节数
+
+# 章内自重复（多稿拼接）检测
+_SELF_NGRAM = 24              # 章内重复检测 n-gram 长度
+_SELF_DUP_RATIO = 0.25        # 章内被重复 n-gram 覆盖比例 > 25% → 疑似多稿拼接
+_SALVAGE_MIN_LINE = 8         # 抢救时视为「草稿分界标记」的最小行长度
+_SALVAGE_MAX_LINE = 16        # 草稿分界标记的最大行长度（短促收尾/面板行；长行多为正常叙事重复）
+_SALVAGE_SPREAD = 300         # 同一标记两次出现的最小字距（区分跨草稿重复 vs 章内呼应）
+
+# 判定「正文完整收尾」的句末标点
+_TERMINAL = set("。！？…”\"』」）】）…。!?"")）】")
+
+
+def _has_type(issues, keyword: str) -> bool:
+    """issues 中是否存在 type 含指定关键词的问题。"""
+    return any(keyword in (it.get("type", "") or "") for it in issues)
 
 
 class QualityChecker:
@@ -55,6 +70,22 @@ class QualityChecker:
         issues = result["issues"]
         rewritten_occurred = False
 
+        # 事后自愈①：章内多稿拼接 → 确定性单稿抢救（不依赖 LLM，避免重写再次堆稿）
+        if _has_type(issues, "章内大量自重复"):
+            salvaged = self._salvage_single_draft(content)
+            if salvaged and salvaged != content and len(salvaged) > len(content) * 0.25:
+                content = salvaged
+                nc, ns = _split_summary(content)
+                if nc:
+                    content = nc
+                if ns:
+                    summary = ns
+                rewritten_occurred = True
+                if not silent:
+                    print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
+                result = self.check(chapter_no, plan_title, plan_goal, content)
+                issues = result["issues"]
+
         # 不通过 → 触发 1 次自动重写
         if not result["passed"]:
             if not silent:
@@ -64,7 +95,11 @@ class QualityChecker:
             rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues)
             if rewritten and len(rewritten) > len(content) * 0.5:
                 content = rewritten
-                content, summary = _split_summary(content)
+                nc, ns = _split_summary(content)
+                if nc:
+                    content = nc
+                if ns:
+                    summary = ns
                 rewritten_occurred = True
                 # 复检
                 result = self.check(chapter_no, plan_title, plan_goal, content)
@@ -111,6 +146,17 @@ class QualityChecker:
         if dup:
             issues.extend(dup)
             score -= 20
+
+        # 2.4 章内多稿自重复（确定性）：同一章内部出现大段重复 → 疑似草稿拼接
+        #    补盲：_dup_issues 只比对前几章，看不到本章内部多段草稿互相重复。
+        for it in self._self_dup_issues(content):
+            issues.append(it)
+            score -= 30
+
+        # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
+        for it in self._ending_issues(content):
+            issues.append(it)
+            score -= 30
 
         # 2.5 AI 痕迹量化检测（P1-4，确定性规则，只扣分不单独阻断）
         if getattr(self.cfg, "ai_taste_check", True):
@@ -186,6 +232,122 @@ class QualityChecker:
                 })
         return issues
 
+    @staticmethod
+    def _draft_markers(content, min_count=2, min_line=_SALVAGE_MIN_LINE,
+                       max_line=_SALVAGE_MAX_LINE, spread=_SALVAGE_SPREAD) -> dict:
+        """检测「同一章多稿首尾拼接」的分界标记：跨大跨度重复出现的独特短行。
+
+        返回 {行文本: [字符偏移,...]}；无拼接返回空 dict。
+        只统计「短促收尾/面板行」（长度在 min_line~max_line 之间）：多稿拼接时
+        每篇草稿都会自带同一句短收尾（如"今日可死次数：2。"），而长行重复多为
+        正常叙事复用（如第2章一条 40 字长行重复 2 次是正常内容），不能当标记。
+        """
+        if not content or len(content) < min_line * 3:
+            return {}
+        lines = content.split("\n")
+        occ: dict[str, list[int]] = {}
+        pos = 0
+        for ln in lines:
+            s = ln.strip()
+            if min_line <= len(s) <= max_line:
+                occ.setdefault(s, []).append(pos)
+            pos += len(ln) + 1
+        return {s: ps for s, ps in occ.items()
+                if len(ps) >= min_count and ps[-1] - ps[0] >= spread}
+
+    def _self_dup_issues(self, content: str) -> list[dict]:
+        """章内自重复（确定性）：同一章正文内部出现大段重复 → 疑似多稿拼接。
+
+        这是对「与前文重复」检查的补盲：后者只比对前几章，看不见本章内部的
+        多段草稿彼此重复。两个互补信号，任一命中即视为拼接：
+        A. 草稿分界标记：同一短促收尾/面板行（8~16字）跨大跨度重复 ≥3 次
+           （正常单章几乎不会，多稿拼接必然多篇共用同一句短收尾）；
+        B. n-gram 覆盖：被「出现≥2次的 n-gram」覆盖的字符占比过高
+           （草稿之间大段内容相同但措辞略有差异，或草稿数少<3 时用）。
+        """
+        if not content or len(content) < _SELF_NGRAM * 3:
+            return []
+        # 信号 A：草稿分界标记（短收尾行重复 ≥3 次）
+        if self._draft_markers(content, min_count=3):
+            return [{
+                "type": "结构-章内大量自重复（疑似多稿拼接）",
+                "detail": "正文中出现跨大跨度重复的短促收尾句（疑似同一章多段草稿首尾拼接）；"
+                          "应只保留单一完整版本",
+                "level": "大改",
+            }]
+        # 信号 B：n-gram 覆盖比例
+        grams: dict[str, list[int]] = {}
+        for i in range(len(content) - _SELF_NGRAM + 1):
+            grams.setdefault(content[i:i + _SELF_NGRAM], []).append(i)
+        covered = [False] * len(content)
+        for poss in grams.values():
+            if len(poss) >= 2:
+                for i in poss:
+                    for j in range(i, min(i + _SELF_NGRAM, len(content))):
+                        covered[j] = True
+        ratio = sum(covered) / len(content)
+        if ratio > _SELF_DUP_RATIO:
+            return [{
+                "type": "结构-章内大量自重复（疑似多稿拼接）",
+                "detail": (f"正文 {len(content)} 字中约 {ratio:.0%} 由重复片段构成，"
+                           "疑似同一章多段草稿被首尾拼接；应只保留单一完整版本"),
+                "level": "大改",
+            }]
+        return []
+
+    def _ending_issues(self, content: str) -> list[dict]:
+        """结尾完整性（确定性）：正文未以句末标点收尾 → 疑似在句子中途被截断。"""
+        if not content:
+            return []
+        last = content.rstrip()[-1]
+        if last not in _TERMINAL:
+            return [{
+                "type": "结构-正文未完整收尾（疑似截断）",
+                "detail": "本章正文未以句末标点结束，疑似在句子中途被截断；应补完结尾",
+                "level": "大改",
+            }]
+        return []
+
+    def _salvage_single_draft(self, content: str) -> str:
+        """同章多稿首尾拼接 → 确定性抢救出最完整的单一草稿；无拼接则原样返回。
+
+        用「草稿分界标记」（重复独特长句）切候选段，取「最长且以句末标点收尾」的一段。
+        纯确定性实现，不依赖 LLM，避免重写时再次堆稿。
+        """
+        marks = self._draft_markers(content)
+        if not marks:
+            return content
+        # 选「出现次数最多、行最短」的重复句作分界标记：短而独立的收尾句
+        # （如面板行"今日可死次数：2。"）比长开头句更贴近"草稿收尾"，避免切出碎片。
+        marker = max(marks, key=lambda s: (len(marks[s]), -len(s)))
+        cuts = sorted(marks[marker])
+        segs, prev = [], 0
+        for c in cuts:
+            nl = content.find("\n", c)
+            end = nl if nl != -1 else len(content)
+            segs.append(content[prev:end])
+            prev = end + 1
+        segs.append(content[prev:])  # 最后一稿（通常为新起笔的截断稿）
+
+        def _score(s: str) -> int:
+            t = s.strip()
+            if not t:
+                return -1
+            return len(t) + (100000 if t[-1] in _TERMINAL else 0)
+
+        best = max(segs, key=_score).strip()
+        # 去掉开头的悬空残留行（上一稿收尾的短行，如"明天呢？"）：只去
+        # ≤4字 或 ≤12字且以问号/省略号结尾的短行，避免误删真实起句（如"他走得很快。"）
+        bl = best.split("\n")
+        while len(bl) > 1 and bl[0].strip():
+            s = bl[0].strip()
+            if len(s) <= 4 or (len(s) <= 12 and s[-1] in "？…"):
+                bl = bl[1:]
+            else:
+                break
+        best = "\n".join(bl).strip()
+        return best
+
     def _content_check(self, content: str) -> list[str]:
         from ..safety import basic_content_check
         return basic_content_check(content)
@@ -248,7 +410,9 @@ class QualityChecker:
                 f"【当前正文】\n{content}"
             )
             text = self.llm.chat(
-                "你是资深网络小说写手，擅长按质检意见重写章节。",
+                "你是资深网络小说写手，擅长按质检意见重写章节。\n\n"
+                + _output_discipline()
+                + "\n重写后必须只输出【一个】完整连贯的正文版本，并以句末标点完整收尾。",
                 prompt, temperature=0.8, max_tokens=8000,
             )
             return (text or "").strip()

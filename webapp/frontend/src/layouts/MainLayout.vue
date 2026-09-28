@@ -8,12 +8,14 @@
       <div class="right">
         <span v-if="auth.user" class="balance">余额 ¥{{ (balance || 0).toFixed(2) }}</span>
         <el-button v-if="auth.user" text @click="rechargeRef.open()">充值</el-button>
+        <el-button v-if="auth.user" text @click="$router.push('/workspace')">工作台</el-button>
         <el-button v-if="auth.user" text @click="$router.push('/teardowns')">拆书库</el-button>
         <el-button v-if="auth.isAdmin" text @click="$router.push('/admin')">管理后台</el-button>
         <el-dropdown v-if="auth.user" @command="onCommand">
           <span class="username">{{ auth.user.username }}<el-icon><arrow-down /></el-icon></span>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item command="workspace">工作台</el-dropdown-item>
               <el-dropdown-item command="llm">模型配置</el-dropdown-item>
               <el-dropdown-item command="logout">退出</el-dropdown-item>
             </el-dropdown-menu>
@@ -55,6 +57,7 @@ onMounted(async () => {
 })
 
 function onCommand(cmd) {
+  if (cmd === 'workspace') { router.push('/workspace'); return; }
   if (cmd === 'llm') { llmRef.value.open(); return; }
   if (cmd === 'logout') {
     auth.logout()

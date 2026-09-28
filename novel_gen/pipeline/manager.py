@@ -116,7 +116,7 @@ class NovelPipeline:
             raise RuntimeError("AI 扩写模式需要提供大纲或简要内容（expand_input 为空）")
         system, user = expand_outline_prompt(self.cfg, self.cfg.expand_input.strip())
         logger.info("阶段开始: 扩写大纲（expand_input %d 字）", len(self.cfg.expand_input.strip()))
-        data = self.llm.chat_json(system, user, temperature=0.7)
+        data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
         outline = Outline.from_dict(data)
         outline.title = outline.title or self.cfg.effective_title()
         outline = self.outline_gen._normalize(outline)
@@ -531,7 +531,7 @@ class NovelPipeline:
         )
         logger.info("阶段开始: 设定提炼 world_from_content")
         system, user = world_from_content_prompt(self.cfg, block)
-        data = self.llm.chat_json(system, user, temperature=0.7)
+        data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
         world = World.from_dict(data)
         if not world.world_view:
             world.world_view = f"{self.cfg.genre}题材原创世界观"
@@ -555,7 +555,7 @@ class NovelPipeline:
         remain = max(1, self.cfg.num_chapters - len(user_chs))
         logger.info("阶段开始: 续写大纲 continue_outline（剩余 %d 章）", remain)
         system, user = continue_outline_prompt(self.cfg, user_block, remain)
-        data = self.llm.chat_json(system, user, temperature=0.7)
+        data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
         plans = []
         for i, c in enumerate(data.get("chapters", []), start=1):
             title = (c.get("title") or "").strip() or f"第{len(user_chs) + i}章"

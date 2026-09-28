@@ -97,7 +97,7 @@ def refundable_amount(user_id: int) -> float:
     with _connect() as conn:
         paid = conn.execute(
             "SELECT COALESCE(SUM(amount),0) AS s FROM recharges "
-            "WHERE user_id=%s AND amount>0 AND note LIKE '管理员手动充值%'",
+            "WHERE user_id=%s AND amount>0 AND note LIKE '管理员手动充值%%'",
             (user_id,)).fetchone()["s"]
         refunded = conn.execute(
             "SELECT COALESCE(SUM(amount),0) AS s FROM refund_requests "
@@ -118,7 +118,7 @@ def create_refund_request(user_id: int, amount: float, reason: str) -> tuple[boo
             return False, "你已有一笔待处理退款申请，请等待站长处理"
         refundable = conn.execute(
             "SELECT COALESCE(SUM(amount),0) AS s FROM recharges "
-            "WHERE user_id=%s AND amount>0 AND note LIKE '管理员手动充值%'",
+            "WHERE user_id=%s AND amount>0 AND note LIKE '管理员手动充值%%'",
             (user_id,)).fetchone()["s"]
         refunded = conn.execute(
             "SELECT COALESCE(SUM(amount),0) AS s FROM refund_requests "

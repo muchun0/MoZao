@@ -172,7 +172,7 @@ def quality_report(project_id: str = "", days: int = 0) -> dict:
             qc_where += " AND " + " AND ".join(conds)
         qc_rows = conn.execute(
             f"SELECT extra FROM agent_trace WHERE {qc_where}", tuple(params)).fetchall()
-        churn_where = "step_type='agent_step' AND step_name LIKE '%编辑审稿%'"
+        churn_where = "step_type='agent_step' AND step_name LIKE '%%编辑审稿%%'"
         if conds:
             churn_where += " AND " + " AND ".join(conds)
         churn_rows = conn.execute(

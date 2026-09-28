@@ -20,6 +20,8 @@
 | 2026-09-21 | 生成正文提示词约束口头禅：`writer.md` 限同句口头禅每章 ≤2 次、禁止章末复现；`architect.md` 禁止把口头禅写进 `core_event`/`transition` 作为"每章复现"指令 | 实测《我的地球Online日记》45 万字中"先记下来"出现 150 次（≈3.3 次/万字），口头禅从识别标签退化为复读机；`repetition.py`（>5 次/万字才禁）拦不住刻意设计的短口头禅，需在提示词层约束 |
 | 2026-09-27 | Agent 生产级加固阶段1：全链路 trace（`agent_trace` 表 + LLM 层模板方法自动埋点）、成本防护（AgentGuard 循环/Token 阈值）、输入注入检测（API 400 + 拼 system 前清洗）、输出合规校验、章级 QualityChecker 自校验（1 次自动重写） | 解决「执行不可回溯/成本不可控/输入无防护/输出无校验」；mock provider 不挂 guard 保持离线测试一致；各能力独立降级开关；新增 4 测试文件 38 用例，全量 118 pytest 全绿 + mock 冒烟 + MySQL 落库验证通过。**约束：新能力默认开启，异常用 `agent_guard.*` 开关关闭，勿改回硬编码** |
 | 2026-09-27 | `webapp/db.py`（1409 行单文件）拆分为 `webapp/db/` 包：`base`（连接池/表结构/init_db）+ `users`（用户/返佣/认证/余额）+ `projects`（归属/退款）+ `skills`（技能/市场）+ `style_roles` + `teardowns`（拆书库）；`__init__.py` re-export 全部符号（含 `_connect`/`_valid_email`/`DB_*`） | 数据层按业务域收敛；调用方 `from webapp import db` 零改动（routers/core/admin_cli/teardown_lib/tests 全部兼容）；**回归：80 pytest 全绿 + app 加载 108 路由 + 15 业务模块导入通过才合入**。约束：新增数据函数放对应域子模块，禁止回写 base.py |
+| 2026-09-28 | 封面 AI 模型由硅基流动 `baidu/ERNIE-Image-Turbo` 更换为 `Tongyi-MAI/Z-Image-Turbo`（代码默认值 + 本地 .env COVER_MODEL 同步更新；生产可经 COVER_MODEL 环境变量覆盖） | 硅基流动官方通知 ERNIE-Image-Turbo 2026-09-30 下线；Z-Image-Turbo 兼容现有 payload（image_size=768x1024 / seed / output_format=png，官方 images API 参数已核实）；回归全量 205 pytest 全绿。merge master 8719855 |
+| 2026-09-28 | 扩写大纲（expand 模式）分批生成：先出总纲（title/intro/core_conflict/main_line/volumes），再按 8 章一批生成章节；`expand_outline_prompt` 增加 batch 参数（None=总纲 / (start,end,prev_summary)=章节批），跨批传前情摘要保持连贯 | 承接 6326ac5 截断修复：即使显式 max_tokens=8192，全书大纲 JSON（几十章 × 8 字段）仍可能超限；分批把单次输出降到安全长度，避免反复重试截断。回归全量 205 pytest 全绿。merge master 8719855 |
 
 ## 二、踩坑记录（避坑清单）
 

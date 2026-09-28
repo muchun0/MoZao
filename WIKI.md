@@ -25,7 +25,7 @@
 | 内容解析 | 上传/粘贴已有正文自动切分章节预览 |
 | 生成 | 生成前联网搜索热门小说参考文风（博查 API）；多 agent 流水线（调研员→架构师→写手→审校→读者） |
 | 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分） |
-| 封面 | 硅基流动 ERNIE-Image-Turbo 一体封面；每本限 5 次 |
+| 封面 | 硅基流动 Tongyi-MAI/Z-Image-Turbo 一体封面；每本限 5 次 |
 | 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
 | Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
@@ -41,7 +41,7 @@
 
 - 后端：Python 3.13 · FastAPI · Uvicorn · MySQL（库 `mozao`；本地 root/yue_426983）
 - 前端：Vue 3 + Element Plus + Vite + Pinia + Vue Router（`webapp/frontend/`）
-- AI：DeepSeek（文本）、博查 Bocha（联网调研）、硅基流动 ERNIE-Image-Turbo（封面）
+- AI：DeepSeek（文本）、博查 Bocha（联网调研）、硅基流动 Tongyi-MAI/Z-Image-Turbo（封面）
 - 部署：Docker 多阶段构建（node:20-alpine 编译前端 → python:3.13-slim 运行），docker-compose 编排（mysql-mozao + novel-gen）
 
 ### 目录结构

@@ -156,6 +156,19 @@ class Memory:
                 if nearby:
                     n_lines = [f"第{c.no}章《{c.title}》：{c.goal}" for c in nearby]
                     parts.append("[L3·近期章节大纲]\n" + "\n".join(n_lines))
+                # L3.5 本章转场衔接：架构师设计的 transition（上一章结尾 → 本章开头如何衔接），
+                # 写手必须据此从上一章结尾续写，避免章节场景硬切
+                try:
+                    idx = up_to_chapter - 1
+                    if 0 <= idx < len(outline.chapters):
+                        cur_plan = outline.chapters[idx]
+                        tr = getattr(cur_plan, "transition", "") or ""
+                        if tr:
+                            parts.append(
+                                "[L3.5·本章转场衔接·写手必须按此从上一章结尾续写（最高优先于自由发挥）]\n" + tr
+                            )
+                except Exception:
+                    pass
         except Exception:
             pass
 

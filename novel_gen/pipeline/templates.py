@@ -854,7 +854,7 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
     return system, user
 
 
-def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal):
+def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=""):
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
         "你的任务是把它拆成 3-5 个连续场景，每个场景 1000-1500 字。"
@@ -863,6 +863,8 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal):
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
+        f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
+        f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
         "请拆成 3-5 个场景，每个场景包含：\n"
         "- location: 地点\n"
@@ -870,6 +872,8 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal):
         "- emotion: 这个场景的情绪目标\n"
         "- anchors: 必须保留的细节\n"
         f"- target_words: 该场景目标字数（总和应接近 {cfg.chapter_words}）\n\n"
+        "场景连续性硬规则：第一个场景必须承接上一章结尾的场景与人物状态，"
+        "从上一章结束的地方接着展开；后续场景沿剧情推进自然过渡，禁止跳跃式换场。\n\n"
         '输出 JSON：{"scenes": [...]}'
     )
     return system, user
@@ -907,12 +911,21 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
         "写作要求：\n"
-        "1. 只写这个场景的内容，不要写场景之间的过渡总结\n"
+        "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
         "3. 对话单独成段，一句对话一段\n"
         "4. 禁止'他很愤怒/他很震惊'式抽象情绪词，用动作+微表情替代\n"
         "5. 字数达到目标即可，不要拖长\n"
-        "6. 不要输出【摘要】，不要输出场景编号，直接输出正文"
+        "6. 不要输出【摘要】，不要输出场景编号，直接输出正文\n"
+        "7. 场景衔接硬规则：\n"
+        + ("   - 本章第一个场景：必须从【上一章节结尾】的场景、时间、人物状态直接续写，"
+           "开头 1-2 句自然承接上一章结尾（如顺延时间、沿用地点、接住人物动作），"
+           "禁止硬切到无关新场景；【上一章节结尾】标注'（无）'时表示首章，可直接开篇\n"
+           if scene_idx == 1 else
+           "   - 本章后续场景：必须自然承接上一个场景的结尾（人物、地点、事件顺延），"
+           "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场\n")
+        + "8. 情节连续：场景内和场景间不得出现'上一幕还在A地，下一句已在B地'式断层，"
+        "所有换场都要有可感知的衔接动作或时间过渡"
     )
     return system, user
 

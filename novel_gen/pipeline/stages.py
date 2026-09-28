@@ -420,7 +420,7 @@ class ChapterWriter:
         # 1. 拆场景（低温 0.4）
         try:
             sys_s, user_s = split_scenes_prompt(
-                self.cfg, chapter_no, plan_title, plan_goal
+                self.cfg, chapter_no, plan_title, plan_goal, prev_tail=prev_tail
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             scenes = json.loads(_strip_json_block(raw)).get("scenes", [])
@@ -569,7 +569,7 @@ class ChapterWriter:
         prev = self.store.load_chapter(chapter_no - 1)
         if not prev or not prev.content:
             return ""
-        return prev.content.strip()[-120:]
+        return prev.content.strip()[-300:]
 
 
 def _split_summary(text: str) -> tuple[str, str]:

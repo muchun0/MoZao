@@ -79,3 +79,76 @@ def test_issues_not_dict_skipped():
     rows = [{"extra": {"score": 80, "auto_revised": False, "issues": ["oops", {"type": "合规-疑似违规内容"}]}}]
     r = _aggregate_quality(rows)
     assert dict(r["issue_top_types"]).get("合规") == 1
+
+
+# ---------- quality_report 全链路（mock _connect）：churn LIKE 字面量 % 转义回归 ----------
+
+def _make_conn(executed):
+    """脚本化假连接：total 聚合查询返回一行，其余查询返回空；
+    用 pymysql 同源 escape 逻辑验证每条参数化 SQL 可安全 mogrify（LIKE %% 回归核心）。"""
+    import pymysql
+
+    class _Cur:
+        def __init__(self, rows):
+            self._rows = list(rows)
+
+        def fetchone(self):
+            return dict(self._rows[0]) if self._rows else None
+
+        def fetchall(self):
+            return [dict(r) for r in self._rows]
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            mogrified = None
+            if params is not None:
+                escaped = tuple(pymysql.converters.escape_item(p, "utf8mb4") for p in params)
+                mogrified = sql % escaped  # 修复前此处抛 TypeError/ValueError
+            executed.append((sql, tuple(params) if params is not None else None, mogrified))
+            if "COUNT(DISTINCT trace_id)" in sql:
+                return _Cur([{"task_count": 0, "call_count": 0, "token_total": 0,
+                              "avg_duration_ms": 0, "fail_count": 0}])
+            return _Cur([])
+
+    return _Conn()
+
+
+@pytest.mark.p2
+def test_quality_report_like_escaped_no_filter(monkeypatch):
+    """无过滤条件（params 为空 tuple 仍走 mogrify）：churn LIKE %% 转义不报错，语义还原。"""
+    from webapp.db import traces as db_traces
+
+    executed = []
+    monkeypatch.setattr(db_traces, "_connect", lambda: _make_conn(executed))
+    r = db_traces.quality_report()
+    assert r["report"]["churn_risk_dist"] == {"低": 0, "中": 0, "高": 0}
+    churn = [e for e in executed if "编辑审稿" in e[0]]
+    assert len(churn) == 1
+    sql, params, mogrified = churn[0]
+    assert "%%编辑审稿%%" in sql  # SQL 源文本为转义写法
+    assert params == ()
+    assert mogrified is not None and "LIKE '%编辑审稿%'" in mogrified  # mogrify 后还原为单 %
+
+
+@pytest.mark.p2
+def test_quality_report_like_escaped_with_filter(monkeypatch):
+    """带 project_id/days 过滤（params 非空）：churn LIKE %% 与 %s 占位符共存时安全格式化。"""
+    from webapp.db import traces as db_traces
+
+    executed = []
+    monkeypatch.setattr(db_traces, "_connect", lambda: _make_conn(executed))
+    r = db_traces.quality_report(project_id="p1", days=7)
+    assert r["filter"] == {"project_id": "p1", "days": 7}
+    churn = [e for e in executed if "编辑审稿" in e[0]]
+    assert len(churn) == 1
+    sql, params, mogrified = churn[0]
+    assert "%%编辑审稿%%" in sql
+    assert len(params) == 2  # project_id + created_at
+    assert mogrified is not None and "LIKE '%编辑审稿%'" in mogrified
+    assert "project_id='p1'" in mogrified  # 过滤条件正常拼接

@@ -110,7 +110,7 @@
 | `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |
-| `components/tools/ToolsPanel.vue` | 工具面板（风格角色管理/技能挂载/参考文风字段、改稿建议 + 全书终审块） |
+| `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台） |
 | `components/outline/OutlineEditor.vue` | 三级大纲编辑器（拖拽） |
 | `components/world/CharacterGraph.vue` | 人物关系图 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |

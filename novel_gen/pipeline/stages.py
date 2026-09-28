@@ -269,8 +269,11 @@ class ChapterWriter:
         prev_tail = self._prev_tail(chapter_no)
 
         # 注入时间线提示
+        plan_core_event = ""
         try:
             outline = self.store.load_outline()
+            if outline and chapter_no - 1 < len(outline.chapters):
+                plan_core_event = outline.chapters[chapter_no - 1].core_event or ""
             if outline and outline.timelines:
                 from .templates import timeline_hint_for_chapter
                 plan_tl = ""
@@ -331,6 +334,7 @@ class ChapterWriter:
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
                 dynamic_module_used=hq_mode,
+                plan_core_event=plan_core_event,
             )
             system = ""
         else:
@@ -343,6 +347,7 @@ class ChapterWriter:
                 memory_context=memory_context,
                 prev_tail=prev_tail,
                 is_final=is_final,
+                chapter_core_event=plan_core_event,
             )
             system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
@@ -405,7 +410,8 @@ class ChapterWriter:
 
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
-                                 dynamic_module_used: bool = True):
+                                 dynamic_module_used: bool = True,
+                                 plan_core_event: str = ""):
         """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
 
         高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
@@ -420,7 +426,8 @@ class ChapterWriter:
         # 1. 拆场景（低温 0.4）
         try:
             sys_s, user_s = split_scenes_prompt(
-                self.cfg, chapter_no, plan_title, plan_goal, prev_tail=prev_tail
+                self.cfg, chapter_no, plan_title, plan_goal,
+                prev_tail=prev_tail, core_event=plan_core_event,
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             scenes = json.loads(_strip_json_block(raw)).get("scenes", [])
@@ -435,6 +442,7 @@ class ChapterWriter:
                 chapter_title=plan_title, chapter_goal=plan_goal,
                 research_block="", memory_context=memory_context,
                 prev_tail=prev_tail, is_final=is_final,
+                chapter_core_event=plan_core_event,
             )
             system = self._sys(system)
             return self.llm.chat(system, user, temperature=0.85,
@@ -449,6 +457,7 @@ class ChapterWriter:
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 memory_context, running_tail, dynamic,
+                core_event=plan_core_event,
             )
             sys_c = self._sys(sys_c)
             try:

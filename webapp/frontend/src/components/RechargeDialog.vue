@@ -49,7 +49,7 @@ function open() {
 
 async function submitRefund() {
   try {
-    await request.post('/refund/request', refundForm.value)
+    await request.post('/me/refund-request', refundForm.value)
     ElMessage.success('退款申请已提交，请等待站长处理')
     refundDialog.value = false
   } catch (e) {

@@ -48,6 +48,7 @@ class LogicValidator:
         issues += self._check_mechanism(world)
         issues += self._check_theme_anchor(world)
         issues += self._check_foreshadow(world)
+        issues += self._check_design_cards(world)
         return issues
 
     #: 机制卡三要素关键信号词（REQ-章内自洽与机制账本）
@@ -155,6 +156,32 @@ class LogicValidator:
                 issues.append(IssueItem("minor", "foreshadow",
                                         f"伏笔『{name}』level 非法：{lvl}",
                                         "level 应为 small/medium/large"))
+        return issues
+
+    def _check_design_cards(self, world: World) -> list[IssueItem]:
+        """事前设计卡完整性（REQ-事前设定卡）：把怪物/地点/机制数字落成结构化卡，
+        防止写手在正文自行发明形态、空间、数字。缺失降为 major（不阻塞旧项目）。"""
+        issues: list[IssueItem] = []
+        mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
+        # 机制卡有可视化数字，但缺结构化初始值 → major
+        if mechanism and any(k in mechanism for k in ("次数", "蚀痕", "进度", "面板")):
+            mb = getattr(world, "mechanism_baseline", None)
+            has_baseline = mb is not None and any(
+                (getattr(mb, f, "") or "").strip() for f in
+                ("scar_current", "panel_format", "reset_rule"))
+            if not has_baseline:
+                issues.append(IssueItem(
+                    "major", "design_cards",
+                    "机制卡含可视化数字，但缺 mechanism_baseline（数字标准答案卡）",
+                    "按 world_prompt 补 mechanism_baseline：旧痕当前长度/面板唯一写法/重置规则"))
+        # 世界观散文提到怪物类生物，但没生物图鉴 → major
+        wv = (getattr(world, "world_view", "") or "")
+        enemies = getattr(world, "enemies", None) or []
+        if wv and not enemies and any(k in wv for k in ("灰卒", "怪物", "妖兽", "魔物", "怪物", "敌")):
+            issues.append(IssueItem(
+                "major", "design_cards",
+                "世界观提到敌对生物，但缺 enemies 生物图鉴",
+                "按 world_prompt 补 enemies：形态/感知方式/行为/弱点写死"))
         return issues
 
     # ---------- 阶段二：骨架（Outline） ----------

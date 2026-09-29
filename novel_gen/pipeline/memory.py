@@ -153,6 +153,52 @@ class Memory:
                             w_normal.append("本章相关人物动机卡：" + "；".join(m_lines))
                 except Exception:
                     pass
+            # ---- 事前设计卡（REQ-事前设定卡）：怪物/地点/势力，小而全量注入（写手不得自行发明） ----
+            try:
+                enemies = getattr(world, "enemies", None) or []
+                if enemies:
+                    e_lines = []
+                    for e in enemies:
+                        bits = []
+                        if getattr(e, "form", ""): bits.append(f"形态：{e.form}")
+                        if getattr(e, "senses", ""): bits.append(f"感知：{e.senses}（正文不得矛盾）")
+                        if getattr(e, "behavior", ""): bits.append(f"行为：{e.behavior}")
+                        if getattr(e, "kill", ""): bits.append(f"弱点：{e.kill}")
+                        if bits:
+                            e_lines.append(f"{e.name}（{'；'.join(bits)}）")
+                    if e_lines:
+                        w_normal.append("【生物图鉴·形态/感知/行为写死，不得自相矛盾】\n" + "\n".join(e_lines))
+            except Exception:
+                pass
+            try:
+                locs = getattr(world, "locations", None) or []
+                if locs:
+                    l_lines = []
+                    for lc in locs:
+                        bits = []
+                        if getattr(lc, "terrain", ""): bits.append(f"地形：{lc.terrain}")
+                        if getattr(lc, "light", ""): bits.append(f"光线：{lc.light}（不得矛盾）")
+                        if getattr(lc, "exits", ""): bits.append(f"出口：{lc.exits}")
+                        if bits:
+                            l_lines.append(f"{lc.name}（{'；'.join(bits)}）")
+                    if l_lines:
+                        w_normal.append("【地点卡·地形/光线/出口写死，不得自相矛盾】\n" + "\n".join(l_lines))
+            except Exception:
+                pass
+            try:
+                facs = getattr(world, "factions", None) or []
+                if facs:
+                    f_lines = []
+                    for f in facs:
+                        bits = []
+                        if getattr(f, "goal", ""): bits.append(f"目标：{f.goal}")
+                        if getattr(f, "relation_to_mc", ""): bits.append(f"与主角：{f.relation_to_mc}")
+                        if bits:
+                            f_lines.append(f"{f.name}（{'；'.join(bits)}）")
+                    if f_lines:
+                        w_normal.append("【势力卡·成员行为须符合此卡】\n" + "；".join(f_lines))
+            except Exception:
+                pass
             if world.foreshadowing:
                 def _fs(x):
                     # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
@@ -217,6 +263,35 @@ class Memory:
             taboos = getattr(world, "setting_taboos", []) or []
             if taboos:
                 key_parts.append("【设定禁忌·明确禁止出现的吃设定行为】\n" + "；".join(str(t) for t in taboos))
+            # 机制初始值（REQ-事前设定卡）：正文里数字的唯一标准答案，写手不得自行发明数字
+            mb = getattr(world, "mechanism_baseline", None)
+            if mb is not None and any([getattr(mb, f, "") for f in
+                                       ("scar_start", "scar_per_death", "scar_current",
+                                        "scar_end", "panel_format", "reset_rule")]):
+                mb_lines = []
+                if getattr(mb, "scar_start", ""): mb_lines.append(f"旧痕起点：{mb.scar_start}")
+                if getattr(mb, "scar_per_death", ""): mb_lines.append(f"每死延伸：{mb.scar_per_death}")
+                if getattr(mb, "scar_current", ""): mb_lines.append(f"旧痕当前：{mb.scar_current}")
+                if getattr(mb, "scar_end", ""): mb_lines.append(f"终局：{mb.scar_end}")
+                if getattr(mb, "panel_format", ""): mb_lines.append(f"面板唯一写法：{mb.panel_format}")
+                if getattr(mb, "reset_rule", ""): mb_lines.append(f"重置规则：{mb.reset_rule}")
+                key_parts.append(
+                    "【机制初始值·正文数字唯一标准答案，禁止自行发明数字/长度/比例】\n" + "\n".join(mb_lines)
+                )
+            # 时钟规则（REQ-事前设定卡）：每章都要遵守，防时间不推进、地下暮色
+            ck = getattr(world, "clock", None)
+            if ck is not None and any([getattr(ck, f, "") for f in ("day_cycle", "travel", "light_rule")]):
+                ck_lines = []
+                if getattr(ck, "day_cycle", ""): ck_lines.append(f"日周期：{ck.day_cycle}")
+                if getattr(ck, "travel", ""): ck_lines.append(f"路程：{ck.travel}")
+                if getattr(ck, "light_rule", ""): ck_lines.append(f"光线规则：{ck.light_rule}")
+                key_parts.append(
+                    "【时钟规则·本章时间流逝、天色、路程必须一致，不得时间不推进却重复写'还有N小时'】\n" + "\n".join(ck_lines)
+                )
+            # 语言风格禁忌（REQ-事前设定卡）：时代/术语禁用词
+            style_taboos = getattr(world, "style_taboos", []) or []
+            if style_taboos:
+                key_parts.append("【语言风格禁忌·以下词语/表达绝对禁止出现】\n" + "；".join(str(t) for t in style_taboos))
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 

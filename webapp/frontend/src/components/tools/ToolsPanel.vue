@@ -122,8 +122,17 @@
         <el-input-number v-model="batchStart" :min="1" controls-position="right" style="width:90px" />
         <span>至</span>
         <el-input-number v-model="batchEnd" :min="1" controls-position="right" style="width:90px" />
-        <el-button size="small" type="primary" @click="doBatch">开始</el-button>
+        <el-button size="small" type="primary" @click="doBatch" :loading="batchRunning" :disabled="batchRunning">开始</el-button>
       </el-space>
+      <div v-if="batchRunning || batchError" style="margin-top:10px">
+        <el-progress v-if="batchRunning" :percentage="batchPct" :stroke-width="10"
+          :indeterminate="batchPct === 0" :status="batchPct >= 100 ? 'success' : ''" />
+        <div v-if="batchRunning && batchStatus" class="muted" style="margin-top:6px">{{ batchStatus }}</div>
+        <div v-if="batchError" class="batch-err">
+          <div><b>批量生成未完成：</b>{{ batchError }}</div>
+          <div class="muted" style="margin-top:4px">已生成的章节已保留，可把「开始」章改为失败的章节号后再次开始续跑。</div>
+        </div>
+      </div>
     </el-card>
 
     <!-- 伏笔管理 -->
@@ -162,9 +171,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import * as toolsApi from '../../api/tools'
-import { getProject } from '../../api/project'
+import { getProject, getStatus } from '../../api/project'
 import { batchGenerate } from '../../api/novel'
 import { ElMessage } from 'element-plus'
 
@@ -219,6 +228,58 @@ const altLoading = ref(false)
 const alts = ref([])
 const batchStart = ref(1)
 const batchEnd = ref(1)
+// 批量生成进度跟踪：点击开始后轮询 /projects/{id}，展示进度条、状态与终止原因（含成本防护提示）
+const batchRunning = ref(false)
+const batchPct = ref(0)
+const batchStatus = ref('')
+const batchError = ref('')
+let batchTimer = null
+
+function stopBatchPolling() {
+  if (batchTimer) { clearInterval(batchTimer); batchTimer = null }
+}
+
+async function pollBatch() {
+  try {
+    const s = await getStatus(props.pid)
+    // 进度按本次批量范围计算：chapters_done 是项目整体已生成章数，扣除批量起点之前的存量
+    const total = batchEnd.value - batchStart.value + 1
+    if (total > 0 && s.chapters_done !== undefined) {
+      const done = Math.max(0, s.chapters_done - batchStart.value + 1)
+      batchPct.value = Math.min(100, Math.round(done / total * 100))
+    }
+    batchStatus.value = s.running
+      ? (s.state?.phase === 'writing' ? '正在逐章写作…'
+         : s.state?.phase ? `正在生成（${s.state.phase}）…` : '批量生成中…')
+      : ''
+    if (!s.running) {
+      stopBatchPolling()
+      batchRunning.value = false
+      if (s.error) {
+        batchError.value = s.error
+        ElMessage.error('批量生成终止：' + s.error)
+      } else {
+        ElMessage.success('批量生成完成')
+      }
+    }
+  } catch { /* 网络抖动忽略，下一轮轮询再试 */ }
+}
+
+async function doBatch() {
+  if (batchRunning.value) return
+  if (batchEnd.value < batchStart.value) { ElMessage.warning('结束章不能小于起始章'); return }
+  try {
+    await batchGenerate(props.pid, { start: batchStart.value, end: batchEnd.value })
+    ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
+    batchRunning.value = true
+    batchError.value = ''
+    batchPct.value = 0
+    batchStatus.value = '批量生成中…'
+    stopBatchPolling()
+    batchTimer = setInterval(pollBatch, 3000)
+    pollBatch()
+  } catch (e) { ElMessage.error(e?.response?.data?.detail || '批量生成失败') }
+}
 
 const fsInput = ref('')
 const foreshadowing = ref([])
@@ -266,13 +327,6 @@ async function genAlts() {
   } catch (e) { ElMessage.error('生成失败') } finally { altLoading.value = false }
 }
 
-async function doBatch() {
-  try {
-    await batchGenerate(props.pid, { start: batchStart.value, end: batchEnd.value })
-    ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
-  } catch (e) { ElMessage.error('批量生成失败') }
-}
-
 async function loadFs() {
   try { const r = await toolsApi.listForeshadowing(props.pid); foreshadowing.value = r.foreshadowing || [] } catch {}
 }
@@ -301,7 +355,8 @@ async function delLk(i) {
   loadLk()
 }
 
-
+// 离开工具面板时停止批量轮询，避免泄漏定时器
+onUnmounted(stopBatchPolling)
 
 </script>
 
@@ -334,4 +389,5 @@ async function delLk(i) {
 .lv-big { color: #f56c6c; font-weight: 700; }
 .review-type { color: #409eff; }
 .review-pos { color: #909399; }
+.batch-err { padding: 8px 10px; background: #fef0f0; border-left: 3px solid #f56c6c; border-radius: 4px; font-size: 13px; }
 </style>

@@ -20,7 +20,7 @@
 | `.llm_encrypt.key` | BYOK 加密密钥（**不入库**） |
 | `启动小说生成器.bat` | Windows 一键启动 |
 | `deploy/` | 部署辅助：`Caddyfile`+`caddy.service`（反代）、`migrate_sqlite_to_mysql.py`（历史数据迁移）、`insert_skills_133.sql` |
-| `tests/` | pytest 测试（44 用例，mock provider 离线跑通） |
+| `tests/` | pytest 测试（241 用例，mock provider 离线跑通；含 `test_volume_link.py` 分卷-章节关联、`test_world_reveal.py` 世界观逐步展开） |
 | `skills_library/` | 写作技能库：`genre-research`/`hot-novels`/`style-references`/`writing-techniques` + 技能蒸馏文档（`INDEX.md` 有目录） |
 | `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
@@ -41,9 +41,14 @@
 | `research/schemas.py` | 调研数据结构 |
 | `research/knowledge_base.json` | 内置热门小说共性知识库 |
 | `pipeline/manager.py` | **`NovelPipeline`**：整条流水线编排 + 断点续跑 + 风格注入；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出）；编辑审稿 churn 落 trace |
+| `pipeline/orchestrator.py` | 架构总控 `Orchestrator`：阶段门禁 StageGate（产出→准出校验→自动重生成≤N轮→仲裁放行）+ 冲突仲裁；`manager.run_world/run_outline` 接入（mock provider 默认跳过） |
+| `pipeline/validator.py` | 独立逻辑校验 `LogicValidator`：设定一致性/OOC/主线偏移/重复≤5%/伏笔完整性 5 类校验 + 分级 |
+| `pipeline/issue_triage.py` | 问题分级 `IssueItem`(fatal/major/minor) + triage/has_fatal/sort 纯函数 |
+| `pipeline/report.py` | 成果整合：落盘 4 份设计文档到 `projects/<id>/design/`（核心设定册/骨架大纲/节奏手册/质量报告） |
 | `pipeline/stages.py` | 阶段定义/推进 |
 | `pipeline/agents/base.py` | Agent 基类（人设+技能 → System Prompt） |
 | `pipeline/agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色实现（调研/大纲/正文/审校/读者/风格师） |
+| `pipeline/agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分：主题与人物 / 世界观与规则 / 节奏与伏笔 专项 Agent（认领结构化锚点 + 确定性推导关键节点/分卷节奏/伏笔回收闭环） |
 | `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**） |
 | `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物状态注入（P0-2） |
 | `pipeline/character_state.py` | 人物动态状态快照（P0-2）：确定性出场记录 + 可选 LLM 状态细节抽取，失败降级 |
@@ -58,6 +63,7 @@
 | `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |
 | `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2） |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |
+| `store/schemas.py` | 项目数据结构；多Agent协作扩展：`World` 新增 theme_proposition/conflict_matrix/protagonist_arc/character_motives/goldfinger_rules(五要素)/setting_taboos，`foreshadowing` 升级为结构化 `ForeshadowItem`(buried_ch/reveal_ch/level)，`Outline` 新增 key_nodes/volume_pacing；全部 from_dict 兼容旧数据 |
 | `export/book_formats.py` | TXT/EPUB/DOCX 导出 |
 | `export/cover.py` | AI 封面生成（Pillow） |
 | `utils/chapter_splitter.py` | 章节切分 |

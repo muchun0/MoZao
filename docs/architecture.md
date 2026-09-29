@@ -38,7 +38,7 @@
 | `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计 | `base.py`、`factory.py`、`providers.py`、`usage.py` |
 | `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告 | `research.py`、`sources.py`、`schemas.py` |
 | `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
-| `store/` | 项目落盘、状态机、断点续传、进度统计 | `project.py`（`ProjectStore`）、`schemas.py` |
+| `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角） | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
 | `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
 | `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘 | — |
@@ -51,10 +51,15 @@
 | 文件 | 职责 |
 |---|---|
 | `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace |
+| `orchestrator.py` | 架构总控 `Orchestrator`：任务拆解、**阶段门禁 StageGate**（产出→准出校验→不合格自动重生成≤N轮→超限仲裁放行）、跨模块冲突仲裁（主题>人物>世界观）；`manager.run_world/run_outline` 接入门禁（mock provider 默认跳过，保持离线行为一致） |
+| `validator.py` | 独立第三方逻辑校验 Agent `LogicValidator`：5 类专项校验（设定一致性/人物OOC/主线偏移/重复情节≤5%/伏笔完整性），输出分级问题清单，供 StageGate 与质量报告复用 |
+| `issue_triage.py` | 问题分级模型 `IssueItem`（fatal/major/minor）+ triage/has_fatal/sort 纯函数 |
+| `report.py` | 成果整合：全书完成后落盘 4 份设计文档（核心设定册/全本骨架大纲/节奏执行手册/质量校验报告）到 `projects/<id>/design/`，失败降级不阻塞 |
 | `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
-| `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线 / 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
+| `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线（`OutlineGenerator` 生成后按分卷区间回填 `volume_no`；世界观产出 `world_reveals` 阶段揭示计划）/ 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
+| `agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分（REQ）：主题与人物 Agent（主题命题/三层冲突/主角弧光/配角动机）/ 世界观与规则 Agent（世界观/金手指五要素/设定禁忌）/ 节奏与伏笔 Agent（关键节点/分卷节奏/伏笔回收闭环）；`ArchitectAgent` 收敛为骨架生产者并编排三者 |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
-| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2）+ 按章触发注入 L1 裁剪（P1-3，强约束置 prompt 末尾） |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2）+ 按章触发注入 L1 裁剪（P1-3，强约束置 prompt 末尾）；世界观**跟随主角视角分层注入**（有 `world_reveals` 时：已揭示进普通区、未揭示进强约束区禁剧透；无则回退全量注入） |
 | `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取，失败静默降级，写入 character_states.json |
 | `review_summary.py` | 全书质量汇总（P0-3）：改稿问题类型分布 / 质检平均分 / 校验问题统计（纯函数，供 /review 接口聚合） |
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |

@@ -63,6 +63,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
     FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
     FeatureFlag("review", "final_review", False, "全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）"),
+    FeatureFlag("review", "stage_gate", True, "多Agent阶段门禁：每阶段产出后准出校验，不合格自动重生成（REQ 多Agent协作分层优化）"),
+    FeatureFlag("review", "stage_gate_retries", 2, "阶段门禁最大自动重生成轮次，超限由总控仲裁放行（REQ 多Agent协作分层优化）"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -246,6 +248,8 @@ class NovelConfig:
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
+    stage_gate: bool = feature_default("stage_gate")                 # 多Agent阶段门禁：每阶段产出后准出校验（REQ 多Agent协作分层优化）
+    stage_gate_retries: int = feature_default("stage_gate_retries")  # 阶段门禁最大自动重生成轮次（REQ 多Agent协作分层优化）
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

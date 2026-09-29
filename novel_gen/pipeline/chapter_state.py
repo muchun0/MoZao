@@ -15,6 +15,7 @@
   "items":     {"灰髓袋": "被独眼刘抢走"},        # 物品归属
   "time":      "第9天，夜间，墟外坡底",          # 时间锚点
   "facts":     ["人头押金由独眼刘垫付，陆沉欠独眼刘"],  # 已发生事实（不可逆事件）
+  "body":      ["左臂肘部以下无知觉", "衣袖焦黑翻卷"],  # 主角身体/伤势/服饰状态
 }
 
 LLM 抽取失败时降级：确定性正则抓「次数/进度/蚀痕…：N」面板行，其余字段留空；
@@ -59,10 +60,13 @@ def extract_scene_state(llm, text: str) -> dict | None:
 def _llm_scene_extract(llm, text: str) -> dict:
     system = (
         "你是小说场景状态记录员。根据场景正文，抽取「已达成且后续场景必须延续」的状态："
-        "机制数字（面板/进度，如可死次数：2）、人物生死、物品归属、时间锚点。\n"
+        "机制数字（面板/进度，如可死次数：2）、人物生死、物品归属、时间锚点、"
+        "主角身体状态（伤口位置/知觉范围/服饰损坏，如'左臂肘部以下无知觉''衣袖焦黑'）。\n"
         '只输出合法 JSON：{"numbers":["可死次数：2"],"characters":{"疤脸":"已死"},'
-        '"items":{"灰髓袋":"被独眼刘抢走"},"time":"同日午后，墟内一层"}。\n'
+        '"items":{"灰髓袋":"被独眼刘抢走"},"time":"同日午后，墟内一层",'
+        '"body":["左臂肘部以下无知觉","衣袖焦黑翻卷"]}。\n'
         "规则：只写正文明确呈现的状态；死亡/被抢等不可逆事件必须记录；"
+        "身体状态必须写清部位与范围（'肘部以下'而非笼统'受伤'）；"
         "数字必须是正文出现的准确写法；无某项给空对象/空数组；只输出 JSON。"
     )
     data = llm.chat_json(system, f"场景正文：\n{text}", temperature=0.3, max_tokens=400)
@@ -78,16 +82,19 @@ def _llm_scene_extract(llm, text: str) -> dict:
     items = data.get("items")
     if isinstance(items, dict):
         out["items"] = {str(k): str(v) for k, v in items.items() if str(k).strip()}
+    body = data.get("body")
+    if isinstance(body, list):
+        out["body"] = [str(x) for x in body if str(x).strip()]
     t = data.get("time")
     if isinstance(t, str) and t.strip():
         out["time"] = t.strip()
-    if not any(k in out for k in ("numbers", "characters", "items", "time")):
+    if not any(k in out for k in ("numbers", "characters", "items", "time", "body")):
         raise ValueError("场景状态抽取结果为空")
     return out
 
 
 def merge_scene_state(acc: dict, upd: dict) -> dict:
-    """把新场景状态并入累计账本（同 key 后写覆盖，facts 累积去重）。"""
+    """把新场景状态并入累计账本（同 key 后写覆盖，body/facts 累积去重）。"""
     acc = dict(acc or {})
     if not upd:
         return acc
@@ -102,6 +109,10 @@ def merge_scene_state(acc: dict, upd: dict) -> dict:
     items.update(upd.get("items") or {})
     if items:
         acc["items"] = items
+    # 身体状态：新场景可能改写旧状态（如复活修复伤口），整体覆盖而非累积，
+    # 防止"肘部以下无知觉"与"手腕以上无知觉"两个矛盾版本并存。
+    if upd.get("body"):
+        acc["body"] = [str(x) for x in upd["body"] if str(x).strip()]
     if upd.get("time"):
         acc["time"] = str(upd["time"])
     return acc
@@ -120,6 +131,10 @@ def format_scene_state(acc: dict) -> str:
     items = acc.get("items") or {}
     if items:
         lines.append("物品归属：" + "；".join(f"{k}（{v}）" for k, v in items.items()))
+    body = acc.get("body") or []
+    if body:
+        lines.append("主角身体状态：" + "；".join(str(x) for x in body) +
+                     "（后续场景的伤口/知觉/服饰描写必须与此一致，不得自行改变范围）")
     if acc.get("time"):
         lines.append(f"时间锚点：{acc['time']}")
     if not lines:
@@ -155,14 +170,16 @@ def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | N
 def _llm_chapter_extract(llm, chapter, no: int) -> dict:
     system = (
         "你是小说世界状态管理员。根据给定章节正文，把「机制数字、人物生死、物品归属、"
-        "时间锚点、已发生事实」整理成状态清单，供下一章续写时承接。\n"
+        "时间锚点、已发生事实、主角身体状态」整理成状态清单，供下一章续写时承接。\n"
         '只输出合法 JSON：{"numbers":["可死次数：1","蚀痕：3/10"],'
         '"characters":{"疤脸":"已死（死在墟内二层）"},'
         '"items":{"灰髓袋":"被独眼刘抢走"},'
         '"time":"第9天，夜间，墟外坡底",'
-        '"facts":["人头押金由独眼刘垫付，陆沉欠独眼刘"]}。\n'
+        '"facts":["人头押金由独眼刘垫付，陆沉欠独眼刘"],'
+        '"body":["左臂肘部以下无知觉","左臂衣袖焦黑"]}。\n'
         "规则：只写正文明确呈现的状态；死亡/被抢/负债等不可逆事件必须记录；"
-        "数字必须是正文出现的准确写法；无某项给空对象/空数组；只输出 JSON。"
+        "身体状态写清部位与范围（伤口/知觉/服饰）；数字必须是正文出现的准确写法；"
+        "无某项给空对象/空数组；只输出 JSON。"
     )
     data = llm.chat_json(
         system,
@@ -181,13 +198,16 @@ def _llm_chapter_extract(llm, chapter, no: int) -> dict:
     items = data.get("items")
     if isinstance(items, dict):
         out["items"] = {str(k): str(v) for k, v in items.items() if str(k).strip()}
+    body = data.get("body")
+    if isinstance(body, list):
+        out["body"] = [str(x) for x in body if str(x).strip()]
     t = data.get("time")
     if isinstance(t, str) and t.strip():
         out["time"] = t.strip()
     facts = data.get("facts")
     if isinstance(facts, list):
         out["facts"] = [str(x) for x in facts if str(x).strip()]
-    if not any(k in out for k in ("numbers", "characters", "items", "time", "facts")):
+    if not any(k in out for k in ("numbers", "characters", "items", "time", "facts", "body")):
         raise ValueError("章末状态抽取结果为空")
     return out
 
@@ -210,6 +230,9 @@ def format_chapter_state(state: dict) -> str:
     facts = state.get("facts") or []
     if facts:
         lines.append("已发生事实：" + "；".join(str(x) for x in facts))
+    body = state.get("body") or []
+    if body:
+        lines.append("主角身体状态：" + "；".join(str(x) for x in body))
     if not lines:
         return ""
     return (

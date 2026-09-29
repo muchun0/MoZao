@@ -32,6 +32,11 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
         # 大改风控：重写时自动加载 world + memory + verify_issues 作为硬约束
         chapter = pipeline.chapter_writer.write(
             no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+        # 章末状态落盘（章间账本）：与写章循环一致，否则重写后账本不更新
+        try:
+            pipeline._update_chapter_state(no, silent=True)
+        except Exception:
+            logger.warning("重写后章末状态抽取失败（忽略）: no=%d", no)
     except Exception as e:
         logger.exception("单章重写失败: project=%s no=%d", project_id, no)
         raise HTTPException(status_code=500, detail=f"重写失败：{e}")

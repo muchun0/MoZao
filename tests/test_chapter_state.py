@@ -111,6 +111,24 @@ def test_merge_scene_state_later_wins():
 
 
 @pytest.mark.p1
+def test_merge_scene_body_replaces_not_accumulates():
+    """身体状态后写覆盖（复活修复伤口后，旧的'肘部以下无知觉'不应与新状态并存）。"""
+    acc = {"numbers": ["可死次数：3"], "body": ["左臂肘部以下无知觉", "衣袖焦黑"]}
+    upd = {"body": ["左臂灼伤已退，仅剩手腕以下无知觉"]}
+    out = merge_scene_state(acc, upd)
+    assert out["body"] == ["左臂灼伤已退，仅剩手腕以下无知觉"]
+    assert "左臂肘部以下无知觉" not in out["body"]
+
+
+@pytest.mark.p1
+def test_format_scene_state_includes_body():
+    acc = {"numbers": ["可死次数：2"], "body": ["左臂肘部以下无知觉"]}
+    hint = format_scene_state(acc)
+    assert "身体状态" in hint
+    assert "左臂肘部以下无知觉" in hint
+
+
+@pytest.mark.p1
 def test_format_scene_state_hint():
     acc = {"numbers": ["可死次数：1"], "characters": {"疤脸": "已死"},
            "items": {"灰髓袋": "被独眼刘抢走"}, "time": "第9天夜间"}

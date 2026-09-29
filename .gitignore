@@ -50,3 +50,5 @@ ux_report/
 
 # 本地配置（含密钥，不入库）
 config.yaml
+# 营销素材
+marketing/

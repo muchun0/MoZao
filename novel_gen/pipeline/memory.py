@@ -130,6 +130,16 @@ class Memory:
                 w_normal.append(f"本章相关人物卡：{chars}" if trimmed else f"人物卡：{chars}")
             if world.foreshadowing:
                 def _fs(x):
+                    # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
+                    if hasattr(x, "buried_ch"):
+                        parts = []
+                        if x.name or x.content:
+                            parts.append(x.name or x.content)
+                        if getattr(x, "buried_ch", 0):
+                            parts.append(f"埋第{x.buried_ch}章")
+                        if getattr(x, "reveal_ch", None):
+                            parts.append(f"收第{x.reveal_ch}章")
+                        return "（" + "，".join(parts) + "）" if len(parts) > 1 else (parts[0] if parts else "")
                     if isinstance(x, dict):
                         return " ".join(str(v) for v in x.values())
                     return str(x)
@@ -155,6 +165,33 @@ class Memory:
                 key_parts.append(
                     "【金手指机制卡·绝对不可违背，数字与规则全文必须自洽，首章要实际用起来并兑现标题】\n" + mechanism
                 )
+            # ---- 底层锚点（REQ 多Agent协作分层优化）：主题/弧光/金手指五要素/设定禁忌进强约束区 ----
+            theme = getattr(world, "theme_proposition", "") or ""
+            if theme:
+                key_parts.append("【核心主题·全文剧情与人物选择须最终回归此命题】\n" + theme)
+            arc = getattr(world, "protagonist_arc", None)
+            if arc is not None and (getattr(arc, "belief", "") or getattr(arc, "flaw", "")):
+                arc_parts = [f"开篇信念：{arc.belief}", f"核心缺陷：{arc.flaw}"]
+                if getattr(arc, "change_nodes", None):
+                    arc_parts.append("关键转变节点：" + "；".join(arc.change_nodes))
+                if getattr(arc, "final_insight", ""):
+                    arc_parts.append(f"最终认知：{arc.final_insight}")
+                key_parts.append(
+                    "【主角弧光卡·人物关键选择必须符合当前弧光阶段，禁止工具化行为】\n" + "\n".join(arc_parts)
+                )
+            gf = getattr(world, "goldfinger_rules", None)
+            if gf is not None:
+                gf_lines = [
+                    f"触发条件：{gf.trigger}", f"能力上限：{gf.upper_limit}",
+                    f"能力下限：{gf.lower_limit}", f"使用代价：{gf.cost}",
+                    f"成长路径：{gf.growth_path}",
+                ]
+                key_parts.append(
+                    "【金手指规则说明书·五要素绝对不可违背，能力边界与代价全文必须自洽】\n" + "\n".join(gf_lines)
+                )
+            taboos = getattr(world, "setting_taboos", []) or []
+            if taboos:
+                key_parts.append("【设定禁忌·明确禁止出现的吃设定行为】\n" + "；".join(str(t) for t in taboos))
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 

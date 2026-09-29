@@ -87,7 +87,7 @@
           <el-select v-model="form.skill_id" clearable placeholder="可选：套用平台写作技能（网文实战技巧）">
             <el-option v-for="s in skills" :key="s.id" :label="s.name" :value="s.id">
               <div style="display:flex;justify-content:space-between;gap:12px">
-                <span>{{ s.name }}</span>
+                <span>{{ s.name }} <small class="muted" v-if="skillStage(s)">（{{ skillStage(s) }}）</small></span>
                 <small class="muted">{{ s.scope }}</small>
               </div>
             </el-option>
@@ -211,6 +211,12 @@ const fileMsg = ref('')
 const charInput = ref('')
 const forbidInput = ref('')
 const advOpen = ref([])
+
+const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }
+const skillStage = s => {
+  const list = (s.applicable_stages || '').split(/[,，]/).map(x => x.trim()).filter(Boolean)
+  return list.length ? list.map(x => STAGE_LABELS[x] || x).join('/') : ''
+}
 
 const formatSample = [
   '《示例书名》',

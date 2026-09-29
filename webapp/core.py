@@ -1058,6 +1058,7 @@ class SkillReq(BaseModel):
     is_active: int = 1
     sort_order: int = 0
     role: str = ""  # 空=全局；researcher/architect/writer/reviewer=专属角色
+    applicable_stages: str = ""  # 适用阶段，逗号分隔；空=全阶段（REQ-技能统一 阶段一）
 
 
 class StyleRoleReq(BaseModel):

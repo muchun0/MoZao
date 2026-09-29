@@ -27,6 +27,7 @@ def create_my_skill(req: dict, user: dict = Depends(_require_user)):
         description=req.get("description", ""),
         prompt_append=req.get("prompt_append", ""),
         role=req.get("role", ""),
+        applicable_stages=req.get("applicable_stages", ""),
         is_active=1 if req.get("is_active", True) else 0,
     )
     logger.info("用户创建skill: uid=%d sid=%d name=%s", user["id"], sid, name)
@@ -38,7 +39,7 @@ def update_my_skill(skill_id: int, req: dict, user: dict = Depends(_require_user
     if not db.get_user_skill(skill_id, user["id"]):
         raise HTTPException(status_code=404, detail="Skill不存在")
     fields = {}
-    for k in ("name", "description", "prompt_append", "role", "is_active"):
+    for k in ("name", "description", "prompt_append", "role", "applicable_stages", "is_active"):
         if k in req:
             v = req[k]
             if k == "is_active":
@@ -74,6 +75,7 @@ def publish_market(req: dict, user: dict = Depends(_require_user)):
         description=src.get("description", ""),
         prompt_append=src["prompt_append"],
         role=src.get("role", ""),
+        applicable_stages=src.get("applicable_stages", ""),
     )
     logger.info("用户发布skill到市场: uid=%d sid=%d mid=%d name=%s",
                 user["id"], src_id, mid, src["name"])

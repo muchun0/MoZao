@@ -137,8 +137,8 @@
         </el-card>
       </el-tab-pane>
 
-      <!-- ============ 我的技能 ============ -->
-      <el-tab-pane label="我的技能" name="skills">
+      <!-- ============ 技能管理（我的/平台/市场 统一入口，REQ-技能统一 9.7） ============ -->
+      <el-tab-pane label="技能管理" name="skills">
         <el-card>
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
@@ -148,25 +148,43 @@
           </template>
           <div v-for="s in mySkills" :key="s.id" class="fs-row">
             <div>
-              <b>{{ s.name }}</b>
+              <b>{{ s.name }}</b> <el-tag size="small" type="success">我的</el-tag>
               <div class="muted" style="font-size:12px">{{ s.description }}</div>
-              <div class="muted" style="font-size:12px">角色：{{ s.role || '全部' }} · 发布：{{ s.market_id ? '已上架市场' : '未上架' }}</div>
+              <div class="muted" style="font-size:12px">角色：{{ roleLabel(s) }} · 适用阶段：{{ stageLabel(s) }} · 发布：{{ s.market_id ? '已上架市场' : '未上架' }}</div>
             </div>
             <span style="display:flex;gap:6px">
               <el-button v-if="!s.market_id" size="small" link type="primary" @click="publishSkill(s)">发布到市场</el-button>
               <el-button size="small" link type="danger" @click="delMySkill(s.id)">删</el-button>
             </span>
           </div>
-          <div v-if="!mySkills.length" class="muted" style="padding:12px 0">还没有自定义技能</div>
+          <div v-if="!mySkills.length" class="muted" style="padding:12px 0">还没有自定义技能，点右上角新建</div>
+        </el-card>
+
+        <el-card style="margin-top:12px">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <b>平台技能（平台内置）</b>
+              <el-button size="small" link @click="loadPlatformSkills()">刷新</el-button>
+            </div>
+          </template>
+          <p class="muted" style="font-size:12px;margin-bottom:8px">平台维护的写作技法，只读浏览；可在「风格角色」中挂载，或建书时直接选用。</p>
+          <div v-for="s in platformSkills" :key="s.id" class="fs-row">
+            <div>
+              <b>{{ s.name }}</b> <el-tag size="small" type="info">平台</el-tag>
+              <div class="muted" style="font-size:12px">{{ s.description }}</div>
+              <div class="muted" style="font-size:12px">角色：{{ roleLabel(s) }} · 适用阶段：{{ stageLabel(s) }}</div>
+            </div>
+          </div>
+          <div v-if="!platformSkills.length" class="muted" style="padding:12px 0">暂无平台技能</div>
         </el-card>
 
         <el-card style="margin-top:12px">
           <template #header><b>技能市场（安装）</b></template>
           <div v-for="m in marketSkills" :key="m.id" class="fs-row">
             <div>
-              <b>{{ m.name }}</b> <small class="muted">({{ m.role || '全部' }})</small>
+              <b>{{ m.name }}</b> <el-tag size="small" type="warning">市场</el-tag>
               <div class="muted" style="font-size:12px">{{ m.description }}</div>
-              <div class="muted" style="font-size:12px">by {{ m.author_name || '匿名' }} · 下载 {{ m.downloads }}</div>
+              <div class="muted" style="font-size:12px">角色：{{ roleLabel(m) }} · 适用阶段：{{ stageLabel(m) }} · by {{ m.author_name || '匿名' }} · 下载 {{ m.downloads }}</div>
             </div>
             <el-button v-if="m.installed" size="small" disabled>已安装</el-button>
             <el-button v-else size="small" type="primary" @click="installSkill(m)">安装</el-button>
@@ -218,6 +236,15 @@
             <el-option label="写手(Writer)" value="writer" />
             <el-option label="审校(Reviewer)" value="reviewer" />
             <el-option label="读者(Reader)" value="reader" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="适用阶段">
+          <el-select v-model="skillForm.stage_list" multiple clearable placeholder="不选=全部阶段" style="width:100%">
+            <el-option label="调研(research)" value="research" />
+            <el-option label="大纲(outline)" value="outline" />
+            <el-option label="世界观(world)" value="world" />
+            <el-option label="正文(chapter)" value="chapter" />
+            <el-option label="审校(review)" value="review" />
           </el-select>
         </el-form-item>
         <el-form-item label="描述"><el-input v-model="skillForm.description" placeholder="一句话说明这个Skill的作用" /></el-form-item>
@@ -366,11 +393,18 @@ async function doSubmitRefund() {
   } catch (e) { ElMessage.error(e?.response?.data?.detail || '提交失败') }
 }
 
-// ---- 我的技能 ----
+// ---- 技能管理（我的/平台/市场 统一入口） ----
+const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }
+const ROLE_LABELS = { researcher: '调研', architect: '架构师', writer: '写手', reviewer: '审校', reader: '读者', validator: '逻辑校验' }
+const roleLabel = s => (s.role ? (ROLE_LABELS[s.role] || s.role) : '全部角色')
+const stageLabel = s => {
+  const list = (s.applicable_stages || '').split(/[,，]/).map(x => x.trim()).filter(Boolean)
+  return list.length ? list.map(x => STAGE_LABELS[x] || x).join('、') : '全部阶段'
+}
 const mySkills = ref([])
 const marketSkills = ref([])
 const showSkillDlg = ref(false)
-const skillForm = ref({ name: '', role: '', description: '', prompt_append: '' })
+const skillForm = ref({ name: '', role: '', description: '', prompt_append: '', stage_list: [] })
 async function loadMySkills() {
   try { const r = await toolsApi.listMySkills(); mySkills.value = r.skills || [] } catch {}
 }
@@ -380,10 +414,12 @@ async function loadMarket() {
 async function saveMySkill() {
   if (!skillForm.value.name.trim()) { ElMessage.warning('请输入名称'); return }
   try {
-    await toolsApi.saveMySkill(skillForm.value)
+    const payload = { ...skillForm.value }
+    payload.applicable_stages = (payload.stage_list || []).join(',')
+    await toolsApi.saveMySkill(payload)
     ElMessage.success('技能已保存')
     showSkillDlg.value = false
-    skillForm.value = { name: '', role: '', description: '', prompt_append: '' }
+    skillForm.value = { name: '', role: '', description: '', prompt_append: '', stage_list: [] }
     loadMySkills()
   } catch { ElMessage.error('保存失败') }
 }

@@ -72,12 +72,15 @@
         </el-table>
       </el-tab-pane>
 
-      <!-- 写作风格Skill -->
-      <el-tab-pane label="写作风格" name="skills">
-        <el-button type="primary" size="small" @click="skillDialog = true">+ 新建风格</el-button>
+      <!-- 平台技能管理 -->
+      <el-tab-pane label="平台技能" name="skills">
+        <el-button type="primary" size="small" @click="skillDialog = true">+ 新建平台技能</el-button>
         <el-table :data="skills" stripe size="small" style="margin-top:10px">
           <el-table-column prop="name" label="名称" />
-          <el-table-column prop="role" label="角色" width="100" />
+          <el-table-column prop="role" label="角色" width="90" />
+          <el-table-column label="适用阶段" width="140">
+            <template #default="{ row }">{{ stageLabel(row) }}</template>
+          </el-table-column>
           <el-table-column prop="description" label="描述" />
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
@@ -161,20 +164,31 @@
       </template>
     </el-dialog>
 
-    <!-- Skill编辑弹窗 -->
-    <el-dialog v-model="skillDialog" title="新建写作风格" width="600px">
+    <!-- 平台技能编辑弹窗 -->
+    <el-dialog v-model="skillDialog" title="新建平台技能" width="620px">
       <el-form :model="skillForm" label-width="80px">
         <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
         <el-form-item label="角色">
-          <el-select v-model="skillForm.role">
-            <el-option label="规划师" value="researcher" />
+          <el-select v-model="skillForm.role" style="width:100%">
+            <el-option label="全部角色" value="" />
+            <el-option label="调研" value="researcher" />
             <el-option label="架构师" value="architect" />
             <el-option label="写手" value="writer" />
-            <el-option label="审核员" value="reviewer" />
+            <el-option label="审校" value="reviewer" />
+            <el-option label="读者" value="reader" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="适用阶段">
+          <el-select v-model="skillForm.stage_list" multiple clearable placeholder="不选=全部阶段" style="width:100%">
+            <el-option label="调研(research)" value="research" />
+            <el-option label="大纲(outline)" value="outline" />
+            <el-option label="世界观(world)" value="world" />
+            <el-option label="正文(chapter)" value="chapter" />
+            <el-option label="审校(review)" value="review" />
           </el-select>
         </el-form-item>
         <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
-        <el-form-item label="提示词"><el-input v-model="skillForm.prompt" type="textarea" :rows="8" /></el-form-item>
+        <el-form-item label="提示词"><el-input v-model="skillForm.prompt_append" type="textarea" :rows="8" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="skillDialog = false">取消</el-button>
@@ -209,7 +223,13 @@ const agentDialog = ref(false)
 const agentUser = ref(null)
 
 const skillDialog = ref(false)
-const skillForm = ref({ name: '', role: 'writer', description: '', prompt: '' })
+const skillForm = ref({ name: '', role: '', description: '', prompt_append: '', stage_list: [] })
+
+const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }
+const stageLabel = s => {
+  const list = (s.applicable_stages || '').split(/[,，]/).map(x => x.trim()).filter(Boolean)
+  return list.length ? list.map(x => STAGE_LABELS[x] || x).join('、') : '全部阶段'
+}
 
 const stats = computed(() => [
   { label: '总用户', value: overview.value.user_count ?? '-' },
@@ -282,10 +302,13 @@ async function doRefund(row, approve) {
 }
 
 async function saveSkill() {
-  await adminApi.saveSkill(skillForm.value)
+  const payload = { ...skillForm.value }
+  payload.applicable_stages = (payload.stage_list || []).join(',')
+  delete payload.stage_list
+  await adminApi.saveSkill(payload)
   ElMessage.success('已保存')
   skillDialog.value = false
-  skillForm.value = { name: '', role: 'writer', description: '', prompt: '' }
+  skillForm.value = { name: '', role: '', description: '', prompt_append: '', stage_list: [] }
   loadSkills()
 }
 

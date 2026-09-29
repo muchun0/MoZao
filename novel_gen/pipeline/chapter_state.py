@@ -148,14 +148,15 @@ def format_scene_state(acc: dict) -> str:
 def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | None = None) -> dict | None:
     """每章落盘后抽取章末状态，供下一章承接。
 
-    - LLM 层（cfg.chapter_state_llm）：抽取 numbers/characters/items/time/facts；
-    - 失败降级：确定性面板数字正则；
+    - LLM 层（cfg.chapter_state_llm + 降频 state_extract_frequency，REQ-token优化 P0-4）：
+      抽取 numbers/characters/items/time/facts；
+    - 失败/非抽取章降级：确定性面板数字正则；
     - 再失败返回 None（调用方跳过）。
     """
     if not chapter or not chapter.content:
         return None
     try:
-        if getattr(cfg, "chapter_state_llm", True):
+        if getattr(cfg, "chapter_state_llm", True) and _should_llm_extract(no, cfg):
             state = _llm_chapter_extract(llm, chapter, no)
             state["chapter"] = no
             return state
@@ -165,6 +166,15 @@ def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | N
     if not nums:
         return None
     return {"chapter": no, "numbers": nums}
+
+
+def _should_llm_extract(no: int, cfg) -> bool:
+    """REQ-token优化 P0-4：章末状态 LLM 抽取降频——每 state_extract_frequency 章抽 1 次，
+    其余章走确定性面板数字正则（零 LLM）。1=每章（原行为）。"""
+    freq = int(getattr(cfg, "state_extract_frequency", 3) or 3)
+    if freq <= 1:
+        return True
+    return (int(no) % freq) == 1
 
 
 def _llm_chapter_extract(llm, chapter, no: int) -> dict:

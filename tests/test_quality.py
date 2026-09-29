@@ -95,7 +95,7 @@ def test_quality_passed_no_rewrite(store):
     )
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", long_content, "摘要")
     assert result["passed"] is True
-    assert calls["n"] == 2  # 读者校验 + 前后矛盾自检，均未触发重写
+    assert calls["n"] == 1  # 读者 LLM 校验 1 次（章内矛盾自检默认仅高质量模式，REQ-token优化 P1-3）
 
 
 @pytest.mark.p2

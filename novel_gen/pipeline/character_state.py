@@ -36,7 +36,7 @@ def extract_character_states(llm, cfg, world, chapter, no: int, old_states: dict
         st["last_seen"] = no
         states[n] = st
 
-    if seen and getattr(cfg, "character_state_llm", True):
+    if seen and getattr(cfg, "character_state_llm", True) and _should_llm_extract(no, cfg):
         try:
             updates = _llm_extract(llm, cfg, world, chapter, no, seen[:MAX_LLM_UPDATE])
             for u in updates or []:
@@ -53,6 +53,15 @@ def extract_character_states(llm, cfg, world, chapter, no: int, old_states: dict
         except Exception:
             logger.warning("LLM 状态抽取失败，仅保留出场记录: no=%d", no)
     return states
+
+
+def _should_llm_extract(no: int, cfg) -> bool:
+    """REQ-token优化 P0-4：章末/人物状态 LLM 抽取降频——每 state_extract_frequency 章抽 1 次，
+    其余章只走确定性（出场记录/面板正则，零 LLM 成本）。1=每章（原行为）。"""
+    freq = int(getattr(cfg, "state_extract_frequency", 3) or 3)
+    if freq <= 1:
+        return True
+    return (int(no) % freq) == 1
 
 
 def _llm_extract(llm, cfg, world, chapter, no: int, names: list[str]) -> list[dict]:

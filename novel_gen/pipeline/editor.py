@@ -102,7 +102,59 @@ class EditorReviewer:
 
     def revise(self, cfg: NovelConfig, outline: Outline, review: EditorReview,
                research_block: str) -> Outline:
-        """基于编辑审阅意见修正大纲，返回修正后的大纲。"""
+        """基于编辑审阅意见修正大纲，返回修正后的大纲。
+
+        REQ-token优化 P1-6：默认 diff 式修正——只输出需改字段，Python 合并回原大纲，
+        不重吐全大纲 JSON（输出 4096 → 数百 token）；解析失败/关闭开关回退整章重出。
+        """
+        if getattr(cfg, "editor_diff_revise", True):
+            revised = self._revise_diff(cfg, outline, review, research_block)
+            if revised is not None and len(revised.chapters) == len(outline.chapters):
+                return revised
+        return self._revise_whole(cfg, outline, review, research_block)
+
+    def _revise_diff(self, cfg: NovelConfig, outline: Outline, review: EditorReview,
+                     research_block: str) -> Outline | None:
+        """diff 式修正：LLM 只输出需要改动的章节字段，Python 合并回原大纲。"""
+        system = (
+            "你是一位网文主编。根据编辑审阅意见，修正以下大纲。"
+            "必须保留用户强约束（背景/主角/预设人物/避雷），只调整结构、节奏、钩子和差异化。"
+            "只输出需要改动的字段（diff），不要重新输出整个大纲。"
+        )
+        outline_text = "\n".join(
+            f"第{c.no}章《{c.title}》：{c.goal}" for c in outline.chapters
+        )
+        actions = "\n".join(f"- {a}" for a in review.priority_actions)
+        issues = "\n".join(f"- {i}" for i in review.issues)
+        hard = _hard_constraints(cfg)
+        user = (
+            f"【原大纲】\n{outline_text}\n\n"
+            f"【编辑指出的问题】\n{issues}\n\n"
+            f"【优先修改动作】\n{actions}\n\n"
+            f"{hard}\n\n"
+            f"【题材共性调研】\n{research_block}\n\n"
+            f"请输出需要改动的字段（未提及的章节与字段保持原样，不要输出）：\n"
+            f'{{"updates": [{{"no": 0, "title"?: "全书新书名(如需)", "intro"?: "全书新简介(如需)"}}, '
+            f'{{"no": 1, "title"?: "新章名(如需)", "goal"?: "新本章目标(如需)"}}]}}\n'
+            f"规则：no=0 表示全书级字段（可省略）；章节字段只列出真正需要修改的；"
+            f"全部字段都可省略；务必保持章节总数不变。"
+        )
+        raw = self.llm.chat(system, user, temperature=0.5, max_tokens=1200)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return None
+        try:
+            d = json.loads(match.group())
+        except (json.JSONDecodeError, TypeError):
+            return None
+        updates = d.get("updates") if isinstance(d, dict) else None
+        if not isinstance(updates, list):
+            return None
+        return _apply_updates(outline, updates)
+
+    def _revise_whole(self, cfg: NovelConfig, outline: Outline, review: EditorReview,
+                      research_block: str) -> Outline:
+        """整章重出（原逻辑，diff 失败/关闭时兜底）。"""
         system = (
             "你是一位网文主编。根据编辑审阅意见，修正以下大纲。"
             "必须保留用户强约束（背景/主角/预设人物/避雷），只调整结构、节奏、钩子和差异化。"
@@ -157,3 +209,37 @@ class EditorReviewer:
             suggestions=[raw[:500]],
             priority_actions=[],
         )
+
+
+def _apply_updates(outline: Outline, updates: list) -> Outline | None:
+    """diff 式修正合并（REQ-token优化 P1-6）。
+
+    updates 每项形如 {"no": N, "title"?: ..., "intro"?(仅 no=0), "goal"?: ...}：
+    no=0 表示全书级字段；章节字段缺失 = 不改；非法项跳过。
+    返回合并后的大纲；异常返回 None（调用方回退整章重出）。
+    """
+    try:
+        chapters = {c.no: c for c in outline.chapters}
+        for u in updates:
+            if not isinstance(u, dict):
+                continue
+            try:
+                no = int(u.get("no", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if no == 0:
+                if u.get("title"):
+                    outline.title = str(u["title"]).strip()
+                if u.get("intro"):
+                    outline.intro = str(u["intro"]).strip()
+            elif no in chapters:
+                c = chapters[no]
+                if u.get("title"):
+                    c.title = str(u["title"]).strip()
+                if u.get("goal"):
+                    c.goal = str(u["goal"]).strip()
+                if u.get("core_event"):
+                    c.core_event = str(u["core_event"]).strip()
+        return outline
+    except Exception:
+        return None

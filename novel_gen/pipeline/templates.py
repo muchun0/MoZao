@@ -954,7 +954,8 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
 def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event=""):
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
-        "你的任务是把它拆成 3-5 个连续场景，每个场景 1000-1500 字。"
+        "你的任务是把它拆成 3-5 个连续场景，每个场景 1000-1500 字，"
+        "并同时规划本章出场人物的行动表（写手必须逐条落实，人物言行与行动表一致）。"
         "严格按 JSON 格式输出，不要额外解释。"
     )
     user = (
@@ -980,7 +981,11 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "每次发生→后果必须分配完整场景/段落，权重均衡，禁止第一次展开、后续一笔带过\n"
         "3. 场景内机制数字（面板/蚀痕等）的推进必须与事件次数严格对应：每死一次数字递减一次，"
         "跨天重置按机制卡规则结算\n\n"
-        '输出 JSON：{"scenes": [...]}'
+        "【本章人物行动表】再为本章出场人物规划行动表（并入本 JSON 的 characters_action 字段），"
+        "每人包含：name（人物名）、goal（本章目标，具体可行动）、key_actions（2-4 个动词驱动的关键行动，"
+        "能推进剧情或冲突）、emotion（情绪状态一句话）、dialogue_intent（对话意图：想通过对话达成/试探/隐瞒什么）。\n\n"
+        '输出 JSON：{"scenes": [...], "characters_action": [{"name": "...", "goal": "...", '
+        '"key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
     )
     return system, user
 
@@ -1082,6 +1087,32 @@ def verify_prompt(cfg, recent_summaries, world):
         "3. 时间线是否矛盾\n"
         "4. 人物关系是否正确\n\n"
         '输出 JSON：{"issues": [{"problem": "...", "suggestion": "..."}], "ok": true/false}'
+    )
+    return system, user
+
+
+def verify_combined_prompt(cfg, chapter_no, recent_summaries, world_text, chapter_text=""):
+    """REQ-token优化 P1-5：一致性/读者/编辑三类校验合并为一次调用，替代 3 连独立调用，
+    输入不再把世界观与摘要重复喂 3 遍。"""
+    system = (
+        "你是小说 continuity 总编辑。请基于世界观设定与最近几章摘要，"
+        "一次性完成三类检查并输出一个 JSON。只输出 JSON，不要额外解释。"
+    )
+    summaries_block = "\n".join(
+        f"第{i+1}章：{s}" for i, s in enumerate(recent_summaries)
+    )
+    user = (
+        f"【世界观/设定】\n{world_text[:2000]}\n\n"
+        f"【最近几章摘要】\n{summaries_block}\n\n"
+        + (f"【最新一章正文】\n{chapter_text[:2000]}\n\n" if chapter_text else "")
+        + "请执行三类检查：\n"
+        "1. consistency：主角人设/已埋伏笔/时间线/人物关系是否前后一致\n"
+        "2. reader：读者视角是否有信息传递问题（哪里看不懂/人物分不清/默认读者知道没讲过的事）\n"
+        "3. editor：编辑视角给最新一章评分（满分10）与弃书风险（低/中/高）\n\n"
+        '输出 JSON：{"issues": [{"problem": "...", "suggestion": "..."}], '
+        '"reader": {"confused": bool, "issues": [{"problem": "...", "suggestion": "..."}]}, '
+        '"editor": {"score": 0-10, "reader_churn_risk": "低/中/高", '
+        '"issues": [{"problem": "...", "suggestion": "..."}]}}'
     )
     return system, user
 

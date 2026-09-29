@@ -265,6 +265,17 @@ class ProjectStore:
         d = self._read_json(self.world_path(), None)
         return World.from_dict(d) if d else None
 
+    # ---------- 分章设定卡索引（REQ-token优化 P1-1）----------
+    def setting_cards_path(self) -> Path:
+        return self.dir / "setting_cards.json"
+
+    def save_setting_cards(self, data: dict) -> None:
+        if data:
+            self._write_json(self.setting_cards_path(), data)
+
+    def load_setting_cards(self) -> Optional[dict]:
+        return self._read_json(self.setting_cards_path(), None)
+
     # ---------- 章节 ----------
     def chapter_path(self, no: int) -> Path:
         return self.chapters_dir / f"{no:03d}.json"

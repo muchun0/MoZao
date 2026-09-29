@@ -98,7 +98,7 @@ def test_direct_read_config_persist(store):
     """新配置字段 save/load 往返一致。"""
     cfg = store.load_config()
     assert cfg.memory_direct_read_chapters == 1
-    assert cfg.memory_direct_read_chars == 2000
+    assert cfg.memory_direct_read_chars == 1200  # REQ-token优化 P0-5：2000→1200 降输入
     cfg.memory_direct_read_chapters = 3
     cfg.memory_direct_read_chars = 800
     store.save_config(cfg)

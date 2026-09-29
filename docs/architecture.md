@@ -50,7 +50,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace |
+| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；**校验合并**（REQ-token优化 P1-5）：`_run_verify` 默认 `verify_combined_prompt` 一次调用输出 consistency/reader/editor 三类（verify_combined=False 回退原 3 连调用），一致性校验频率 `verify_every` 默认 5；`_build_setting_cards` 幂等接入分章设定卡索引；`_parse_json_obj` 容错解析；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace |
 | `orchestrator.py` | 架构总控 `Orchestrator`：任务拆解、**阶段门禁 StageGate**（产出→准出校验→不合格自动重生成≤N轮→超限仲裁放行）、跨模块冲突仲裁（主题>人物>世界观）；`manager.run_world/run_outline` 接入门禁（mock provider 默认跳过，保持离线行为一致） |
 | `validator.py` | 独立第三方逻辑校验 Agent `LogicValidator`：5 类专项校验（设定一致性/人物OOC/主线偏移/重复情节≤5%/伏笔完整性）+ 机制卡三要素校验（语义/结算/代价终局，REQ-章内自洽），输出分级问题清单，供 StageGate 与质量报告复用 |
 | `issue_triage.py` | 问题分级模型 `IssueItem`（fatal/major/minor）+ triage/has_fatal/sort 纯函数 |
@@ -59,16 +59,17 @@
 | `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线（`OutlineGenerator` 生成后按分卷区间回填 `volume_no`；世界观产出 `world_reveals` 阶段揭示计划）/ 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
 | `agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分（REQ）：主题与人物 Agent（主题命题/三层冲突/主角弧光/配角动机）/ 世界观与规则 Agent（世界观/金手指五要素/设定禁忌）/ 节奏与伏笔 Agent（关键节点/分卷节奏/伏笔回收闭环）；`ArchitectAgent` 收敛为骨架生产者并编排三者 |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
-| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物当前状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实，账本章号<当前章才注入）+ 配角动机卡注入出场人物区 + 按章触发注入 L1 裁剪（P1-3，强约束置 prompt 末尾）；世界观**跟随主角视角分层注入**（有 `world_reveals` 时：已揭示进普通区、未揭示进强约束区禁剧透；无则回退全量注入） |
-| `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取，失败静默降级，写入 character_states.json |
-| `chapter_state.py` | **章内/章间状态账本**（REQ-章内自洽与机制账本）：章末/场景状态抽取（机制数字/人物生死/物品归属/时间锚点/已发生事实），LLM 主抽取 + 确定性面板正则兜底 + 失败降级；manager 写章循环落 `chapter_state.json`，stages 场景级生成逐场景累积「已推进状态」注入后续场景（防面板数字漏减、角色死而复生、物品归属错乱） |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物当前状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实，账本章号<当前章才注入）+ 配角动机卡注入出场人物区 + **分章设定卡子集注入**（REQ-token优化 P1-1：有 `setting_cards.json` 时按章只注入命中人物/生物/地点/势力/伏笔，空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区机制卡/主题/弧光/金手指/禁忌/时钟永不裁剪）+ 世界观**跟随主角视角分层注入**（有 `world_reveals` 时：已揭示进普通区、未揭示进强约束区禁剧透；无则回退全量注入） |
+| `setting_cards.py` | **分章设定卡索引**（REQ-token优化 P1-1，纯 Python 前置确定性脚本）：world 落盘后构建 `projects/<id>/setting_cards.json`——出场人物沿用 `memory.predict_appearing_chars` 预测，生物/地点/势力/伏笔按「名称直判（本章 goal/core/出场人物名含其名）+ 关键词包含」双条件匹配；manager 幂等接入（world 后 + 惰性两种路径），构建失败/关闭静默降级全量注入 |
+| `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取（`_should_llm_extract` 按 `state_extract_frequency` 降频，默认每 3 章 1 次 LLM），失败静默降级，写入 character_states.json |
+| `chapter_state.py` | **章内/章间状态账本**（REQ-章内自洽与机制账本）：章末/场景状态抽取（机制数字/人物生死/物品归属/时间锚点/已发生事实），LLM 主抽取（`_should_llm_extract` 按 `state_extract_frequency` 降频）+ 确定性面板正则兜底 + 失败降级；manager 写章循环落 `chapter_state.json`，stages 场景级生成逐场景累积「已推进状态」注入后续场景（防面板数字漏减、角色死而复生、物品归属错乱） |
 | `review_summary.py` | 全书质量汇总（P0-3）：改稿问题类型分布 / 质检平均分 / 校验问题统计（纯函数，供 /review 接口聚合） |
-| `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正） |
+| `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正）；**diff 式修正**（REQ-token优化 P1-6）：`_revise_diff` 只输出 `{"updates":[{no,title?,intro?,goal?}]}`（max_tokens 4096→1200），`_apply_updates` Python 合并回原大纲，解析失败/关闭回退 `_revise_whole` 整章重出 |
 | `reviser.py` | 单章重写/审校入口 |
 | `repetition.py` | 防同质化常驻提示词、防重复 |
 | `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
-| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规/章内同句复读）+ 读者视角 LLM 校验 + 1 次自动重写；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4）；章内同句复读（REQ-章内自洽）：叙述≥3次/长句2次/面板行2次→大改触发重写，对话口头禅≤2豁免 |
+| `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规/章内同句复读）+ 读者视角 LLM 校验（章内矛盾自检 `consistency_llm_check` 默认仅高质量模式）+ 1 次自动重写；**定点重写**（REQ-token优化 P1-4）：`_locate_problem_spans` 按 issue pos 段落→detail 原句锚点定位窗口 ±200 字，窗口覆盖 <60% 正文才局部重写并 Python 拼回，无定位/跨度过大回退 `_rewrite_whole` 整章重出；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4）；章内同句复读（REQ-章内自洽）：叙述≥3次/长句2次/面板行2次→大改触发重写，对话口头禅≤2豁免 |
 | `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
 | `skills.py` | **技能统一注入管线**（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照（均读统一表 `skills`，source 区分 platform/user），按角色默认阶段（STAGE_BY_ROLE）过滤（技能 applicable_stages 空=全量）、统一清洗、产出 manifest（供 `agent_trace` 归因）；`agents/base.py` 与 `templates._skill_append` 均经此管线 |
 | `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |

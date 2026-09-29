@@ -488,12 +488,143 @@ def _list_to_dicts(items: list, cls):
 
 
 @dataclass
+class EnemyCard:
+    """生物图鉴：前期实际出场的怪物/敌对生物一张卡（事前设计，防止写手自编形态）。"""
+    name: str = ""
+    form: str = ""          # 外形解剖：有无固定形态、肢体/器官/核心位置
+    senses: str = ""        # 感知方式（触须振动/视觉/热感；决定能不能写"视线盲区"）
+    behavior: str = ""      # 行为模式（巡逻编队/伏击/食腐/对死人反应）
+    kill: str = ""          # 击杀条件/弱点
+    tier: str = ""          # 层级（浅层常见/精英/首领）
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "form": self.form, "senses": self.senses,
+                "behavior": self.behavior, "kill": self.kill, "tier": self.tier}
+
+    @classmethod
+    def from_dict(cls, d) -> "EnemyCard":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")), form=_norm_str(d.get("form", "")),
+                senses=_norm_str(d.get("senses", "")), behavior=_norm_str(d.get("behavior", "")),
+                kill=_norm_str(d.get("kill", "")), tier=_norm_str(d.get("tier", "")),
+            )
+        return cls()
+
+
+@dataclass
+class LocationCard:
+    """地点卡：前期实际出场的场景一张卡（地形/光线/连通，防地下暮色、死路涌深处）。"""
+    name: str = ""
+    terrain: str = ""       # 地形结构
+    light: str = ""         # 光线规则（地下无光/天光在何处/光源是什么）
+    sound_smell: str = ""   # 声音气味
+    exits: str = ""         # 连通与出口（哪里是死路/通哪）
+    danger: str = ""        # 危险来源与层级
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "terrain": self.terrain, "light": self.light,
+                "sound_smell": self.sound_smell, "exits": self.exits, "danger": self.danger}
+
+    @classmethod
+    def from_dict(cls, d) -> "LocationCard":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")), terrain=_norm_str(d.get("terrain", "")),
+                light=_norm_str(d.get("light", "")), sound_smell=_norm_str(d.get("sound_smell", "")),
+                exits=_norm_str(d.get("exits", "")), danger=_norm_str(d.get("danger", "")),
+            )
+        return cls()
+
+
+@dataclass
+class MechanismBaseline:
+    """机制初始值：把机制卡里的数字落成结构化"当前值"，写手不得自行发明。"""
+    scar_start: str = ""        # 旧痕起点
+    scar_per_death: str = ""    # 每死一次延伸量
+    scar_current: str = ""      # 旧痕当前累计（长度/次数）
+    scar_end: str = ""          # 终局位置（蔓延至何处=蚀化）
+    panel_format: str = ""     # 面板唯一写法（禁用其他格式）
+    reset_rule: str = ""       # 每日重置规则
+
+    def to_dict(self) -> dict:
+        return {"scar_start": self.scar_start, "scar_per_death": self.scar_per_death,
+                "scar_current": self.scar_current, "scar_end": self.scar_end,
+                "panel_format": self.panel_format, "reset_rule": self.reset_rule}
+
+    @classmethod
+    def from_dict(cls, d) -> "MechanismBaseline":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            scar_start=_norm_str(d.get("scar_start", "")),
+            scar_per_death=_norm_str(d.get("scar_per_death", "")),
+            scar_current=_norm_str(d.get("scar_current", "")),
+            scar_end=_norm_str(d.get("scar_end", "")),
+            panel_format=_norm_str(d.get("panel_format", "")),
+            reset_rule=_norm_str(d.get("reset_rule", "")),
+        )
+
+
+@dataclass
+class ClockCard:
+    """时钟规则：日周期/光线规则/地点间路程（静态部分；当前时间锚点在章级账本）。"""
+    day_cycle: str = ""     # 日周期（何时刷新/晨昏/夜色）
+    travel: str = ""        # 地点间路程耗时
+    light_rule: str = ""    # 哪里有光哪里没光（防地下暮色）
+
+    def to_dict(self) -> dict:
+        return {"day_cycle": self.day_cycle, "travel": self.travel, "light_rule": self.light_rule}
+
+    @classmethod
+    def from_dict(cls, d) -> "ClockCard":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            day_cycle=_norm_str(d.get("day_cycle", "")),
+            travel=_norm_str(d.get("travel", "")),
+            light_rule=_norm_str(d.get("light_rule", "")),
+        )
+
+
+@dataclass
+class FactionCard:
+    """势力卡：前期出场的组织一张卡（目标/成员/与主角关系）。"""
+    name: str = ""
+    goal: str = ""
+    members: str = ""
+    relation_to_mc: str = ""
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "goal": self.goal,
+                "members": self.members, "relation_to_mc": self.relation_to_mc}
+
+    @classmethod
+    def from_dict(cls, d) -> "FactionCard":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")), goal=_norm_str(d.get("goal", "")),
+                members=_norm_str(d.get("members", "")),
+                relation_to_mc=_norm_str(d.get("relation_to_mc", "")),
+            )
+        return cls()
+
+
+@dataclass
 class World:
     """世界观 + 人物卡 + 伏笔清单 + 锁定设定（记忆系统的「设定库」）。
 
     多Agent协作分层新增底层锚点字段（theme_proposition / conflict_matrix /
     protagonist_arc / character_motives / goldfinger_rules / setting_taboos），
     foreshadowing 升级为结构化 ForeshadowItem；全部 from_dict 兼容旧数据。
+    事前设计卡（REQ-事前设定卡）：enemies/locations/mechanism_baseline/clock/
+    factions/style_taboos——写每章前注入，从源头防设定矛盾。
     """
     world_view: str = ""
     characters: list[Character] = field(default_factory=list)
@@ -508,6 +639,13 @@ class World:
     character_motives: list[CharacterMotive] = field(default_factory=list)  # 配角动机卡
     goldfinger_rules: GoldfingerRules | None = None  # 金手指规则说明书（五要素）
     setting_taboos: list[str] = field(default_factory=list)  # 设定禁忌清单
+    # ---- 事前设计卡（REQ-事前设定卡）----
+    enemies: list[EnemyCard] = field(default_factory=list)        # 生物图鉴
+    locations: list[LocationCard] = field(default_factory=list)  # 地点卡
+    mechanism_baseline: MechanismBaseline | None = None           # 机制初始值（数字标准答案）
+    clock: ClockCard | None = None                                # 时钟规则（静态）
+    factions: list[FactionCard] = field(default_factory=list)    # 势力卡
+    style_taboos: list[str] = field(default_factory=list)         # 语言风格禁忌（时代/术语禁用词）
 
     def to_dict(self) -> dict:
         return {
@@ -523,6 +661,12 @@ class World:
             "character_motives": _list_to_dicts(self.character_motives, CharacterMotive),
             "goldfinger_rules": self.goldfinger_rules.to_dict() if self.goldfinger_rules else None,
             "setting_taboos": list(self.setting_taboos),
+            "enemies": [e.to_dict() for e in self.enemies],
+            "locations": [l.to_dict() for l in self.locations],
+            "mechanism_baseline": self.mechanism_baseline.to_dict() if self.mechanism_baseline else None,
+            "clock": self.clock.to_dict() if self.clock else None,
+            "factions": [f.to_dict() for f in self.factions],
+            "style_taboos": list(self.style_taboos),
         }
 
     @classmethod
@@ -548,6 +692,12 @@ class World:
             character_motives=[CharacterMotive.from_dict(m) for m in (d.get("character_motives", []) or [])],
             goldfinger_rules=GoldfingerRules.from_dict(gf) if isinstance(gf, dict) else None,
             setting_taboos=[_norm_str(x) for x in (d.get("setting_taboos", []) or [])],
+            enemies=[EnemyCard.from_dict(e) for e in (d.get("enemies") or []) if isinstance(e, (dict, str))],
+            locations=[LocationCard.from_dict(l) for l in (d.get("locations") or []) if isinstance(l, (dict, str))],
+            mechanism_baseline=MechanismBaseline.from_dict(mb) if isinstance(mb := d.get("mechanism_baseline"), dict) else None,
+            clock=ClockCard.from_dict(ck) if isinstance(ck := d.get("clock"), dict) else None,
+            factions=[FactionCard.from_dict(f) for f in (d.get("factions") or []) if isinstance(f, (dict, str))],
+            style_taboos=[_norm_str(x) for x in (d.get("style_taboos", []) or [])],
         )
 
 

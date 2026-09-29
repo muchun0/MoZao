@@ -214,6 +214,36 @@ class Character:
 
 
 @dataclass
+class WorldReveal:
+    """世界观阶段揭示点：主角从某一章起才知道某段世界观（跟随主角视角逐步展开）。
+
+    from_ch: 主角从该章起得知此设定的起始章号（初始已知 = 1）
+    content: 该阶段主角获知的世界观片段（主角视角、具体）
+    """
+    from_ch: int = 1
+    content: str = ""
+
+    def to_dict(self) -> dict:
+        return {"from_ch": self.from_ch, "content": self.content}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "WorldReveal":
+        return cls(
+            from_ch=int(d.get("from_ch", 1) or 1),
+            content=_norm_str(d.get("content", "")),
+        )
+
+
+def _norm_str(v):
+    """把 LLM 可能返回的 dict/list 等非标量规范化为字符串。"""
+    if isinstance(v, dict):
+        return " ".join(f"{k}:{_norm_str(val)}" for k, val in v.items())
+    if isinstance(v, list):
+        return "；".join(_norm_str(x) for x in v)
+    return str(v) if v is not None else ""
+
+
+@dataclass
 class World:
     """世界观 + 人物卡 + 伏笔清单 + 锁定设定（记忆系统的「设定库」）。"""
     world_view: str = ""
@@ -221,6 +251,7 @@ class World:
     foreshadowing: list[str] = field(default_factory=list)
     locked_settings: list[str] = field(default_factory=list)  # 核心设定锁定，AI不得违背
     mechanism_rules: str = ""  # 金手指机制卡：机制语义/数字结算/代价递增/终局，AI 不得违背且必须自洽
+    world_reveals: list[WorldReveal] = field(default_factory=list)  # 世界观逐步揭示计划（跟随主角视角）
 
     def to_dict(self) -> dict:
         return {
@@ -229,28 +260,24 @@ class World:
             "foreshadowing": list(self.foreshadowing),
             "locked_settings": list(self.locked_settings),
             "mechanism_rules": self.mechanism_rules,
+            "world_reveals": [r.to_dict() for r in self.world_reveals],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "World":
-        def _norm_str(v):
-            """把 LLM 可能返回的 dict/list 等非标量规范化为字符串。"""
-            if isinstance(v, dict):
-                return " ".join(f"{k}:{_norm_str(val)}" for k, val in v.items())
-            if isinstance(v, list):
-                return "；".join(_norm_str(x) for x in v)
-            return str(v) if v is not None else ""
-
         raw_foreshadow = d.get("foreshadowing", []) or []
         foreshadowing = [_norm_str(x) for x in raw_foreshadow]
         locked_raw = d.get("locked_settings", []) or []
         locked = [_norm_str(x) for x in locked_raw]
+        reveals_raw = d.get("world_reveals", []) or []
+        reveals = [WorldReveal.from_dict(r) for r in reveals_raw if isinstance(r, dict)]
         return cls(
             world_view=_norm_str(d.get("world_view", "")),
             characters=[Character.from_dict(c) for c in (d.get("characters", []) or [])],
             foreshadowing=foreshadowing,
             locked_settings=locked,
             mechanism_rules=_norm_str(d.get("mechanism_rules", "")),
+            world_reveals=reveals,
         )
 
 

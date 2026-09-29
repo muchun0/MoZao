@@ -67,7 +67,27 @@ class Memory:
         if world is not None:
             w_normal = []
             hit: list[str] = []
-            if world.world_view:
+            reveals = getattr(world, "world_reveals", None) or []
+            if reveals:
+                # 跟随主角视角逐步展开：只注入「主角截至本章已知道」的世界观；
+                # 未揭示的部分注入为强约束「禁止提前透露」，避免写手上帝视角剧透。
+                revealed = sorted([r for r in reveals if r.from_ch <= up_to_chapter],
+                                  key=lambda r: r.from_ch)
+                unrevealed = sorted([r for r in reveals if r.from_ch > up_to_chapter],
+                                    key=lambda r: r.from_ch)
+                if revealed:
+                    w_normal.append(
+                        "【当前阶段·主角已知世界观】\n"
+                        + "\n".join(f"- {r.content}" for r in revealed)
+                    )
+                if unrevealed:
+                    key_parts.append(
+                        "【尚未揭示设定·绝对禁止在正文提前透露，"
+                        "需留待对应章节随主角探索/剧情推进自然揭晓】\n"
+                        + "\n".join(f"- {r.content}" for r in unrevealed)
+                    )
+            elif world.world_view:
+                # 旧数据（无揭示计划）：保持原行为，全量注入
                 key_parts.append(f"世界观：{world.world_view}")
             if world.characters:
                 def _char_line(c):

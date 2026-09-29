@@ -69,22 +69,42 @@ class Memory:
             hit: list[str] = []
             reveals = getattr(world, "world_reveals", None) or []
             if reveals:
-                # 跟随主角视角逐步展开：只注入「主角截至本章已知道」的世界观；
-                # 未揭示的部分注入为强约束「禁止提前透露」，避免写手上帝视角剧透。
-                revealed = sorted([r for r in reveals if r.from_ch <= up_to_chapter],
-                                  key=lambda r: r.from_ch)
-                unrevealed = sorted([r for r in reveals if r.from_ch > up_to_chapter],
-                                    key=lambda r: r.from_ch)
-                if revealed:
+                # 跟随主角视角逐步展开，三段式：潜伏期 → 铺垫期 → 揭示期。
+                # - 潜伏期（N < foreshadow_ch）：设定完全不注入（写早了即剧透）
+                # - 铺垫期（foreshadow_ch ≤ N < from_ch）：注入 hint（可写暗示/异常），
+                #   真相仍进强约束区禁剧透——保证揭示是"被线索引出来"而非凭空摊牌
+                # - 揭示期（N ≥ from_ch）：真相注入普通区，并要求收束此前线索
+                known: list[str] = []      # 已揭示真相 → 普通区
+                hints: list[str] = []      # 铺垫线索 → 普通区
+                unrevealed: list[str] = [] # 未揭示真相 → 强约束区禁剧透
+                for r in sorted(reveals, key=lambda r: r.from_ch):
+                    fs = r.foreshadow_ch if r.foreshadow_ch is not None else r.from_ch
+                    if r.from_ch <= up_to_chapter:
+                        known.append(r.content)
+                    elif fs <= up_to_chapter:
+                        # 铺垫期：有显式铺垫（foreshadow_ch < from_ch）
+                        if r.hint:
+                            hints.append(r.hint)
+                        unrevealed.append(r.content)  # 真相仍禁剧透
+                    elif r.foreshadow_ch is None:
+                        # 旧数据（无铺垫期）：未揭示真相仍进强约束禁剧透（保持原行为）
+                        unrevealed.append(r.content)
+                    # 否则：显式铺垫的潜伏期，不注入
+                if known:
                     w_normal.append(
                         "【当前阶段·主角已知世界观】\n"
-                        + "\n".join(f"- {r.content}" for r in revealed)
+                        + "\n".join(f"- {c}" for c in known)
+                    )
+                if hints:
+                    w_normal.append(
+                        "【当前阶段·铺垫线索（本章可写的暗示/异常/疑惑，但严禁说出真相）】\n"
+                        + "\n".join(f"- {h}" for h in hints)
                     )
                 if unrevealed:
                     key_parts.append(
-                        "【尚未揭示设定·绝对禁止在正文提前透露，"
-                        "需留待对应章节随主角探索/剧情推进自然揭晓】\n"
-                        + "\n".join(f"- {r.content}" for r in unrevealed)
+                        "【尚未揭示设定·绝对禁止在正文提前透露真相，"
+                        "只能按铺垫线索写暗示；留待对应章节随主角探索/剧情推进自然揭晓】\n"
+                        + "\n".join(f"- {c}" for c in unrevealed)
                     )
             elif world.world_view:
                 # 旧数据（无揭示计划）：保持原行为，全量注入

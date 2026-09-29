@@ -217,20 +217,40 @@ class Character:
 class WorldReveal:
     """世界观阶段揭示点：主角从某一章起才知道某段世界观（跟随主角视角逐步展开）。
 
-    from_ch: 主角从该章起得知此设定的起始章号（初始已知 = 1）
-    content: 该阶段主角获知的世界观片段（主角视角、具体）
+    三段式揭示（铺垫 → 揭示 → 展开），避免"到点凭空解锁"：
+    - foreshadow_ch: 铺垫最早章（从此章起正文可埋线索/暗示；< from_ch 才有铺垫期，
+      等于 from_ch 表示无铺垫期直接揭示）
+    - hint: 铺垫要点（揭示前正文应出现的异常/线索/疑惑，主角与读者可感知的"不对劲"，
+      但不得说出真相；空则无铺垫）
+    - from_ch: 主角正式得知真相的起始章
+    - content: 真相（主角明确获知的世界观片段，主角视角、具体）
     """
     from_ch: int = 1
     content: str = ""
+    foreshadow_ch: int | None = None  # None=无铺垫期（兼容旧数据），直接揭示
+    hint: str = ""
 
     def to_dict(self) -> dict:
-        return {"from_ch": self.from_ch, "content": self.content}
+        return {
+            "from_ch": self.from_ch,
+            "content": self.content,
+            "foreshadow_ch": self.foreshadow_ch,
+            "hint": self.hint,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "WorldReveal":
+        from_ch = int(d.get("from_ch", 1) or 1)
+        foreshadow_ch = d.get("foreshadow_ch")
+        if foreshadow_ch is None:
+            foreshadow_ch = None
+        else:
+            foreshadow_ch = int(foreshadow_ch or from_ch)
         return cls(
-            from_ch=int(d.get("from_ch", 1) or 1),
+            from_ch=from_ch,
             content=_norm_str(d.get("content", "")),
+            foreshadow_ch=foreshadow_ch,
+            hint=_norm_str(d.get("hint", "")),
         )
 
 

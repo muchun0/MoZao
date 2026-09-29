@@ -41,7 +41,10 @@ from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.guard import AgentGuardError
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
-from novel_gen.store.schemas import Chapter, ChapterPlan, Outline, World, Character
+from novel_gen.store.schemas import (
+    Chapter, ChapterPlan, Outline, World, Character,
+    EnemyCard, LocationCard, MechanismBaseline, ClockCard, FactionCard,
+)
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.utils.paths import get_output_dir, get_projects_dir
 from novel_gen.store.project import ProjectStore, _safe_name
@@ -996,9 +999,23 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
         # 模块2：成本防护超限——保留已生成产物 + 超限提示
         handle.error = f"{exc}（已保留当前已生成内容，可从断点继续）"
         logger.warning("批量生成被成本防护终止: project=%s %s", project_id, exc)
+        # 落盘 state.error：线程结束 _RUNS.pop 后 handle 不可见，前端 status 只能读到 state.error，
+        # 不落盘则成本防护终止对前端完全无提示（与 _run_outline_only 保持一致）
+        try:
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
+        except Exception:
+            pass
     except Exception as e:
         handle.error = f"{type(e).__name__}: {e}"
         logger.exception("批量生成失败: %s", project_id)
+        try:
+            st = store.load_state()
+            st.error = handle.error
+            store.save_state(st)
+        except Exception:
+            pass
     finally:
         _GEN_SEMAPHORE.release()
         with _LOCK:

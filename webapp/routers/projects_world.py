@@ -77,41 +77,86 @@ def project_world(project_id: str, user: dict = Depends(_require_user)):
     store = _find_project(project_id)
     world = store.load_world()
     if not world:
-        return {"world_view": "", "characters": [], "foreshadowing": []}
+        return {"world_view": "", "characters": [], "foreshadowing": [],
+                "enemies": [], "locations": [], "factions": [],
+                "mechanism_baseline": {}, "clock": {}, "style_taboos": []}
     return {
         "world_view": world.world_view,
         "characters": [c.to_dict() for c in world.characters],
         "foreshadowing": list(world.foreshadowing),
         "locked_settings": list(world.locked_settings),
+        "enemies": [e.to_dict() for e in (getattr(world, "enemies", None) or [])],
+        "locations": [l.to_dict() for l in (getattr(world, "locations", None) or [])],
+        "factions": [f.to_dict() for f in (getattr(world, "factions", None) or [])],
+        "mechanism_baseline": (getattr(world, "mechanism_baseline", None).to_dict()
+                               if getattr(world, "mechanism_baseline", None) else {}),
+        "clock": (getattr(world, "clock", None).to_dict()
+                  if getattr(world, "clock", None) else {}),
+        "style_taboos": list(getattr(world, "style_taboos", None) or []),
     }
 
 
 @app.put("/api/projects/{project_id}/world")
 def update_world(project_id: str, payload: dict, user: dict = Depends(_require_user)):
-    """用户手动编辑世界观/人物档案（增删改人物、拓展世界观文本）。"""
+    """用户手动编辑世界观/人物档案/事前设计卡。
+
+    在旧 world 上增量更新（保留 theme_proposition / conflict_matrix / protagonist_arc
+    等非编辑字段），只覆盖前端传来的可编辑字段。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
-    old = store.load_world() or World(world_view="", characters=[], foreshadowing=[], locked_settings=[])
-    world_view = str(payload.get("world_view", "")).strip()
-    chars_in = payload.get("characters", []) or []
+    old = store.load_world() or World(world_view="", characters=[])
+
+    world_view = str(payload.get("world_view", old.world_view)).strip()
     chars = []
-    for raw in chars_in:
+    for raw in (payload.get("characters", []) or []):
         if not isinstance(raw, dict):
             continue
         c = Character.from_dict(raw)
-        if not c.name:
-            continue
-        chars.append(c)
+        if c.name:
+            chars.append(c)
+
+    # 事前设计卡：前端传来即覆盖，没传则保留旧值
+    enemies = [EnemyCard.from_dict(e) for e in (payload.get("enemies") or getattr(old, "enemies", []))
+               if isinstance(e, (dict, str))]
+    locations = [LocationCard.from_dict(l) for l in (payload.get("locations") or getattr(old, "locations", []))
+                 if isinstance(l, (dict, str))]
+    factions = [FactionCard.from_dict(f) for f in (payload.get("factions") or getattr(old, "factions", []))
+                if isinstance(f, (dict, str))]
+    mb_raw = payload.get("mechanism_baseline")
+    mb = MechanismBaseline.from_dict(mb_raw) if isinstance(mb_raw, dict) else getattr(old, "mechanism_baseline", None)
+    ck_raw = payload.get("clock")
+    ck = ClockCard.from_dict(ck_raw) if isinstance(ck_raw, dict) else getattr(old, "clock", None)
+    style_taboos = [str(x) for x in (payload.get("style_taboos") or getattr(old, "style_taboos", []) or [])]
+
     fs = [str(x) for x in (payload.get("foreshadowing", old.foreshadowing) or [])]
     ls = [str(x) for x in (payload.get("locked_settings", old.locked_settings) or [])]
-    new_world = World(world_view=world_view, characters=chars, foreshadowing=fs, locked_settings=ls)
-    store.save_world(new_world)
-    logger.info("用户编辑世界观: project=%s chars=%d", project_id, len(chars))
+
+    # 复用旧对象，只更新可编辑字段，保留 theme/arc/goldfinger 等
+    old.world_view = world_view
+    old.characters = chars
+    old.foreshadowing = fs
+    old.locked_settings = ls
+    old.enemies = enemies
+    old.locations = locations
+    old.factions = factions
+    old.mechanism_baseline = mb
+    old.clock = ck
+    old.style_taboos = style_taboos
+    store.save_world(old)
+    logger.info("用户编辑世界观: project=%s chars=%d enemies=%d locations=%d factions=%d",
+                project_id, len(chars), len(enemies), len(locations), len(factions))
     return {
-        "world_view": new_world.world_view,
-        "characters": [c.to_dict() for c in new_world.characters],
+        "world_view": old.world_view,
+        "characters": [c.to_dict() for c in old.characters],
         "foreshadowing": fs,
         "locked_settings": ls,
+        "enemies": [e.to_dict() for e in enemies],
+        "locations": [l.to_dict() for l in locations],
+        "factions": [f.to_dict() for f in factions],
+        "mechanism_baseline": mb.to_dict() if mb else {},
+        "clock": ck.to_dict() if ck else {},
+        "style_taboos": style_taboos,
     }
 
 

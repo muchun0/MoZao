@@ -1095,12 +1095,25 @@ class OutlineChapterReq(BaseModel):
     emotion: str = ""
     transition: str = ""
     tag: str = ""
+    volume_no: int = 0  # 所属分卷编号（0=未分卷），前端拖拽/手动调整后随保存落盘
+
+
+class OutlineVolumeReq(BaseModel):
+    no: int = 0
+    name: str = ""
+    intro: str = ""
+    main_conflict: str = ""
+    character_growth: str = ""
+    climax: str = ""
+    start_ch: int = 0
+    end_ch: int = 0
 
 
 class OutlineSaveReq(BaseModel):
     title: str = ""
     intro: str = ""
     chapters: list[OutlineChapterReq] = []
+    volumes: list[OutlineVolumeReq] = []
 
 
 REGEN_DAILY_LIMIT = 10  # 每项目每日重生成次数上限（重生成免费，防滥用）

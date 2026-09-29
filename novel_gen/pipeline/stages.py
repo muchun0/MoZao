@@ -28,6 +28,43 @@ from .templates import (
 _CN_NUM = "一二三四五六七八九十"
 
 
+def assign_volumes(outline: Outline, target: int) -> None:
+    """按 volumes 的 start_ch~end_ch 区间，为无归属章节确定性回填 volume_no。
+
+    规则：
+    - 已手动设置（volume_no != 0）的章节保留原值，不覆盖；
+    - 覆盖全书 [1, target]：区间内按卷归属；区间外（首卷前/卷间空档/末卷后）
+      就近归入最近的分卷，保证不交叉、不留空档、无"未分卷"遗漏；
+    - 无 volumes 时不处理（保持 0）。
+    """
+    vols = sorted((v for v in (outline.volumes or []) if v and v.no), key=lambda v: v.no)
+    if not vols:
+        return
+    mapping: dict[int, int] = {}
+    # 1) 区间内：重叠时取 no 较小者（setdefault）
+    for v in vols:
+        lo, hi = max(1, v.start_ch), min(target, v.end_ch)
+        for c in range(lo, hi + 1):
+            mapping.setdefault(c, v.no)
+    # 2) 区间外补全，避免"未分卷"遗漏
+    first_lo = max(1, vols[0].start_ch)
+    for c in range(1, first_lo):            # 首卷 start 之前 → 归首卷
+        mapping[c] = vols[0].no
+    for i in range(len(vols) - 1):          # 卷间空档 → 归前一卷
+        cur_end = min(target, vols[i].end_ch)
+        nxt_start = max(1, vols[i + 1].start_ch)
+        for c in range(cur_end + 1, nxt_start):
+            mapping[c] = vols[i].no
+    last_end = min(target, vols[-1].end_ch)
+    for c in range(last_end + 1, target + 1):  # 末卷之后 → 归末卷
+        mapping[c] = vols[-1].no
+    # 3) 回填：只填未分配章节
+    for ch in outline.chapters:
+        if getattr(ch, "volume_no", 0) != 0:
+            continue
+        ch.volume_no = mapping.get(ch.no, 0)
+
+
 def unique_chapter_titles(chapters: list) -> list:
     """章节标题唯一化（原地修改并返回）。
 
@@ -151,7 +188,9 @@ class OutlineGenerator:
             prev_summary = "；".join(
                 f"第{c.no}章《{c.title}》：{c.goal}" for c in recent
             )
-        return Outline(title=title, intro=intro, core_conflict=core_conflict, main_line=main_line, volumes=volumes, chapters=chapters)
+        outline = Outline(title=title, intro=intro, core_conflict=core_conflict, main_line=main_line, volumes=volumes, chapters=chapters)
+        assign_volumes(outline, target)  # 按分卷区间确定性回填 volume_no
+        return outline
 
     def _head_blocks(self) -> str:
         """复用强约束/参考方向区块文本。"""
@@ -198,6 +237,7 @@ class OutlineGenerator:
             normalized.append(c)
         unique_chapter_titles(normalized)  # 章节名全书唯一（重名自动加后缀）
         outline.chapters = normalized
+        assign_volumes(outline, self.cfg.num_chapters)  # 按分卷区间确定性回填 volume_no
         return outline
 
 

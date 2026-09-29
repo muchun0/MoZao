@@ -31,6 +31,24 @@ from webapp.logger import get_logger
 logger = get_logger("pipeline")
 
 
+def _parse_json_obj(text: str) -> dict:
+    """容错解析 LLM 输出的 JSON 对象（去 ``` 围栏）；失败返回空 dict。"""
+    try:
+        import json
+        t = (text or "").strip()
+        if t.startswith("```"):
+            lines = t.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            t = "\n".join(lines).strip()
+        data = json.loads(t)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 class NovelPipeline:
     def __init__(self, cfg: NovelConfig, store: ProjectStore, llm: LLMClient,
                  trace: TraceRecorder | None = None):
@@ -280,7 +298,29 @@ class NovelPipeline:
             except Exception:
                 pass
         # 底层锚点准出门禁：金手指五要素 / 伏笔闭环 / 主题锚点不合格自动重生成
-        return self.orchestrator.run_stage("bottom_anchors", _produce, invalidate=_invalidate)
+        world = self.orchestrator.run_stage("bottom_anchors", _produce, invalidate=_invalidate)
+        # REQ-token优化 P1-1：world 落盘后确定性构建分章设定卡索引（零 LLM，失败降级全量注入）
+        self._build_setting_cards(world, silent=silent)
+        return world
+
+    def _build_setting_cards(self, world: World | None, silent: bool = False) -> None:
+        """P1-1：world 落盘后确定性构建分章设定卡索引（零 LLM，Python 前置处理）。
+        失败/关闭/已存在 → 降级或跳过，绝不阻塞主流程。"""
+        try:
+            if not getattr(self.cfg, "setting_cards", True):
+                return
+            if self.store.load_setting_cards() is not None:
+                return
+            if world is None:
+                return
+            outline = self.store.load_outline()
+            from .setting_cards import build_setting_cards
+            data = build_setting_cards(self.store, world, outline)
+            self.store.save_setting_cards(data)
+            if data and not silent:
+                print(f"[设定卡索引] 已构建：{len(data.get('chapters', []))} 章")
+        except Exception:
+            logger.exception("分章设定卡构建失败（降级为全量注入）")
 
     def run_editor_review(self, silent: bool = False) -> None:
         """大纲生成后执行编辑视角质检；不通过则自动修正一次。幂等：已审阅则跳过。"""
@@ -333,6 +373,9 @@ class NovelPipeline:
         # 确保人物/世界观已生成，正文才有设定库可注入
         if self.store.load_world() is None:
             self.run_world(silent=silent)
+        else:
+            # REQ-token优化 P1-1：world 已存在但索引缺失时惰性构建（幂等，失败降级）
+            self._build_setting_cards(self.store.load_world(), silent=silent)
         research = None
         if not self.is_expand_mode():
             research = self.store.load_research() or self.run_research(silent=True)
@@ -381,7 +424,12 @@ class NovelPipeline:
             logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
 
     def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
-        """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
+        """每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5）。
+
+        默认合并为 1 次调用（verify_combined_prompt 输出一致性/读者/编辑三类结果），
+        输入不再把世界观与摘要重复喂 3 遍；verify_combined=False 时回退原 3 连调用。
+        只写 issues 文件，不改已生成章节。
+        """
         try:
             summaries = self.store.load_summaries()
             recent = [s for s in summaries if int(s.get("no", 0)) <= chapter_no][-3:]
@@ -391,78 +439,84 @@ class NovelPipeline:
                 world_text = (world.world_view or "") + "\n" + "; ".join(
                     f"{c.name}({c.role})" for c in (world.characters or []) if c.name
                 )
-            sys_v, user_v = verify_prompt(self.cfg, [s["summary"] for s in recent], world_text)
-            raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=800)
-            # 解析 JSON
-            import json
-            t = raw.strip()
-            if t.startswith("```"):
-                lines = t.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                t = "\n".join(lines).strip()
-            data = json.loads(t)
-            issues = data.get("issues", [])
-            if issues:
-                self.store.append_verify_issues(chapter_no, issues)
-                if not silent:
-                    print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
-                logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
-
-            # 读者视角自检（三问）
-            from .templates import blind_check_prompt
-            sys_b, user_b = blind_check_prompt(
-                self.cfg, chapter_no,
-                [s["summary"] for s in recent],
-                world_text,
-            )
-            raw_b = self.llm.chat(sys_b, user_b, temperature=0.3, max_tokens=500)
-            t_b = raw_b.strip()
-            if t_b.startswith("```"):
-                lines_b = t_b.splitlines()
-                if lines_b and lines_b[0].startswith("```"):
-                    lines_b = lines_b[1:]
-                if lines_b and lines_b[-1].strip() == "```":
-                    lines_b = lines_b[:-1]
-                t_b = "\n".join(lines_b).strip()
-            b_data = json.loads(t_b)
-            if b_data.get("confused") or b_data.get("issues"):
-                self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
-                if not silent:
-                    print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
-
-            # 编辑视角审稿（正文阶段）
-            from .templates import editor_review_text_prompt
             ch = self.store.load_chapter(chapter_no)
-            if ch and ch.content:
-                sys_e, user_e = editor_review_text_prompt(
-                    self.cfg, chapter_no, ch.title, ch.content,
-                    [s["summary"] for s in recent],
+            chapter_text = ch.content if (ch and ch.content) else ""
+            if getattr(self.cfg, "verify_combined", True):
+                from .templates import verify_combined_prompt
+                sys_v, user_v = verify_combined_prompt(
+                    self.cfg, chapter_no,
+                    [s["summary"] for s in recent], world_text, chapter_text[:2000],
                 )
-                raw_e = self.llm.chat(sys_e, user_e, temperature=0.3, max_tokens=800)
-                t_e = raw_e.strip()
-                if t_e.startswith("```"):
-                    lines_e = t_e.splitlines()
-                    if lines_e and lines_e[0].startswith("```"):
-                        lines_e = lines_e[1:]
-                    if lines_e and lines_e[-1].strip() == "```":
-                        lines_e = lines_e[:-1]
-                    t_e = "\n".join(lines_e).strip()
-                e_data = json.loads(t_e)
-                score = e_data.get("score", 5)
-                churn = e_data.get("reader_churn_risk", "中")
+                raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=1600)
+                data = _parse_json_obj(raw)
+                issues = data.get("issues") or []
+                if issues:
+                    self.store.append_verify_issues(chapter_no, issues)
+                    if not silent:
+                        print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                    logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
+                reader = data.get("reader") or {}
+                r_issues = reader.get("issues") or []
+                if reader.get("confused") or r_issues:
+                    self.store.append_verify_issues(chapter_no, r_issues)
+                    if not silent:
+                        print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+                editor = data.get("editor") or {}
+                score = editor.get("score", 5)
+                churn = editor.get("reader_churn_risk", "中")
                 if not silent:
                     print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
-                logger.info("编辑审稿: 第%d章 score=%d churn=%s", chapter_no, score, churn)
-                # P2-4：编辑审稿结果落 trace，供质量报表聚合弃书风险分布
+                logger.info("编辑审稿: 第%d章 score=%s churn=%s", chapter_no, score, churn)
                 self._trace_step(f"第{chapter_no}章编辑审稿", {"score": score, "churn": churn})
-                # 评分低于5或弃书风险高，记录问题
-                if score < 5 or churn == "高":
-                    e_issues = e_data.get("issues", [])
+                try:
+                    _sc = int(score)
+                except (TypeError, ValueError):
+                    _sc = 5
+                e_issues = editor.get("issues") or []
+                if _sc < 5 or churn == "高":
                     if e_issues:
                         self.store.append_verify_issues(chapter_no, e_issues)
+            else:
+                # 回退：原 3 连调用（verify_combined=False）
+                sys_v, user_v = verify_prompt(self.cfg, [s["summary"] for s in recent], world_text)
+                raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=800)
+                data = _parse_json_obj(raw)
+                issues = data.get("issues", [])
+                if issues:
+                    self.store.append_verify_issues(chapter_no, issues)
+                    if not silent:
+                        print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                    logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
+                from .templates import blind_check_prompt
+                sys_b, user_b = blind_check_prompt(
+                    self.cfg, chapter_no,
+                    [s["summary"] for s in recent],
+                    world_text,
+                )
+                raw_b = self.llm.chat(sys_b, user_b, temperature=0.3, max_tokens=500)
+                b_data = _parse_json_obj(raw_b)
+                if b_data.get("confused") or b_data.get("issues"):
+                    self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
+                    if not silent:
+                        print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+                from .templates import editor_review_text_prompt
+                if ch and ch.content:
+                    sys_e, user_e = editor_review_text_prompt(
+                        self.cfg, chapter_no, ch.title, ch.content,
+                        [s["summary"] for s in recent],
+                    )
+                    raw_e = self.llm.chat(sys_e, user_e, temperature=0.3, max_tokens=800)
+                    e_data = _parse_json_obj(raw_e)
+                    score = e_data.get("score", 5)
+                    churn = e_data.get("reader_churn_risk", "中")
+                    if not silent:
+                        print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
+                    logger.info("编辑审稿: 第%d章 score=%d churn=%s", chapter_no, score, churn)
+                    self._trace_step(f"第{chapter_no}章编辑审稿", {"score": score, "churn": churn})
+                    if score < 5 or churn == "高":
+                        e_issues = e_data.get("issues", [])
+                        if e_issues:
+                            self.store.append_verify_issues(chapter_no, e_issues)
         except Exception as e:
             logger.warning("一致性校验失败（不阻塞生成）: %s", e)
 
@@ -568,8 +622,9 @@ class NovelPipeline:
             # REQ-章内自洽与机制账本：每章落盘后抽取章末状态供下一章承接（可开关，失败降级）
             if getattr(self.cfg, "chapter_state_tracking", True):
                 self._update_chapter_state(no, silent=silent)
-            # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
-            if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
+            # 高质量模式：每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5，原每 3 章），结果只影响后续章节
+            _v_every = max(1, int(getattr(self.cfg, "verify_every", 5) or 5))
+            if getattr(self.cfg, 'high_quality_mode', False) and no % _v_every == 0 and no < total:
                 self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)

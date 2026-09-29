@@ -354,8 +354,9 @@ class ChapterWriter:
         except Exception:
             pass
 
-        # P1-1 人物行动表先行：正文生成前先规划本章人物行动（解析失败自动回退原流程）
-        if getattr(self.cfg, "action_plan_first", True):
+        # P1-1 人物行动表先行：默认并入拆场景输出（REQ-token优化 P0-2，不再独立调用）；
+        # 仅当 action_plan_first=True 时恢复独立调用（老项目/显式开启）。
+        if getattr(self.cfg, "action_plan_first", False):
             try:
                 action_plan = self._gen_action_plan(
                     chapter_no, plan_title, plan_goal, memory_context,
@@ -463,14 +464,17 @@ class ChapterWriter:
             _pick_dynamic_module,
         )
 
-        # 1. 拆场景（低温 0.4）
+        # 1. 拆场景（低温 0.4；REQ-token优化 P0-2：顺带产出本章人物行动表，不再独立调用）
+        action_plan_block = ""
         try:
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
-            scenes = json.loads(_strip_json_block(raw)).get("scenes", [])
+            split_data = json.loads(_strip_json_block(raw))
+            scenes = split_data.get("scenes", [])
+            action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
         except Exception:
             scenes = []
 
@@ -493,14 +497,29 @@ class ChapterWriter:
         dynamic = _pick_dynamic_module(chapter_no, genre) if dynamic_module_used else ""
         scene_texts = []
         running_tail = prev_tail
+        # 本章人物行动表（拆场景产出）拼入每个场景的记忆上下文
+        mem_for_scene = memory_context
+        if action_plan_block:
+            mem_for_scene = (mem_for_scene + "\n\n" if mem_for_scene else "") + \
+                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan_block
         # REQ-章内自洽与机制账本：场景间累积「已推进状态」（面板数字/人物生死/物品/时间），
         # 注入后续场景，防「三次死亡只减两次数字」「疤脸死而复生」等章内状态断裂。
         scene_state_acc: dict = {}
         scene_state_hint: str = ""
+        # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
+        # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
+        scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
         for idx, sc in enumerate(scenes, start=1):
+            if idx == 1 or not scene_delta_on:
+                mem_for_this = mem_for_scene
+            elif action_plan_block:
+                mem_for_this = ("【前情记忆】已在第1个场景完整注入，本场景不再重复全文。\n"
+                                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致）】\n" + action_plan_block)
+            else:
+                mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
-                memory_context, running_tail, dynamic,
+                mem_for_this, running_tail, dynamic,
                 core_event=plan_core_event,
                 scene_state_hint=scene_state_hint,
             )
@@ -517,11 +536,22 @@ class ChapterWriter:
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
-                # 场景状态推进抽取（失败降级为空，不影响流程）
-                if idx < len(scenes) and getattr(self.cfg, "chapter_state_llm", True):
+                # 场景状态推进抽取（REQ-token优化 P0-1）：
+                # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
+                # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。
+                if idx < len(scenes):
                     try:
-                        from .chapter_state import extract_scene_state, format_scene_state, merge_scene_state
-                        adv = extract_scene_state(self.llm, piece)
+                        from .chapter_state import (extract_scene_state, format_scene_state,
+                                                    merge_scene_state, _deterministic_numbers)
+                        mode = getattr(self.cfg, "scene_state_mode", "auto") or "auto"
+                        hq = getattr(self.cfg, "high_quality_mode", False)
+                        use_llm = (mode == "llm" or (mode == "auto" and hq)) and \
+                            getattr(self.cfg, "chapter_state_llm", True)
+                        if use_llm:
+                            adv = extract_scene_state(self.llm, piece)
+                        else:
+                            nums = _deterministic_numbers(piece)
+                            adv = {"numbers": nums} if nums else None
                         if adv:
                             scene_state_acc = merge_scene_state(scene_state_acc, adv)
                             scene_state_hint = format_scene_state(scene_state_acc)
@@ -533,22 +563,25 @@ class ChapterWriter:
 
         chapter_text = "\n\n".join(t for t in scene_texts if t)
 
-        # 3. 润色通读（中温 0.7）
-        try:
-            sys_p, user_p = polish_chapter_prompt(
-                self.cfg, chapter_no, plan_title, chapter_text
-            )
-            polished = self.llm.chat(
-                sys_p, user_p,
-                temperature=0.7,
-                max_tokens=4000,
-                frequency_penalty=0.2,
-                presence_penalty=0.1,
-            )
-            if polished and len(polished) > len(chapter_text) * 0.5:
-                chapter_text = polished
-        except Exception:
-            pass
+        # 3. 润色通读（中温 0.7；REQ-token优化 P0-3：普通模式默认跳过，省整章输入+输出）
+        hq_mode = getattr(self.cfg, "high_quality_mode", False)
+        polish_on = hq_mode or not getattr(self.cfg, "polish_hq_only", True)
+        if polish_on:
+            try:
+                sys_p, user_p = polish_chapter_prompt(
+                    self.cfg, chapter_no, plan_title, chapter_text
+                )
+                polished = self.llm.chat(
+                    sys_p, user_p,
+                    temperature=0.7,
+                    max_tokens=4000,
+                    frequency_penalty=0.2,
+                    presence_penalty=0.1,
+                )
+                if polished and len(polished) > len(chapter_text) * 0.5:
+                    chapter_text = polished
+            except Exception:
+                pass
 
         # 4. 追加摘要（复用普通模式的摘要生成）
         # 清理 LLM 偶发输出的尾部 Markdown 分隔线（---/***），避免章末残留无体例的分隔符
@@ -636,6 +669,28 @@ class ChapterWriter:
         if not prev or not prev.content:
             return ""
         return prev.content.strip()[-300:]
+
+
+def _format_action_plan(chars: list) -> str:
+    """把拆场景输出中的 characters_action 格式化为注入文本（空则返回空串）。
+
+    REQ-token优化 P0-2：行动表由拆场景一次调用顺带产出，这里只做确定性格式化，
+    零新增 LLM 调用；格式与原 _gen_action_plan 一致。
+    """
+    if not chars:
+        return ""
+    lines = []
+    for c in chars:
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        actions = c.get("key_actions") or []
+        if isinstance(actions, str):
+            actions = [actions]
+        lines.append(
+            f"- {c['name']}：目标『{c.get('goal', '')}』；关键行动：{'、'.join(str(a) for a in actions)}；"
+            f"情绪：{c.get('emotion', '')}；对话意图：{c.get('dialogue_intent', '')}"
+        )
+    return "\n".join(lines)
 
 
 def _split_summary(text: str) -> tuple[str, str]:

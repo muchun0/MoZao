@@ -44,12 +44,16 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     # ---- memory：记忆与长文一致性 ----
     FeatureFlag("memory", "memory_window", 5, "生成当前章时回填最近 N 章摘要，控制上下文成本"),
     FeatureFlag("memory", "memory_direct_read_chapters", 1, "前文直读：直读最近 N 章正文（0=关闭，保持纯摘要；P0-1）"),
-    FeatureFlag("memory", "memory_direct_read_chars", 2000, "每章直读正文最大字符数（取章节尾部；P0-1）"),
+    FeatureFlag("memory", "memory_direct_read_chars", 1200, "每章直读正文最大字符数（取章节尾部；P0-1；REQ-token优化 P0-5：2000→1200 降输入）"),
     FeatureFlag("memory", "character_state_tracking", True, "每章正文落盘后更新人物动态状态快照（P0-2）"),
     FeatureFlag("memory", "character_state_llm", True, "是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）"),
     FeatureFlag("memory", "chapter_state_tracking", True, "章间机制/世界状态账本：每章落盘后抽取章末状态（数字/生死/物品/时间），供下一章承接，防数字断链与死而复生（REQ-章内自洽与机制账本）"),
     FeatureFlag("memory", "chapter_state_llm", True, "是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则，零 LLM 成本）"),
     FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
+    FeatureFlag("memory", "scene_state_mode", "auto", "场景间状态抽取模式（REQ-token优化 P0-1）：auto=高质量模式 LLM/普通模式确定性正则；llm=全部 LLM；deterministic=全部确定性正则（零 LLM）"),
+    FeatureFlag("memory", "state_extract_frequency", 3, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章"),
+    FeatureFlag("memory", "setting_cards", True, "分章设定卡索引（REQ-token优化 P1-1）：world 后确定性构建 setting_cards.json，按章只注入相关设定子集，构建失败回退全量注入"),
+    FeatureFlag("memory", "scene_delta_inject", True, "场景 prompt 分层注入（REQ-token优化 P1-2）：首场景注入全量记忆，后续场景只注入增量块（已推进状态+人物卡子集+场景大纲），降重复输入"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -58,8 +62,9 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "high_quality_mode", False, "高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字"),
     FeatureFlag("writing", "pacing_density", "medium", "爽点密度：low(慢热)/medium(适中)/high(密集)"),
     FeatureFlag("writing", "plot_speed", "medium", "剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)"),
-    FeatureFlag("writing", "action_plan_first", True, "正文前先生成人物行动表，写手必须落实（P1-1）"),
+    FeatureFlag("writing", "action_plan_first", False, "正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出，不再独立调用；True=恢复独立调用）"),
     FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
+    FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
@@ -67,6 +72,11 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "final_review", False, "全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）"),
     FeatureFlag("review", "stage_gate", True, "多Agent阶段门禁：每阶段产出后准出校验，不合格自动重生成（REQ 多Agent协作分层优化）"),
     FeatureFlag("review", "stage_gate_retries", 2, "阶段门禁最大自动重生成轮次，超限由总控仲裁放行（REQ 多Agent协作分层优化）"),
+    FeatureFlag("review", "consistency_llm_check", False, "章内前后矛盾 LLM 自检（REQ-token优化 P1-3）：默认仅高质量模式开启；普通模式只保留确定性规则+读者 LLM 校验"),
+    FeatureFlag("review", "targeted_rewrite", True, "定点重写（REQ-token优化 P1-4）：质检触发重写时只重写问题段落窗口，不整章重出；无定位点退回复核回整章"),
+    FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
+    FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
+    FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -232,6 +242,10 @@ class NovelConfig:
     chapter_state_tracking: bool = feature_default("chapter_state_tracking")           # 章间机制/世界状态账本：每章落盘后抽取章末状态供下一章承接
     chapter_state_llm: bool = feature_default("chapter_state_llm")                     # 是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则）
     lorebook_trim: bool = feature_default("lorebook_trim")                             # 按章触发注入（Lorebook 式裁剪，P1-3）
+    scene_state_mode: str = feature_default("scene_state_mode")                        # 场景间状态抽取模式：auto/llm/deterministic（REQ-token优化 P0-1）
+    state_extract_frequency: int = feature_default("state_extract_frequency")          # 章末/人物状态 LLM 抽取频率：每 N 章 1 次（REQ-token优化 P0-4）
+    setting_cards: bool = feature_default("setting_cards")                             # 分章设定卡索引（REQ-token优化 P1-1）
+    scene_delta_inject: bool = feature_default("scene_delta_inject")                   # 场景 prompt 分层注入（REQ-token优化 P1-2）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -247,13 +261,19 @@ class NovelConfig:
     # ---- 节奏控制参数（默认值见 FEATURE_FLAGS）----
     pacing_density: str = feature_default("pacing_density")      # 爽点密度：low(慢热)/medium(适中)/high(密集)
     plot_speed: str = feature_default("plot_speed")              # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
-    action_plan_first: bool = feature_default("action_plan_first")  # 正文前先生成人物行动表，写手必须落实（P1-1）
+    action_plan_first: bool = feature_default("action_plan_first")  # 正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出）
     scene_split: bool = feature_default("scene_split")              # 场景级生成下沉普通模式（单章≥2000字自动拆；P1-2）
+    polish_hq_only: bool = feature_default("polish_hq_only")        # 整章润色仅高质量模式（REQ-token优化 P0-3）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
     stage_gate: bool = feature_default("stage_gate")                 # 多Agent阶段门禁：每阶段产出后准出校验（REQ 多Agent协作分层优化）
     stage_gate_retries: int = feature_default("stage_gate_retries")  # 阶段门禁最大自动重生成轮次（REQ 多Agent协作分层优化）
+    consistency_llm_check: bool = feature_default("consistency_llm_check")  # 章内矛盾 LLM 自检：默认仅高质量模式（REQ-token优化 P1-3）
+    targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）
+    verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
+    verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）
+    editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

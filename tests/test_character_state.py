@@ -53,7 +53,9 @@ def test_deterministic_seen_record(store):
 
 @pytest.mark.p1
 def test_llm_details_merged(store):
-    """LLM 返回状态细节时按人物名合并覆盖，保留 last_seen。"""
+    """LLM 返回状态细节时按人物名合并覆盖，保留 last_seen（freq=1 每章抽取=原行为）。"""
+    cfg = store.load_config()
+    cfg.state_extract_frequency = 1
     w = _world()
     ch = Chapter(no=2, title="第二章", content="林小满负伤。" * 50, summary="s")
     llm = MagicMock()
@@ -64,11 +66,32 @@ def test_llm_details_merged(store):
              "goal": "疗伤并追踪线索"},
         ]
     }
-    states = extract_character_states(llm, store.load_config(), w, ch, 2, {"林小满": {"last_seen": 1}})
+    states = extract_character_states(llm, cfg, w, ch, 2, {"林小满": {"last_seen": 1}})
     assert states["林小满"]["last_seen"] == 2
     assert states["林小满"]["location"] == "落霞城医馆"
     assert states["林小满"]["body"] == "左臂受伤"
     assert "与江澈结盟" in states["林小满"]["relations"]
+
+
+@pytest.mark.p1
+def test_llm_extract_frequency(store):
+    """REQ-token优化 P0-4：state_extract_frequency=3 时，no%3==1 的章才调 LLM，
+    其余章仅确定性出场记录（零 LLM）。"""
+    cfg = store.load_config()
+    cfg.state_extract_frequency = 3
+    w = _world()
+    llm = MagicMock()
+    llm.chat_json.return_value = {"updated": []}
+    # no=2：不抽 LLM（2%3==2）
+    ch2 = Chapter(no=2, title="第二章", content="林小满负伤。" * 50, summary="s")
+    states2 = extract_character_states(llm, cfg, w, ch2, 2, {})
+    assert states2["林小满"]["last_seen"] == 2
+    llm.chat_json.assert_not_called()
+    # no=4：抽 LLM（4%3==1）
+    llm.reset_mock()
+    ch4 = Chapter(no=4, title="第四章", content="林小满再战。" * 50, summary="s")
+    extract_character_states(llm, cfg, w, ch4, 4, {"林小满": {"last_seen": 3}})
+    llm.chat_json.assert_called_once()
 
 
 @pytest.mark.p1

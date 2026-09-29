@@ -39,23 +39,81 @@ _SCENES_JSON = (
 
 @pytest.mark.p1
 def test_normal_mode_long_chapter_uses_scenes(store):
-    """普通模式 2500 字章节：走拆场景→场景→润色链路。"""
+    """普通模式 2500 字章节：走拆场景→场景→摘要链路；
+    润色默认仅高质量模式（REQ-token优化 P0-3：普通模式不润色）。"""
     cfg = store.load_config()
     cfg.action_plan_first = False
     cfg.agent_guard.quality_check = False
     store.save_config(cfg)
     llm = MagicMock()
-    # 1) 拆场景 2) 场景正文 3) 润色 4) 摘要
+    # 1) 拆场景 2) 场景正文 3) 摘要（普通模式不再调用润色）
     llm.chat.side_effect = [
         _SCENES_JSON,
         "场景正文：林小满推开医馆的门。" * 190,          # ~2280 字
-        "润色后完整正文：" + "场景正文：林小满推开医馆的门。" * 195,  # 润色更长生效
         "场景链路摘要",
     ]
     ch = _writer(cfg, llm, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
-    assert llm.chat.call_count == 4
-    assert "润色后完整正文" in ch.content
+    assert llm.chat.call_count == 3
+    assert "场景正文：林小满推开医馆的门" in ch.content
     assert ch.summary == "场景链路摘要"
+
+
+@pytest.mark.p1
+def test_normal_mode_polish_only_hq(store):
+    """polish_hq_only=True：普通模式无润色调用；False 时恢复润色。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        _SCENES_JSON,
+        "场景正文：林小满推开医馆的门。" * 190,
+        "场景链路摘要",
+    ]
+    _writer(cfg, llm, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
+    assert llm.chat.call_count == 3  # 无润色
+
+    cfg.polish_hq_only = False
+    store.save_config(cfg)
+    llm2 = MagicMock()
+    llm2.chat.side_effect = [
+        _SCENES_JSON,
+        "场景正文：林小满推开医馆的门。" * 190,
+        "润色后完整正文：" + "场景正文：林小满推开医馆的门。" * 195,
+        "场景链路摘要",
+    ]
+    ch2 = _writer(cfg, llm2, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
+    assert llm2.chat.call_count == 4
+    assert "润色后完整正文" in ch2.content
+
+
+@pytest.mark.p1
+def test_action_plan_from_scene_split(store):
+    """REQ-token优化 P0-2：拆场景输出 characters_action → 场景 prompt 收到行动表，
+    不再发起独立行动表调用。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False          # 默认：不独立调用
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "落霞城", "event": "林小满抵达", "emotion": "疲惫", '
+        '"target_words": 1200}], '
+        '"characters_action": [{"name": "林小满", "goal": "查清玉佩来历", '
+        '"key_actions": ["去藏经阁"], "emotion": "警惕", "dialogue_intent": "套话"}]}'
+    )
+    llm.chat.side_effect = [
+        scenes_json,
+        "场景正文：林小满抵达。" * 280,     # ~2800 字，达标不触发扩写
+        "场景摘要",
+    ]
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 3        # 拆场景(含行动表) + 场景 + 摘要：无独立行动表调用
+    # 场景 prompt 应包含行动表文本（确定性格式化注入）
+    scene_call = llm.chat.call_args_list[1][0][1]
+    assert "查清玉佩来历" in scene_call
+    assert "去藏经阁" in scene_call
 
 
 @pytest.mark.p1

@@ -214,9 +214,11 @@ class QualityChecker:
         # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）：
         # 抓确定性规则与读者视角都漏的硬矛盾——身体状态/知觉范围前后不一、
         # 同类生物行为模式不一、方位指代错误、同一意象比喻两版本。
-        for it in self._consistency_llm_check(chapter_no, content):
-            issues.append(it)
-            score -= 25
+        # REQ-token优化 P1-3：默认仅高质量模式开启；普通模式保留确定性规则 + 读者 LLM 校验。
+        if getattr(self.cfg, "high_quality_mode", False) or getattr(self.cfg, "consistency_llm_check", False):
+            for it in self._consistency_llm_check(chapter_no, content):
+                issues.append(it)
+                score -= 25
 
         # 去重 + 排序（大改在前）
         seen, uniq = set(), []
@@ -497,9 +499,29 @@ class QualityChecker:
         except Exception:
             return []
 
-    # ---------- 自动重写（1 次） ----------
+    # ---------- 自动重写（1 次；REQ-token优化 P1-4：定点化，不整章重出） ----------
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,
                       content: str, issues: list[dict]) -> str:
+        """优先只重写问题段落（省整章重出 token 60~75%）；无定位点/跨度过大 → 整章重写。"""
+        try:
+            if getattr(self.cfg, "targeted_rewrite", True):
+                spans = _locate_problem_spans(content, issues)
+                if spans:
+                    spans = _align_to_paras(content, spans)
+                    # 合并后仍为单一窗口且覆盖 <60% 正文 → 定点重写
+                    if len(spans) == 1 and (spans[0][1] - spans[0][0]) < len(content) * 0.6:
+                        rewritten = self._rewrite_span(
+                            chapter_no, plan_title, plan_goal, content, spans[0], issues,
+                        )
+                        if rewritten and rewritten != content:
+                            return rewritten
+            return self._rewrite_whole(chapter_no, plan_title, plan_goal, content, issues)
+        except Exception:
+            return ""
+
+    def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
+                       content: str, issues: list[dict]) -> str:
+        """整章重写（原行为，无定位信息/定点失败时兜底）。"""
         try:
             target = max(self.cfg.chapter_words, 500)
             issue_block = "\n".join(
@@ -524,6 +546,41 @@ class QualityChecker:
                 prompt, temperature=0.8, max_tokens=8000,
             )
             return (text or "").strip()
+        except Exception:
+            return ""
+
+    def _rewrite_span(self, chapter_no: int, plan_title: str, plan_goal: str,
+                      content: str, span: tuple[int, int], issues: list[dict]) -> str:
+        """只重写问题窗口：上下文 + 问题段 → LLM 输出替换段 → Python 拼回（零结构破坏）。"""
+        try:
+            s, e = span
+            ctx_before = content[max(0, s - 200):s]
+            ctx_after = content[e:min(len(content), e + 200)]
+            problem_seg = content[s:e]
+            issue_block = "\n".join(
+                f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
+            )
+            prompt = (
+                f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的一个段落，"
+                f"质检发现如下问题，请只重写这个段落（不要改动上下文，不要输出其他内容）。\n"
+                f"【本章目标】{plan_goal}\n"
+                f"【质检问题】\n{issue_block}\n\n"
+                f"【段落前文（保持衔接，不要重复）】\n{ctx_before}\n\n"
+                f"【需要重写的段落】\n{problem_seg}\n\n"
+                f"【段落后文（保持衔接，不要提前写）】\n{ctx_after}\n\n"
+                f"重写要求：\n"
+                f"1. 保留剧情走向、人物设定与关键信息，不推翻前文既定事实\n"
+                f"2. 针对性修复上述问题（去重复/修正矛盾/补足内容）\n"
+                f"3. 只输出替换后的这一个段落，不要解释，不要输出【摘要】\n"
+                f"4. 以句末标点完整收尾"
+            )
+            text = (self.llm.chat(
+                "你是资深网络小说写手，擅长按质检意见局部修改章节段落。",
+                prompt, temperature=0.8, max_tokens=4000,
+            ) or "").strip()
+            if not text:
+                return ""
+            return content[:s] + text + content[e:]
         except Exception:
             return ""
 
@@ -623,3 +680,95 @@ def _iter_repeat_groups(groups: dict):
             items.append((bucket, norm, sentences))
     items.sort(key=lambda t: -len(t[2]))
     return items
+
+
+# ---------- 定点重写定位工具（REQ-token优化 P1-4） ----------
+
+_CTX = 200          # 句锚点窗口半径
+_MIN_FRAG = 8       # 参与匹配的 detail 片段最短归一化长度
+_SPAN_GAP = 400     # 间距 ≤400 的窗口合并
+
+
+def _locate_problem_spans(content: str, issues: list[dict]) -> list[tuple[int, int]]:
+    """从 issue 定位问题段落（起点, 终点），供定点重写。
+
+    定位来源优先级：
+    1. issue["pos"]（如「段3」「第3段」）→ 按段落序号定位；
+    2. issue["detail"] 中 ≥8 字的片段 → 归一化后在正文句子中匹配，
+       以句为锚点取前后 _CTX 字符窗口；
+    3. 无法定位 → 返回空列表（调用方整章重写）。
+    """
+    if not content or not issues:
+        return []
+    import re
+    spans: list[tuple[int, int]] = []
+    # 1) 段落定位
+    para_nos = set()
+    for it in issues:
+        pos = (it.get("pos") or "").strip()
+        if not pos:
+            continue
+        m = re.search(r"(\d+)", pos)
+        if m:
+            para_nos.add(int(m.group(1)))
+    if para_nos:
+        paras = content.split("\n")
+        for pi in sorted(para_nos):
+            if 1 <= pi <= len(paras):
+                seg = paras[pi - 1]
+                start = content.find(seg)
+                if start >= 0:
+                    spans.append((start, start + len(seg)))
+        if spans:
+            return _merge_spans(spans)
+    # 2) 句锚点定位：detail 中 ≥8 字片段归一化匹配正文句子
+    anchors: list[str] = []
+    for it in issues:
+        detail = it.get("detail") or ""
+        for m in re.finditer(r"[“\"『]?([^”\"』，。；：]{8,40})[”\"』]?", detail):
+            frag = m.group(1).strip()
+            if frag:
+                anchors.append(frag)
+    if anchors:
+        sents = list(_iter_sentences(content))
+        for frag in anchors:
+            nf = _norm_sentence(frag)
+            if len(nf) < _MIN_FRAG:
+                continue
+            for sentence, _ in sents:
+                ns = _norm_sentence(sentence)
+                if ns and (nf in ns or ns in nf):
+                    i = content.find(sentence)
+                    if i >= 0:
+                        spans.append((max(0, i - _CTX),
+                                      min(len(content), i + len(sentence) + _CTX)))
+                    break
+        if spans:
+            return _merge_spans(spans)
+    return []
+
+
+def _merge_spans(spans: list[tuple[int, int]], gap: int = _SPAN_GAP) -> list[tuple[int, int]]:
+    """间距 ≤ gap 的窗口合并为一个（一次调用重写合并窗口）。"""
+    if not spans:
+        return []
+    spans = sorted(spans)
+    merged = [spans[0]]
+    for s, e in spans[1:]:
+        if s - merged[-1][1] <= gap:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _align_to_paras(content: str, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """把窗口边界对齐到段落首尾，避免重写拼接处断句。"""
+    out = []
+    for s, e in spans:
+        s0 = content.rfind("\n", 0, s) + 1
+        e0 = content.find("\n", e)
+        if e0 == -1:
+            e0 = len(content)
+        out.append((s0, e0))
+    return out

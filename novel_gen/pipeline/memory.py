@@ -69,6 +69,26 @@ class Memory:
         if world is not None:
             w_normal = []
             hit: list[str] = []
+            # REQ-token优化 P1-1：分章设定卡子集（缺失/关闭/失败 → None = 回退全量注入）
+            sc_ch = None
+            try:
+                _cfg_d = self.store.load_config()
+                if bool(getattr(_cfg_d, "setting_cards", True)):
+                    _sc = self.store.load_setting_cards()
+                    if _sc and isinstance(_sc.get("chapters"), list):
+                        for _c in _sc["chapters"]:
+                            if int(_c.get("no", 0)) == up_to_chapter:
+                                sc_ch = _c
+                                break
+            except Exception:
+                pass
+            # 注意：空列表（[]）= 命中索引但本章无该项 → 不注入；None = 索引缺失/关闭 → 回退全量
+            _scd = sc_ch or {}
+            sub_chars = _scd.get("chars") if sc_ch else None
+            sub_enemies = _scd.get("enemies") if sc_ch else None
+            sub_locations = _scd.get("locations") if sc_ch else None
+            sub_factions = _scd.get("factions") if sc_ch else None
+            sub_fs = _scd.get("foreshadows") if sc_ch else None
             reveals = getattr(world, "world_reveals", None) or []
             if reveals:
                 # 跟随主角视角逐步展开，三段式：潜伏期 → 铺垫期 → 揭示期。
@@ -116,7 +136,12 @@ class Memory:
                     return f"{c.name}（{c.role}）——{c.desc}"
                 hit = [c.name for c in world.characters if c.name]
                 trimmed = False
-                if lorebook_on and len(world.characters) > 4:
+                if sub_chars:
+                    # 设定卡子集：只注入本章出场人物（真子集才算裁剪）
+                    sub_hit = [n for n in sub_chars if any(c.name == n for c in world.characters)]
+                    if sub_hit:
+                        hit, trimmed = sub_hit, len(sub_hit) < len(hit)
+                elif lorebook_on and len(world.characters) > 4:
                     # 预测本章出场人物；预测失败回退全量注入（不裁关键信息）
                     try:
                         summaries = [s.get("summary", "") for s in self.store.load_summaries()[-3:]]
@@ -153,9 +178,12 @@ class Memory:
                             w_normal.append("本章相关人物动机卡：" + "；".join(m_lines))
                 except Exception:
                     pass
-            # ---- 事前设计卡（REQ-事前设定卡）：怪物/地点/势力，小而全量注入（写手不得自行发明） ----
+            # ---- 事前设计卡（REQ-事前设定卡）：怪物/地点/势力，小而全量注入（写手不得自行发明）。
+            # REQ-token优化 P1-1：有设定卡子集时按章只注入相关卡；无子集保持全量注入。 ----
             try:
                 enemies = getattr(world, "enemies", None) or []
+                if sub_enemies is not None:
+                    enemies = [e for e in enemies if getattr(e, "name", "") in sub_enemies]
                 if enemies:
                     e_lines = []
                     for e in enemies:
@@ -172,6 +200,8 @@ class Memory:
                 pass
             try:
                 locs = getattr(world, "locations", None) or []
+                if sub_locations is not None:
+                    locs = [lc for lc in locs if getattr(lc, "name", "") in sub_locations]
                 if locs:
                     l_lines = []
                     for lc in locs:
@@ -187,6 +217,8 @@ class Memory:
                 pass
             try:
                 facs = getattr(world, "factions", None) or []
+                if sub_factions is not None:
+                    facs = [f for f in facs if getattr(f, "name", "") in sub_factions]
                 if facs:
                     f_lines = []
                     for f in facs:
@@ -214,7 +246,10 @@ class Memory:
                     if isinstance(x, dict):
                         return " ".join(str(v) for v in x.values())
                     return str(x)
-                if trimmed:
+                if sub_fs is not None:
+                    if sub_fs:
+                        w_normal.append("相关伏笔：" + "；".join(sub_fs))
+                elif trimmed:
                     related = [x for x in world.foreshadowing if any(n in _fs(x) for n in hit)]
                     if related:
                         w_normal.append("相关伏笔：" + "；".join(_fs(x) for x in related))

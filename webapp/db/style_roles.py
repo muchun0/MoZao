@@ -44,8 +44,8 @@ def list_style_roles(only_active: bool = False, owner_id: int | None = None,
                     "SELECT rs.skill_type, rs.skill_id, "
                     "CASE WHEN rs.skill_type='user' THEN us.name ELSE s.name END AS skill_name "
                     "FROM style_role_skills rs "
-                    "LEFT JOIN writing_skills s ON rs.skill_type='admin' AND s.id=rs.skill_id "
-                    "LEFT JOIN user_skills us ON rs.skill_type='user' AND us.id=rs.skill_id "
+                    "LEFT JOIN skills s ON rs.skill_type='admin' AND s.source='platform' AND s.id=rs.skill_id "
+                    "LEFT JOIN skills us ON rs.skill_type='user' AND us.source='user' AND us.id=rs.skill_id "
                     "WHERE rs.role_id=%s ORDER BY rs.sort_order ASC, rs.id ASC",
                     (r["id"],)).fetchall()]
     return result
@@ -103,8 +103,8 @@ def list_style_role_skills(role_id: int) -> list[dict]:
             "CASE WHEN rs.skill_type='user' THEN us.name ELSE s.name END AS skill_name, "
             "CASE WHEN rs.skill_type='user' THEN us.prompt_append ELSE s.prompt_append END AS prompt_append "
             "FROM style_role_skills rs "
-            "LEFT JOIN writing_skills s ON rs.skill_type='admin' AND s.id=rs.skill_id "
-            "LEFT JOIN user_skills us ON rs.skill_type='user' AND us.id=rs.skill_id "
+            "LEFT JOIN skills s ON rs.skill_type='admin' AND s.source='platform' AND s.id=rs.skill_id "
+            "LEFT JOIN skills us ON rs.skill_type='user' AND us.source='user' AND us.id=rs.skill_id "
             "WHERE rs.role_id=%s ORDER BY rs.sort_order ASC, rs.id ASC",
             (role_id,)).fetchall()
     return [dict(r) for r in rows if r.get("skill_name")]
@@ -113,7 +113,7 @@ def list_style_role_skills(role_id: int) -> list[dict]:
 def mount_skill_to_role(role_id: int, skill_type: str, skill_id: int) -> int:
     """把技能挂载到风格角色。幂等：已挂载返回已有 id。
 
-    skill_type='admin' 指 writing_skills（平台技能）；'user' 指 user_skills（用户自建）。
+    skill_type='admin' 指 skills(source='platform') 平台技能；'user' 指 skills(source='user') 用户自建。
     """
     role = get_style_role(role_id)
     if not role:
@@ -126,7 +126,7 @@ def mount_skill_to_role(role_id: int, skill_type: str, skill_id: int) -> int:
         # 用户技能必须存在且属于该角色所有者（平台角色只能由管理员挂用户技能的场景除外）
         with _connect() as conn:
             us = conn.execute(
-                "SELECT id FROM user_skills WHERE id=%s AND user_id=%s",
+                "SELECT id FROM skills WHERE source='user' AND id=%s AND owner_id=%s",
                 (skill_id, role["user_id"])).fetchone()
         if not us:
             raise RuntimeError("用户技能不存在或不属于你")

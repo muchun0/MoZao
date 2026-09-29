@@ -52,3 +52,19 @@ ux_report/
 config.yaml
 # 营销素材
 marketing/
+
+# ===== 运行日志（本地） =====
+_server_*.log
+webapp*.log
+
+# ===== 发版打包与上传分片 =====
+novel_master*.zip
+novel_master.part*
+novel_upgrade.zip
+up_part_*.txt
+
+# ===== AI 生成草稿缓存 =====
+draft_*_folder/
+
+# Claude Code 规则（local only，与 AGENTS.md 同策略）
+CLAUDE.md

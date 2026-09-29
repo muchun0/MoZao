@@ -95,7 +95,7 @@ def test_quality_passed_no_rewrite(store):
     )
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", long_content, "摘要")
     assert result["passed"] is True
-    assert calls["n"] == 1  # 只调了读者校验，未触发重写
+    assert calls["n"] == 2  # 读者校验 + 前后矛盾自检，均未触发重写
 
 
 @pytest.mark.p2
@@ -179,8 +179,8 @@ def test_salvage_recovers_single_draft(store):
     # 抢救后只保留单一草稿：不再出现两个"明天呢？"分界，且以句号收尾
     assert chapter.content.count("明天呢？") <= 1
     assert chapter.content.rstrip().endswith("。")
-    # 仅两次读者校验（首检+抢救后复检），未触发 LLM 重写（确定性抢救已修复）
-    assert calls["n"] <= 2
+    # 两轮校验（首检+抢救后复检）各含读者校验+矛盾自检，未触发 LLM 重写
+    assert calls["n"] <= 4
     # 抢救以 auto_revised 落 review.json
     review = json.loads((store.dir / "review.json").read_text(encoding="utf-8"))
     assert review[0]["auto_revised"] is True

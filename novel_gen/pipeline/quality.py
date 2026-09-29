@@ -211,6 +211,13 @@ class QualityChecker:
                 })
                 score -= 20
 
+        # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）：
+        # 抓确定性规则与读者视角都漏的硬矛盾——身体状态/知觉范围前后不一、
+        # 同类生物行为模式不一、方位指代错误、同一意象比喻两版本。
+        for it in self._consistency_llm_check(chapter_no, content):
+            issues.append(it)
+            score -= 25
+
         # 去重 + 排序（大改在前）
         seen, uniq = set(), []
         for it in issues:
@@ -453,6 +460,42 @@ class QualityChecker:
             return issues, hook_score
         except Exception:
             return [], None
+
+    # ---------- 章内前后矛盾自检（LLM） ----------
+    def _consistency_llm_check(self, chapter_no: int, content: str) -> list[dict]:
+        """通读全章找硬矛盾：①主角身体状态（伤口位置/知觉范围/服饰损坏）前后不一；
+        ②同一类生物/配角的行为模式前后不一；③方位/指代错误（人在A地却描述B地）；
+        ④同一意象的比喻出现两个版本。只报硬矛盾，报了即大改。"""
+        if not content:
+            return []
+        try:
+            sys = (
+                "你是严谨的小说文字编辑，通读本章后只找「前后自相矛盾的硬伤」，不评文笔、不评节奏。\n"
+                "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻\",\"detail\":\"具体矛盾：前一处…后一处…\"}]}。\n"
+                "判定标准：两处描写不能同时为真才算矛盾；比喻措辞不同但喻体相同不算；"
+                "随剧情合理变化的伤口/状态不算矛盾；没有矛盾就输出空数组。"
+            )
+            user = (
+                f"第{chapter_no}章正文：\n{content[:3500]}\n\n"
+                "请输出上述 JSON。"
+            )
+            raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
+            data = self._parse_json(raw)
+            out = []
+            for it in (data.get("contradictions") or []):
+                if not isinstance(it, dict):
+                    continue
+                detail = str(it.get("detail", "")).strip()
+                if not detail:
+                    continue
+                out.append({
+                    "type": f"自相矛盾-{it.get('type', '')}",
+                    "detail": detail,
+                    "level": "大改",
+                })
+            return out
+        except Exception:
+            return []
 
     # ---------- 自动重写（1 次） ----------
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,

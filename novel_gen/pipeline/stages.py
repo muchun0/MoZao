@@ -551,6 +551,8 @@ class ChapterWriter:
             pass
 
         # 4. 追加摘要（复用普通模式的摘要生成）
+        # 清理 LLM 偶发输出的尾部 Markdown 分隔线（---/***），避免章末残留无体例的分隔符
+        chapter_text = re.sub(r"[\s\n]*(-{3,}|\*{3,}|_{3,})\s*$", "", chapter_text).rstrip()
         summary = self._gen_summary(chapter_no, plan_title, chapter_text)
         if summary:
             chapter_text = chapter_text + "\n\n【摘要】" + summary

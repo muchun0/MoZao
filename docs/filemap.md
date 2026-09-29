@@ -19,9 +19,9 @@
 | `.env` | 环境变量（API Key/SMTP/DB，**不入库**） |
 | `.llm_encrypt.key` | BYOK 加密密钥（**不入库**） |
 | `启动小说生成器.bat` | Windows 一键启动 |
-| `deploy/` | 部署辅助：`Caddyfile`+`caddy.service`（反代）、`migrate_sqlite_to_mysql.py`（历史数据迁移）、`insert_skills_133.sql` |
-| `tests/` | pytest 测试（241 用例，mock provider 离线跑通；含 `test_volume_link.py` 分卷-章节关联、`test_world_reveal.py` 世界观逐步展开） |
-| `skills_library/` | 写作技能库：`genre-research`/`hot-novels`/`style-references`/`writing-techniques` + 技能蒸馏文档（`INDEX.md` 有目录） |
+| `deploy/` | 部署辅助：`Caddyfile`+`caddy.service`（反代）、`migrate_sqlite_to_mysql.py`（历史数据迁移）、`insert_skills_133.sql`、`migrate_skills_merge.py`（技能表统一迁移）、`sync_skills_library.py`（skills_library 蒸馏同步到统一 skills 表） |
+| `tests/` | pytest 测试（296+ 用例，mock provider 离线跑通；含 `test_volume_link.py` 分卷-章节关联、`test_world_reveal.py` 世界观逐步展开、`test_skill_assembler.py` 技能统一注入管线） |
+| `skills_library/` | 写作技能库：`genre-research`/`hot-novels`/`style-references`/`writing-techniques` + 技能蒸馏文档（`INDEX.md` 有目录）；`style-references` 种子化进 style_roles，`writing-techniques` 由 `deploy/sync_skills_library.py` 蒸馏为平台技能 |
 | `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
 | `_*.py`（`_extract_routes`/`_split_server`/`_smoke_*` 等） | 一次性开发脚本（路由对比/拆分/冒烟），非运行路径 |
@@ -60,6 +60,7 @@
 | `pipeline/guard.py` | 成本防护（模块2）：AgentGuard 循环/Token 阈值 |
 | `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写；`auto_revised` 真值落 review.json（P2-4） |
 | `pipeline/ai_taste.py` | AI 痕迹量化检测（P1-4）：连接词堆砌/情绪词直白/句式排比/段落雷同（纯函数，供质检扣分） |
+| `pipeline/skills.py` | 技能统一注入管线（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照，按角色默认阶段过滤（applicable_stages 空=全量）、清洗、产出 manifest（供 trace 归因） |
 | `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |
 | `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2） |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |
@@ -78,7 +79,7 @@
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
 | `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流 |
-| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text 幂等迁移）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 平台技能/用户技能/技能市场；`style_roles.py` 风格角色/挂载/种子化（reference_text 透传）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口） |
+| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口） |
 | `secret_encrypt.py` | BYOK Key Fernet 加密（`enc:v1:` 前缀） |
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
 | `referral.py` | 代理参数（AGENT_DISCOUNT/COMMISSION_RATE/COMMISSION_BASE/REFERRAL_BONUS） |

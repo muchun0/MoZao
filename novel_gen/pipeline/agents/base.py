@@ -18,6 +18,7 @@ from pathlib import Path
 from ...config import NovelConfig
 from ...llm.base import LLMClient
 from ...store.project import ProjectStore
+from ..skills import build_role_skill_block, role_default_stages
 from webapp.logger import get_logger
 
 
@@ -38,6 +39,11 @@ class BaseAgent(ABC):
         self._role_prompt: str | None = None  # 懒加载
 
     @property
+    def stages(self) -> list[str]:
+        """角色默认适用阶段（REQ-技能统一联动接线点）；未知角色回退全阶段。"""
+        return role_default_stages(self.role_name)
+
+    @property
     def role_prompt(self) -> str:
         """从 prompts/{role}.md 加载角色身份描述（懒加载，只读一次）。"""
         if self._role_prompt is None:
@@ -45,56 +51,52 @@ class BaseAgent(ABC):
             self._role_prompt = p.read_text(encoding="utf-8") if p.exists() else ""
         return self._role_prompt
 
-    def _role_skill_append(self) -> str:
-        """加载：管理员全局skill + 管理员角色专属skill + 当前用户自定义skill。"""
+    def _record_skill_manifest(self, stage, manifest: list) -> None:
+        """把本次技能注入清单落 agent_trace（结构化归因）。有 recorder 才记，异常吞掉。"""
         try:
-            from webapp import db
-            blocks = []
-            # 管理员全局 skill（role=''）
-            for sk in db.list_skills(only_active=True, role=""):
-                if sk.get("prompt_append"):
-                    blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
-            # 管理员角色专属 skill
-            for sk in db.list_skills(only_active=True, role=self.role_name):
-                if sk.get("prompt_append"):
-                    blocks.append(f"【{sk['name']}】\n{sk['prompt_append']}")
-            # 用户自定义 skill（通过项目owner反查user_id）
-            try:
-                from ...safety import sanitize_system_text
-                pid = self.store.dir.name
-                for usk in db.list_user_skills_by_project(pid):
-                    raw = usk.get("prompt_append") or ""
-                    # 模块3：用户可写内容拼入 System Prompt 前做注入过滤兜底
-                    clean = sanitize_system_text(raw)
-                    if not clean:
-                        continue
-                    if usk.get("prompt_append"):
-                        # role为空=所有角色生效；role匹配=只对该角色生效
-                        if not usk.get("role") or usk["role"] == self.role_name:
-                            blocks.append(f"【用户自定义：{usk['name']}】\n{clean}")
-            except Exception as ue:
-                self.logger.warning("加载用户skill失败（忽略）: %s", ue)
-            return "\n\n".join(blocks)
+            rec = getattr(self.llm, "recorder", None)
+            if rec is not None and getattr(rec, "record_agent_step", None):
+                rec.record_agent_step("skill_injection", extra={
+                    "role": self.role_name,
+                    "stage": stage if isinstance(stage, str) else stage,
+                    "skills": manifest,
+                })
+        except Exception:
+            pass
+
+    def _role_skill_append(self, stage=None) -> str:
+        """统一注入管线（REQ-技能统一）：管理员全局skill + 管理员角色专属skill + 当前用户自定义skill，
+        按角色默认阶段路由，产出 manifest 落 trace。
+
+        stage=None 时按 self.stages（角色默认阶段）路由；显式传 stage（str/list）则按指定阶段。
+        数据库不可用时返回空串（不阻塞生成主流程）。
+        """
+        try:
+            if stage is None:
+                stage = self.stages
+            body, manifest = build_role_skill_block(self.role_name, self.store, stage)
+            self._record_skill_manifest(stage, manifest)
+            return body
         except Exception as e:
             self.logger.warning("加载角色 skill 失败（忽略）: %s", e)
             return ""
 
-    def persona_prefix(self) -> str:
+    def persona_prefix(self, stage=None) -> str:
         """角色底色：角色 prompt + 角色专属 skill（DB），供外部阶段拼接到 system 之前。
 
         与 _system_with_role 的区别：本方法不接收任务指令、也不追加项目级 skill
         ——项目级 skill 由各阶段提示词函数自行追加，此处重复追加会导致两份。
         """
         parts = [self.role_prompt]
-        role_skill = self._role_skill_append()
+        role_skill = self._role_skill_append(stage)
         if role_skill:
             parts.append("## 本角色专属写作要求\n" + role_skill)
         return "\n\n".join(p for p in parts if p)
 
-    def _system_with_role(self, extra: str = "") -> str:
+    def _system_with_role(self, extra: str = "", stage=None) -> str:
         """拼接：角色 prompt + 角色专属skill + 全局skill + 额外指令。"""
         parts = [self.role_prompt]
-        role_skill = self._role_skill_append()
+        role_skill = self._role_skill_append(stage)
         if role_skill:
             parts.append("## 本角色专属写作要求\n" + role_skill)
         if extra:

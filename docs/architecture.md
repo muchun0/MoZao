@@ -69,6 +69,7 @@
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
 | `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规）+ 读者视角 LLM 校验 + 1 次自动重写；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4） |
 | `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
+| `skills.py` | **技能统一注入管线**（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照（均读统一表 `skills`，source 区分 platform/user），按角色默认阶段（STAGE_BY_ROLE）过滤（技能 applicable_stages 空=全量）、统一清洗、产出 manifest（供 `agent_trace` 归因）；`agents/base.py` 与 `templates._skill_append` 均经此管线 |
 | `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |
 
 ### 2.3 webapp/（SaaS Web 服务）
@@ -78,7 +79,7 @@
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
 | `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑 |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场）、`style_roles.py`（风格角色，reference_text 透传）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -140,7 +141,7 @@
 | `recharges` | 充值流水 |
 | `commission_log` | 代理返佣明细 |
 | `refund_requests` | 退款申请与处理 |
-| `writing_skills` / `skill_market` / `user_skills` | 平台写作技能 / 技能市场 / 用户挂载技能 |
+| `skills` | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限/信任；platform=管理员可信、user/market=用户可写（拼 system 前清洗）；含 role/applicable_stages/version/downloads/market_id；旧 `writing_skills`/`user_skills`/`skill_market` 保留不 DROP（迁移回退） |
 | `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
 | `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险 |
 

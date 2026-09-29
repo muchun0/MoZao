@@ -255,25 +255,16 @@ def _anti_similarity_system(stage: str = "chapter") -> str:
         )
     return core + "\n\n" + blacklist + "\n\n" + extra
 
-def _skill_append(cfg: NovelConfig) -> str:
-    """用户可控内容拼入 System Prompt 前的组装（模块3：经注入过滤兜底）。
+def _skill_append(cfg: NovelConfig, stage: str = "") -> str:
+    """用户可控内容拼入 System Prompt 前的统一组装（REQ-技能统一，复用 collect_project_blocks）。
 
     custom_prompt / skill_prompt_append 均为用户可写内容，若含注入话术
     （忽略以上指令/修改系统设定等）可篡改系统约束，拼入前统一清洗。
+    stage 参数预留（项目级快照无阶段元数据，始终注入），保持既有输出逐字节一致。
     """
-    from ..safety import sanitize_system_text
-    parts = []
-    txt = (getattr(cfg, "skill_prompt_append", "") or "").strip()
-    if txt:
-        clean = sanitize_system_text(txt)
-        if clean:
-            parts.append("\n\n【写作风格 Skill（必须严格遵循）】\n" + clean)
-    cp = (getattr(cfg, "custom_prompt", "") or "").strip()
-    if cp:
-        clean_cp = sanitize_system_text(cp)
-        if clean_cp:
-            parts.append("\n\n【用户自定义提示词】\n" + clean_cp)
-    return "".join(parts)
+    from ..pipeline.skills import collect_project_blocks
+    text, _manifest = collect_project_blocks(cfg, stage)
+    return text
 
 # ---------- 人物立体化（基于番茄课程《告别千人一面：带你写出有血有肉的人物》提炼） ----------
 def _character_depth_rules(stage: str = "chapter") -> str:

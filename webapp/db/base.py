@@ -192,9 +192,13 @@ _SKILLS = """CREATE TABLE IF NOT EXISTS writing_skills (
     name VARCHAR(80) NOT NULL,
     description VARCHAR(255) DEFAULT '',
     prompt_append TEXT,
+    role VARCHAR(20) NOT NULL DEFAULT '',
+    applicable_stages VARCHAR(200) NOT NULL DEFAULT '',
+    version VARCHAR(20) NOT NULL DEFAULT '1',
     is_active INT NOT NULL DEFAULT 1,
     sort_order INT NOT NULL DEFAULT 0,
-    created_at DOUBLE NOT NULL
+    created_at DOUBLE NOT NULL,
+    KEY idx_ws_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
@@ -205,6 +209,7 @@ _SKILL_MARKET = """CREATE TABLE IF NOT EXISTS skill_market (
     description VARCHAR(255) DEFAULT '',
     prompt_append TEXT,
     role VARCHAR(20) NOT NULL DEFAULT '',
+    applicable_stages VARCHAR(200) NOT NULL DEFAULT '',
     downloads INT NOT NULL DEFAULT 0,
     created_at DOUBLE NOT NULL,
     KEY idx_sm_author (author_id),
@@ -246,9 +251,12 @@ _USER_SKILLS = """CREATE TABLE IF NOT EXISTS user_skills (
     description VARCHAR(255) DEFAULT '',
     prompt_append TEXT,
     role VARCHAR(20) NOT NULL DEFAULT '',
+    applicable_stages VARCHAR(200) NOT NULL DEFAULT '',
     is_active INT NOT NULL DEFAULT 1,
     created_at DOUBLE NOT NULL,
-    KEY idx_us_user (user_id)
+    market_id INT NOT NULL DEFAULT 0,
+    KEY idx_us_user (user_id),
+    KEY idx_us_market (market_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
@@ -266,6 +274,32 @@ _TEARDOWN = """CREATE TABLE IF NOT EXISTS book_teardown (
     updated_at DOUBLE NOT NULL,
     KEY idx_td_genre (genre),
     KEY idx_td_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+# 统一技能表（REQ-技能统一 阶段二）：把 writing_skills/user_skills/skill_market 收敛为单表。
+# source ∈ {platform, user, market} 区分权限与信任级别：
+#   platform：owner_id=0，管理员可信（拼 system 前不强制清洗）；
+#   user/market：owner_id=用户，用户可写（拼 system 前统一清洗）。
+# 旧 4 表保留不 DROP（迁移回退与存量核对用），运行时读写全部走本表。
+_SKILLS_UNIFIED = """CREATE TABLE IF NOT EXISTS skills (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    source VARCHAR(16) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    name VARCHAR(80) NOT NULL,
+    description VARCHAR(255) DEFAULT '',
+    prompt_append TEXT,
+    role VARCHAR(20) NOT NULL DEFAULT '',
+    applicable_stages VARCHAR(200) NOT NULL DEFAULT '',
+    version VARCHAR(20) NOT NULL DEFAULT '1',
+    is_active INT NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    downloads INT NOT NULL DEFAULT 0,
+    market_id INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL,
+    KEY idx_sk_owner (source, owner_id),
+    KEY idx_sk_role (role),
+    KEY idx_sk_market (market_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
@@ -310,7 +344,7 @@ def init_db() -> None:
 
     with _connect() as conn:
         for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
-                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE):
+                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED):
             conn.execute(ddl)
         _ensure_teardown_user_id()
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
@@ -350,6 +384,19 @@ def init_db() -> None:
         if "role" not in scol:
             conn.execute("ALTER TABLE writing_skills ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT ''")
             conn.execute("ALTER TABLE writing_skills ADD KEY idx_ws_role (role)")
+        # REQ-技能统一：平台技能加适用阶段/版本元数据（空阶段=全阶段生效）
+        if "applicable_stages" not in scol:
+            conn.execute("ALTER TABLE writing_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
+        if "version" not in scol:
+            conn.execute("ALTER TABLE writing_skills ADD COLUMN version VARCHAR(20) NOT NULL DEFAULT '1'")
+        # user_skills 加适用阶段元数据（空阶段=全阶段生效）
+        usk_stage_cols = _column_names(conn, "user_skills")
+        if "applicable_stages" not in usk_stage_cols:
+            conn.execute("ALTER TABLE user_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
+        # skill_market 加适用阶段元数据（市场技能安装进 user_skills 时保留阶段）
+        sm_stage_cols = _column_names(conn, "skill_market")
+        if "applicable_stages" not in sm_stage_cols:
+            conn.execute("ALTER TABLE skill_market ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
         # style_roles 加 user_id 归属：0=平台内置，>0=用户自建
         sr_cols = _column_names(conn, "style_roles")
         if "user_id" not in sr_cols:

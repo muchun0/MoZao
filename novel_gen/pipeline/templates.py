@@ -96,6 +96,60 @@ def _de_ai_rules() -> str:
     )
 
 
+def _output_discipline() -> str:
+    """正文输出纪律（硬约束）：防止同章多稿拼接、版本并列、元文字开头与中途截断。
+
+    注入到所有「整章正文输出」提示词（整章生成/逐场景/润色/改稿/扩写/质检重写）。
+    背景：曾出现一次 LLM 返回把同一章多个起笔草稿首尾拼接（入墟→突袭→睁眼→营地），
+    并在句子中途截断，被原样落盘。此块在提示词源头规避同类问题。
+    """
+    return (
+        "【输出纪律·硬约束】\n"
+        "1. 只输出【一个】完整连贯的正文版本。严禁并列输出多个起笔、多个改写方案或多稿拼接"
+        "（禁止出现'方案一/方案二''第一版/第二版''另一种写法''或者这样开头'等并列形式）；"
+        "同一事件不得重复叙述两遍。\n"
+        "2. 正文开头不得重复章节标题或场景编号（禁止以'【第X章《…》】'等元文字开头）。\n"
+        "3. 全文必须写完整并自然收尾：末句完整、以句末标点（。！？…”）结束，"
+        "禁止在句子中途截断或停在半句话上。\n"
+        "4. 章节内场景/段落只作自然推进，禁止返回开头重述、或换一个起笔再写一遍。"
+    )
+
+
+def _writing_constraints() -> str:
+    """正文写作约束（内容/写作类，防止「金手指不自洽、细节漂移、钩子太晚、母题口癖」）。
+
+    注入整章正文输出提示词（chapter/scene）。对应批注三/四/五的根因：
+    ① 人物一致性——左右手/旧疤/习惯等物理细节全文只允许一种口径；
+    ② 开篇锚点前置——首章 500 字内建立读者共情锚点，不让最有温度的内容沉底；
+    ③ 母题密度——同一动作/短句/意象单章出现 ≤2 次，防「母题」退化为「口癖」；
+    ④ 时间轴——跨天显式标记、闪回带"回想"、禁止无标记倒挂（章内自洽）；
+    ⑤ 事实与细节单口径——同一事件/关系/债务方向只允许一种说法；
+    ⑥ 内心活动底线——情绪靠演，但不能全程零内心；
+    ⑦ 悬念句口径——首次出现的悬念句保持同一来源方位，禁止提前引用。
+    """
+    return (
+        "【正文写作约束】\n"
+        "1. 人物一致性：人物外貌与身体细节（左右手、旧疤、习惯动作、衣着、发型）必须前后一致，"
+        "同一物理事实全文只允许一种口径，严禁左右手/细节在段落间漂移。\n"
+        "2. 开篇锚点前置（尤其第1章）：开篇 500 字内必须建立让读者共情的人物锚点"
+        "（一个具体的人、一件具体的痛或牵挂）；不得把唯一有温度、有情绪落点的内容埋到章节末尾。"
+        "主角对'重要他人的遭遇'的反应，应优先于对'自身处境'的冷漠叙述。\n"
+        "3. 母题密度：同一动作/表情/手势/短句/意象在单章内出现不超过 2 次，"
+        "避免从'母题'退化为'口癖'；重复必须有递进，不能原样复读。\n"
+        "4. 时间轴：正文时间线以顺叙为主；跨天/隔夜/数日后等时间跳跃必须显式标记"
+        "（'三天后''翌日''当晚'）；闪回必须用'回想''那天'等提示词明确标出，且每章至多 1 处；"
+        "禁止无标记的时间倒挂（先写后发生的事、再补签状/前因）。\n"
+        "5. 事实与细节单口径：同一件事/人物关系/债务方向/身体状态（旧疤、腿伤）全文只允许一种说法，"
+        "已发生的事件（死亡、被抢、押金归属）不得在后续段落'复活'或重述两遍；"
+        "同一意象的比喻不得一章出现两个版本。\n"
+        "6. 内心活动底线：每章必须至少 2-3 处主角的内心反应（身体感受、未说出口的判断、闪念、"
+        "对重要他人的牵挂），用具体感受与动作承载；禁止抽象情绪词（'他很愤怒'），"
+        "也禁止全章零内心、只会'嗯/行'。\n"
+        "7. 悬念句口径：章内首次出现的悬念句/声音/意象（如某句低语），再次出现必须保持"
+        "同一来源、同一方位、同一触发条件；禁止在首次出现前提前引用，禁止同一悬念句前后口径打架。"
+    )
+
+
 def _ending_requirements() -> str:
     """结局硬要求：无论长篇短篇，全书必须有完整结局。
 
@@ -216,25 +270,16 @@ def _anti_similarity_system(stage: str = "chapter") -> str:
         )
     return core + "\n\n" + blacklist + "\n\n" + extra
 
-def _skill_append(cfg: NovelConfig) -> str:
-    """用户可控内容拼入 System Prompt 前的组装（模块3：经注入过滤兜底）。
+def _skill_append(cfg: NovelConfig, stage: str = "") -> str:
+    """用户可控内容拼入 System Prompt 前的统一组装（REQ-技能统一，复用 collect_project_blocks）。
 
     custom_prompt / skill_prompt_append 均为用户可写内容，若含注入话术
     （忽略以上指令/修改系统设定等）可篡改系统约束，拼入前统一清洗。
+    stage 参数预留（项目级快照无阶段元数据，始终注入），保持既有输出逐字节一致。
     """
-    from ..safety import sanitize_system_text
-    parts = []
-    txt = (getattr(cfg, "skill_prompt_append", "") or "").strip()
-    if txt:
-        clean = sanitize_system_text(txt)
-        if clean:
-            parts.append("\n\n【写作风格 Skill（必须严格遵循）】\n" + clean)
-    cp = (getattr(cfg, "custom_prompt", "") or "").strip()
-    if cp:
-        clean_cp = sanitize_system_text(cp)
-        if clean_cp:
-            parts.append("\n\n【用户自定义提示词】\n" + clean_cp)
-    return "".join(parts)
+    from ..pipeline.skills import collect_project_blocks
+    text, _manifest = collect_project_blocks(cfg, stage)
+    return text
 
 # ---------- 人物立体化（基于番茄课程《告别千人一面：带你写出有血有肉的人物》提炼） ----------
 def _character_depth_rules(stage: str = "chapter") -> str:
@@ -649,7 +694,7 @@ def outline_prompt(
             f"{('【前情提要（已规划章节的剧情摘要）】\n' + prev_summary + '\n\n') if prev_summary else ''}"
             f"请注意：本章段是全书的一部分，要与前情连贯、伏笔呼应，并推动全书主线。\n"
             f"请输出 JSON：\n"
-            f"- chapters：恰好 {end_no - start_no + 1} 个章节对象的数组，每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签)，章节标题必须互不相同、全书唯一，严禁重名章\n"
+            f"- chapters：恰好 {end_no - start_no + 1} 个章节对象的数组，每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签), volume_no(所属分卷编号，必须落在对应分卷的 start_ch~end_ch 区间内)，章节标题必须互不相同、全书唯一，严禁重名章\n"
             f"（本次只输出本区间章节，序号必须从 {start_no} 连续编号到 {end_no}，不要输出其他章节。）\n"
             f"大纲要求：\n"
             f"1. 每章除 goal 外，必须完整填写所有结构化字段：core_event(核心事件，30字以上), conflict(冲突设计，20字以上), character_moves(人物动线，20字以上), foreshadowing(伏笔/回收，无则填无), emotion(情绪价值，如爽点/虐点/悬念), transition(转场提示，与前后章如何衔接), tag(节点标签)。禁止任何字段留空或只填\"无\"，core_event和conflict必须写具体剧情，不能套话\n"
@@ -674,7 +719,7 @@ def outline_prompt(
             f"- core_conflict：全书核心冲突（一句话，L1总纲层）\n"
             f"- main_line：全书主线脉络（3-5句概括起承转合，L1总纲层）\n"
             f"- volumes：分卷数组，将全书按剧情阶段分为3-5卷，每卷字段：no, name(卷名), intro(本卷核心主题), main_conflict(本卷主要矛盾), character_growth(本卷人物成长), climax(本卷高潮), start_ch(起始章), end_ch(结束章)\n"
-            f"- chapters：恰好 {cfg.num_chapters} 个章节对象的数组（L3章节小纲层），每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签)，章节标题必须互不相同、全书唯一，严禁重名章\n"
+            f"- chapters：恰好 {cfg.num_chapters} 个章节对象的数组（L3章节小纲层），每项包含字段：no(序号), title(章名), goal(一句话剧情), core_event(核心事件), conflict(冲突设计), character_moves(人物动线), foreshadowing(埋设/回收的伏笔), emotion(情绪价值), transition(转场提示), tag(节点标签), volume_no(所属分卷编号，必须落在对应分卷的 start_ch~end_ch 区间内)，章节标题必须互不相同、全书唯一，严禁重名章\n"
             f"大纲要求：\n"
             f"1. 三级结构：先定总纲（core_conflict+main_line），再分卷（volumes），最后章节小纲（chapters）；章节归属对应分卷的start_ch~end_ch区间\n"
             f"2. 开篇 3 章内立住主角、抛出核心冲突与悬念（遵循调研的开篇策略）\n"
@@ -717,9 +762,61 @@ def world_prompt(
         f"【大纲（节选）】\n{outline_text}\n\n"
         f"请输出 JSON：\n"
         f"- world_view：世界观设定（2-4 句：世界格局/力量体系/时代背景/核心矛盾），必须符合用户给定的故事背景\n"
+        f"- world_reveals：世界观逐步揭示计划数组（跟随主角视角逐步展开，禁止一次写全）。"
+        f"每项 {{\"foreshadow_ch\": 铺垫最早章（从此章起正文可埋线索/暗示，须 < from_ch）, "
+        f"\"hint\": 铺垫要点（揭示前正文应出现的异常/线索/疑惑，主角与读者可感知的\"不对劲\"，但不得说出真相，1-2 句具体）, "
+        f"\"from_ch\": 主角正式得知真相的起始章, \"content\": 真相（主角明确获知的世界观片段，主角视角、具体）}}；"
+        f"主角初始已知的 from_ch=1；foreshadow_ch 必须小于 from_ch（至少提前 2-3 章埋铺垫），"
+        f"真相要有前文线索/伏笔层层铺垫引出，严禁到某一章凭空解锁；后续阶段按剧情推进递增（如铺垫8/揭示15、铺垫20/揭示30…），全书规划 3-6 个阶段；"
+        f"全部阶段 content 合并后必须与 world_view 总纲完全一致、不新增矛盾设定；"
+        f"未到 from_ch 的真相不得提前透露，只能按 hint 写暗示\n"
         f"- characters：3-8 个人物对象数组，每项含字段：name(姓名), role(定位主角/主角团/反派/关键配角), desc(一句话概括), appearance(外貌特征), personality(性格核心), desire(核心欲望), wound(软肋/创伤), arc(人物弧光), speech_style(说话方式/口头禅), relations(与其他角色关系)；"
         f"用户预设的主角与人物必须包含在内且描述符合设定，可补充其他角色；描述要具体，能支撑剧情行为逻辑\n"
-        f"- foreshadowing：2-5 条贯穿全文的伏笔/悬念（每条一句）\n"
+        f"- foreshadowing：2-5 条贯穿全文的伏笔/悬念数组，每项 {{\"id\":伏笔编号, \"name\":伏笔名, "
+        f"\"buried_ch\":埋点章号, \"reveal_ch\":回收章号, \"level\":\"small\"(章内)/\"medium\"(卷内)/\"large\"(全篇), "
+        f"\"content\":伏笔内容}}；每条必须同时给出埋点与回收章号，禁止只埋不收（只埋不收视为设计缺陷）\n"
+        f"- mechanism_rules：金手指/核心机制的规则卡（本书有金手指/系统/独特设定则必填，否则空字符串）。"
+        f"必须写到无歧义、可自洽，至少覆盖：①机制名称与语义（每个数字/状态的确切含义，如'可死次数=今日剩余复活次数，不是已死次数'）；"
+        f"②结算规则（何时增减、何时重置、与历史状态如何衔接，杜绝自相矛盾）；③代价/成长（每次使用代价递增、上限/终局条件）；"
+        f"④正文要求（首章必须把机制实际用起来、兑现标题，数字与规则全书一致）；"
+        f"⑤数字账本写法：若机制有可视化数字（面板/蚀痕/进度），给出正文中数字的准确写法"
+        f"（如'今日可死次数：3'）并定义每个数字的当前语义与递减/递增规则；"
+        f"⑥时间词语义：标题或机制含'今日''每日'等时间词时，必须明确是否每日重置、跨天如何结算"
+        f"（如'每日子时重置为3；一日内每死一次减1'），禁止标题口径与机制冲突；"
+        f"⑦多数字关系：存在多套数字（如剩余次数与蚀痕进度）时必须交代两者关系与各自语义，"
+        f"禁止并列无关联；⑧历史衔接：开篇已有历史痕迹（如蚀痕长度/旧疤）必须与当前数字自洽"
+        f"（如蚀痕=累计死亡次数，则剩余次数=上限-累计），禁止开篇状态与面板矛盾\n"
+        f"- theme_proposition：核心主题命题（一句话内核，全书剧情与人物关键选择最终回归的主题，如'失去一切后如何重新定义自我'）\n"
+        f"- conflict_matrix：三层冲突矩阵数组，每项 {{\"level\":\"personal\"(个人内心)/\"interpersonal\"(人际对抗)/\"world\"(世界层面), "
+        f"\"description\":该层核心冲突}}，三层各一条且层层递进\n"
+        f"- protagonist_arc：主角完整弧光卡 {{\"belief\":开篇信念, \"flaw\":核心缺陷, "
+        f"\"change_nodes\":[关键转变节点数组, 至少2个], \"final_insight\":最终认知}}\n"
+        f"- character_motives：核心配角动机数组，每项 {{\"name\":姓名, \"goal\":核心目标, "
+        f"\"behavior_logic\":行为逻辑, \"link_to_protagonist\":与主角的核心关联}}，至少覆盖主要配角与反派\n"
+        f"- goldfinger_rules：金手指规则说明书五要素 {{\"trigger\":触发条件, \"upper_limit\":能力上限, "
+        f"\"lower_limit\":能力下限, \"cost\":使用代价, \"growth_path\":成长路径}}（无金手指则空对象；有则五要素必填且无歧义）\n"
+        f"- setting_taboos：设定禁忌清单数组（明确禁止出现的吃设定行为/能力，如'复活无代价''时间可随意倒流'）\n"
+        f"- enemies：前期实际出场的怪物/敌对生物图鉴数组（3-6 个，只列前 10 章会写到的，不要大而全百科）。"
+        f"每项 {{\"name\":名称, \"form\":外形解剖（有无固定形态、几条肢体、有无眼睛/口器/触须/核心，写死一句话，禁止'形态模糊'这类模糊词）, "
+        f"\"senses\":感知方式（触须振动/视觉/热感，写死；后续正文不得出现与感知方式矛盾的写法，如靠触须就不能写'视线盲区'）, "
+        f"\"behavior\":行为模式（巡逻编队/伏击/食腐/对死人的反应）, \"kill\":击杀条件与弱点, \"tier\":层级（浅层常见/精英/首领）}}；"
+        f"形态一经写死，全书不得自相矛盾\n"
+        f"- locations：前期实际出场的地点数组（3-6 个，只列前 10 章会写到的）。"
+        f"每项 {{\"name\":地点名, \"terrain\":地形结构, \"light\":光线规则（地下无光/光源是什么/天光在何处，写死；后续正文不得与光线规则矛盾，如地下不得写暮色/晚霞）, "
+        f"\"sound_smell\":声音气味, \"exits\":连通与出口（哪里是死路/通哪，写死）, \"danger\":危险来源}}；"
+        f"空间关系一经写死，正文不得矛盾\n"
+        f"- mechanism_baseline：机制初始值对象（若 mechanism_rules 含可视化数字/进度条，必填；否则空对象）。"
+        f"把机制卡里的数字落成结构化'当前标准答案'，字段：{{\"scar_start\":旧痕起点, \"scar_per_death\":每死一次延伸量, "
+        f"\"scar_current\":旧痕当前累计长度/次数, \"scar_end\":终局位置（蔓延至何处=蚀化/失败）, "
+        f"\"panel_format\":面板唯一写法（如'今日可死次数：N/3'，禁止再发明别的格式）, \"reset_rule\":每日重置规则}}；"
+        f"这是正文里所有数字的唯一来源，写手不得自行发明数字；与 mechanism_rules 必须自洽\n"
+        f"- clock：时钟规则对象（每章都要遵守）。字段：{{\"day_cycle\":日周期（何时重置/晨昏/夜色节点）, "
+        f"\"travel\":关键地点间路程耗时（写死，如'墟口到铁匠铺约一刻钟'）, "
+        f"\"light_rule\":光线与时间对应关系（哪里有光哪里没光、什么时间什么天色）}}；"
+        f"正文里'过了多久''还剩几小时'必须与此一致，不得时间不推进却重复写'还有N小时'\n"
+        f"- factions：前期出场的势力/组织数组（2-4 个）。每项 {{\"name\":势力名, \"goal\":目标, \"members\":关键成员, \"relation_to_mc\":与主角关系}}；"
+        f"主角遇到该势力成员时，行为必须符合此卡\n"
+        f"- style_taboos：语言风格禁忌数组（5-10 条，本书绝对禁用的出戏词，如'走位''视野CD''刷新''开挂'等现代游戏术语、时代错乱物品、作者内心吐槽）\n"
         f"设定要求：与大纲严格一致，人物动机清晰，伏笔在后期能回收，避雷元素不得出现。"
         f"{('每个重要人物的 desc 必须按「人物立体化·角色卡要求」写全：身份标签/经历背景/性格核心/欲望软肋/行为范式/压力反应，保证人物有辨识度、行为有依据。' if cfg.character_depth else '')}"
     )
@@ -872,15 +969,23 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "- event: 发生什么\n"
         "- emotion: 这个场景的情绪目标\n"
         "- anchors: 必须保留的细节\n"
+        "- time_marker: 本场景的时间锚点（与上一场景的时间间隔与标记，如'同日午后''三天后''翌日清晨'；"
+        "若机制规则含每日重置，跨天场景必须写明重置后的机制数字）\n"
         f"- target_words: 该场景目标字数（总和应接近 {cfg.chapter_words}）\n\n"
         "场景连续性硬规则：第一个场景必须承接上一章结尾的场景与人物状态，"
-        "从上一章结束的地方接着展开；后续场景沿剧情推进自然过渡，禁止跳跃式换场。\n\n"
+        "从上一章结束的地方接着展开；后续场景沿剧情推进自然过渡，禁止跳跃式换场。\n"
+        "时间硬规则：\n"
+        "1. 场景时间必须顺延，禁止无标记的时间倒挂（先写结果再补前因时，必须拆出'回想'场景并标记）\n"
+        "2. 同一章内的关键事件（如多次死亡-复活、多次入墟）不得压成一句话摘要，"
+        "每次发生→后果必须分配完整场景/段落，权重均衡，禁止第一次展开、后续一笔带过\n"
+        "3. 场景内机制数字（面板/蚀痕等）的推进必须与事件次数严格对应：每死一次数字递减一次，"
+        "跨天重置按机制卡规则结算\n\n"
         '输出 JSON：{"scenes": [...]}'
     )
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -900,6 +1005,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     if ref:
         system += "\n\n" + ref
     system += _skill_append(cfg)
+    system += "\n\n" + _output_discipline()
+    system += "\n\n" + _writing_constraints()
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
     user = (
@@ -912,6 +1019,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n\n"
         f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
+        f"{'【本章已推进状态（后续场景必须延续，禁止回退或重复叙述已发生事实）】\n' + scene_state_hint + '\n\n' if scene_state_hint else ''}"
+        f"{'【本场景时间锚点】' + scene.get('time_marker', '') + '\n\n' if scene.get('time_marker') else ''}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -927,7 +1036,17 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
            "   - 本章后续场景：必须自然承接上一个场景的结尾（人物、地点、事件顺延），"
            "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场\n")
         + "8. 情节连续：场景内和场景间不得出现'上一幕还在A地，下一句已在B地'式断层，"
-        "所有换场都要有可感知的衔接动作或时间过渡"
+        "所有换场都要有可感知的衔接动作或时间过渡\n"
+        "9. 状态衔接（硬约束）：本场景的机制数字（面板/蚀痕）、人物生死、物品归属必须与"
+        "【本章已推进状态】衔接——已发生的事件（死亡/被抢/数字递减）只发生一次，"
+        "数字随事件严格递减/递增，禁止回退、复活或重复叙述两遍\n"
+        "10. 时间过渡（硬约束）：场景间跨天/隔夜必须写明时间标记（'三天后''翌日''当晚'）；"
+        "闪回必须用'回想''那天'等提示且每章至多 1 处；禁止无标记的时间倒挂\n"
+        "11. 视角（硬约束）：只写主角在场所见所感，禁止上帝视角；"
+        "主角装死/独处/昏迷时，禁止写'肉眼可见''远远望去'这类需要旁观者的客观描写，"
+        "只能写他自己的体感（声音、触感、疼痛、记忆）\n"
+        "12. 内心反应底线：主角可以沉默寡言，但本场景至少要有 1 处内心反应"
+        "（身体感受/未说出口的判断/闪念），用具体感受表达，禁止全程零内心"
     )
     return system, user
 
@@ -939,6 +1058,7 @@ def polish_chapter_prompt(cfg, chapter_no, chapter_title, chapter_text):
         "绝对不要改变情节、不要增删剧情、不要改人物对话含义。"
         "只输出润色后的完整正文。"
     )
+    system += "\n\n" + _output_discipline()
     user = (
         f"【第{chapter_no}章《{chapter_title}》】\n"
         f"{chapter_text}\n\n"
@@ -996,6 +1116,7 @@ def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
         "你的任务是只改清单里列出的问题，不改剧情走向、不改人物对话含义。"
         "保持原文字数基本不变（±10%）。只输出润色后的完整正文。"
     )
+    system += "\n\n" + _output_discipline()
     issues_text = chr(10).join(
         f"- [{it.get('type','')}] {it.get('pos','')}：{it.get('detail','')}"
         for it in small_issues
@@ -1135,6 +1256,8 @@ def chapter_prompt(
     if ref:
         system += "\n\n" + ref
     system += _skill_append(cfg)
+    system += "\n\n" + _output_discipline()
+    system += "\n\n" + _writing_constraints()
     return system, user
 
 
@@ -1165,9 +1288,28 @@ def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[st
         f"【用户已有正文（节选，可能截断）】\n{chapters_block}\n\n"
         f"请输出 JSON：\n"
         f"- world_view：从正文提炼的世界观设定（2-4 句：时代背景/世界格局/力量体系/核心矛盾）\n"
+        f"- world_reveals：世界观逐步揭示计划数组（跟随主角视角）。"
+        f"每项 {{\"foreshadow_ch\": 铺垫最早章, \"hint\": 铺垫要点（正文已出现的暗示/线索）, "
+        f"\"from_ch\": 主角正式得知真相的起始章, \"content\": 真相}}；"
+        f"正文中已明确揭示的真相 from_ch 填 1；正文已出现暗示但未揭真相的，foreshadow_ch 填正文最早出现暗示的章节、from_ch 排到后续揭晓章；"
+        f"正文尚未出现、作为后续悬念的设定按剧情需要排期；foreshadow_ch 必须 < from_ch（真相要有前文铺垫）；"
+        f"全部阶段 content 合并后必须与 world_view 完全一致；未到 from_ch 的真相不得提前透露，只能按 hint 写暗示\n"
         f"- characters：3-8 个人物对象数组，每项 {{\"name\":姓名,\"role\":定位,\"desc\":性格与背景}}；"
         f"主角与已出场人物必须包含，描述要与正文言行一致\n"
-        f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念（每条一句；正文没有悬念时提炼潜在冲突）\n"
+        f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念数组，每项 {{\"id\":编号, \"name\":伏笔名, "
+        f"\"buried_ch\":埋点章号, \"reveal_ch\":回收章号, \"level\":\"small\"/\"medium\"/\"large\", "
+        f"\"content\":伏笔内容}}；每条必须给出埋点与回收章号，正文没有悬念时提炼潜在冲突\n"
+        f"- mechanism_rules：从正文提炼的金手指/核心机制规则卡（正文有金手指/系统/独特设定则必填，否则空字符串）。"
+        f"必须无歧义、与正文一致，覆盖：机制语义（每个数字/状态的确切含义）、结算规则（何时增减/重置/衔接历史）、"
+        f"代价与终局（代价递增/上限）、正文要求（首章兑现标题，数字与规则全书一致）、"
+        f"数字账本写法（正文中数字的准确写法与每个数字语义）、时间词语义（'今日'等是否每日重置、跨天结算）、"
+        f"多数字关系（多套数字必须交代关联）、历史衔接（开篇已有痕迹与当前数字自洽）\n"
+        f"- theme_proposition：核心主题命题（一句话内核，从正文提炼）\n"
+        f"- conflict_matrix：三层冲突矩阵数组，每项 {{\"level\":\"personal\"/\"interpersonal\"/\"world\", \"description\":该层冲突}}，三层各一条\n"
+        f"- protagonist_arc：主角完整弧光卡 {{\"belief\":开篇信念, \"flaw\":核心缺陷, \"change_nodes\":[关键转变], \"final_insight\":最终认知}}\n"
+        f"- character_motives：核心配角动机数组，每项 {{\"name\", \"goal\", \"behavior_logic\", \"link_to_protagonist\"}}\n"
+        f"- goldfinger_rules：金手指五要素 {{\"trigger\", \"upper_limit\", \"lower_limit\", \"cost\", \"growth_path\"}}（无金手指则空对象）\n"
+        f"- setting_taboos：设定禁忌清单数组（正文明确禁止出现的吃设定行为）\n"
         f"要求：与用户正文严格一致，人物动机有据可查，避免凭空新增与正文矛盾的世界观。"
     )
     system += _skill_append(cfg)
@@ -1237,6 +1379,7 @@ def expand_chapter_prompt(
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:
         system += "\n\n" + _fanqie_rules("chapter")
+    system += "\n\n" + _output_discipline()
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【目标字数】扩写后正文（不含任何标记）应达到约 {target_words} 字\n"

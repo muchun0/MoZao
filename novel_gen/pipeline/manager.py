@@ -24,6 +24,7 @@ from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         verify_prompt, final_review_prompt)
 from .trace import TraceRecorder
 from .editor import EditorReviewer
+from .orchestrator import Orchestrator
 from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent
 from webapp.logger import get_logger
 
@@ -50,6 +51,8 @@ class NovelPipeline:
             self.guard = AgentGuard(cfg.agent_guard, recorder=trace)
         llm.guard = self.guard
         self.memory = Memory(store, cfg.memory_window)
+        # 架构总控（多Agent阶段门禁 / 冲突仲裁，REQ 多Agent协作分层优化）
+        self.orchestrator = Orchestrator(cfg, store, llm, trace)
         # 多智能体角色（v2 架构）
         self.researcher = ResearcherAgent(cfg, llm, store)
         self.architect = ArchitectAgent(cfg, llm, store)
@@ -102,13 +105,16 @@ class NovelPipeline:
         # 扩写模式：从用户提供的大纲/简要内容生成章节大纲，跳过调研
         if self.is_expand_mode():
             return self._run_expand_outline(silent=silent)
-        logger.info("阶段开始: 大纲 outline（架构师）")
-        self._trace_step("大纲生成开始")
-        research = self.run_research(silent=True)
-        result = self.architect.run_outline(research, silent=silent)
-        logger.info("阶段完成: 大纲 outline（%s，%d 章）", result.title, len(result.chapters))
-        self._trace_step("大纲生成完成", {"chapters": len(result.chapters)})
-        return result
+        def _produce():
+            logger.info("阶段开始: 大纲 outline（架构师）")
+            self._trace_step("大纲生成开始")
+            research = self.run_research(silent=True)
+            res = self.architect.run_outline(research, silent=silent)
+            logger.info("阶段完成: 大纲 outline（%s，%d 章）", res.title, len(res.chapters))
+            self._trace_step("大纲生成完成", {"chapters": len(res.chapters)})
+            return res
+        # 骨架阶段准出门禁（校验并记录；大纲重生成会级联清依赖，暂不自动打回）
+        return self.orchestrator.run_stage("skeleton", _produce, invalidate=None)
 
     def _run_expand_outline(self, silent: bool = False) -> Outline:
         """扩写模式：把用户提供的大纲/简要内容拆解为结构化章节大纲。
@@ -246,22 +252,35 @@ class NovelPipeline:
             logger.warning("副本结构设计失败（不阻塞）: %s", e)
 
     def run_world(self, silent: bool = False) -> World:
+        """人物/世界观（底层锚点）阶段，经 StageGate 准出门禁（REQ 多Agent协作分层优化）。"""
         self._enter_scene("world")
-        existing = self.store.load_world()
-        if existing is not None:
-            if not silent:
-                print(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物")
-            return existing
-        outline = self.run_outline(silent=True)
-        self.run_timeline(silent=silent)
-        self.run_units(silent=silent)
-        research = self.store.load_research() or self.run_research(silent=True)
-        logger.info("阶段开始: 人物/世界观 world（架构师）")
-        self._trace_step("人物/世界观生成开始")
-        result = self.architect.run_world(silent=silent)
-        logger.info("阶段完成: 人物/世界观 world（%d 个人物）", len(result.characters))
-        self._trace_step("人物/世界观生成完成", {"characters": len(result.characters)})
-        return result
+
+        def _produce():
+            existing = self.store.load_world()
+            if existing is not None:
+                if not silent:
+                    print(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物，{len(existing.foreshadowing)} 条伏笔")
+                return existing
+            outline = self.run_outline(silent=True)
+            self.run_timeline(silent=silent)
+            self.run_units(silent=silent)
+            research = self.store.load_research() or self.run_research(silent=True)
+            logger.info("阶段开始: 人物/世界观 world（架构师）")
+            self._trace_step("人物/世界观生成开始")
+            result = self.architect.run_world(silent=silent)
+            logger.info("阶段完成: 人物/世界观 world（%d 个人物）", len(result.characters))
+            self._trace_step("人物/世界观生成完成", {"characters": len(result.characters)})
+            return result
+
+        def _invalidate():
+            try:
+                self.store.world_path().unlink(missing_ok=True)
+                if not silent:
+                    print("[StageGate] world 打回重生成（已清产物）")
+            except Exception:
+                pass
+        # 底层锚点准出门禁：金手指五要素 / 伏笔闭环 / 主题锚点不合格自动重生成
+        return self.orchestrator.run_stage("bottom_anchors", _produce, invalidate=_invalidate)
 
     def run_editor_review(self, silent: bool = False) -> None:
         """大纲生成后执行编辑视角质检；不通过则自动修正一次。幂等：已审阅则跳过。"""
@@ -344,6 +363,22 @@ class NovelPipeline:
             self.store.save_character_states(new)
         except Exception:
             logger.exception("人物状态更新失败（降级跳过）: no=%d", no)
+
+    def _update_chapter_state(self, no: int, silent: bool = False) -> None:
+        """REQ-章内自洽与机制账本：每章落盘后抽取章末状态（机制数字/人物生死/
+        物品/时间/事实），供下一章承接；失败降级，不阻塞生成。"""
+        try:
+            from .chapter_state import extract_chapter_state
+            ch = self.store.load_chapter(no)
+            if not ch or not ch.content:
+                return
+            world = self.store.load_world()
+            state = extract_chapter_state(self.llm, self.cfg, world, ch, no,
+                                          old_state=self.store.load_chapter_state())
+            if state:
+                self.store.save_chapter_state(state)
+        except Exception:
+            logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
 
     def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
         """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
@@ -530,11 +565,15 @@ class NovelPipeline:
             # P0-2：每章正文落盘后更新人物动态状态快照（可开关，失败降级不阻塞）
             if getattr(self.cfg, "character_state_tracking", True):
                 self._update_character_states(no, silent=silent)
+            # REQ-章内自洽与机制账本：每章落盘后抽取章末状态供下一章承接（可开关，失败降级）
+            if getattr(self.cfg, "chapter_state_tracking", True):
+                self._update_chapter_state(no, silent=silent)
             # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
             if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
                 self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)
+        self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:
             print(f"\n全部 {total} 章生成完毕。")
@@ -628,10 +667,35 @@ class NovelPipeline:
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
         self._mark_state("done", last_chapter=total)
+        self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:
             print(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
         logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
+
+    def _write_design_reports(self, silent: bool = False) -> None:
+        """成果整合（REQ 多Agent协作分层优化，阶段E）：全书完成后落盘 4 份设计文档。
+        失败降级不阻塞导出与结算。问题来源：对当前产物跑一次底层锚点/骨架/节奏校验。"""
+        try:
+            from .report import write_reports
+            world = self.store.load_world()
+            outline = self.store.load_outline()
+            if world is None or outline is None:
+                return
+            collected = []
+            try:
+                v = self.orchestrator.validator
+                collected += v.validate_stage("bottom_anchors", world)
+                collected += v.validate_stage("skeleton", outline)
+                collected += v.validate_stage("pacing", outline)
+            except Exception:
+                collected = []
+            paths = write_reports(self.store, world, outline, issues=collected,
+                                  arbitrations=self.orchestrator.arbitrations)
+            if paths and not silent:
+                print(f"[成果整合] 已生成设计文档 {len(paths)} 份 → design/")
+        except Exception:
+            pass
 
     def _with_stylist(self, system: str) -> str:
         """正文生成统一叠加风格角色人设（项目选了风格角色时）。"""
@@ -683,6 +747,7 @@ class NovelPipeline:
             except Exception:
                 logger.exception("扩写失败: no=%d", ch.no)
         self._mark_state("done", last_chapter=len(self.store.list_chapters()))
+        self._write_design_reports(silent)
         if not silent:
             print(f"\n扩写完成：共处理 {len(chapters)} 章。")
         logger.info("扩写完成: chapters=%d targets=%s", len(chapters), targets)

@@ -47,6 +47,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "memory_direct_read_chars", 2000, "每章直读正文最大字符数（取章节尾部；P0-1）"),
     FeatureFlag("memory", "character_state_tracking", True, "每章正文落盘后更新人物动态状态快照（P0-2）"),
     FeatureFlag("memory", "character_state_llm", True, "是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）"),
+    FeatureFlag("memory", "chapter_state_tracking", True, "章间机制/世界状态账本：每章落盘后抽取章末状态（数字/生死/物品/时间），供下一章承接，防数字断链与死而复生（REQ-章内自洽与机制账本）"),
+    FeatureFlag("memory", "chapter_state_llm", True, "是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则，零 LLM 成本）"),
     FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
@@ -63,6 +65,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
     FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
     FeatureFlag("review", "final_review", False, "全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）"),
+    FeatureFlag("review", "stage_gate", True, "多Agent阶段门禁：每阶段产出后准出校验，不合格自动重生成（REQ 多Agent协作分层优化）"),
+    FeatureFlag("review", "stage_gate_retries", 2, "阶段门禁最大自动重生成轮次，超限由总控仲裁放行（REQ 多Agent协作分层优化）"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -225,6 +229,8 @@ class NovelConfig:
     memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
     character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照
     character_state_llm: bool = feature_default("character_state_llm")                 # 是否用 LLM 抽取状态细节（False=仅确定性出场记录）
+    chapter_state_tracking: bool = feature_default("chapter_state_tracking")           # 章间机制/世界状态账本：每章落盘后抽取章末状态供下一章承接
+    chapter_state_llm: bool = feature_default("chapter_state_llm")                     # 是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则）
     lorebook_trim: bool = feature_default("lorebook_trim")                             # 按章触发注入（Lorebook 式裁剪，P1-3）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
@@ -246,6 +252,8 @@ class NovelConfig:
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
+    stage_gate: bool = feature_default("stage_gate")                 # 多Agent阶段门禁：每阶段产出后准出校验（REQ 多Agent协作分层优化）
+    stage_gate_retries: int = feature_default("stage_gate_retries")  # 阶段门禁最大自动重生成轮次（REQ 多Agent协作分层优化）
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

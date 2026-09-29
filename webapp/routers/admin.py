@@ -46,7 +46,8 @@ def admin_create_skill(req: SkillReq, user: dict = Depends(_require_admin)):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="名称不能为空")
     sid = db.create_skill(req.name.strip(), req.description, req.prompt_append,
-                          req.is_active, req.sort_order, req.role)
+                          req.is_active, req.sort_order, req.role,
+                          applicable_stages=req.applicable_stages)
     logger.info("新建写作风格: id=%d name=%s by=%s", sid, req.name, user["username"])
     return {"ok": True, "id": sid}
 
@@ -57,7 +58,8 @@ def admin_update_skill(skill_id: int, req: SkillReq, user: dict = Depends(_requi
         raise HTTPException(status_code=404, detail="Skill 不存在")
     db.update_skill(skill_id, name=req.name.strip(), description=req.description,
                      prompt_append=req.prompt_append, is_active=req.is_active,
-                     sort_order=req.sort_order, role=req.role)
+                     sort_order=req.sort_order, role=req.role,
+                     applicable_stages=req.applicable_stages)
     logger.info("更新写作风格: id=%d by=%s", skill_id, user["username"])
     return {"ok": True}
 

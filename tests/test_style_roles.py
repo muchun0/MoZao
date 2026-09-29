@@ -89,7 +89,7 @@ def test_mount_user_skill_requires_owner(clean_roles):
         assert any(s["skill_type"] == "user" and s["skill_id"] == sid for s in skills)
     finally:
         with db._connect() as conn:
-            conn.execute("DELETE FROM user_skills WHERE id=%s", (sid,))
+            conn.execute("DELETE FROM skills WHERE source='user' AND id=%s", (sid,))
 
 
 def test_unmount(clean_roles):

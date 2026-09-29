@@ -37,6 +37,7 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
         raise HTTPException(status_code=400, detail="大纲至少需要 1 个章节")
 
     # 规范化：重排 no、空 title/goal 补默认（与生成端 OutlineGenerator._normalize 一致）
+    # 分卷与章节卷号：完整接收并落盘（volume_no 支持前端拖拽/手动调整后持久化）
     chapters = []
     for i, c in enumerate(req.chapters, start=1):
         title = (c.title or "").strip() or f"第{i}章"
@@ -50,13 +51,27 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
             emotion=(c.emotion or "").strip(),
             transition=(c.transition or "").strip(),
             tag=(c.tag or "").strip(),
+            volume_no=int(getattr(c, "volume_no", 0) or 0),
         ))
     unique_chapter_titles(chapters)  # 章节名全书唯一（重名自动加后缀）
 
     old = store.load_outline()
+    # 分卷数组：来自前端（含增删卷），空则回退保留旧值（兼容旧前端不传 volumes）
+    if req.volumes:
+        from novel_gen.store.schemas import Volume
+        volumes = [
+            Volume(no=int(v.no or 0), name=(v.name or ""), intro=(v.intro or ""),
+                   main_conflict=(v.main_conflict or ""), character_growth=(v.character_growth or ""),
+                   climax=(v.climax or ""), start_ch=int(v.start_ch or 0), end_ch=int(v.end_ch or 0))
+            for v in req.volumes
+        ]
+    else:
+        volumes = list((old.volumes or [])) if old else []
+
     new_outline = Outline(
         title=(req.title or "").strip() or (old.title if old else ""),
         intro=(req.intro or "").strip() or (old.intro if old else ""),
+        volumes=volumes,
         chapters=chapters,
     )
     store.save_outline(new_outline)

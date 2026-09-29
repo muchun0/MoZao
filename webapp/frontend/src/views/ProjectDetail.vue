@@ -13,7 +13,7 @@
       </div>
       <div class="step-actions">
         <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
-        <el-button v-if="!outlineReady" type="primary" @click="runOutline" :loading="generating && !genDone">
+        <el-button v-if="!outlineReady && !hadOutline" type="primary" @click="runOutline" :loading="generating && !genDone">
           {{ generating && !genDone ? '生成中…' : '生成大纲与世界观' }}
         </el-button>
         <template v-else>
@@ -106,6 +106,103 @@
               <div class="char-row"><span class="char-label">简介</span><el-input v-model="c.desc" size="small" /></div>
             </div>
           </el-card>
+
+          <!-- ===== 事前设计卡（REQ-事前设定卡） ===== -->
+          <el-divider content-position="left">事前设计卡（防设定矛盾，正文必须遵守）</el-divider>
+
+          <!-- 生物图鉴 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">生物图鉴（{{ worldDraft.enemies?.length || 0 }}）</h4>
+            <el-button size="small" @click="worldDraft.enemies.push({ name:'', form:'', senses:'', behavior:'', kill:'', tier:'' })">+ 添加怪物</el-button>
+          </div>
+          <el-card v-for="(e,i) in (worldDraft.enemies||[])" :key="'en'+i" style="margin-bottom:10px">
+            <div class="char-head">
+              <el-input v-model="e.name" size="small" placeholder="怪物名（如灰卒）" style="width:140px" />
+              <el-input v-model="e.tier" size="small" placeholder="层级（浅层/精英/首领）" style="width:180px;margin-left:8px" />
+              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.enemies.splice(i,1)">删除</el-button>
+            </div>
+            <div class="char-fields">
+              <div class="char-row"><span class="char-label">形态解剖</span><el-input v-model="e.form" size="small" placeholder="写死：有无固定形态、肢体、器官、核心位置" /></div>
+              <div class="char-row"><span class="char-label">感知方式</span><el-input v-model="e.senses" size="small" placeholder="触须振动/视觉/热感（决定能否写视线盲区）" /></div>
+              <div class="char-row"><span class="char-label">行为模式</span><el-input v-model="e.behavior" size="small" placeholder="巡逻/伏击/食腐/对死人反应" /></div>
+              <div class="char-row"><span class="char-label">弱点</span><el-input v-model="e.kill" size="small" placeholder="击杀条件/弱点" /></div>
+            </div>
+          </el-card>
+
+          <!-- 地点卡 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">地点卡（{{ worldDraft.locations?.length || 0 }}）</h4>
+            <el-button size="small" @click="worldDraft.locations.push({ name:'', terrain:'', light:'', sound_smell:'', exits:'', danger:'' })">+ 添加地点</el-button>
+          </div>
+          <el-card v-for="(l,i) in (worldDraft.locations||[])" :key="'loc'+i" style="margin-bottom:10px">
+            <div class="char-head">
+              <el-input v-model="l.name" size="small" placeholder="地点名（如墟内支道）" style="width:160px" />
+              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.locations.splice(i,1)">删除</el-button>
+            </div>
+            <div class="char-fields">
+              <div class="char-row"><span class="char-label">地形结构</span><el-input v-model="l.terrain" size="small" /></div>
+              <div class="char-row"><span class="char-label">光线规则</span><el-input v-model="l.light" size="small" placeholder="地下无光/光源/天光在何处（正文不得矛盾）" /></div>
+              <div class="char-row"><span class="char-label">声音气味</span><el-input v-model="l.sound_smell" size="small" /></div>
+              <div class="char-row"><span class="char-label">出口连通</span><el-input v-model="l.exits" size="small" placeholder="哪里是死路/通哪" /></div>
+              <div class="char-row"><span class="char-label">危险来源</span><el-input v-model="l.danger" size="small" /></div>
+            </div>
+          </el-card>
+
+          <!-- 势力卡 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">势力卡（{{ worldDraft.factions?.length || 0 }}）</h4>
+            <el-button size="small" @click="worldDraft.factions.push({ name:'', goal:'', members:'', relation_to_mc:'' })">+ 添加势力</el-button>
+          </div>
+          <el-card v-for="(f,i) in (worldDraft.factions||[])" :key="'fac'+i" style="margin-bottom:10px">
+            <div class="char-head">
+              <el-input v-model="f.name" size="small" placeholder="势力名" style="width:160px" />
+              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.factions.splice(i,1)">删除</el-button>
+            </div>
+            <div class="char-fields">
+              <div class="char-row"><span class="char-label">目标</span><el-input v-model="f.goal" size="small" /></div>
+              <div class="char-row"><span class="char-label">关键成员</span><el-input v-model="f.members" size="small" /></div>
+              <div class="char-row"><span class="char-label">与主角关系</span><el-input v-model="f.relation_to_mc" size="small" /></div>
+            </div>
+          </el-card>
+
+          <!-- 机制初始值 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">机制初始值（数字标准答案）</h4>
+          </div>
+          <el-card style="margin-bottom:10px">
+            <div class="char-fields">
+              <div class="char-row"><span class="char-label">旧痕起点</span><el-input v-model="worldDraft.mechanism_baseline.scar_start" size="small" placeholder="如：手腕" /></div>
+              <div class="char-row"><span class="char-label">每死延伸</span><el-input v-model="worldDraft.mechanism_baseline.scar_per_death" size="small" placeholder="如：约一指宽" /></div>
+              <div class="char-row"><span class="char-label">旧痕当前</span><el-input v-model="worldDraft.mechanism_baseline.scar_current" size="small" placeholder="如：累计约二十次死亡" /></div>
+              <div class="char-row"><span class="char-label">终局位置</span><el-input v-model="worldDraft.mechanism_baseline.scar_end" size="small" placeholder="如：蔓延至心脉=蚀化" /></div>
+              <div class="char-row"><span class="char-label">面板格式</span><el-input v-model="worldDraft.mechanism_baseline.panel_format" size="small" placeholder="唯一写法，如：今日可死次数：N/3" /></div>
+              <div class="char-row"><span class="char-label">重置规则</span><el-input v-model="worldDraft.mechanism_baseline.reset_rule" size="small" placeholder="如：每日子时重置为3" /></div>
+            </div>
+          </el-card>
+
+          <!-- 时钟规则 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">时钟规则（每章遵守）</h4>
+          </div>
+          <el-card style="margin-bottom:10px">
+            <div class="char-fields">
+              <div class="char-row"><span class="char-label">日周期</span><el-input v-model="worldDraft.clock.day_cycle" size="small" placeholder="何时重置/晨昏/夜色节点" /></div>
+              <div class="char-row"><span class="char-label">路程</span><el-input v-model="worldDraft.clock.travel" size="small" placeholder="关键地点间耗时，如：墟口到铁匠铺约一刻钟" /></div>
+              <div class="char-row"><span class="char-label">光线规则</span><el-input v-model="worldDraft.clock.light_rule" size="small" placeholder="哪里有光哪里没光、何时天色" /></div>
+            </div>
+          </el-card>
+
+          <!-- 语言禁忌 -->
+          <div class="world-edit-head" style="margin-top:8px">
+            <h4 style="margin:0">语言禁忌（{{ worldDraft.style_taboos?.length || 0 }} 条）</h4>
+            <el-button size="small" @click="worldDraft.style_taboos.push('')">+ 添加禁用词</el-button>
+          </div>
+          <el-card style="margin-bottom:10px">
+            <div v-for="(t,i) in (worldDraft.style_taboos||[])" :key="'stb'+i" style="display:flex;margin-bottom:6px">
+              <el-input v-model="worldDraft.style_taboos[i]" size="small" placeholder="禁用词/表达（如：走位、视野CD、刷新）" style="flex:1" />
+              <el-button type="danger" size="small" link @click="worldDraft.style_taboos.splice(i,1)">删除</el-button>
+            </div>
+          </el-card>
         </template>
         <el-empty v-else>
           <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
@@ -184,10 +281,17 @@ const project = ref(null)
 const chapters = ref([])
 const outline = ref(null)
 const world = ref(null)
-const worldDraft = ref({ world_view: "", characters: [] })
+const worldDraft = ref({
+  world_view: "", characters: [],
+  enemies: [], locations: [], factions: [],
+  mechanism_baseline: {}, clock: {}, style_taboos: [],
+})
 const worldSaving = ref(false)
 const lock = ref({})
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
+// 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
+// 导致 outlineReady 翻转、v-else 按钮组整体消失。用 hadOutline 保住按钮组（生成中置灰而非隐藏）。
+const hadOutline = ref(false)
 const isWorldLocked = computed(() => !!lock.value.world_view)
 const isChLocked = (no) => !!(lock.value.chapter || {})[no]
 const isCharLocked = (name) => !!(lock.value.character || {})[name]
@@ -285,6 +389,15 @@ async function regenChapter(c) {
 function addCharacter() {
   worldDraft.value.characters.push({ name: "", role: "", desc: "", appearance: "", personality: "", desire: "", wound: "", arc: "", speech_style: "", relations: "" })
 }
+function normalizeWorldDraft() {
+  const d = worldDraft.value
+  d.enemies = d.enemies || []
+  d.locations = d.locations || []
+  d.factions = d.factions || []
+  d.style_taboos = d.style_taboos || []
+  d.mechanism_baseline = d.mechanism_baseline || {}
+  d.clock = d.clock || {}
+}
 async function saveWorldDraft() {
   worldSaving.value = true
   try {
@@ -302,11 +415,13 @@ async function loadAll() {
   try {
     project.value = await getProject(pid)
     outline.value = await getOutline(pid)
+    hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
     chapters.value = (await getChapters(pid)).chapters || []
     genTotal.value = outline.value?.chapters?.length || 0
     genDoneCount.value = chapters.value.length
     world.value = await getWorld(pid)
     worldDraft.value = JSON.parse(JSON.stringify(world.value))
+    normalizeWorldDraft()
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     await checkStatus()
   } catch (e) {
@@ -388,8 +503,10 @@ function startPolling() {
 async function refreshAfterGen() {
   try {
     outline.value = await getOutline(pid)
+    hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
     world.value = await getWorld(pid)
     worldDraft.value = JSON.parse(JSON.stringify(world.value))
+    normalizeWorldDraft()
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     genDoneCount.value = chapters.value.length

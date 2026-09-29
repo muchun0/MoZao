@@ -128,3 +128,71 @@ def test_old_world_without_mechanism_rules_no_crash(store):
     store.save_world(w)
     ctx = Memory(store, 5).build_context(w, up_to_chapter=1, chapter_goal="推进")
     assert "金手指机制卡" not in ctx  # 没机制卡就不注入该块
+
+
+# ---------- REQ-章内自洽与机制账本：新写作约束 + 场景提示词注入（P2） ----------
+
+
+@pytest.mark.p2
+def test_writing_constraints_block_new_rules():
+    """写作约束块包含时间轴/单口径/内心底线/悬念句四类新规则。"""
+    t = templates._writing_constraints()
+    assert "时间轴" in t and "三天后" in t and "回想" in t
+    assert "事实与细节单口径" in t and "复活" in t
+    assert "内心活动底线" in t and "零内心" in t
+    assert "悬念句口径" in t and "提前引用" in t
+
+
+@pytest.mark.p2
+def test_world_prompt_outputs_mechanism_rules_extended():
+    """世界观提示词要求机制卡补充数字账本/时间词语义/多数字关系/历史衔接。"""
+    cfg = _cfg()
+    system, user = templates.world_prompt(cfg, Outline(title="测试", intro="x"), "")
+    assert "数字账本" in user
+    assert "时间词语义" in user or "今日" in user
+    assert "多数字关系" in user
+    assert "历史衔接" in user
+    system2, user2 = templates.world_from_content_prompt(cfg, "已有正文…")
+    assert "数字账本写法" in user2
+    assert "时间词语义" in user2
+    assert "多数字关系" in user2
+
+
+@pytest.mark.p2
+def test_scene_prompt_injects_state_hint_and_time_marker():
+    """场景提示词注入【本章已推进状态】与【本场景时间锚点】+ 状态/视角/内心硬约束。"""
+    cfg = _cfg()
+    scene = {"location": "墟内二层", "event": "第三次死亡复活", "emotion": "麻木",
+             "anchors": ["面板数字"], "target_words": 1200, "time_marker": "三天后"}
+    sys_s, user_s = templates.scene_prompt(
+        cfg, 1, "第一章", 3, scene, "", "尾巴",
+        None, core_event="死亡", scene_state_hint="可死次数：1；疤脸已死")
+    assert "【本场景时间锚点】三天后" in user_s
+    assert "【本章已推进状态" in user_s
+    assert "可死次数：1" in user_s and "疤脸已死" in user_s
+    assert "状态衔接" in user_s and "禁止回退" in user_s
+    assert "时间过渡" in user_s and "闪回" in user_s
+    assert "视角" in user_s and "肉眼可见" in user_s
+    assert "内心反应底线" in user_s
+
+
+@pytest.mark.p2
+def test_scene_prompt_no_hint_when_empty():
+    """无已推进状态/时间锚点时，对应块不出现。"""
+    cfg = _cfg()
+    scene = {"location": "墟", "event": "入墟挖晶", "emotion": "压抑",
+             "anchors": [], "target_words": 1200}
+    sys_s, user_s = templates.scene_prompt(cfg, 1, "第一章", 1, scene, "", "尾巴", None)
+    assert "【本章已推进状态（后续场景必须延续" not in user_s
+    assert "【本场景时间锚点】" not in user_s
+
+
+@pytest.mark.p2
+def test_split_scenes_prompt_requires_time_marker():
+    """场景拆分提示词要求 time_marker + 关键事件等权重 + 时间顺延。"""
+    cfg = _cfg()
+    system, user = templates.split_scenes_prompt(cfg, 1, "第一章", "三次死亡", "三日后")
+    assert "time_marker" in user
+    assert "每日重置" in user
+    assert "不得压成一句话摘要" in user
+    assert "时间必须顺延" in user

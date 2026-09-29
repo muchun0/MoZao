@@ -364,6 +364,22 @@ class NovelPipeline:
         except Exception:
             logger.exception("人物状态更新失败（降级跳过）: no=%d", no)
 
+    def _update_chapter_state(self, no: int, silent: bool = False) -> None:
+        """REQ-章内自洽与机制账本：每章落盘后抽取章末状态（机制数字/人物生死/
+        物品/时间/事实），供下一章承接；失败降级，不阻塞生成。"""
+        try:
+            from .chapter_state import extract_chapter_state
+            ch = self.store.load_chapter(no)
+            if not ch or not ch.content:
+                return
+            world = self.store.load_world()
+            state = extract_chapter_state(self.llm, self.cfg, world, ch, no,
+                                          old_state=self.store.load_chapter_state())
+            if state:
+                self.store.save_chapter_state(state)
+        except Exception:
+            logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
+
     def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
         """每 3 章跑一次全局一致性校验（低温 0.3）。只写 issues 文件，不改已生成章节。"""
         try:
@@ -549,6 +565,9 @@ class NovelPipeline:
             # P0-2：每章正文落盘后更新人物动态状态快照（可开关，失败降级不阻塞）
             if getattr(self.cfg, "character_state_tracking", True):
                 self._update_character_states(no, silent=silent)
+            # REQ-章内自洽与机制账本：每章落盘后抽取章末状态供下一章承接（可开关，失败降级）
+            if getattr(self.cfg, "chapter_state_tracking", True):
+                self._update_chapter_state(no, silent=silent)
             # 高质量模式：每 3 章跑一次全局一致性校验，结果只影响后续章节
             if getattr(self.cfg, 'high_quality_mode', False) and no % 3 == 0 and no < total:
                 self._run_verify(no, silent=silent)

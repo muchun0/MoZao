@@ -202,3 +202,82 @@ def test_quality_check_disabled(store, tmp_path):
     assert len(ch.content) > 100
     # 未触发校验（不会因短正文调用重写导致额外调用）
     assert llm.chat.call_count >= 1
+
+
+# ---------- 章内同句复读（REQ-章内自洽与机制账本，P2 确定性） ----------
+
+_PAD_A = ("风从墟口灌进来，带着湿土和血的腥气。他把铜钱塞回怀里，指尖在边缘上磨了一下。"
+          "城墙的影子压过来，像一头睡着的兽。独眼刘的声音从门里传出来，骂骂咧咧。"
+          "他坐在门槛上，膝盖抵着下巴。")
+_PAD_B = ("雾没过脚踝，他摸到怀里的蚀晶，凉的。风从墟底吹上来，带着腥气。"
+          "他想起娘死前塞给他的铜钱，边缘磨得发亮。他点点头，把铜钱攥进掌心。"
+          "墟口的雾一层比一层厚。")
+# 两段填充内部及彼此之间无重复句；保证只命中被测的重复句，断言不串扰。
+
+
+@pytest.mark.p2
+def test_repeat_narrative_long_x3():
+    """叙述长句原样出现 3 次 → 大改（触发自动重写）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "城墙像谁把墓碑插满了地平线。" * 3 + _PAD_A + _PAD_B
+    issues = qc._repeat_sentence_issues(content)
+    assert issues and issues[0]["level"] == "大改"
+    assert "同句复读" in issues[0]["type"]
+    assert "城墙像谁把墓碑插满了地平线" in issues[0]["detail"]
+
+
+@pytest.mark.p2
+def test_repeat_narrative_long_x2():
+    """叙述长句（≥12 字）出现 2 次 → 大改（整句复读）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "城墙像谁把墓碑插满了地平线。" + _PAD_A + "城墙像谁把墓碑插满了地平线。" + _PAD_B
+    issues = qc._repeat_sentence_issues(content)
+    assert issues and issues[0]["level"] == "大改"
+
+
+@pytest.mark.p2
+def test_repeat_panel_line_x2():
+    """数字面板行原样出现 2 次（数字未推进）→ 大改（结算未推进信号）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "今日可死次数：1。" + _PAD_A + "今日可死次数：1。" + _PAD_B
+    issues = qc._repeat_sentence_issues(content)
+    assert issues and issues[0]["level"] == "大改"
+    assert "今日可死次数：1" in issues[0]["detail"]
+
+
+@pytest.mark.p2
+def test_repeat_narrative_short_x2_medium():
+    """叙述短句（8~11 字）出现 2 次 → 中改（记录不阻塞）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "他转身往墟口走去。" + _PAD_A + "他转身往墟口走去。" + _PAD_B
+    issues = qc._repeat_sentence_issues(content)
+    assert issues and issues[0]["level"] == "中改"
+
+
+@pytest.mark.p2
+def test_repeat_dialogue_x3_hard():
+    """对话句（≥8 字）出现 3 次 → 大改；短口头禅（"行"）豁免不计。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("“别他妈死在里面，拖累老子。”疤脸说。" + _PAD_A + "“别他妈死在里面，拖累老子。”他又说。"
+               + _PAD_B + "“别他妈死在里面，拖累老子。”疤脸最后叮嘱。")
+    issues = qc._repeat_sentence_issues(content)
+    assert issues and issues[0]["level"] == "大改"
+    assert "别他妈死在里面" in issues[0]["detail"]
+
+
+@pytest.mark.p2
+def test_repeat_dialogue_x2_allowed():
+    """对话口头禅出现 2 次 → 不报（writer.md 允许 ≤2 次）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "“行。”他说。" + _PAD_A + "“行。”他又说。" + _PAD_B
+    assert qc._repeat_sentence_issues(content) == []
+
+
+@pytest.mark.p2
+def test_repeat_none():
+    """无复读 → 不报（无误报）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    ok = ("他往墟口走，雾没过脚踝。独眼在雾里站着，浑身是血。他摸到怀里的蚀晶，凉的。"
+          "风从墟底吹上来，带着腥气。他想起娘死前塞给他的铜钱，边缘磨得发亮。"
+          "独眼说别他妈死在里面。他点点头，把铜钱攥进掌心。城墙的影子压过来，像一头睡着的兽。")
+    assert qc._repeat_sentence_issues(ok) == []

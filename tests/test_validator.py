@@ -139,3 +139,63 @@ def test_validator_never_raises_on_bad_input(validator):
     assert isinstance(issues, list)
     issues = validator.validate_stage("unknown_stage", World())
     assert issues == []
+
+
+# ---------- 机制卡三要素校验（REQ-章内自洽与机制账本，P1） ----------
+
+
+@pytest.mark.p1
+def test_mechanism_complete_passes(validator):
+    """机制卡覆盖 语义/结算/代价终局 → 无机制类问题。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；"
+                           "结算规则：每死一次减1，每日子时重置为3；"
+                           "代价终局：次数用尽即死，蚀痕随累计死亡递增",
+    })
+    issues = validator.validate_stage("bottom_anchors", w)
+    assert not any(i.scope == "mechanism" for i in issues)
+
+
+@pytest.mark.p1
+def test_mechanism_missing_semantics_fatal(validator):
+    """只写了名目、没有机制语义 → 致命。"""
+    w = World.from_dict({"world_view": "w", "mechanism_rules": "复活机制，无数字"})
+    issues = validator.validate_stage("bottom_anchors", w)
+    mech = [i for i in issues if i.scope == "mechanism"]
+    assert mech and mech[0].severity == "fatal"
+    assert "机制语义" in mech[0].desc
+
+
+@pytest.mark.p1
+def test_mechanism_missing_settlement_fatal(validator):
+    """有语义与代价但没有结算规则 → 致命（数字怎么变没交代）。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；代价终局：用尽即死",
+    })
+    issues = validator.validate_stage("bottom_anchors", w)
+    mech = [i for i in issues if i.scope == "mechanism"]
+    assert mech and mech[0].severity == "fatal"
+    assert "结算规则" in mech[0].desc
+
+
+@pytest.mark.p1
+def test_mechanism_missing_cost_fatal(validator):
+    """有语义与结算但没有代价/终局 → 致命。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；结算规则：每死一次减1",
+    })
+    issues = validator.validate_stage("bottom_anchors", w)
+    mech = [i for i in issues if i.scope == "mechanism"]
+    assert mech and mech[0].severity == "fatal"
+    assert "代价与终局" in mech[0].desc
+
+
+@pytest.mark.p1
+def test_mechanism_empty_skipped(validator):
+    """无金手指（空机制卡）→ 不报机制类问题（金手指五要素缺失另由 goldfinger 查）。"""
+    w = World.from_dict({"world_view": "w"})
+    issues = validator.validate_stage("bottom_anchors", w)
+    assert not any(i.scope == "mechanism" for i in issues)

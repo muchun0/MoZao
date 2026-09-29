@@ -42,7 +42,10 @@ def _bad_world():
 
 
 def _good_world():
-    return World.from_dict({"world_view": "w", "mechanism_rules": "机制",
+    return World.from_dict({"world_view": "w",
+                            "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；"
+                                               "结算规则：每死一次减1，每日子时重置为3；"
+                                               "代价终局：次数用尽即死，蚀痕进度随累计死亡递增",
                             "theme_proposition": "t",
                             "goldfinger_rules": {"trigger": "t", "upper_limit": "u",
                                                  "lower_limit": "l", "cost": "c", "growth_path": "g"},

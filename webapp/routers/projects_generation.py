@@ -91,13 +91,31 @@ def regen_world(project_id: str, user: dict = Depends(_require_user)):
         raise HTTPException(status_code=429, detail="系统繁忙")
     try:
         def _do():
+            old_world = None
             try:
                 pipeline = _open_pipeline(store)
-                from novel_gen.store.schemas import World
-                store.save_world(World(world_view="", characters=[], foreshadowing=[]))
+                # 关键：必须删 world.json 文件，不能写空壳 World——
+                # load_world() 对存在的文件一律返回对象（哪怕 world_view=""），
+                # run_world() 的"已存在则复用"会把空壳当成品直接放行，
+                # 导致重生成空跑、世界观与人物档案被清空。与 outline 重生成同模式。
+                try:
+                    old_world = store.load_world()
+                except Exception:
+                    old_world = None
+                try:
+                    store.world_path().unlink(missing_ok=True)
+                except Exception:
+                    pass
                 pipeline.run_world()
             except Exception as e:
                 handle.error = str(e)
+                logger.exception("重生成世界观失败: project=%s", project_id)
+                # 生成失败：恢复旧世界观，避免设定数据丢失
+                try:
+                    if old_world is not None:
+                        store.save_world(old_world)
+                except Exception:
+                    logger.exception("重生成世界观失败后恢复旧设定异常: project=%s", project_id)
             finally:
                 _GEN_SEMAPHORE.release()
                 with _LOCK:

@@ -23,6 +23,7 @@
         <el-progress :percentage="pct(p)" :stroke-width="6" style="margin-top:8px" />
         <div class="pactions" @click.stop>
           <el-button v-if="!p.archived" size="small" @click="doArchive(p)">归档</el-button>
+          <el-button v-else size="small" @click="doArchive(p)">取消归档</el-button>
           <el-button size="small" @click="doClone(p)">克隆</el-button>
           <el-button size="small" type="danger" @click="doDelete(p)">删除</el-button>
         </div>
@@ -301,7 +302,7 @@ function downloadFormat() {
 async function load() {
   loading.value = true
   try {
-    const res = await listProjects()
+    const res = await listProjects({ show_archived: true })
     list.value = res.projects || res || []
   } catch (e) {
     ElMessage.error('加载失败')
@@ -382,8 +383,8 @@ async function doCreate() {
 }
 
 async function doArchive(p) {
-  await archiveProject(p.id)
-  ElMessage.success('已归档')
+  const res = await archiveProject(p.id)
+  ElMessage.success(res?.archived ? '已归档' : '已取消归档')
   load()
 }
 async function doClone(p) {

@@ -42,23 +42,24 @@
 | `research/knowledge_base.json` | 内置热门小说共性知识库 |
 | `pipeline/manager.py` | **`NovelPipeline`**：整条流水线编排 + 断点续跑 + 风格注入；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出）；编辑审稿 churn 落 trace |
 | `pipeline/orchestrator.py` | 架构总控 `Orchestrator`：阶段门禁 StageGate（产出→准出校验→自动重生成≤N轮→仲裁放行）+ 冲突仲裁；`manager.run_world/run_outline` 接入（mock provider 默认跳过） |
-| `pipeline/validator.py` | 独立逻辑校验 `LogicValidator`：设定一致性/OOC/主线偏移/重复≤5%/伏笔完整性 5 类校验 + 分级 |
+| `pipeline/validator.py` | 独立逻辑校验 `LogicValidator`：设定一致性/OOC/主线偏移/重复≤5%/伏笔完整性 5 类校验 + 机制卡三要素（语义/结算/代价终局，REQ-章内自洽） + 分级 |
 | `pipeline/issue_triage.py` | 问题分级 `IssueItem`(fatal/major/minor) + triage/has_fatal/sort 纯函数 |
 | `pipeline/report.py` | 成果整合：落盘 4 份设计文档到 `projects/<id>/design/`（核心设定册/骨架大纲/节奏手册/质量报告） |
-| `pipeline/stages.py` | 阶段定义/推进 |
+| `pipeline/stages.py` | 阶段定义/推进；场景级生成逐场景累积「本章已推进状态」注入后续场景（REQ-章内自洽） |
 | `pipeline/agents/base.py` | Agent 基类（人设+技能 → System Prompt） |
 | `pipeline/agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色实现（调研/大纲/正文/审校/读者/风格师） |
 | `pipeline/agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分：主题与人物 / 世界观与规则 / 节奏与伏笔 专项 Agent（认领结构化锚点 + 确定性推导关键节点/分卷节奏/伏笔回收闭环） |
 | `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**） |
-| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物状态注入（P0-2） |
+| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1）+ L1.5 人物状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实）+ 配角动机卡注入 |
 | `pipeline/character_state.py` | 人物动态状态快照（P0-2）：确定性出场记录 + 可选 LLM 状态细节抽取，失败降级 |
+| `pipeline/chapter_state.py` | **章内/章间状态账本**（REQ-章内自洽）：章末/场景状态抽取（机制数字/生死/物品/时间/事实），LLM 主抽取 + 确定性面板正则兜底；章间承接防数字断链、场景间推进防死而复生 |
 | `pipeline/review_summary.py` | 全书质量汇总（P0-3）：改稿问题/质检均分/校验问题统计（纯函数） |
 | `pipeline/editor.py` | 编辑质检（9 维审稿，<7 分自动修正） |
 | `pipeline/reviser.py` | 章节重写/审校 |
 | `pipeline/repetition.py` | 防重复/防同质化 |
 | `pipeline/trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder；`record_quality` 带 score/issue_count/auto_revised（P2-4 数据底座） |
 | `pipeline/guard.py` | 成本防护（模块2）：AgentGuard 循环/Token 阈值 |
-| `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写；`auto_revised` 真值落 review.json（P2-4） |
+| `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写；含章内同句复读检测（叙述≥3/长句2/面板行2→大改，对话口头禅≤2豁免）；`auto_revised` 真值落 review.json（P2-4） |
 | `pipeline/ai_taste.py` | AI 痕迹量化检测（P1-4）：连接词堆砌/情绪词直白/句式排比/段落雷同（纯函数，供质检扣分） |
 | `pipeline/skills.py` | 技能统一注入管线（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照，按角色默认阶段过滤（applicable_stages 空=全量）、清洗、产出 manifest（供 trace 归因） |
 | `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑 |

@@ -394,6 +394,19 @@ class ProjectStore:
         """整体覆盖保存（每章更新后写入最新快照）。"""
         self._write_json(self.character_states_path(), states)
 
+    # ---------- 章内/章间状态账本（REQ-章内自洽与机制账本） ----------
+    def chapter_state_path(self) -> Path:
+        return self.dir / "chapter_state.json"
+
+    def load_chapter_state(self) -> Optional[dict]:
+        """返回 {chapter, numbers, characters, items, time, facts}；无账本返回 None。"""
+        d = self._read_json(self.chapter_state_path(), None)
+        return d if isinstance(d, dict) and d.get("chapter") else None
+
+    def save_chapter_state(self, state: dict) -> None:
+        """整体覆盖保存（每章落盘后写入最新章末状态）。"""
+        self._write_json(self.chapter_state_path(), state)
+
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:
         return self.dir / "final_review.json"

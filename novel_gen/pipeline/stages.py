@@ -493,11 +493,16 @@ class ChapterWriter:
         dynamic = _pick_dynamic_module(chapter_no, genre) if dynamic_module_used else ""
         scene_texts = []
         running_tail = prev_tail
+        # REQ-章内自洽与机制账本：场景间累积「已推进状态」（面板数字/人物生死/物品/时间），
+        # 注入后续场景，防「三次死亡只减两次数字」「疤脸死而复生」等章内状态断裂。
+        scene_state_acc: dict = {}
+        scene_state_hint: str = ""
         for idx, sc in enumerate(scenes, start=1):
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 memory_context, running_tail, dynamic,
                 core_event=plan_core_event,
+                scene_state_hint=scene_state_hint,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -512,6 +517,16 @@ class ChapterWriter:
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
+                # 场景状态推进抽取（失败降级为空，不影响流程）
+                if idx < len(scenes) and getattr(self.cfg, "chapter_state_llm", True):
+                    try:
+                        from .chapter_state import extract_scene_state, format_scene_state, merge_scene_state
+                        adv = extract_scene_state(self.llm, piece)
+                        if adv:
+                            scene_state_acc = merge_scene_state(scene_state_acc, adv)
+                            scene_state_hint = format_scene_state(scene_state_acc)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"    [场景] 第{idx}个场景生成失败: {e}")
                 scene_texts.append("")

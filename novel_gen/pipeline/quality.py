@@ -41,6 +41,13 @@ _SALVAGE_SPREAD = 300         # 同一标记两次出现的最小字距（区分
 # 判定「正文完整收尾」的句末标点
 _TERMINAL = set("。！？…”\"』」）】）…。!?"")）】")
 
+# 章内同句复读检测（REQ-章内自洽与机制账本）：母题密度提示词的成文后兜底
+_REPEAT_MIN_LEN = 8         # 参与复读统计的最短归一化句长
+_REPEAT_LONG_LEN = 12       # 叙述长句出现 2 次即视为整句复读
+_REPEAT_HARD_COUNT = 3      # 叙述/对话句出现 ≥3 次 → 大改（触发自动重写）
+_DIALOG_ALLOWED = 2         # 对话句（口头禅）允许 2 次（writer.md：同一口头禅每章 ≤2 次）
+_PANEL_KEYWORDS = ("次数", "进度", "蚀痕", "剩余", "面板")   # 数字面板行信号
+
 
 def _has_type(issues, keyword: str) -> bool:
     """issues 中是否存在 type 含指定关键词的问题。"""
@@ -152,6 +159,14 @@ class QualityChecker:
         for it in self._self_dup_issues(content):
             issues.append(it)
             score -= 30
+
+        # 2.7 章内同句复读（确定性，REQ-章内自洽与机制账本）：同一句/同一动作
+        #    整句原样复读（城墙墓碑、复活体感、铜钱、被扑倒等一字不差重复）。
+        #    _self_dup_issues 只抓多稿拼接（短行+大段 n-gram），不覆盖整句复读，
+        #    这里对母题密度提示词做成文后兜底：命中大改级 → 触发 1 次自动重写。
+        for it in self._repeat_sentence_issues(content):
+            issues.append(it)
+            score -= 15
 
         # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
         for it in self._ending_issues(content):
@@ -294,6 +309,56 @@ class QualityChecker:
                 "level": "大改",
             }]
         return []
+
+    def _repeat_sentence_issues(self, content: str) -> list[dict]:
+        """章内同句复读（确定性，REQ-章内自洽与机制账本）。
+
+        归一化句子后统计：叙述句（引号外）出现 ≥3 次、或叙述长句 ≥12 字出现 2 次、
+        或数字面板行（含次数/进度/蚀痕/剩余/面板+数字）出现 ≥2 次 → 大改；
+        叙述短句（8~11 字）出现 2 次 → 中改；对话句（口头禅）≥3 次 → 大改、2 次放行。
+        聚合为每条类型一条 issue（附最多 3 个例句），避免刷屏。
+        """
+        if not content or len(content) < 100:
+            return []
+        groups: dict[str, dict[str, list[str]]] = {"叙述": {}, "对话": {}}
+        for sentence, in_quote in _iter_sentences(content):
+            norm = _norm_sentence(sentence)
+            is_panel = _is_panel_line(norm)
+            if not norm:
+                continue
+            if len(norm) < _REPEAT_MIN_LEN and not (is_panel and len(norm) >= 5):
+                continue
+            bucket = "对话" if in_quote else "叙述"
+            groups[bucket].setdefault(norm, []).append(sentence.strip())
+
+        hard: list[str] = []
+        soft: list[str] = []
+        for bucket, norm, sentences in _iter_repeat_groups(groups):
+            cnt = len(sentences)
+            if cnt >= _REPEAT_HARD_COUNT:
+                hard.append(f"[{bucket}×{cnt}] {sentences[0]}")
+            elif bucket == "叙述" and cnt == 2:
+                if len(norm) >= _REPEAT_LONG_LEN or _is_panel_line(norm):
+                    hard.append(f"[叙述×2] {sentences[0]}")
+                else:
+                    soft.append(f"[叙述×2] {sentences[0]}")
+            # 对话 ×2 = 口头禅（writer.md 允许 ≤2 次），不报
+
+        issues: list[dict] = []
+        if hard:
+            issues.append({
+                "type": "写作-同句复读",
+                "detail": "同一句/同一动作整句原样复读（" + "；".join(hard[:3]) + "……）；"
+                          "同一母题不得原样复读，重复必须有递进，数字面板行重复=数字结算未推进",
+                "level": "大改",
+            })
+        if soft:
+            issues.append({
+                "type": "写作-同句复读（轻）",
+                "detail": "叙述短句原样出现 2 次（" + "；".join(soft[:3]) + "）；建议改写为不同表述",
+                "level": "中改",
+            })
+        return issues
 
     def _ending_issues(self, content: str) -> list[dict]:
         """结尾完整性（确定性）：正文未以句末标点收尾 → 疑似在句子中途被截断。"""
@@ -472,3 +537,46 @@ def _split_summary(text: str) -> tuple[str, str]:
         summary = text[idx + len(marker):].strip().replace("\n", " ")
         return body, summary
     return text.strip(), ""
+
+
+# ---------- 章内同句复读工具（REQ-章内自洽与机制账本） ----------
+
+_QUOTE_OPEN = {"“": "”", "「": "」", '"': '"'}
+
+
+def _iter_sentences(text: str):
+    """按句末标点切句，返回 (句子原文, 是否在对话引号内)。追踪中英文引号状态。"""
+    in_quote = None
+    buf: list[str] = []
+    for ch in text:
+        buf.append(ch)
+        if in_quote is None and ch in _QUOTE_OPEN:
+            in_quote = ch
+        elif in_quote is not None and ch == _QUOTE_OPEN[in_quote]:
+            in_quote = None
+        if ch in "。！？…" and buf:
+            yield "".join(buf), in_quote is not None
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        yield tail, in_quote is not None
+
+
+def _norm_sentence(s: str) -> str:
+    """归一化：只保留中文与字母数字，去空白标点（复读判定基准）。"""
+    return "".join(ch for ch in (s or "") if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+
+
+def _is_panel_line(norm: str) -> bool:
+    """数字面板行：含 次数/进度/蚀痕/剩余/面板 关键词且带数字（如「今日可死次数2」）。"""
+    return any(k in norm for k in _PANEL_KEYWORDS) and any(c.isdigit() for c in norm)
+
+
+def _iter_repeat_groups(groups: dict):
+    """遍历归一化句 → (bucket, norm, 原始句子列表)，按出现次数降序（大问题先报）。"""
+    items = []
+    for bucket, mp in groups.items():
+        for norm, sentences in mp.items():
+            items.append((bucket, norm, sentences))
+    items.sort(key=lambda t: -len(t[2]))
+    return items

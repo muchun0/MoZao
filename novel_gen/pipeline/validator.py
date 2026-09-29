@@ -45,8 +45,44 @@ class LogicValidator:
     def _validate_bottom_anchors(self, world: World) -> list[IssueItem]:
         issues: list[IssueItem] = []
         issues += self._check_goldfinger(world)
+        issues += self._check_mechanism(world)
         issues += self._check_theme_anchor(world)
         issues += self._check_foreshadow(world)
+        return issues
+
+    #: 机制卡三要素关键信号词（REQ-章内自洽与机制账本）
+    #: 语义：数字/状态的确切含义；结算：增减/重置的动作规则；代价：上限/终局。
+    #: 刻意排除宽泛词（如"数字""今日"），避免"无数字""今日剩余复活次数"等
+    #: 语义描述被误判为已覆盖对应要素。
+    _MECH_SEMANTIC = ("语义", "含义", "状态", "次数", "蚀痕", "面板", "进度", "可死")
+    _MECH_SETTLE = ("结算", "增减", "递减", "递增", "重置", "每死", "减一", "恢复")
+    _MECH_END = ("代价", "上限", "终局", "触发", "成长", "封顶", "用尽", "永久")
+
+    def _check_mechanism(self, world: World) -> list[IssueItem]:
+        """机制卡完整性（REQ-章内自洽与机制账本）：非空机制卡必须覆盖
+        「机制语义 / 结算规则 / 代价与终局」三要素，缺失视为致命。
+
+        背景：面板数字 3→2→1→1、蚀痕长度与剩余次数矛盾、「今日」与跨天冲突，
+        均源于机制卡只写了个名目、没有无歧义的结算规则。
+        """
+        issues: list[IssueItem] = []
+        mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
+        if not mechanism:
+            return issues
+        missing = []
+        if not any(k in mechanism for k in self._MECH_SEMANTIC):
+            missing.append("机制语义（每个数字/状态的确切含义）")
+        if not any(k in mechanism for k in self._MECH_SETTLE):
+            missing.append("结算规则（何时增减/重置/与历史衔接）")
+        if not any(k in mechanism for k in self._MECH_END):
+            missing.append("代价与终局（代价递增/上限/触发）")
+        if missing:
+            issues.append(IssueItem(
+                severity="fatal", scope="mechanism",
+                desc="金手指机制卡不完整，缺失：" + "、".join(missing),
+                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 八要素补全"
+                          "（机制语义/结算规则/代价终局/数字账本/时间词语义/多数字关系/历史衔接/正文要求）",
+            ))
         return issues
 
     def _check_goldfinger(self, world: World) -> list[IssueItem]:

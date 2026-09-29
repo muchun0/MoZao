@@ -47,6 +47,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "memory_direct_read_chars", 2000, "每章直读正文最大字符数（取章节尾部；P0-1）"),
     FeatureFlag("memory", "character_state_tracking", True, "每章正文落盘后更新人物动态状态快照（P0-2）"),
     FeatureFlag("memory", "character_state_llm", True, "是否用 LLM 抽取状态细节（False=仅确定性出场记录，零 LLM 成本）"),
+    FeatureFlag("memory", "chapter_state_tracking", True, "章间机制/世界状态账本：每章落盘后抽取章末状态（数字/生死/物品/时间），供下一章承接，防数字断链与死而复生（REQ-章内自洽与机制账本）"),
+    FeatureFlag("memory", "chapter_state_llm", True, "是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则，零 LLM 成本）"),
     FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
@@ -227,6 +229,8 @@ class NovelConfig:
     memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
     character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照
     character_state_llm: bool = feature_default("character_state_llm")                 # 是否用 LLM 抽取状态细节（False=仅确定性出场记录）
+    chapter_state_tracking: bool = feature_default("chapter_state_tracking")           # 章间机制/世界状态账本：每章落盘后抽取章末状态供下一章承接
+    chapter_state_llm: bool = feature_default("chapter_state_llm")                     # 是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则）
     lorebook_trim: bool = feature_default("lorebook_trim")                             # 按章触发注入（Lorebook 式裁剪，P1-3）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）

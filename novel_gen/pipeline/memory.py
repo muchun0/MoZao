@@ -48,6 +48,8 @@ class Memory:
         L1 全局设定库：按章触发注入（P1-3）——只注入预测出场人物卡与相关伏笔；
             用户强约束 / 锁定项 / 核心世界观永不裁剪，置于 prompt 末尾。
         L1.5 人物动态状态：最近出场人物的当前状态（P0-2）
+        L1.6 章内/章间状态账本：上一章结束时的机制数字/人物生死/物品/时间/事实
+            （REQ-章内自洽与机制账本：承接可变状态，防面板数字断链、死而复生）
         L2 卷级摘要：当前所在卷的卷目标+高潮+人物成长
         L3 近章大纲：当前章前后各2章的剧情节点
         L4 前章尾文：最近N章一句话摘要（短期）
@@ -128,6 +130,29 @@ class Memory:
                         pass
                 chars = "；".join(_char_line(c) for c in world.characters if c.name in hit)
                 w_normal.append(f"本章相关人物卡：{chars}" if trimmed else f"人物卡：{chars}")
+                # 配角动机卡（REQ-章内自洽与机制账本）：人物卡只有静态描述，
+                # 动机卡（goal/behavior_logic/link_to_protagonist）决定行为逻辑，
+                # 不注入则写手临场编动机，导致押金责任方/抢袋动机等前后漂移。
+                try:
+                    motives = getattr(world, "character_motives", None) or []
+                    if motives:
+                        m_lines = []
+                        for m in motives:
+                            name = getattr(m, "name", "") or ""
+                            if name and name in hit:
+                                bits = []
+                                if getattr(m, "goal", ""):
+                                    bits.append(f"目标：{m.goal}")
+                                if getattr(m, "behavior_logic", ""):
+                                    bits.append(f"行为逻辑：{m.behavior_logic}")
+                                if getattr(m, "link_to_protagonist", ""):
+                                    bits.append(f"与主角关联：{m.link_to_protagonist}")
+                                if bits:
+                                    m_lines.append(f"{name}（{'；'.join(bits)}）")
+                        if m_lines:
+                            w_normal.append("本章相关人物动机卡：" + "；".join(m_lines))
+                except Exception:
+                    pass
             if world.foreshadowing:
                 def _fs(x):
                     # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
@@ -208,6 +233,19 @@ class Memory:
                 lines = [format_state_line(name, st) for name, st in items if st.get("last_seen")]
                 if lines:
                     parts.append("[L1.5·人物当前状态·最近更新]\n" + "\n".join(lines))
+        except Exception:
+            pass
+
+        # L1.6 章内/章间状态账本（REQ-章内自洽与机制账本）：上一章结束时的
+        # 机制数字/人物生死/物品归属/时间/事实，供本章延续（防数字断链、死而复生）。
+        # 账本来自已落盘的前章（chapter < 当前章才注入），失败静默降级。
+        try:
+            from .chapter_state import format_chapter_state
+            st = self.store.load_chapter_state()
+            if st and int(st.get("chapter", 0) or 0) < up_to_chapter:
+                hint = format_chapter_state(st)
+                if hint:
+                    parts.append("[L1.6·世界状态·承接上一章]\n" + hint)
         except Exception:
             pass
 

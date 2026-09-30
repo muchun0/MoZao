@@ -226,13 +226,111 @@ def test_scene_overlap_fallback(store):
     assert "整章回退正文" in ch.content
 
 
+# ---------- 拆场景设计重构（2026-09-30）：事件清单先行 + 结构化校验 ----------
+
+def test_scene_plan_validation():
+    """拆场景结构校验：场景数超上限（>4=凑数拆重复场景）、事件编号重复引用、
+    多场景 target_words 偏离目标 → 判不合格回退整章；正常规划通过。"""
+    from novel_gen.pipeline.stages import _validate_scene_plan
+    # 场景数 5（6316 字版"苏妄言被围"拆 5 个变体场景的形态）→ 不合格
+    ok, why = _validate_scene_plan([{"target_words": 500} for _ in range(5)], 2500)
+    assert not ok and "场景数" in why
+    # 同一事件编号被两个场景引用 → 不合格（事件引用唯一性）
+    ok, why = _validate_scene_plan([
+        {"scene_event_ref": "事件1", "target_words": 1200},
+        {"scene_event_ref": "事件1", "target_words": 1300},
+    ], 2500)
+    assert not ok and "引用" in why
+    # 多场景 target_words 之和偏离目标 ±10% → 不合格
+    ok, why = _validate_scene_plan([
+        {"event": "陆沉在矿道被灰卒咬死复活", "target_words": 400},
+        {"event": "陆沉爬出墟口遇苏妄言被围", "target_words": 400},
+    ], 2500)
+    assert not ok and "target_words" in why
+    # 正常 2 场景（新格式引用不同事件编号、字数接近目标）→ 通过
+    ok, _ = _validate_scene_plan([
+        {"scene_event_ref": "事件1", "event": "陆沉在铁精矿脉被灰卒咬穿喉咙，面板3→2，复活", "target_words": 1300},
+        {"scene_event_ref": "事件2", "event": "陆沉爬出墟口救苏妄言引开三只赤尉", "target_words": 1200},
+    ], 2500)
+    assert ok
+    # 单场景不判失败（拆不出时按整章单场景写，交给质量审计兜底）
+    ok, _ = _validate_scene_plan([{"event": "陆沉救苏妄言", "target_words": 1400}], 2500)
+    assert ok
+
+
+@pytest.mark.p1
+def test_scene_event_ref_expansion():
+    """场景 scene_event_ref 展开为事件清单原文：模型无法再靠换措辞把同一事件塞进两场景。"""
+    from novel_gen.pipeline.stages import _expand_scene_event_refs, _validate_scene_plan
+    scenes = [
+        {"scene_event_ref": "事件1", "target_words": 1300},
+        {"scene_event_ref": "事件2", "target_words": 1200},
+    ]
+    events = [
+        {"id": "事件1", "desc": "陆沉在铁精矿脉被灰卒咬穿喉咙，面板3→2，复活"},
+        {"id": "事件2", "desc": "陆沉爬出墟口救苏妄言引开三只赤尉"},
+    ]
+    _expand_scene_event_refs(scenes, events)
+    assert scenes[0]["event"] == events[0]["desc"]
+    assert scenes[1]["event"] == events[1]["desc"]
+    ok, _ = _validate_scene_plan(scenes, 2500)
+    assert ok
+    # 同编号引用两次 → 判重叠
+    scenes2 = [{"scene_event_ref": "事件1"}, {"scene_event_ref": "事件1"}]
+    _expand_scene_event_refs(scenes2, events)
+    ok, why = _validate_scene_plan(scenes2, 2500)
+    assert not ok and "事件1" in why
+
+
+@pytest.mark.p1
+def test_scene_adjacent_repeat_retry(store):
+    """场景生成端兜底：场景 N 与上一场景全文高度相似（重演上一场景）→ 重试 1 次并强制
+    从上一场景结局后续写；重试结果不同则采用，从拼接发生点拦截（不整章重写）。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "墟口空地", "event": "陆沉引开赤尉救苏妄言", "emotion": "焦灼", '
+        '"target_words": 1300}, '
+        '{"location": "墟口坡地", "event": "陆沉带苏妄言撤往补给站", "emotion": "紧迫", '
+        '"target_words": 1200}], "characters_action": []}'
+    )
+    # 场景 1 正文（1300+ 字，避免触发字数兜底扩写）；场景 2 第一版 = 场景 1 原样复刻（重演）；
+    # 场景 2 重试版 = 全新推进（1200+ 字）；摘要
+    scene1 = ("陆沉伏在墟口边缘，苏妄言被三只赤尉围住，他攥紧短凿，心跳一下一下撞着肋骨。"
+              "碎石在指缝间滚落，他听见她急促的呼吸，面板还剩两次，蚀痕烧到小臂中段。" * 20)
+    scene2_new = ("陆沉已经冲到坡底，一把拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
+                  "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。" * 15)
+    llm.chat.side_effect = [
+        scenes_json,
+        scene1,
+        scene1,                    # 场景 2 第一版：整段复刻上一场景
+        scene2_new,                # 场景 2 重试版：全新推进
+        "摘要",
+    ]
+    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 5  # 拆场景 + 场景1 + 场景2第一版 + 场景2重试 + 摘要
+    assert "拽住苏妄言的后领" in ch.content   # 采用重试版（全新推进）
+    # 重试 prompt 含强制从结局后续写规则
+    retry_call = llm.chat.call_args_list[3]
+    retry_user = retry_call.args[1] if retry_call.args else retry_call[1]
+    assert "本场景重试强制规则" in retry_user
+    assert "禁止重演上一场景" in retry_user
+
+
 # ---------- 事前防线：拆场景/写场景 prompt 硬规则注入（用户要求'事前解决'） ----------
 
 def test_split_prompt_event_dedup_rule():
-    """拆场景 prompt 含事件去重规则：同类事件本章至多一次、机制数字规划到场景、专有名词锁定。"""
+    """拆场景 prompt 含事件去重规则：事件清单先行、场景引用事件编号、同类事件本章至多一次、
+    机制数字规划到场景、专有名词锁定。"""
     from novel_gen.pipeline.templates import split_scenes_prompt
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     _, user = split_scenes_prompt(cfg, 1, "第一章", "目标", core_event="死亡-复活")
+    assert "第一步：规划本章事件清单" in user          # 事件清单先行（设计重构根因）
+    assert "scene_event_ref" in user                    # 场景逐字引用事件编号（防措辞漂移）
+    assert "场景数 = 事件数" in user                    # 1 事件 = 1 场景
     assert "事件去重与机制规划硬规则" in user
     assert "同类事件本章至多一次" in user              # 防"三次救苏妄言"循环
     assert "机制数字规划到场景" in user                # 每场景结束时标注 X/X
@@ -265,7 +363,7 @@ def test_split_prompt_word_count_hardcap():
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     sys_s, user = split_scenes_prompt(cfg, 1, "第一章", "目标", core_event="死亡-复活")
     assert "2-4 个连续场景" in sys_s                  # 不再 3-5 个（3×1000>2500 自相矛盾）
-    assert "场景数由本章总字数反推" in sys_s
+    assert "由本章总字数反推" in sys_s
     assert "之和必须等于 2500" in user                # target_words 硬等于 chapter_words
     assert "禁止为了凑场景数或凑字数超写" in user
 

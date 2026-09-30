@@ -511,11 +511,23 @@ class ChapterWriter:
             split_data = json.loads(_strip_json_block(raw))
             scenes = split_data.get("scenes", [])
             action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
-            # P1-1 场景事件边界互斥：event 高度相似 = 同一事件拆成两场景（同事件两版本
-            # 的拼接源头，《万墟之上》第1章段A/段C 即此类），回退整章生成
-            if scenes and _scene_events_overlap(scenes):
+            # 2026-09-30 拆场景设计重构（用户指出"一直在打补丁、根因在场景拆分设计"）：
+            # 场景拆分 = 事件分配——LLM 先规划互斥事件清单 events，场景 scene_event_ref 逐字
+            # 引用事件编号。这里把引用展开为事件原文（sc["event"]），互斥由「事件清单两两
+            # 不同 + 引用唯一性 + 场景数/字数校验」结构化保证，不再依赖文本相似度猜重叠
+            # （6316 字版"苏妄言被围"被拆成 5 个换措辞场景即旧校验盲区）。
+            events_list = split_data.get("events") or []
+            _expand_scene_event_refs(scenes, events_list)
+            # P1-1 场景事件边界互斥 + 结构校验（场景数∈[2,4]、target_words 和∈±10%、
+            # 事件引用唯一）：不合格 = 同一事件拆成两场景（同事件两版本拼接源头，
+            # 《万墟之上》第1章段A/段C 即此类），回退整章生成
+            ok_plan, why_bad = _validate_scene_plan(scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
+            if scenes and not ok_plan:
                 if not silent:
-                    print("  [拆场景] 场景事件重叠（同一事件拆成两场景），回退整章生成")
+                    print(f"  [拆场景] 场景规划校验不通过（{why_bad}），回退整章生成")
+                scenes = []
+            if not scenes and (split_data.get("events") or events_list):
+                # events 已产出但场景无效：仍回退整章（不赌单场景）
                 scenes = []
         except Exception:
             scenes = []
@@ -583,6 +595,43 @@ class ChapterWriter:
                     presence_penalty=0.15,
                 )
                 piece = _strip_html_tags(piece)
+                # 2026-09-30 场景重演兜底（生成端）：场景 N 与上一场景全文高度相似
+                # = 模型无视衔接把上一场景整段复刻（6316 字版"灰卒咬喉死"原样重复根因）。
+                # 此处确定性检测 + 本场景重试 1 次（替换场景 prompt 强制从结局后续写），
+                # 而非事后整章重写——拦截在拼接发生点，省整章重写 token。
+                if idx > 1 and piece and scene_texts:
+                    import difflib
+                    prev_text = scene_texts[-1]
+                    _ratio = 0.0
+                    if prev_text:
+                        _ratio = difflib.SequenceMatcher(None, _norm_scene_event(prev_text),
+                                                         _norm_scene_event(piece)).ratio()
+                    if _ratio > _SCENE_ADJACENT_REPEAT_RATIO:
+                        if not silent:
+                            print(f"  [场景] 第{idx}个场景与上一场景高度相似（{_ratio:.2f}），"
+                                  f"疑似重演上一场景，重试 1 次强制从上一场景结局后续写")
+                        sys_c2, user_c2 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                        )
+                        retry = self.llm.chat(
+                            self._sys(sys_c2), user_c2,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.35,
+                            presence_penalty=0.2,
+                        )
+                        retry = _strip_html_tags(retry)
+                        _r2 = 0.0
+                        if retry:
+                            _r2 = difflib.SequenceMatcher(
+                                None, _norm_scene_event(prev_text),
+                                _norm_scene_event(retry)).ratio()
+                        if _r2 < _ratio and _r2 <= _SCENE_ADJACENT_REPEAT_RATIO:
+                            piece = retry
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
@@ -753,6 +802,13 @@ def _format_action_plan(chars: list) -> str:
 _SCENE_EVENT_OVERLAP_RATIO = 0.55
 #: 事件次数标记正则：「第1/2/3…次」或「第一次/第二次…」，两事件次数不同视为不同事件
 _SCENE_ORDINAL_PATTERN = r"第\s*[一二三1-3０-９\d]+\s*次"
+#: 拆场景结构校验：场景数上限（2-4 个，超出=凑数拆场景的迹象，直接回退整章）
+_SCENE_COUNT_MIN, _SCENE_COUNT_MAX = 2, 4
+#: target_words 之和允许偏离 chapter_words 的幅度（±10%）
+_SCENE_WORDS_TOLERANCE = 0.10
+#: 相邻场景输出相似度阈值：场景 N 与场景 N-1 全文相似度超过该值 = 场景重演上一场景
+#: （生成端把上一场景整段复刻，6316 字版"灰卒咬喉死"原样重复即此类），重试本场景
+_SCENE_ADJACENT_REPEAT_RATIO = 0.55
 
 
 def _norm_scene_event(text: str) -> str:
@@ -769,32 +825,83 @@ def _scene_event_ordinals(text: str) -> set[str]:
     return set(re.findall(_SCENE_ORDINAL_PATTERN, text))
 
 
-def _scene_events_overlap(scenes: list) -> bool:
-    """拆场景事件互斥校验（P1-1，零 LLM 成本）：
-    任意两个场景的 event 文本高度相似 → 同一事件被拆成两场景（同事件两版本），
-    返回 True 由调用方回退整章生成，杜绝「同一战斗写两遍」的拼接源头。
+def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
+    """拆场景设计重构（2026-09-30）：场景 scene_event_ref 逐字引用事件清单编号，
+    这里把引用展开为事件原文（sc["event"]）。事件互斥由「事件清单两两不同 + 引用唯一性」
+    结构化保证，模型无法再靠换措辞把同一事件塞进两个场景。
+    - 有 events_list + scene_event_ref → 展开引用（新格式）
+    - 无 events_list 或引用缺失 → 保留场景自带 event 文本（旧格式，走相似度降级校验）
     """
-    import difflib
-    events: list[tuple[str, set[str]]] = []
+    by_id: dict[str, str] = {}
+    for e in events_list or []:
+        if isinstance(e, dict):
+            eid = str(e.get("id") or "").strip()
+            desc = str(e.get("desc") or "").strip()
+            if eid and desc:
+                by_id[eid] = desc
     for sc in scenes:
         if not isinstance(sc, dict):
             continue
-        ev = (sc.get("event") or "").strip()
-        if not ev:
+        ref = str(sc.get("scene_event_ref") or "").strip()
+        if ref and ref in by_id:
+            sc["event"] = by_id[ref]
+            sc["scene_event_ref"] = ref
+
+
+def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, str]:
+    """拆场景结构校验（零 LLM 成本，2026-09-30 从文本相似度升级为结构化校验）：
+    1. 场景数 ≤ 4（拆出 5-6 个场景 = 把同一事件拆多遍凑场景数，《万墟之上》6316 字版根因；
+       单场景不视为失败——拆不出时按整章单场景写，交由后续字数/质量审计兜底）
+    2. 多场景时 target_words 之和 ∈ [chapter_words ±10%]（拆场景字数规划失效迹象）
+    3. 事件互斥：新格式按 scene_event_ref 引用唯一性（同一事件编号被 ≥2 场景引用=重叠）；
+       旧格式（无 ref）降级按 event 文本归一化相似度（>0.55 判重叠）
+    返回 (是否通过, 失败原因)；不通过由调用方回退整章生成。
+    """
+    if not scenes:
+        return True, ""
+    if len(scenes) > _SCENE_COUNT_MAX:
+        return False, f"场景数 {len(scenes)} 超出上限 4（疑似把同一事件拆多遍凑场景数）"
+    if len(scenes) >= 2 and chapter_words > 0:
+        total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
+        if total > 0 and abs(total - chapter_words) > chapter_words * _SCENE_WORDS_TOLERANCE:
+            return False, f"场景 target_words 之和 {total} 偏离目标 {chapter_words} 超 ±10%"
+    # 事件互斥：优先引用唯一性，缺失 ref 降级文本相似度
+    refs: list[str] = []
+    texts: list[tuple[str, set[str]]] = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
             continue
-        events.append((_norm_scene_event(ev), _scene_event_ordinals(ev)))
-    for i in range(len(events)):
-        for j in range(i + 1, len(events)):
-            a, a_ord = events[i]
-            b, b_ord = events[j]
+        ref = str(sc.get("scene_event_ref") or "").strip()
+        if ref:
+            refs.append(ref)
+        ev = (sc.get("event") or "").strip()
+        if ev:
+            texts.append((_norm_scene_event(ev), _scene_event_ordinals(ev)))
+    if refs:
+        seen: set[str] = set()
+        for r in refs:
+            if r in seen:
+                return False, f"事件编号 {r} 被多个场景引用（同一事件拆成两场景）"
+            seen.add(r)
+    import difflib
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            a, a_ord = texts[i]
+            b, b_ord = texts[j]
             if not a or not b:
                 continue
             # 次数标记互斥（第一次 vs 第二次…）→ 视为不同事件，跳过
             if a_ord and b_ord and not (a_ord & b_ord):
                 continue
             if difflib.SequenceMatcher(None, a, b).ratio() > _SCENE_EVENT_OVERLAP_RATIO:
-                return True
-    return False
+                return False, "场景事件高度相似（同一事件换措辞拆成两场景）"
+    return True, ""
+
+
+def _scene_events_overlap(scenes: list) -> bool:
+    """兼容别名：仅事件互斥维度（旧测试/调用沿用）。"""
+    ok, _ = _validate_scene_plan(scenes, chapter_words=0)
+    return not ok
 
 
 def _split_summary(text: str) -> tuple[str, str]:

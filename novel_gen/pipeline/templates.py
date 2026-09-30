@@ -955,7 +955,8 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
 def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event=""):
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
-        "你的任务是把它拆成 2-4 个连续场景（场景数由本章总字数反推：总字数 ÷ 1200 取整，"
+        "你的任务分两步：①先规划本章的【互斥事件清单】（几个事件就拆几个场景，1 事件 = 1 场景）；"
+        "②再按事件清单拆成 2-4 个连续场景（场景数 = 事件数，由本章总字数反推：总字数 ÷ 1200 取整，"
         "最少 2 个；2500 字章 → 约 2-3 个场景，禁止为了凑场景数超写），"
         "每个场景约 700-1400 字，并同时规划本章出场人物的行动表（写手必须逐条落实，人物言行与行动表一致）。"
         "严格按 JSON 格式输出，不要额外解释。"
@@ -963,13 +964,28 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     user = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
-        f"【本章核心事件（场景拆分必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n"
+        f"【本章核心事件（事件清单必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n"
         f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
         f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
-        "请拆成 2-4 个场景，每个场景包含：\n"
+        "== 第一步：规划本章事件清单（events，N 个事件 = N 个场景） ==\n"
+        "每个事件用一句话写清『人物 + 冲突对象 + 动作 + 结果』（如\"陆沉在铁精矿脉采掘时被灰卒咬穿喉咙，"
+        "面板 3→2，复活\"）。硬规则：\n"
+        "1. 事件必须两两互斥：同一『人物+冲突对象+动作+结果』本章至多一次；"
+        "【本章核心事件】必须被完整覆盖且只覆盖一次\n"
+        "2. 事件之间必须因果推进：前一个事件的结果 = 后一个事件的起点；"
+        "禁止第 2 个事件重新回到第 1 个事件的开头状态重演一遍（哪怕换了地点、换了措辞）\n"
+        "3. 禁止把同一事件拆成两个事件：能发生的独立事件不足时，宁可少拆（最少 2 个场景），"
+        "也禁止把\"被围-犹豫-冲上去救\"这类同一过程拆成多个场景\n"
+        "4. 机制数字规划到事件：含结算的事件（死亡-复活、次数增减、进度推进）写明结束时机制数字为 X/X；"
+        "全章机制数字序列只允许严格递减（或按机制卡重置），禁止两个事件结束时间一数值\n"
+        "5. 同类事件本章至多一次：同一类剧情动作（救援、被围、死亡-复活、追击、对峙）只允许完整发生一次；"
+        "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现\n\n"
+        "== 第二步：按事件清单拆场景（scenes） ==\n"
+        "场景数 = 事件数。每个场景包含：\n"
         "- location: 地点\n"
-        "- event: 发生什么\n"
+        "- scene_event_ref: 必须逐字引用 events 中的事件编号（\"事件1\"…\"事件N\"），"
+        "禁止自行改写或换措辞描述事件——一个事件编号只能被一个场景引用\n"
         "- emotion: 这个场景的情绪目标\n"
         "- anchors: 必须保留的细节\n"
         "- time_marker: 本场景的时间锚点（与上一场景的时间间隔与标记，如'同日午后''三天后''翌日清晨'；"
@@ -979,11 +995,11 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "场景连续性硬规则：第一个场景必须承接上一章结尾的场景与人物状态，"
         "从上一章结束的地方接着展开；后续场景沿剧情推进自然过渡，禁止跳跃式换场。\n"
         "事件互斥硬规则（防同事件两版本拼接）：\n"
-        "1. 场景之间的 event 必须互斥：同一事件（如某次死亡-复活、某次救援、某次对话、某次战斗）"
-        "只能被一个场景完整覆盖，禁止两个场景写同一件事的两个版本/两段同构描述\n"
-        "2. 场景间不得共用同一『事件+人物+动作』组合：若两个场景的 event 描述到同一人物做同一动作、"
-        "同一地点同一事态，必须合并为一个场景或让时间线明确错开（一个承接另一个的结果，而不是重复过程）\n"
-        "3. 每个场景的 event 一句话能说清『新发生的、推进剧情的事』；如果两个 event 换句话说是同一件事，即视为重叠\n"
+        "1. 场景之间的 scene_event_ref 必须互斥：同一事件只能被一个场景完整覆盖，"
+        "禁止两个场景写同一件事的两个版本/两段同构描述\n"
+        "2. 场景间不得共用同一『事件+人物+动作』组合：若两个场景引用到同一事件，必须合并为一个场景"
+        "或让时间线明确错开（一个承接另一个的结果，而不是重复过程）\n"
+        "3. 每个场景的事件一句话能说清『新发生的、推进剧情的事』；如果两个场景换个说法是同一件事，即视为重叠\n"
         "时间硬规则：\n"
         "1. 场景时间必须顺延，禁止无标记的时间倒挂（先写结果再补前因时，必须拆出'回想'场景并标记）\n"
         "2. 同一章内的关键事件（如多次死亡-复活、多次入墟）不得压成一句话摘要，"
@@ -995,20 +1011,23 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "只允许完整发生一次；后续场景若仍需同一人物再面对同一批敌人，只能作为承接上一次结果的"
         "余波/升级出现（敌人已换位置、人已脱险、代价更大、局势升级），禁止把同一事件的过程再写一遍\n"
         "2. 机制数字规划到场景：每个含机制结算的场景（死亡-复活、次数增减、进度推进），"
-        "必须在 time_marker 或 event 中明确标注'本场景结束时机制数字为 X/X'；"
+        "必须在 time_marker 或事件引用中明确标注'本场景结束时机制数字为 X/X'；"
         "全章机制数字序列只允许严格递减（或按机制卡重置），禁止两个场景结束时出现同一数值\n"
-        "3. 专有名词锁定：本世界已有的器物/能力/组织/服饰名词（如某光盾、某学宫短褐）在 event/anchors "
+        "3. 专有名词锁定：本世界已有的器物/能力/组织/服饰名词（如某光盾、某学宫短褐）在事件/anchors "
         "中固定同一称谓，后续场景沿用，禁止换词或近义替代\n\n"
         "【本章人物行动表】再为本章出场人物规划行动表（并入本 JSON 的 characters_action 字段），"
         "每人包含：name（人物名）、goal（本章目标，具体可行动）、key_actions（2-4 个动词驱动的关键行动，"
         "能推进剧情或冲突）、emotion（情绪状态一句话）、dialogue_intent（对话意图：想通过对话达成/试探/隐瞒什么）。\n\n"
-        '输出 JSON：{"scenes": [...], "characters_action": [{"name": "...", "goal": "...", '
+        '输出 JSON：{"events": [{"id": "事件1", "desc": "..."}, ...], '
+        '"scenes": [{"location": "...", "scene_event_ref": "事件N", "emotion": "...", '
+        '"anchors": ["..."], "time_marker": "...", "target_words": 1200}...], '
+        '"characters_action": [{"name": "...", "goal": "...", '
         '"key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
     )
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1032,10 +1051,18 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     system += "\n\n" + _writing_constraints()
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
+    scene_ev = str(scene.get("event") or "").strip()
+    force_block = (
+        "\n本场景重试强制规则（上一条输出与上一场景高度重复，已作废）：\n"
+        "1. 本场景正文必须以『上一场景结局之后』的时点/动作为起点续写，"
+        "禁止重演上一场景任何已写情节（连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）\n"
+        "2. 只写本场景唯一事件，禁止把上一场景事件再叙述一遍\n"
+    ) if force_new_progression else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
-        f"【事件】{scene.get('event', '')}\n"
+        f"【本场景唯一事件（场景只写这一个事件，从上一场景结局之后开始；"
+        f"上一场景的事件已完整发生并结束，禁止重演/复述）】{scene_ev if scene_ev else scene.get('event', '')}\n"
         f"【情绪目标】{scene.get('emotion', '')}\n"
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
@@ -1044,6 +1071,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
         f"{'【本章已推进状态（后续场景必须延续，禁止回退或重复叙述已发生事实）】\n' + scene_state_hint + '\n\n' if scene_state_hint else ''}"
         f"{'【本场景时间锚点】' + scene.get('time_marker', '') + '\n\n' if scene.get('time_marker') else ''}"
+        f"{force_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -1057,7 +1085,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
            "禁止硬切到无关新场景；【上一章节结尾】标注'（无）'时表示首章，可直接开篇\n"
            if scene_idx == 1 else
            "   - 本章后续场景：必须自然承接上一个场景的结尾（人物、地点、事件顺延），"
-           "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场\n")
+           "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场；"
+           "本场景的事件在时间线上位于上一场景事件之后，必须从上一场景的『结局之后』续写，"
+           "禁止回到上一场景更早的时点重演其已写情节（哪怕换地点、换措辞、补细节，"
+           "连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）\n")
         + "8. 情节连续：场景内和场景间不得出现'上一幕还在A地，下一句已在B地'式断层，"
         "所有换场都要有可感知的衔接动作或时间过渡\n"
         "9. 状态衔接（硬约束）：本场景的机制数字（面板/蚀痕）、人物生死、物品归属必须与"

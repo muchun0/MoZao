@@ -18,9 +18,16 @@
 - 设定服务于核心冲突与人物弧光，不与世界观/主题冲突。
 - 缺项交给阶段门禁（StageGate）判定并触发重生成，不臆测补全。
 
+## 设定分层约束（硬规则）
+你产出的所有设定必须按三层归属，逐字段自检：
+- **S 静态（宪法，全书不变）**：`world_view` 法则、`mechanism_rules`、`goldfinger_rules`、`mechanism_baseline`、`setting_taboos`、`style_taboos`、`enemies`、`locations`、`clock`、`factions`。一经定稿不得违背、不得修改；措辞无歧义，禁止"感知敏锐"类模糊表述。
+- **D 动态（账本，随章更新）**：任何"当前数值/当前状态"只写初始值，并显式声明"此值随章节结算更新，由状态账本承接"，禁止写进静态描述。
+- **R 揭示（禁剧透）**：`world_reveals` 必须含 `from_ch` / `foreshadow_ch` / `hint`，`foreshadow_ch` 必须提前 2-3 章，禁止一次写全、禁止到点凭空解锁。
+- 机制卡数字与 `mechanism_baseline` 初始值必须自洽，缺一视为致命缺陷。
+
 ## 输出结构（写入 World）
 - `world_view`: str
-- `mechanism_rules`: str（机制卡：语义/结算/代价递增/终局）
+- `mechanism_rules`: str（机制卡：语义/结算/代价递增/终局/数字账本写法/时间词语义/多数字关系/历史衔接）
 - `goldfinger_rules`: {trigger, upper_limit, lower_limit, cost, growth_path}
 - `setting_taboos`: [str]
-- `world_reveals`: [{chapter, content, reveal_at}]
+- `world_reveals`: [{from_ch, content, foreshadow_ch, hint}]（揭示计划：主角得知章 / 视角片段 / 铺垫最早章 / 铺垫线索）

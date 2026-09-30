@@ -476,3 +476,63 @@ def test_consistency_uses_full_content(store):
     long = ("前段内容" * 400) + "后半章关键状态：蚀痕新延伸一寸，灼烫如炭。"
     qc.check(1, "第一章", "推进", long)
     assert "后半章关键状态：蚀痕新延伸一寸" in captured["user"]
+
+
+# ---------- 场景级确定性检测兜底（对话轮重复 + 字数审计） ----------
+
+def _qc_with_cfg(cfg, store=None):
+    return QualityChecker(cfg, MagicMock(), store)
+
+
+@pytest.mark.p1
+def test_dialogue_loop_issues():
+    """同一轮问答/对话序列原样重复（循环拼接）→ 大改。"""
+    from novel_gen.pipeline.quality import QualityChecker as QC
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    qc = _qc_with_cfg(cfg)
+    # 同一轮对话写了五遍（"你死了？→你看错了→我看见数字了"循环），总长 >300 字触发检测
+    dup = ("她盯着他：\n"
+           "“你刚才——死了？”\n"
+           "“你看错了。”\n"
+           "“我看见数字了。从3跳到2。”\n"
+           "她退了一步，转身蹲到同学身边，撕自己右袖，动作利落，牙关咬紧。\n\n") * 5
+    issues = qc._dialogue_loop_issues(dup + "结尾完整。")
+    assert any(i["type"] == "写作-对话轮重复（循环拼接）" and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_dialogue_loop_no_false_positive():
+    """不同台词/有递进的对话 → 不误报。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    qc = _qc_with_cfg(cfg)
+    fine = (
+        "“你刚才——死了？”\n“你看错了。”\n“我看见数字了。从3跳到2。”\n\n"
+        "她没再追问，低头缠布条。\n\n"
+        "“你同学腿上的伤，再不止血就真死了。”\n她抬头看他。\n"
+        "“我知道。”\n"
+    )
+    assert qc._dialogue_loop_issues(fine) == []
+
+
+@pytest.mark.p1
+def test_length_audit_issues():
+    """字数审计：>2 倍目标 → 大改；1.5-2 倍 → 中改；正常 → 不报。"""
+    cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
+    qc = _qc_with_cfg(cfg)
+    # >2 倍 → 大改
+    big = qc._length_audit_issues("长" * 2100)
+    assert any(i["level"] == "大改" and "字数严重超出" in i["type"] for i in big)
+    # 1.5-2 倍 → 中改
+    mid = qc._length_audit_issues("长" * 1700)
+    assert any(i["level"] == "中改" and "字数超出" in i["type"] for i in mid)
+    # 正常 → 不报
+    assert qc._length_audit_issues("长" * 1200) == []
+
+
+@pytest.mark.p1
+def test_length_audit_ignores_summary():
+    """字数审计剥离【摘要】段，不把摘要计入正文长度。"""
+    cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
+    qc = _qc_with_cfg(cfg)
+    content = "长" * 1200 + "\n\n【摘要】" + "摘" * 500
+    assert qc._length_audit_issues(content) == []

@@ -450,6 +450,40 @@ class ChapterWriter:
         return chapter
 
 
+    def _polish_blocks(self, sys_p: str, user_p: str, text: str) -> str:
+        """润色分块（等效大纲 head+chunks 批量模式）：长文按段落切块逐块润色后拼接。
+
+        一次 max_tokens=4000 写不完 6000 字全文必然截断（DeepSeek 单次输出上限 8192），
+        分块后每块输出上限按块长自适应（中文 1 字 ≈ 1.5-2.2 token）。
+        """
+        if len(text) <= 2600:
+            out = self.llm.chat(sys_p, user_p, temperature=0.7,
+                                max_tokens=min(8192, max(4000, int(len(text) * 2.2))),
+                                frequency_penalty=0.2, presence_penalty=0.1)
+            return out or text
+        paras = re.split(r"(\n\n)", text)
+        blocks: list[str] = []
+        cur: list[str] = []
+        cur_len = 0
+        for p in paras:
+            if cur_len + len(p) > 2600 and cur:
+                blocks.append("".join(cur))
+                cur, cur_len = [], 0
+            cur.append(p)
+            cur_len += len(p)
+        if cur:
+            blocks.append("".join(cur))
+        out: list[str] = []
+        for i, blk in enumerate(blocks):
+            head = (f"以下是全文第 {i + 1}/{len(blocks)} 段（全文 {len(text)} 字），"
+                    "请润色这一段：统一语感、修正重复用词和句式、段落衔接自然；"
+                    "不改情节、不增删内容。\n\n")
+            res = self.llm.chat(sys_p, head + blk, temperature=0.7,
+                                max_tokens=min(8192, max(4000, int(len(blk) * 2.2))),
+                                frequency_penalty=0.2, presence_penalty=0.1)
+            out.append(res if res else blk)
+        return "\n\n".join(out)
+
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
                                  dynamic_module_used: bool = True,
@@ -533,10 +567,13 @@ class ChapterWriter:
             )
             sys_c = self._sys(sys_c)
             try:
+                # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
+                # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）
+                _target_w = int(sc.get("target_words") or 1200)
                 piece = self.llm.chat(
                     sys_c, user_c,
                     temperature=0.7,
-                    max_tokens=2000,
+                    max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
                     frequency_penalty=0.3,
                     presence_penalty=0.15,
                 )
@@ -579,13 +616,10 @@ class ChapterWriter:
                 sys_p, user_p = polish_chapter_prompt(
                     self.cfg, chapter_no, plan_title, chapter_text
                 )
-                polished = self.llm.chat(
-                    sys_p, user_p,
-                    temperature=0.7,
-                    max_tokens=4000,
-                    frequency_penalty=0.2,
-                    presence_penalty=0.1,
-                )
+                # 润色分块（等效大纲 head+chunks 模式）：全文 >2600 字时按段落切块逐块润色，
+                # 每块输出上限自适应——一次 4000 tokens 写不完 6000 字全文必然截断
+                # （《万墟之上》21:27 版"正文未完整收尾"根因）
+                polished = self._polish_blocks(sys_p, user_p, chapter_text)
                 if polished and len(polished) > len(chapter_text) * 0.5:
                     chapter_text = polished
             except Exception:

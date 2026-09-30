@@ -250,3 +250,34 @@ def test_scene_prompt_prevention_rules():
     assert "术语锁定" in user                           # 禁止'光盾'变'命执盾'
     assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
     assert "死亡多样化" in user                         # 连续死亡死因不同
+
+
+def test_split_prompt_word_count_hardcap():
+    """拆场景字数规划（超长根因）：场景数由 chapter_words 反推、target_words 总和硬等于目标。"""
+    from novel_gen.pipeline.templates import split_scenes_prompt
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    sys_s, user = split_scenes_prompt(cfg, 1, "第一章", "目标", core_event="死亡-复活")
+    assert "2-4 个连续场景" in sys_s                  # 不再 3-5 个（3×1000>2500 自相矛盾）
+    assert "场景数由本章总字数反推" in sys_s
+    assert "之和必须等于 2500" in user                # target_words 硬等于 chapter_words
+    assert "禁止为了凑场景数或凑字数超写" in user
+
+
+@pytest.mark.p1
+def test_scene_max_tokens_adaptive(store):
+    """逐场景生成 max_tokens 按 target_words 自适应（长场景不再被 2000 截断）。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "墟口", "event": "陆沉救苏妄言", "emotion": "焦灼", '
+        '"target_words": 1400}], "characters_action": []}'
+    )
+    llm.chat.side_effect = [scenes_json, "场景正文。" * 300, "摘要"]
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    scene_call = llm.chat.call_args_list[1]
+    kw = scene_call.kwargs if hasattr(scene_call, "kwargs") else (scene_call[2] if len(scene_call) > 2 else {})
+    # 1400 字目标 → max_tokens ≥ 1400*2.2=3080，且 ≥4000 下限
+    assert kw.get("max_tokens", 0) >= 4000

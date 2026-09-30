@@ -201,6 +201,17 @@ class QualityChecker:
             issues.append(it)
             score -= 30
 
+        # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
+        #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
+        for it in self._dialogue_loop_issues(content):
+            issues.append(it)
+            score -= 30
+
+        # 2.10 字数审计（确定性兜底）：正文远超章节目标字数（拆场景字数规划失效）。
+        for it in self._length_audit_issues(content):
+            issues.append(it)
+            score -= 30
+
         # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
         for it in self._ending_issues(content):
             issues.append(it)
@@ -459,6 +470,65 @@ class QualityChecker:
             }]
         return []
 
+    def _dialogue_loop_issues(self, content: str) -> list[dict]:
+        """场景内对话轮重复（确定性兜底，防'同一轮问答写多遍'循环拼接）。
+
+        抓相邻台词对（连续两句台词组成的问答序列）重复出现：同一轮对话若写成
+        「你死了？→你看错了→我看见数字了」多遍（《万墟之上》21:27 版三遍循环），
+        相邻台词对必然 ≥2 次重复。区别于 _repeat_sentence_issues 的单句统计：
+        这里按"两句台词序列"对齐，命中即大改（场景级循环拼接）。
+        """
+        if not content or len(content) < 300:
+            return []
+        lines = [s.strip() for s, in_quote in _iter_sentences(content) if in_quote]
+        norms = [_norm_sentence(s) for s in lines if _norm_sentence(s)]
+        pairs: dict[tuple[str, str], int] = {}
+        for a, b in zip(norms, norms[1:]):
+            if a and b:
+                pairs[(a, b)] = pairs.get((a, b), 0) + 1
+        bad: list[str] = []
+        for (a, b), cnt in pairs.items():
+            if cnt >= 2 and len(a) >= 3 and len(b) >= 3:
+                bad.append(f"「{a}→{b}」×{cnt}")
+        if not bad:
+            return []
+        return [{
+            "type": "写作-对话轮重复（循环拼接）",
+            "detail": "同一轮问答/对话序列原样重复（" + "；".join(bad[:3]) + "）；"
+                      "同一场景的同一轮对话只允许出现一次，重复=循环拼接，必须重写合并",
+            "level": "大改",
+        }]
+
+    def _length_audit_issues(self, content: str) -> list[dict]:
+        """字数审计（确定性兜底）：正文远超章节目标字数 → 拆场景字数规划失效。
+
+        《万墟之上》chapter_words=2500 却产出 6202 字（2.5 倍）——字数失控必然伴随
+        循环注水。剥离【摘要】后统计正文；>2 倍目标 → 大改（触发重写压缩），
+        >1.5 倍 → 中改。
+        """
+        target = int(getattr(self.cfg, "chapter_words", 0) or 0)
+        if target <= 0 or not content:
+            return []
+        import re as _re
+        body = _re.split(r"【摘要】", content)[0].strip()
+        if not body:
+            return []
+        n = len(body)
+        if n > target * 2:
+            return [{
+                "type": "写作-字数严重超出目标",
+                "detail": f"正文 {n} 字，超出本章目标字数 {target} 的 2 倍——"
+                          f"疑似拆场景字数规划失效或循环注水；应压缩至目标字数附近",
+                "level": "大改",
+            }]
+        if n > target * 1.5:
+            return [{
+                "type": "写作-字数超出目标",
+                "detail": f"正文 {n} 字，超过本章目标字数 {target} 的 1.5 倍；建议精炼至目标附近",
+                "level": "中改",
+            }]
+        return []
+
     def _salvage_single_draft(self, content: str) -> str:
         """同章多稿首尾拼接 → 确定性抢救出最完整的单一草稿；无拼接则原样返回。
 
@@ -620,7 +690,8 @@ class QualityChecker:
                 f"2. 针对性修复上述每个问题（补足字数/去除重复/修正人物一致性/提升读者体验）\n"
                 f"3. 机制数字（面板/蚀痕等）必须按【金手指机制卡】与【机制初始值/面板标准答案】"
                 f"随事件严格结算推进，禁止同值跨段复现\n"
-                f"4. 正文（不含摘要）达到约 {target} 字\n"
+                f"4. 正文（不含摘要）控制在约 {target} 字（±15% 以内）：不足则补足，"
+                f"超出则精炼删减；禁止超写注水——超长输出会被截断丢弃\n"
                 f"5. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要\n\n"
                 f"【当前正文】\n{content}"
             )

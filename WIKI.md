@@ -163,6 +163,18 @@ D:\PythonProjects\DouBao\
 - **P2 收尾增强**：① 动态模块随机化——`_pick_dynamic_module` 随机+相邻去重+seed 可复现；② 风格范文锚定——`style_roles.reference_text` 迁移透传+快照进 config，`_style_reference` 注入（空则不注入）；③ 全书终审——`final_review` 开关（高质量模式默认开），落 final_review.json，异常降级不阻塞导出结算；④ 质量指标报表——`auto_revised` 真值落库，`traces._aggregate_quality/quality_report` 聚合，`GET /api/admin/quality-report`（站长专属，8 指标卡+得分分布+问题 TopN+弃书风险+阶段成本，无数据空态不报错）
 - **开关注册表**：所有功能开关集中到 `novel_gen/config.py` 的 `FEATURE_FLAGS` 注册表管理（如 `review/final_review` 等），按功能模块分组
 
+### 设定静态/动态/揭示三层约束（2026-09-30）
+
+- **S 静态（宪法）**：全书不变的设定写入 `architect.md`/`world_rules.md` 的「设定分层约束（硬规则）」——世界法则/机制卡/金手指/禁忌/人物本质/地点/时钟/势力等，任何 Agent 不得改写
+- **D 动态（账本）**：随章变化的当前数值/生死/物品/时间/事实，由 `chapter_state.json` 逐章更新，禁止写进静态描述；`core_event`/`transition` 是"已发生事实"权威
+- **R 揭示（禁剧透）**：世界观真相走 `world_reveals`（from_ch 揭示章 / foreshadow_ch 铺垫章 / hint 可写暗示），铺垫提前 2-3 章，真相在 from_ch 前禁止泄露
+
+### 揭示执行跟踪（REQ-揭示执行跟踪，2026-09-30）
+
+- `WorldReveal` 新增 `keywords` 真相锚定词；每章正文落盘后 `detect_reveal_hits` 做确定性命中检测（零 LLM），累积到项目目录 `reveal_status.json`
+- 全书完成 `check_reveal_execution` 校验：**提前剧透**（锚定词在 from_ch 前出现）→ fatal；**到点未揭示**（from_ch 已过正文未提及）→ major；旧数据无 keywords 不误报
+- 开关 `reveal_tracking`（FEATURE_FLAGS，默认 True）；失败降级不阻塞生成/结算
+
 ---
 
 ## 5. 数据库结构（MySQL）

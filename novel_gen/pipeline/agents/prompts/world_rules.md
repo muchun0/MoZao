@@ -30,4 +30,4 @@
 - `mechanism_rules`: str（机制卡：语义/结算/代价递增/终局/数字账本写法/时间词语义/多数字关系/历史衔接）
 - `goldfinger_rules`: {trigger, upper_limit, lower_limit, cost, growth_path}
 - `setting_taboos`: [str]
-- `world_reveals`: [{from_ch, content, foreshadow_ch, hint}]（揭示计划：主角得知章 / 视角片段 / 铺垫最早章 / 铺垫线索）
+- `world_reveals`: [{from_ch, content, foreshadow_ch, hint, keywords}]（揭示计划：主角得知章 / 视角片段 / 铺垫最早章 / 铺垫线索 / 真相独有锚定词 1-5 个，正文出现即视为已揭示；keywords 不得与 hint 用词重叠，防止铺垫期暗示被误判为剧透）

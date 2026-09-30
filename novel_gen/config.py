@@ -54,6 +54,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "state_extract_frequency", 3, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章"),
     FeatureFlag("memory", "setting_cards", True, "分章设定卡索引（REQ-token优化 P1-1）：world 后确定性构建 setting_cards.json，按章只注入相关设定子集，构建失败回退全量注入"),
     FeatureFlag("memory", "scene_delta_inject", True, "场景 prompt 分层注入（REQ-token优化 P1-2）：首场景注入全量记忆，后续场景只注入增量块（已推进状态+人物卡子集+场景大纲），降重复输入"),
+    FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -246,6 +247,7 @@ class NovelConfig:
     state_extract_frequency: int = feature_default("state_extract_frequency")          # 章末/人物状态 LLM 抽取频率：每 N 章 1 次（REQ-token优化 P0-4）
     setting_cards: bool = feature_default("setting_cards")                             # 分章设定卡索引（REQ-token优化 P1-1）
     scene_delta_inject: bool = feature_default("scene_delta_inject")                   # 场景 prompt 分层注入（REQ-token优化 P1-2）
+    reveal_tracking: bool = feature_default("reveal_tracking")                         # 揭示执行跟踪（REQ-揭示执行跟踪）：每章检测真相锚定词兑现，落 reveal_status.json
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）

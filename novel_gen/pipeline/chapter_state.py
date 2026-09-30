@@ -260,3 +260,17 @@ def _deterministic_numbers(text: str) -> list[str]:
         if s not in out:
             out.append(s)
     return out
+
+
+def detect_reveal_hits(text: str, reveal) -> bool:
+    """REQ-揭示执行跟踪：正文是否命中 reveal 的真相锚定词（keywords 任一子串）。
+
+    - 命中即视为该章已写出该真相（用于提前剧透 / 到点未揭示判定）；
+    - 无 keywords（旧数据）→ 返回 False：不参与确定性检测、不误报；
+    - 零 LLM 成本，纯子串匹配（英文统一小写比对，中文原样）。
+    """
+    kws = [str(k).strip() for k in (getattr(reveal, "keywords", None) or []) if str(k).strip()]
+    if not kws:
+        return False
+    t = (text or "").lower()
+    return any(k and k.lower() in t for k in kws)

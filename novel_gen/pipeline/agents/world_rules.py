@@ -46,6 +46,9 @@ class WorldRulesAgent(BaseAgent):
         for r in (getattr(world, "world_reveals", None) or []):
             rr = WorldReveal.from_dict(r) if isinstance(r, dict) else None
             if rr is not None and (getattr(rr, "content", "") or "").strip():
+                # REQ-揭示执行跟踪：真相锚定词清洗（strip/去空；空=旧数据跳过检测）
+                rr.keywords = [str(k).strip() for k in (getattr(rr, "keywords", None) or [])
+                               if str(k).strip()]
                 reveals.append(rr)
         world.world_reveals = reveals
 

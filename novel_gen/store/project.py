@@ -418,6 +418,19 @@ class ProjectStore:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
 
+    # ---------- 揭示执行跟踪（REQ-揭示执行跟踪） ----------
+    def reveal_status_path(self) -> Path:
+        return self.dir / "reveal_status.json"
+
+    def load_reveal_status(self) -> dict:
+        """返回 {reveal索引: {from_ch, content, hit_ch[]}}；未跟踪过返回 {}。"""
+        d = self._read_json(self.reveal_status_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_reveal_status(self, status: dict) -> None:
+        """整体覆盖保存（每章检测后写入最新命中情况）。"""
+        self._write_json(self.reveal_status_path(), status)
+
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:
         return self.dir / "final_review.json"

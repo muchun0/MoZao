@@ -301,3 +301,46 @@ class LogicValidator:
 def build_validator() -> LogicValidator:
     """工厂：创建独立校验 Agent。"""
     return LogicValidator()
+
+
+def _reveal_keywords(r) -> list[str]:
+    """reveal 的真相锚定词（strip/去空）。"""
+    return [str(k).strip() for k in (getattr(r, "keywords", None) or []) if str(k).strip()]
+
+
+def check_reveal_execution(world, up_to_chapter: int, status: dict) -> list[IssueItem]:
+    """揭示执行跟踪校验（REQ-揭示执行跟踪）：对照 world_reveals 计划与 reveal_status
+    实际命中，判定两类执行偏差。
+
+    - **提前剧透**：正文在 from_ch 前命中真相锚定词 → fatal（红线：禁剧透）；
+    - **到点未揭示**：from_ch ≤ 已写章但正文从未命中 → major（建议重写/补揭示）；
+    - **旧数据兼容**：无 keywords 的 reveal 不参与确定性检测，不误报。
+
+    纯函数、零 LLM，供 manager 全书完成后汇总报告；不阻塞生成与结算。
+    """
+    issues: list[IssueItem] = []
+    reveals = getattr(world, "world_reveals", None) or []
+    if not reveals or not status:
+        return issues
+    for i, r in enumerate(reveals):
+        if not _reveal_keywords(r):
+            continue  # 旧数据无锚定词：跳过检测
+        key = str(i)
+        item = status.get(key) or {}
+        from_ch = int(item.get("from_ch") if item.get("from_ch") is not None
+                      else getattr(r, "from_ch", 1) or 1)
+        hits = [int(x) for x in (item.get("hit_ch") or []) if str(x).strip()]
+        name = ((getattr(r, "content", "") or "")[:30]) or f"揭示#{i + 1}"
+        if hits and min(hits) < from_ch:
+            issues.append(IssueItem(
+                "fatal", "reveal",
+                f"世界观真相『{name}』提前剧透：计划 from_ch={from_ch}，正文第 {min(hits)} 章已出现真相锚定词",
+                "重写提前泄露的章节，或调整揭示计划 from_ch",
+                chapter_no=min(hits)))
+        if up_to_chapter >= from_ch and not hits:
+            issues.append(IssueItem(
+                "major", "reveal",
+                f"世界观真相『{name}』到点未揭示：from_ch={from_ch} 已过（已写至第 {up_to_chapter} 章），正文从未提及",
+                "重写该章或在后续章节补揭示",
+                chapter_no=from_ch))
+    return issues

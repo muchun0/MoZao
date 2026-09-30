@@ -230,11 +230,15 @@ class WorldReveal:
       但不得说出真相；空则无铺垫）
     - from_ch: 主角正式得知真相的起始章
     - content: 真相（主角明确获知的世界观片段，主角视角、具体）
+    - keywords: 真相独有锚定词（1-5 个专有名词/关键短语，正文出现即视为已揭示；
+      供揭示执行跟踪确定性检测；不得与 hint 用词重叠，防止铺垫期暗示被误判为剧透；
+      空=旧数据，跳过检测）
     """
     from_ch: int = 1
     content: str = ""
     foreshadow_ch: int | None = None  # None=无铺垫期（兼容旧数据），直接揭示
     hint: str = ""
+    keywords: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -242,6 +246,7 @@ class WorldReveal:
             "content": self.content,
             "foreshadow_ch": self.foreshadow_ch,
             "hint": self.hint,
+            "keywords": list(self.keywords or []),
         }
 
     @classmethod
@@ -257,6 +262,7 @@ class WorldReveal:
             content=_norm_str(d.get("content", "")),
             foreshadow_ch=foreshadow_ch,
             hint=_norm_str(d.get("hint", "")),
+            keywords=[str(k).strip() for k in (d.get("keywords") or []) if str(k).strip()],
         )
 
 

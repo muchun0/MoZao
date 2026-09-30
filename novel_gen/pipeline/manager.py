@@ -423,6 +423,57 @@ class NovelPipeline:
         except Exception:
             logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
 
+    def _update_reveal_status(self, no: int, silent: bool = False) -> None:
+        """REQ-揭示执行跟踪：每章正文落盘后，检测 world_reveals 真相锚定词是否被
+        本章正文写出，累积命中章号到 reveal_status.json（供提前剧透/到点未揭示判定）；
+        失败降级，不阻塞生成。"""
+        try:
+            from .chapter_state import detect_reveal_hits
+            world = self.store.load_world()
+            ch = self.store.load_chapter(no)
+            if not world or not ch or not ch.content:
+                return
+            reveals = getattr(world, "world_reveals", None) or []
+            if not reveals:
+                return
+            status = self.store.load_reveal_status()
+            for i, r in enumerate(reveals):
+                key = str(i)
+                item = status.get(key)
+                if not isinstance(item, dict):
+                    item = {
+                        "from_ch": int(getattr(r, "from_ch", 1) or 1),
+                        "content": (getattr(r, "content", "") or "")[:40],
+                    }
+                if detect_reveal_hits(ch.content, r):
+                    hits = item.setdefault("hit_ch", [])
+                    if no not in hits:
+                        hits.append(no)
+                status[key] = item
+            self.store.save_reveal_status(status)
+        except Exception:
+            logger.exception("揭示执行跟踪失败（降级跳过）: no=%d", no)
+
+    def _report_reveal_issues(self, silent: bool = False) -> None:
+        """REQ-揭示执行跟踪：全书完成后汇总揭示执行问题（提前剧透 fatal /
+        到点未揭示 major），写日志与 trace；异常降级，不阻塞导出与结算。"""
+        try:
+            from .validator import check_reveal_execution
+            world = self.store.load_world()
+            if not world:
+                return
+            status = self.store.load_reveal_status()
+            done, _total = self.progress()
+            issues = check_reveal_execution(world, done, status)
+            if not issues:
+                return
+            for it in issues:
+                logger.warning("揭示执行校验: [%s] %s（建议：%s）",
+                               it.severity, it.desc, it.suggestion or "-")
+            self._trace_step("reveal_check", {"issues": [it.to_dict() for it in issues]})
+        except Exception:
+            logger.exception("揭示执行校验失败（降级跳过）")
+
     def _run_verify(self, chapter_no: int, silent: bool = False) -> None:
         """每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5）。
 
@@ -622,12 +673,17 @@ class NovelPipeline:
             # REQ-章内自洽与机制账本：每章落盘后抽取章末状态供下一章承接（可开关，失败降级）
             if getattr(self.cfg, "chapter_state_tracking", True):
                 self._update_chapter_state(no, silent=silent)
+            # REQ-揭示执行跟踪：每章落盘后检测 world_reveals 真相锚定词是否被正文写出
+            if getattr(self.cfg, "reveal_tracking", True):
+                self._update_reveal_status(no, silent=silent)
             # 高质量模式：每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5，原每 3 章），结果只影响后续章节
             _v_every = max(1, int(getattr(self.cfg, "verify_every", 5) or 5))
             if getattr(self.cfg, 'high_quality_mode', False) and no % _v_every == 0 and no < total:
                 self._run_verify(no, silent=silent)
 
         self._mark_state("done", last_chapter=total)
+        # REQ-揭示执行跟踪：全书完成后汇总揭示执行问题（提前剧透/到点未揭示），写 trace 与日志
+        self._report_reveal_issues(silent)
         self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:

@@ -224,3 +224,29 @@ def test_scene_overlap_fallback(store):
     ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
     assert llm.chat.call_count == 2  # 拆场景 1 次 + 整章回退 1 次（不逐场景生成）
     assert "整章回退正文" in ch.content
+
+
+# ---------- 事前防线：拆场景/写场景 prompt 硬规则注入（用户要求'事前解决'） ----------
+
+def test_split_prompt_event_dedup_rule():
+    """拆场景 prompt 含事件去重规则：同类事件本章至多一次、机制数字规划到场景、专有名词锁定。"""
+    from novel_gen.pipeline.templates import split_scenes_prompt
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    _, user = split_scenes_prompt(cfg, 1, "第一章", "目标", core_event="死亡-复活")
+    assert "事件去重与机制规划硬规则" in user
+    assert "同类事件本章至多一次" in user              # 防"三次救苏妄言"循环
+    assert "机制数字规划到场景" in user                # 每场景结束时标注 X/X
+    assert "专有名词锁定" in user                       # 光盾/学宫短褐 称谓固定
+
+
+def test_scene_prompt_prevention_rules():
+    """写场景 prompt 含事前硬规则：数字结算时机、术语锁定、同模式动作去重、死亡多样化。"""
+    from novel_gen.pipeline.templates import scene_prompt
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
+             "anchors": [], "target_words": 1200}
+    _, user = scene_prompt(cfg, 1, "第一章", 1, scene, "前情记忆", "", "")
+    assert "机制数字结算时机" in user                   # 死亡瞬间 vs 复活后 数字口径
+    assert "术语锁定" in user                           # 禁止'光盾'变'命执盾'
+    assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
+    assert "死亡多样化" in user                         # 连续死亡死因不同

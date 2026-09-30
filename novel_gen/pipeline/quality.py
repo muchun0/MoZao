@@ -57,6 +57,10 @@ _PANEL_SPAN_LABEL = 40      # 面板标签参与定位的最大长度（防误�
 # 排除项（实测误命中）："死一次"（"再死一次"=预判非事件）、"咬穿"（回忆/复述他人死亡）、
 # "刷新"（"面板刷新的时候"=设定陈述）——真结算错误时模型通常写"他死了/死亡/复活/结算"。
 _PANEL_EVENT_ANCHORS = re.compile(r"死了|死亡|复活|苏醒|睁眼|醒来|结算|重置")
+# 语境排除：锚点前 12 字内出现回忆/转述/指认/他人预判词 → 不算结算事件
+# （《万墟之上》22:32 版实测 6 处误命中全部是"她看见他死了/你死了/她快死了/
+# 他应该已经死了/感知到了他死亡"等回忆指认，无一是主角实时结算）
+_PANEL_EVENT_RECALL = re.compile(r"看见|看过|见过|说|喊|叫|读|记得|梦见|听说|以为|感知|想起|回忆|幻觉|残留|应该|快死")
 
 # 自动重写轮数（REQ-章内自洽与机制账本·扩展）：检出问题后最多重写 N 轮，通过即停；
 # 全部失败才标记放行（不再"1 次重写不通过即静默交付"）
@@ -385,21 +389,24 @@ class QualityChecker:
     def _repeat_sentence_issues(self, content: str) -> list[dict]:
         """章内同句复读（确定性，REQ-章内自洽与机制账本）。
 
-        归一化句子后统计：叙述句（引号外）出现 ≥3 次、或叙述长句 ≥12 字出现 2 次、
-        或数字面板行（含次数/进度/蚀痕/剩余/面板+数字）出现 ≥2 次 → 大改；
-        叙述短句（8~11 字）出现 2 次 → 中改；对话句（口头禅）≥3 次 → 大改、2 次放行。
+        归一化句子后统计：叙述句（引号外）出现 ≥3 次、或叙述长句 ≥12 字出现 2 次
+        → 大改；叙述短句（8~11 字）出现 2 次 → 中改；对话句（口头禅）≥3 次 → 大改、
+        2 次放行。
         聚合为每条类型一条 issue（附最多 3 个例句），避免刷屏。
+
+        P1-2 起数字面板行（含次数/进度/蚀痕/剩余+数字）不再纳入复读统计——面板行
+        重复由 _panel_progress_issues 专检（区分"结算未推进"大改/"冗余显示"中改），
+        复读再判大改会造成双重大改、误触发重写（《万墟之上》22:32 版实测）。
         """
         if not content or len(content) < 100:
             return []
         groups: dict[str, dict[str, list[str]]] = {"叙述": {}, "对话": {}}
         for sentence, in_quote in _iter_sentences(content):
             norm = _norm_sentence(sentence)
-            is_panel = _is_panel_line(norm)
-            if not norm:
+            if not norm or len(norm) < _REPEAT_MIN_LEN:
                 continue
-            if len(norm) < _REPEAT_MIN_LEN and not (is_panel and len(norm) >= 5):
-                continue
+            if _is_panel_line(norm):
+                continue  # 面板行归 _panel_progress_issues 专检
             bucket = "对话" if in_quote else "叙述"
             groups[bucket].setdefault(norm, []).append(sentence.strip())
 
@@ -410,7 +417,7 @@ class QualityChecker:
             if cnt >= _REPEAT_HARD_COUNT:
                 hard.append(f"[{bucket}×{cnt}] {sentences[0]}")
             elif bucket == "叙述" and cnt == 2:
-                if len(norm) >= _REPEAT_LONG_LEN or _is_panel_line(norm):
+                if len(norm) >= _REPEAT_LONG_LEN:
                     hard.append(f"[叙述×2] {sentences[0]}")
                 else:
                     soft.append(f"[叙述×2] {sentences[0]}")
@@ -421,7 +428,7 @@ class QualityChecker:
             issues.append({
                 "type": "写作-同句复读",
                 "detail": "同一句/同一动作整句原样复读（" + "；".join(hard[:3]) + "……）；"
-                          "同一母题不得原样复读，重复必须有递进，数字面板行重复=数字结算未推进",
+                          "同一母题不得原样复读，重复必须有递进",
                 "level": "大改",
             })
         if soft:
@@ -468,7 +475,17 @@ class QualityChecker:
                 if gap <= _PANEL_REPEAT_SPAN:
                     continue
                 seg = content[a:b]
-                if _PANEL_EVENT_ANCHORS.search(seg):
+                # 事件锚点须跳过回忆/转述/他人语境（"她看见他死了"不算结算事件）
+                event = False
+                for m in _PANEL_EVENT_ANCHORS.finditer(seg):
+                    # 特判"快死了"=将死未死（非结算）：锚点"死了"前 1 字为"快"
+                    if m.group() == "死了" and seg[max(0, m.start() - 1):m.start()] == "快":
+                        continue
+                    ctx = seg[max(0, m.start() - 16):m.start()]
+                    if not _PANEL_EVENT_RECALL.search(ctx):
+                        event = True
+                        break
+                if event:
                     major.append(f"{label}：{num}")
                 else:
                     minor.append(f"{label}：{num}")

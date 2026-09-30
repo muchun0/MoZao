@@ -241,13 +241,12 @@ def test_repeat_narrative_long_x2():
 
 
 @pytest.mark.p2
-def test_repeat_panel_line_x2():
-    """数字面板行原样出现 2 次（数字未推进）→ 大改（结算未推进信号）。"""
+def test_panel_line_x2_not_repeat():
+    """数字面板行不再纳入复读统计（P1-2 归类）：面板行重复由 _panel_progress_issues
+    专检（跨结算→大改/无事件→中改），复读不再双重大改（22:32 版实测误触发重写）。"""
     qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
     content = "今日可死次数：1。" + _PAD_A + "今日可死次数：1。" + _PAD_B
-    issues = qc._repeat_sentence_issues(content)
-    assert issues and issues[0]["level"] == "大改"
-    assert "今日可死次数：1" in issues[0]["detail"]
+    assert qc._repeat_sentence_issues(content) == []
 
 
 @pytest.mark.p2
@@ -361,6 +360,30 @@ def test_panel_event_between_repeat_still_major():
                + _PAD_D)
     issues = qc._panel_progress_issues(content)
     assert any("机制数字未结算推进" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_panel_recall_not_event():
+    """回忆/指认/他人预判语境里的"死了"不算结算事件 → 不误报大改。
+
+    《万墟之上》22:32 版实测："她看见他死了""你死了""她快死了""他应该已经死了"
+    "感知到了他死亡"等 6 处锚点全是回忆指认，面板 2/3 未变是正确行为。
+    """
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    filler = ("他卷起袖子，蚀痕在小臂上蜿蜒，像一条暗紫色的蛛网。灰雾漫过脚踝，"
+              "他攥紧凿子柄，往墟口方向挪了两步，背篓的铁精在身后轻轻晃动，"
+              "矿渣从裂隙口簌簌落下来，砸在碎石堆上，又被风卷走。")
+    content = ("复活后面板刷新：今日可死次数：2/3。\n\n"
+               + filler * 2
+               + "\n\n她看见他死了，看见他倒在蚀雾里，又看见他三秒后从蚀泥中睁眼。"
+               "她的共情执能——她感知到了他死亡的情绪印记。\n\n"
+               "他抬手看面板：今日可死次数：2/3。\n\n"
+               + filler * 2
+               + "\n\n苏妄言快死了。他应该已经死了的人，不该出现在这里。"
+               "面板在视野角落亮着：今日可死次数：2/3。")
+    issues = qc._panel_progress_issues(content)
+    assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
 
 
 @pytest.mark.p1

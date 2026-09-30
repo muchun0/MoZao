@@ -178,3 +178,49 @@ def test_hq_keeps_dynamic_module(store):
     ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
     assert "HQ润色正文" in ch.content
     # 高质量模式写章后仍走自动改稿/读者审校（reviser 调用 mock 为空时跳过不抛）
+
+
+# ---------- 拆场景事件边界互斥（P1-1） ----------
+
+_OVERLAP_SCENES_JSON = (
+    '{"scenes": [{"location": "墟口", "event": "陆沉冲回墟口救苏妄言，被三只赤尉围住，'
+    '苏妄言被学员架走", "emotion": "焦灼", "anchors": ["短刀"], "target_words": 1200},'
+    '{"location": "墟口", "event": "陆沉再次冲上前去救苏妄言，三只赤尉围阵，'
+    '苏妄言被架走撤离", "emotion": "绝望", "anchors": ["短刀"], "target_words": 1200}],'
+    '"characters_action": []}'
+)
+
+
+@pytest.mark.p1
+def test_scene_events_overlap_detector():
+    """场景 event 互斥校验：同一事件两版本判重叠；不同次数标记（第一/二次死亡）不误报。"""
+    from novel_gen.pipeline.stages import _scene_events_overlap
+    # 同事件两版本（同构冲救）→ 重叠
+    assert _scene_events_overlap([
+        {"event": "陆沉冲回墟口救苏妄言，被三只赤尉围住，苏妄言被架走"},
+        {"event": "陆沉再次冲上前去救苏妄言，三只赤尉围阵，苏妄言被架走撤离"},
+    ]) is True
+    # 不同次数标记（第一次死亡 vs 第二次死亡）→ 不同事件，不误报
+    assert _scene_events_overlap([
+        {"event": "陆沉第一次死亡复活，被灰卒咬穿喉咙"},
+        {"event": "陆沉第二次死亡复活，蚀雾灌入鼻腔"},
+    ]) is False
+    # 不同地点/不同事件 → 不误报
+    assert _scene_events_overlap([
+        {"event": "陆沉在裂隙旁凿矿，铁镐崩出火花"},
+        {"event": "苏妄言在学宫廊下等候，冷风灌进衣领"},
+    ]) is False
+
+
+@pytest.mark.p1
+def test_scene_overlap_fallback(store):
+    """拆出重叠场景（同一事件两版本）→ 自动回退整章生成，杜绝拼接源头。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    llm.chat.side_effect = [_OVERLAP_SCENES_JSON, "整章回退正文。" * 400 + "【摘要】回退摘要"]
+    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 2  # 拆场景 1 次 + 整章回退 1 次（不逐场景生成）
+    assert "整章回退正文" in ch.content

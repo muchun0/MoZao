@@ -44,9 +44,29 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     logger.info("章节重写: uid=%d project=%s no=%d words=%d",
                 user["id"], project_id, no, len(chapter.content))
     should_stop, stop_reason = _settle_incremental(store)
+    # P0-3：附上该章质检结果（review.json 最新记录），前端据此显示
+    # "本章质检未通过（score=0）"红标——检出≠修好也绝不再静默交付
+    quality = {}
+    try:
+        review_path = store.dir / "review.json"
+        if review_path.exists():
+            import json as _json
+            for r in reversed(_json.loads(review_path.read_text(encoding="utf-8"))):
+                if r.get("chapter") == no:
+                    qc = r.get("quality_check") or {}
+                    quality = {
+                        "passed": bool(qc.get("passed", True)),
+                        "score": int(qc.get("score", 100)),
+                        "issue_count": len(r.get("issues") or []),
+                        "auto_revised": bool(r.get("auto_revised", False)),
+                    }
+                    break
+    except Exception:
+        pass
     return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
             "summary": chapter.summary, "words": len(chapter.content),
-            "balance_warning": stop_reason if should_stop else ""}
+            "balance_warning": stop_reason if should_stop else "",
+            "quality": quality}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")

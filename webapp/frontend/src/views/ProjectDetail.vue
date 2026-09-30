@@ -380,7 +380,12 @@ async function regenChapter(c) {
   regenNo.value = c.no
   try {
     const res = await rewriteChapter(pid, c.no)
-    ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
+    // P0-3：质检未通过不再静默交付——明确红标提示，用户可人工改稿或再次重写
+    if (res.quality && !res.quality.passed) {
+      ElMessage.warning(`第${c.no}章已重新生成（${res.words}字），但质检未通过（score=${res.quality.score}，${res.quality.issue_count}个问题），请人工检查后再编辑`)
+    } else {
+      ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
+    }
     loadChapters()
   } catch (e) {
     ElMessage.error('重生成失败')

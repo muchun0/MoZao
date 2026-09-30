@@ -186,6 +186,15 @@ def test_extract_chapter_state_failure_degrades(store):
     assert st["numbers"] == ["可死次数：1"]
 
 
+@pytest.mark.p2
+def test_norm_text_keeps_tail_state():
+    """状态抽取不再截断 3500：后半章关键状态（第三次死亡/次数用尽）必须进账本视野。"""
+    from novel_gen.pipeline.chapter_state import _norm_text
+    text = "前段" * 1800 + "后半章关键状态：今日可死次数：0/3，次数用尽，蚀痕又深一寸。"
+    norm = _norm_text(text)
+    assert "后半章关键状态：今日可死次数：0/3" in norm  # 旧 3500 截断会切掉此处
+
+
 @pytest.mark.p1
 def test_format_chapter_state_hint():
     st = {"chapter": 1, "numbers": ["可死次数：1", "蚀痕：3/10"],

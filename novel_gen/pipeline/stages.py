@@ -376,6 +376,7 @@ class ChapterWriter:
                 memory_context, prev_tail, is_final,
                 dynamic_module_used=hq_mode,
                 plan_core_event=plan_core_event,
+                silent=silent,
             )
             system = ""
         else:
@@ -452,7 +453,8 @@ class ChapterWriter:
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
                                  dynamic_module_used: bool = True,
-                                 plan_core_event: str = ""):
+                                 plan_core_event: str = "",
+                                 silent: bool = False):
         """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
 
         高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
@@ -475,6 +477,12 @@ class ChapterWriter:
             split_data = json.loads(_strip_json_block(raw))
             scenes = split_data.get("scenes", [])
             action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
+            # P1-1 场景事件边界互斥：event 高度相似 = 同一事件拆成两场景（同事件两版本
+            # 的拼接源头，《万墟之上》第1章段A/段C 即此类），回退整章生成
+            if scenes and _scene_events_overlap(scenes):
+                if not silent:
+                    print("  [拆场景] 场景事件重叠（同一事件拆成两场景），回退整章生成")
+                scenes = []
         except Exception:
             scenes = []
 
@@ -691,6 +699,54 @@ def _format_action_plan(chars: list) -> str:
             f"情绪：{c.get('emotion', '')}；对话意图：{c.get('dialogue_intent', '')}"
         )
     return "\n".join(lines)
+
+
+#: 场景事件互斥校验（P1-1）：event 文本相似度阈值（归一化后 55% 相同即判重叠）
+_SCENE_EVENT_OVERLAP_RATIO = 0.55
+#: 事件次数标记正则：「第1/2/3…次」或「第一次/第二次…」，两事件次数不同视为不同事件
+_SCENE_ORDINAL_PATTERN = r"第\s*[一二三1-3０-９\d]+\s*次"
+
+
+def _norm_scene_event(text: str) -> str:
+    """归一化 event 文本：去标点空白、保留中文与字母数字（重叠判定基准）。"""
+    return "".join(ch for ch in (text or "") if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+
+
+def _scene_event_ordinals(text: str) -> set[str]:
+    """提取 event 文本中的事件次数标记（如「第一次」「第2次」）。
+
+    同一动作不同次数（第一次死亡/第二次死亡）是不同事件，不是重叠。
+    """
+    import re
+    return set(re.findall(_SCENE_ORDINAL_PATTERN, text))
+
+
+def _scene_events_overlap(scenes: list) -> bool:
+    """拆场景事件互斥校验（P1-1，零 LLM 成本）：
+    任意两个场景的 event 文本高度相似 → 同一事件被拆成两场景（同事件两版本），
+    返回 True 由调用方回退整章生成，杜绝「同一战斗写两遍」的拼接源头。
+    """
+    import difflib
+    events: list[tuple[str, set[str]]] = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            continue
+        ev = (sc.get("event") or "").strip()
+        if not ev:
+            continue
+        events.append((_norm_scene_event(ev), _scene_event_ordinals(ev)))
+    for i in range(len(events)):
+        for j in range(i + 1, len(events)):
+            a, a_ord = events[i]
+            b, b_ord = events[j]
+            if not a or not b:
+                continue
+            # 次数标记互斥（第一次 vs 第二次…）→ 视为不同事件，跳过
+            if a_ord and b_ord and not (a_ord & b_ord):
+                continue
+            if difflib.SequenceMatcher(None, a, b).ratio() > _SCENE_EVENT_OVERLAP_RATIO:
+                return True
+    return False
 
 
 def _split_summary(text: str) -> tuple[str, str]:

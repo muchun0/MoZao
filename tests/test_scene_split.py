@@ -404,6 +404,54 @@ def test_strip_json_block_robust():
     assert _extract_json_field(raw3, "events") == []
 
 
+def test_scene_text_rewrites_event():
+    """2026-10-01 场景正文事件级复写检测：场景正文把已发生事件换措辞又写一遍
+    （坡顶救人版/墟口外救人版：conflict 措辞不同但同为'赤尉+救援'）→ 命中；
+    不同冲突对象（灰卒死亡 vs 救人）→ 不误报。"""
+    from novel_gen.pipeline.stages import _scene_text_rewrites_event
+    # 已完成事件：场景1（灰卒死亡复活）、场景2（坡顶救人）
+    done = [
+        "陆沉被灰卒咬穿喉咙，面板 3/3→2/3，复活",
+        "陆沉在坡顶引开三条赤尉救出被围的苏妄言，苏妄言金光重创赤尉",
+    ]
+    # 场景3 正文把'救苏妄言'重演（冲突对象赤尉+救援动作 冲/砸/挡）
+    text_dup = (
+        "陆沉冲了出去，把铁精矿石抡圆砸向巨型赤尉的复眼，苏妄言趁机结印，"
+        "金光直贯赤尉，三人退入裂隙。"
+    )
+    assert _scene_text_rewrites_event(text_dup, done) == done[1]
+    # 全新推进（无救援动作/不同冲突对象）→ 不命中
+    text_new = (
+        "裂隙深处一片死寂，陆沉靠着岩壁喘匀气，摸出火折子点上，"
+        "他低头看了一眼面板，还剩两次。"
+    )
+    assert _scene_text_rewrites_event(text_new, done) == ""
+    # 场景1 正文（灰卒死亡）不误报救人
+    text_death = (
+        "灰卒咬穿了他的喉管，血喷出来，他抬手去挡，视野发黑。"
+        "面板浮现：今日可死次数：2/3。"
+    )
+    assert _scene_text_rewrites_event(text_death, done) == ""
+
+
+def test_scene_prompt_forbid_event():
+    """2026-10-01 场景重试注入 forbid_event：禁止重写已发生事件。"""
+    from novel_gen.pipeline.templates import scene_prompt
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    scene = {"location": "墟口", "event": "陆沉带伤者退入裂隙", "emotion": "紧绷",
+             "anchors": [], "target_words": 1200}
+    _, user = scene_prompt(cfg, 1, "第一章", 3, scene, "记忆", "", "",
+                           force_new_progression=True,
+                           forbid_event="陆沉在坡顶引开三条赤尉救出被围的苏妄言")
+    assert "重试强制规则" in user
+    assert "已发生事件又写了一遍" in user
+    assert "陆沉在坡顶引开三条赤尉救出被围的苏妄言" in user
+    assert "禁止以任何形式再次发生" in user
+    # 无 forbid_event 时不注入该块
+    _, user2 = scene_prompt(cfg, 1, "第一章", 3, scene, "记忆", "", "")
+    assert "已发生事件又写了一遍" not in user2
+
+
 def test_extract_json_field_partial():
     """2026-10-01 拆场景 JSON 截断时字段级兜底：events/scenes 可分别救回。"""
     from novel_gen.pipeline.stages import _extract_json_field

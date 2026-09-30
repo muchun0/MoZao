@@ -1030,7 +1030,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1062,6 +1062,14 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         "禁止重演上一场景任何已写情节（连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）\n"
         "2. 只写本场景唯一事件，禁止把上一场景事件再叙述一遍\n"
     ) if force_new_progression else ""
+    forbid_block = (
+        f"\n【重试强制规则（上一条输出把已发生事件又写了一遍，已作废）】\n"
+        f"1. 下列事件【已完成且必须在正文中视为既定事实】，你上一条输出把它重演了："
+        f"『{forbid_event}』——本次禁止以任何形式再次发生/再次描写（包括换地点、换措辞、"
+        f"换细节重写一遍，连'犹豫-碎石滚落-对视-冲过去'这类起手式都禁止重复）\n"
+        f"2. 本场景只写本场景唯一事件；上一事件之后人物已经离开/脱险/换了处境，"
+        f"必须从该事件结局之后续写新的情节\n"
+    ) if forbid_event else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1078,6 +1086,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{'【本章已推进状态（后续场景必须延续，禁止回退或重复叙述已发生事实）】\n' + scene_state_hint + '\n\n' if scene_state_hint else ''}"
         f"{'【本场景时间锚点】' + scene.get('time_marker', '') + '\n\n' if scene.get('time_marker') else ''}"
         f"{force_block}"
+        f"{forbid_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"

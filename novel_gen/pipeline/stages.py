@@ -695,6 +695,36 @@ class ChapterWriter:
                             _s2 = _long_sentence_overlap_ratio(prev_text, retry)
                         if _s2 < _span_ovlp and _s2 <= _SCENE_ADJACENT_SPAN_RATIO:
                             piece = retry
+                # 2026-10-01 跨场景同事件复写检测（治本，非打补丁）：
+                # 语义互斥只校验拆场景 events 清单，拦不住"场景生成时模型把已发生事件
+                # 换措辞又写一遍"（第三版坡顶救人/墟口外救人：conflict 措辞不同→
+                # 文本相似度与事件清单双漏检）。对刚生成的场景正文做事件槽位提取
+                # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
+                # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
+                if piece and done_events:
+                    dup_ev = _scene_text_rewrites_event(piece, done_events)
+                    if dup_ev:
+                        if not silent:
+                            print(f"  [场景] 第{idx}个场景复写了已发生事件"
+                                  f"（{dup_ev[:50]}），重试强制只写本场景唯一事件")
+                        sys_c3, user_c3 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=dup_ev,
+                        )
+                        retry3 = self.llm.chat(
+                            self._sys(sys_c3), user_c3,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.35,
+                            presence_penalty=0.2,
+                        )
+                        retry3 = _strip_html_tags(retry3)
+                        if retry3 and not _scene_text_rewrites_event(retry3, done_events):
+                            piece = retry3
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
@@ -877,6 +907,41 @@ _SCENE_ACTION_NORM = {
     "挡": "抵挡", "抵挡": "抵挡", "防守": "抵挡", "阻挡": "抵挡",
     "偷袭": "偷袭", "刺杀": "刺杀", "对峙": "对峙", "埋伏": "埋伏", "侦查": "侦查", "探索": "探索",
 }
+#: 救援专属动词（2026-10-01 场景正文事件复写检测用）：仅"救/引开/砸/挡/扑/迎"这类
+#: 明确救援行为才判定"该冲突事件被再次执行"；"冲/拽/拖"在逃离/撤离/移动场景也常见
+#: （撤往补给站场景'冲到坡底拽住后领往外拖'即被误判），不放宽到通用动作
+_SCENE_RESCUE_VERBS = ("救", "引开", "砸", "挡", "扑", "迎")
+
+
+def _event_conflict(text: str) -> str:
+    """提取文本中的冲突对象：优先敌人名词（赤尉/灰卒/蚀兽/蚀卒），其次人物
+    （苏妄言/学员/弟子）。用于场景正文与已完成事件的事件槽位比对。"""
+    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", text or "")
+    if m:
+        return m.group(0)
+    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(苏妄言|学员|弟子|少年|少女)", text or "")
+    if m:
+        return m.group(0)
+    return ""
+
+
+def _scene_text_rewrites_event(text: str, done_event_descs: list[str]) -> str:
+    """2026-10-01 场景正文事件级复写检测（零 LLM、确定性）：
+    语义互斥只校验拆场景 events 清单，拦不住"场景生成时模型把已发生事件换措辞又写一遍"
+    （第三版坡顶救人/墟口外救人：conflict 措辞'三条赤尉'vs'巨型赤尉'，文本相似度与
+    事件清单双漏检——场景 2 与场景 3 各自引用唯一事件，但场景 3 正文把'救苏妄言'
+    完整重演）。规则：正文含救援行为动词（救/引开/冲/砸/挡/拽/拖/扑/迎）+ 冲突对象，
+    且与某已完成事件的冲突对象+救援动作同现 → 该事件被再次完整执行，返回被复写事件原文。"""
+    c = _event_conflict(text)
+    if not c or not any(v in text for v in _SCENE_RESCUE_VERBS):
+        return ""
+    for ev in done_event_descs:
+        ec = _event_conflict(ev)
+        if not ec or not any(v in ev for v in _SCENE_RESCUE_VERBS):
+            continue
+        if c == ec or c in ec or ec in c:
+            return ev
+    return ""
 #: 拆场景结构校验：场景数上限（2-4 个，超出=凑数拆场景的迹象，直接回退整章）
 _SCENE_COUNT_MIN, _SCENE_COUNT_MAX = 2, 4
 #: target_words 之和允许偏离 chapter_words 的幅度（±10%）

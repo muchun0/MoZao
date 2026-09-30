@@ -149,15 +149,17 @@ def test_scene_split_off_whole(store):
 
 @pytest.mark.p1
 def test_split_fail_fallback(store):
-    """拆场景返回非法 JSON → 自动回退整章生成（不中断）。"""
+    """拆场景非法 JSON（字段兜底也救不回）→ 重试 1 次仍失败 → 自动回退整章生成（不中断）。"""
     cfg = store.load_config()
     cfg.action_plan_first = False
     cfg.agent_guard.quality_check = False
     store.save_config(cfg)
     llm = MagicMock()
-    llm.chat.side_effect = ["不是JSON", "整章回退正文。" * 400 + "【摘要】回退摘要"]
+    # 拆场景 2 次都返回不可解析文本（第 1 次解析失败→字段兜底失败→重试 1 次，
+    # 第 2 次仍失败）→ 回退整章生成（第 3 次调用）
+    llm.chat.side_effect = ["不是JSON", "还不是JSON", "整章回退正文。" * 400 + "【摘要】回退摘要"]
     ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 2
+    assert llm.chat.call_count == 3
     assert "整章回退正文" in ch.content
 
 
@@ -381,6 +383,41 @@ def test_long_sentence_overlap_ratio():
     assert _long_sentence_overlap_ratio(prev, cur_new) < 0.2
     # 整段复刻 → 高复刻率
     assert _long_sentence_overlap_ratio(prev, prev) >= 1.0
+
+
+def test_strip_json_block_robust():
+    """2026-10-01 拆场景 JSON 健壮化：代码块包裹、前后赘述、尾逗号 → 均可解析。"""
+    import json
+    from novel_gen.pipeline.stages import _strip_json_block
+    # 代码块 + 尾逗号 + 赘述
+    raw = '以下是拆场景结果：\n```json\n{"events": [{"id": "事件1", "desc": "a",},],\n"scenes": []}\n```\n（完）'
+    parsed = json.loads(_strip_json_block(raw))
+    assert parsed["events"][0]["desc"] == "a"
+    # 整体有代码块/赘述时剥净；字段级截断（events 完整、scenes 截断）→ 整体救不回，
+    # 但 _extract_json_field 可救回 events（回退整章注入事件序列用）
+    from novel_gen.pipeline.stages import _extract_json_field
+    raw2 = '{"events": [{"id": "事件1", "desc": "b", "conflict": "赤尉", "action": "救援"}], "scenes": [{"location": "墟口"'
+    ev2 = _extract_json_field(raw2, "events")
+    assert len(ev2) == 1 and ev2[0]["desc"] == "b" and ev2[0]["action"] == "救援"
+    # 更极端截断（events 对象未闭合）→ 字段级救不回该字段，返回 []
+    raw3 = '{"events": [{"id": "事件1", "desc": "b"'
+    assert _extract_json_field(raw3, "events") == []
+
+
+def test_extract_json_field_partial():
+    """2026-10-01 拆场景 JSON 截断时字段级兜底：events/scenes 可分别救回。"""
+    from novel_gen.pipeline.stages import _extract_json_field
+    # 输出在 characters_action 处截断 → events/scenes 完整可救
+    raw = ('{"events": [{"id": "事件1", "desc": "陆沉被灰卒咬穿喉咙复活", "conflict": "灰卒", '
+           '"action": "击杀"}, {"id": "事件2", "desc": "救被围的苏妄言", "conflict": "三只赤尉", '
+           '"action": "救援"}], "scenes": [{"location": "墟口", "scene_event_ref": "事件1", '
+           '"target_words": 1200}, {"location": "碎石坡", "scene_event_ref": "事件2", '
+           '"target_words": 1300}], "characters_action": [{"name": "苏妄言", "goal": }')
+    ev = _extract_json_field(raw, "events")
+    sc = _extract_json_field(raw, "scenes")
+    assert len(ev) == 2 and ev[1]["action"] == "救援"
+    assert len(sc) == 2 and sc[1]["scene_event_ref"] == "事件2"
+    assert _extract_json_field(raw, "characters_action") == []
 
 
 def test_scene_prompt_prevention_rules():

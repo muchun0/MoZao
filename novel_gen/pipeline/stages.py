@@ -502,21 +502,62 @@ class ChapterWriter:
 
         # 1. 拆场景（低温 0.4；REQ-token优化 P0-2：顺带产出本章人物行动表，不再独立调用）
         action_plan_block = ""
+        fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
         try:
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
-            split_data = json.loads(_strip_json_block(raw))
-            scenes = split_data.get("scenes", [])
-            action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
+            split_data = None
+            try:
+                split_data = json.loads(_strip_json_block(raw))
+            except Exception:
+                split_data = None
+            if not isinstance(split_data, dict):
+                # 2026-10-01 拆场景 JSON 健壮化：整体解析失败 → 字段级兜底
+                # （events 在前、scenes 在中，长输出截断通常只丢 characters_action）。
+                # 能救回 scenes 就继续走场景拆分；救不回就重试 1 次（温度升 0.5），
+                # 仍失败才回退整章——回退前保留可解析的 events 供整章 prompt 注入
+                # （防"拆场景失败 → 救人事件丢失/重复"整条事前防线失效）。
+                scenes_fb = _extract_json_field(raw, "scenes")
+                events_fb = _extract_json_field(raw, "events")
+                if scenes_fb or events_fb:
+                    split_data = {}
+                    if scenes_fb:
+                        split_data["scenes"] = scenes_fb
+                    if events_fb:
+                        split_data["events"] = events_fb
+                    split_data["characters_action"] = _extract_json_field(raw, "characters_action")
+                else:
+                    if not silent:
+                        print("  [拆场景] JSON 解析失败，重试 1 次（温度 0.5）...")
+                    raw2 = self.llm.chat(
+                        sys_s,
+                        user_s + "\n\n再次提醒：只输出一个合法的 JSON 对象，"
+                        "不要输出任何代码块标记、注释、省略号或尾逗号。",
+                        temperature=0.5,
+                    )
+                    try:
+                        split_data = json.loads(_strip_json_block(raw2))
+                    except Exception:
+                        split_data = _extract_json_field(raw2, "scenes") and {
+                            "scenes": _extract_json_field(raw2, "scenes"),
+                            "events": _extract_json_field(raw2, "events"),
+                            "characters_action": _extract_json_field(raw2, "characters_action"),
+                        }
+                        if not split_data:
+                            split_data = None
+            if isinstance(split_data, dict):
+                fallback_events = split_data.get("events") or []
+                scenes = split_data.get("scenes", [])
+                action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
             # 2026-09-30 拆场景设计重构（用户指出"一直在打补丁、根因在场景拆分设计"）：
             # 场景拆分 = 事件分配——LLM 先规划互斥事件清单 events，场景 scene_event_ref 逐字
             # 引用事件编号。这里把引用展开为事件原文（sc["event"]），互斥由「事件清单两两
             # 不同 + 引用唯一性 + 场景数/字数校验」结构化保证，不再依赖文本相似度猜重叠
             # （6316 字版"苏妄言被围"被拆成 5 个换措辞场景即旧校验盲区）。
-            events_list = split_data.get("events") or []
+            events_list = split_data.get("events") or [] if split_data else []
             _expand_scene_event_refs(scenes, events_list)
             # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
             # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
@@ -537,14 +578,25 @@ class ChapterWriter:
             scenes = []
 
         if not scenes:
-            # 拆场景失败，回退到普通整章生成
+            # 拆场景失败，回退到普通整章生成。2026-10-01：若 events 已从拆场景输出
+            # 救回（拆场景 JSON 截断常见），注入整章 prompt——拆场景失败不再丢事件
+            # （否则"救苏妄言"等核心事件被整章生成遗漏，或模型自发挥写重复）。
+            # 同时注入"每事件只写一遍"纪律，整章生成也受事件序列约束（事前规避）。
             from .templates import chapter_prompt
+            ev_block = ""
+            if fallback_events:
+                ev_block = "\n".join(
+                    f"事件{i + 1}（{e.get('id', '')}）：{e.get('desc', '')}"
+                    f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
+                    for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
+                ) or ""
             system, user = chapter_prompt(
                 self.cfg, chapter_no=chapter_no,
                 chapter_title=plan_title, chapter_goal=plan_goal,
                 research_block="", memory_context=memory_context,
                 prev_tail=prev_tail, is_final=is_final,
                 chapter_core_event=plan_core_event,
+                chapter_events=ev_block,
             )
             system = self._sys(system)
             return self.llm.chat(system, user, temperature=0.85,
@@ -1031,8 +1083,13 @@ def _strip_html_tags(text: str) -> str:
 
 
 def _strip_json_block(text: str) -> str:
-    """从模型输出中提取 JSON 对象（容忍 ```json 包裹）。"""
-    import json
+    """从模型输出中提取 JSON 对象（容忍 ```json 包裹、前后赘述、截断、尾逗号）。
+
+    2026-10-01 健壮化：拆场景输出三块（events+scenes+characters_action）较长，
+    实测多次在结尾处 JSON 语法断裂（'Expecting value: line 46 col 17'）导致整条
+    拆场景链路回退、事件清单丢失。这里先剥代码块，再截第一个 { 到最后一个 }，
+    再修复尾逗号（',后紧跟 }/]' → 对应闭合符）。
+    """
     t = text.strip()
     if t.startswith("```"):
         lines = t.splitlines()
@@ -1041,4 +1098,44 @@ def _strip_json_block(text: str) -> str:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         t = "\n".join(lines).strip()
-    return t
+    s = t.find("{")
+    if s < 0:
+        return ""
+    # 截断场景：从最后一个 } 逐级向前回溯，取第一个可完整解析的闭合前缀
+    # （拆场景长输出常在结尾断裂，scenes 元素未闭合时简单 rfind 会丢 ]
+    # → 这里对每个 } 位置尝试解析，命中即返回）
+    import json as _json
+    closes = [m.end() - 1 for m in re.finditer(r"\}", t)]
+    for e in closes[::-1]:
+        if e <= s:
+            break
+        sub = t[s:e + 1]
+        sub = re.sub(r",\s*([}\]])", r"\1", sub)
+        try:
+            _json.loads(sub)
+            return sub
+        except Exception:
+            continue
+    t = t[s:t.rfind("}") + 1] if t.rfind("}") > s else t[s:]
+    return re.sub(r",\s*([}\]])", r"\1", t)
+
+
+def _extract_json_field(raw: str, field: str) -> list:
+    """整体 JSON 解析失败时，用正则从模型输出里单独提取某字段（events/scenes/
+    characters_action）的数组字面量并解析。返回 [] 表示该字段无法恢复。
+
+    拆场景输出长、易截断：events 在前（char 0~几百）、scenes 在中、characters_action
+    在后——截断通常丢尾部，events/scenes 常可救回；events 可救回即可在回退整章时
+    注入事件序列（防救人事件丢失/重复），scenes 可救回则继续走场景拆分。
+    """
+    import json as _json
+    m = re.search(r'"%s"\s*:\s*(\[.*?\])\s*(?:,|$)' % field, raw, re.S)
+    if not m:
+        return []
+    lit = m.group(1)
+    lit = re.sub(r",\s*([}\]])", r"\1", lit)
+    try:
+        val = _json.loads(lit)
+        return val if isinstance(val, list) else []
+    except Exception:
+        return []

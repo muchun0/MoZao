@@ -407,6 +407,21 @@ def test_summary_consistency_ok():
     assert qc._summary_consistency_issues(content, "") == []
 
 
+@pytest.mark.p1
+def test_consistency_llm_event_duplicate_detected():
+    """矛盾自检识别"同一事件两版本"（救苏妄言空地版/坡地版）→ 大改。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: (
+        '{"contradictions": [{"type": "事件重复", '
+        '"detail": "前一处写陆沉在墟口空地救苏妄言引开赤尉，'
+        '后一处又写坡地上苏妄言再被赤尉围、陆沉又冲下去救——同一事件两版本"}]}'
+    )
+    qc = QualityChecker(cfg, llm, None)
+    issues = qc._consistency_llm_check(1, "正文若干")
+    assert any("事件重复" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
 # ---------- 面板行不再作草稿分界标记（P1-2） ----------
 
 @pytest.mark.p2
@@ -595,14 +610,14 @@ def test_dialogue_loop_no_false_positive():
 
 @pytest.mark.p1
 def test_length_audit_issues():
-    """字数审计：>2 倍目标 → 大改；1.5-2 倍 → 中改；正常 → 不报。"""
+    """字数审计：>1.6 倍目标 → 大改（触发重写压缩）；1.35-1.6 倍 → 中改；正常 → 不报。"""
     cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
     qc = _qc_with_cfg(cfg)
-    # >2 倍 → 大改
-    big = qc._length_audit_issues("长" * 2100)
+    # >1.6 倍 → 大改（22:32 版 4471/2500=1.79 触发重写）
+    big = qc._length_audit_issues("长" * 1700)
     assert any(i["level"] == "大改" and "字数严重超出" in i["type"] for i in big)
-    # 1.5-2 倍 → 中改
-    mid = qc._length_audit_issues("长" * 1700)
+    # 1.35-1.6 倍 → 中改
+    mid = qc._length_audit_issues("长" * 1400)
     assert any(i["level"] == "中改" and "字数超出" in i["type"] for i in mid)
     # 正常 → 不报
     assert qc._length_audit_issues("长" * 1200) == []

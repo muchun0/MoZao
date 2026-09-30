@@ -548,6 +548,11 @@ class ChapterWriter:
         # 注入后续场景，防「三次死亡只减两次数字」「疤脸死而复生」等章内状态断裂。
         scene_state_acc: dict = {}
         scene_state_hint: str = ""
+        # 2026-09-30（跨场景事件重复根因修复）：已推进状态只含数字/生死/物品，不含「事件」——
+        # 场景2写完"救苏妄言"后场景3不知道事件已发生，把同一事件换个地点又写一遍
+        # （《万墟之上》22:32 版空地版/坡地版双版本）。这里把本章已规划场景事件做成
+        # 确定性事件清单，逐场景累积注入后续场景，零 LLM 成本。
+        done_events: list[str] = []
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
@@ -581,6 +586,15 @@ class ChapterWriter:
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
+                # 跨场景事件清单：本场景规划事件（拆场景时定义）追加为"已发生事件"，
+                # 拼入 scene_state_hint 注入后续场景——同一事件不得再次发生/重复描写。
+                ev = str(sc.get("event") or "").strip()
+                if ev and ev not in done_events:
+                    done_events.append(ev)
+                    ev_hint = ("\n【本章已发生事件（硬约束：以下事件已发生，后续场景禁止再次发生/"
+                               "重复描写同一事件；同人物+同冲突+同结果=重复；如需呼应用一句话带过）】\n"
+                               + "\n".join(f"{i}. {e}" for i, e in enumerate(done_events, 1)))
+                    scene_state_hint = (scene_state_hint + ev_hint) if scene_state_hint else ev_hint
                 # 场景状态推进抽取（REQ-token优化 P0-1）：
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。

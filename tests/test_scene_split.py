@@ -253,8 +253,10 @@ def test_scene_prompt_prevention_rules():
     assert "死亡多样化" in user                         # 连续死亡死因不同
     assert "面板显示纪律" in user                       # 数字只在结算瞬间出现一次
     assert "状态度量单一口径" in user                   # 蚀痕累积口径，禁止多处重新计量
+    assert "增长量只用" in user                         # 蚀痕增长只用'寸'，禁'三指/一指宽'
     assert "角色身份全局锁定" in user                   # 苏妄言青袍短发不得第二套描述
     assert "摘要覆盖最终状态" in user                   # 摘要写最终结算数字，不写开篇状态
+    assert "已发生事件禁止重复" in user                 # 本章已发生事件不得再次描写（两版本）
 
 
 def test_split_prompt_word_count_hardcap():
@@ -286,3 +288,33 @@ def test_scene_max_tokens_adaptive(store):
     kw = scene_call.kwargs if hasattr(scene_call, "kwargs") else (scene_call[2] if len(scene_call) > 2 else {})
     # 1400 字目标 → max_tokens ≥ 1400*2.2=3080，且 ≥4000 下限
     assert kw.get("max_tokens", 0) >= 4000
+
+
+@pytest.mark.p1
+def test_scene_done_events_injected_to_later_scene(store):
+    """跨场景事件清单（事前防线）：第 1 个场景的已发生事件必须注入第 2 个场景的 prompt，
+    防止"救苏妄言"被换个地点又写一遍（22:32 版空地版/坡地版双版本根因）。"""
+    cfg = store.load_config()
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "墟口空地", "event": "陆沉引开赤尉救苏妄言", "emotion": "焦灼", '
+        '"target_words": 1300}, '
+        '{"location": "墟口坡地", "event": "陆沉带苏妄言撤往补给站", "emotion": "紧迫", '
+        '"target_words": 1100}], "characters_action": []}'
+    )
+    llm.chat.side_effect = [
+        scenes_json,           # 拆场景
+        "场景一正文。" * 200,   # 场景 1
+        "场景二正文。" * 180,   # 场景 2
+        "摘要",
+    ]
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    # 场景 2 调用（call 2）的 user prompt 必须含【本章已发生事件】+ 场景 1 事件
+    scene2 = llm.chat.call_args_list[2]
+    user2 = scene2.args[1] if scene2.args else scene2[1]
+    assert "【本章已发生事件" in user2
+    assert "陆沉引开赤尉救苏妄言" in user2
+    assert "禁止再次发生" in user2 or "禁止重复描写" in user2

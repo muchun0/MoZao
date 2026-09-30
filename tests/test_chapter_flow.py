@@ -145,3 +145,28 @@ def test_chapter_prompt_injects_core_event():
     )
     assert "【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】" in user
     assert "跟随临时队下墟，灰卒群溃散" in user
+
+
+@pytest.mark.p1
+def test_chapter_prompt_injects_events_sequence():
+    """2026-10-01 拆场景失败回退整章：chapter_events（拆场景救回的 events）注入
+    事件序列 + 每事件只写一遍纪律——拆场景失败不再丢事件/让模型自发挥重复。"""
+    cfg = NovelConfig(title="测试", total_words=10000, genre="玄幻")
+    _, user = templates.chapter_prompt(
+        cfg, chapter_no=1, chapter_title="第一章", chapter_goal="目标",
+        research_block="", memory_context="", prev_tail="",
+        chapter_core_event="死亡-复活",
+        chapter_events="事件1（事件1）：陆沉被灰卒咬穿喉咙，面板 3/3→2/3，复活｜结束时机制状态：面板 2/3，蚀痕越肘弯\n事件2（事件2）：陆沉在碎石坡救下被三只赤尉围住的苏妄言｜结束时机制状态：赤尉退走",
+    )
+    assert "【本章事件序列" in user
+    assert "每事件只写一遍" in user
+    assert "陆沉在碎石坡救下被三只赤尉围住的苏妄言" in user
+    assert "禁止任何事件重复出现" in user
+    # 无 events 时不注入该块，但通用防重复纪律始终存在
+    _, user2 = templates.chapter_prompt(
+        cfg, chapter_no=1, chapter_title="第一章", chapter_goal="目标",
+        research_block="", memory_context="", prev_tail="",
+        chapter_core_event="死亡-复活",
+    )
+    assert "【本章事件序列" not in user2
+    assert "3.5 本章每个事件/冲突场面" in user2 and "只允许完整发生一次" in user2

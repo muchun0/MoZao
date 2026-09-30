@@ -135,13 +135,18 @@ _MID = (
 
 
 def _mk_draft(extra: str) -> str:
-    """构造一个以面板句完整收尾的草稿（用于拼接防护测试）。"""
+    """构造一个以非面板短句完整收尾的草稿（用于拼接防护测试）。
+
+    分界标记用普通短句（"他记住了蚀晶的方位。"）而非数字面板行——
+    P1-2 起面板行不再作为草稿分界标记（同值复现属"数字结算未推进"，
+    由 _panel_progress_issues 专检；真拼接靠 n-gram 覆盖信号判定）。
+    """
     return (
         "灰雾从裂隙口漫出来，像没烧透的炭堆被泼了水。陆沉踩在碎石上，"
         "鞋底碾过蚀晶碎屑，声音被雾气吞掉大半。\n\n"
         + _MID
         + extra
-        + "\n\n今日可死次数：2。\n\n明天呢？"
+        + "\n\n他记住了蚀晶的方位。\n\n明天呢？"
     )
 
 
@@ -236,13 +241,12 @@ def test_repeat_narrative_long_x2():
 
 
 @pytest.mark.p2
-def test_repeat_panel_line_x2():
-    """数字面板行原样出现 2 次（数字未推进）→ 大改（结算未推进信号）。"""
+def test_panel_line_x2_not_repeat():
+    """数字面板行不再纳入复读统计（P1-2 归类）：面板行重复由 _panel_progress_issues
+    专检（跨结算→大改/无事件→中改），复读不再双重大改（22:32 版实测误触发重写）。"""
     qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
     content = "今日可死次数：1。" + _PAD_A + "今日可死次数：1。" + _PAD_B
-    issues = qc._repeat_sentence_issues(content)
-    assert issues and issues[0]["level"] == "大改"
-    assert "今日可死次数：1" in issues[0]["detail"]
+    assert qc._repeat_sentence_issues(content) == []
 
 
 @pytest.mark.p2
@@ -281,3 +285,379 @@ def test_repeat_none():
           "风从墟底吹上来，带着腥气。他想起娘死前塞给他的铜钱，边缘磨得发亮。"
           "独眼说别他妈死在里面。他点点头，把铜钱攥进掌心。城墙的影子压过来，像一头睡着的兽。")
     assert qc._repeat_sentence_issues(ok) == []
+
+
+# ---------- 机制数字结算校验（P0-2，REQ-章内自洽与机制账本·扩展） ----------
+
+_PAD_C = ("灰雾从裂隙口漫出来，像没烧透的炭堆被泼了水。陆沉踩在碎石上，鞋底碾过蚀晶碎屑，"
+          "声音被雾气吞掉大半。他蹲下来，从腰间布袋里摸出铁凿，凿了七下才崩下一块蚀晶。")
+_PAD_D = ("他爬起来，膝盖顶着碎石，手背上全是血口子。背篓翻倒在三步外，铁精矿石散了一地。"
+          "他盯着火把看了两秒，估算自己死了多久。不到半盏茶的工夫。")
+
+@pytest.mark.p2
+def test_panel_progress_not_decreasing(store):
+    """同一面板数字（同标签同数值）跨段复现 = 结算未推进 → 大改「机制数字未结算推进」。"""
+    llm, _ = _mk_llm()
+    qc = QualityChecker(store.load_config(), llm, store)
+    # 两次面板出现间隔需 > _PANEL_REPEAT_SPAN(150)，用两段填充拉大
+    content = ("他死了第一次，视野角落亮起：今日可死次数：2/3。\n\n"
+               + _PAD_C + _PAD_D + _PAD_C
+               + "\n\n他死了第二次，视野角落仍显示：今日可死次数：2/3。\n\n"
+               + _PAD_D)
+    result = qc.check(1, "第一章", "推进", content)
+    assert any("机制数字未结算推进" in (i.get("type", "") or "") for i in result["issues"])
+    assert result["passed"] is False
+
+
+@pytest.mark.p2
+def test_panel_progress_normal_decrease_ok():
+    """面板数字正常递减（3/3→2/3→1/3）→ 不误报。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("视野角落亮起：今日可死次数：3/3。\n\n" + _PAD_C
+               + "\n\n视野角落亮起：今日可死次数：2/3。\n\n" + _PAD_D
+               + "\n\n视野角落亮起：今日可死次数：1/3。")
+    assert qc._panel_progress_issues(content) == []
+
+
+@pytest.mark.p2
+def test_panel_progress_close_repeat_ok():
+    """同一面板数字紧邻复现（间隔 <150 字，如"数字跳了一下"式强调）→ 不误报。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "数字跳了一下，今日可死次数：2/3。今日可死次数：2/3。他盯着那行字，手心出汗。"
+    assert qc._panel_progress_issues(content) == []
+
+
+# ---------- 面板事件锚点（2026-09-30：1/3 冗余显示误报修复） ----------
+
+@pytest.mark.p1
+def test_panel_no_event_repeat_is_minor():
+    """同值跨段复现但中间无结算事件（赶路/确认状态）→ 降级中改"冗余显示"，不再误报大改。
+
+    《万墟之上》21:52 版：第二次死亡后结算 1/3，之后赶路/章末备注栏变化时又显示
+    两次 1/3——数字本就不该变，属冗余显示而非结算未推进。
+    """
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    filler = ("他卷起袖子，蚀痕在小臂上蜿蜒，像一条暗紫色的蛛网。灰雾漫过脚踝，"
+              "他攥紧凿子柄，往墟口方向挪了两步，背篓的铁精在身后轻轻晃动，"
+              "矿渣从裂隙口簌簌落下来，砸在碎石堆上，又被风卷走。")
+    content = ("面板在黑暗里浮出来。今日可死次数：1/3。\n\n"
+               + filler * 2
+               + "\n\n他卷起袖子看了一眼面板：今日可死次数：1/3。\n\n"
+               + filler * 2
+               + "\n\n面板闪了一下，备注栏多出四个字，数字没变：今日可死次数：1/3。")
+    issues = qc._panel_progress_issues(content)
+    assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
+
+
+@pytest.mark.p1
+def test_panel_event_between_repeat_still_major():
+    """两次同值之间有死亡/复活等结算事件 → 仍判大改（真结算未推进）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("他死了第一次，视野角落亮起：今日可死次数：2/3。\n\n"
+               + _PAD_C + _PAD_D + _PAD_C
+               + "\n\n他死了第二次，视野角落仍显示：今日可死次数：2/3。\n\n"
+               + _PAD_D)
+    issues = qc._panel_progress_issues(content)
+    assert any("机制数字未结算推进" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_panel_recall_not_event():
+    """回忆/指认/他人预判语境里的"死了"不算结算事件 → 不误报大改。
+
+    《万墟之上》22:32 版实测："她看见他死了""你死了""她快死了""他应该已经死了"
+    "感知到了他死亡"等 6 处锚点全是回忆指认，面板 2/3 未变是正确行为。
+    """
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    filler = ("他卷起袖子，蚀痕在小臂上蜿蜒，像一条暗紫色的蛛网。灰雾漫过脚踝，"
+              "他攥紧凿子柄，往墟口方向挪了两步，背篓的铁精在身后轻轻晃动，"
+              "矿渣从裂隙口簌簌落下来，砸在碎石堆上，又被风卷走。")
+    content = ("复活后面板刷新：今日可死次数：2/3。\n\n"
+               + filler * 2
+               + "\n\n她看见他死了，看见他倒在蚀雾里，又看见他三秒后从蚀泥中睁眼。"
+               "她的共情执能——她感知到了他死亡的情绪印记。\n\n"
+               "他抬手看面板：今日可死次数：2/3。\n\n"
+               + filler * 2
+               + "\n\n苏妄言快死了。他应该已经死了的人，不该出现在这里。"
+               "面板在视野角落亮着：今日可死次数：2/3。")
+    issues = qc._panel_progress_issues(content)
+    assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
+
+
+@pytest.mark.p1
+def test_summary_consistency_mismatch():
+    """摘要提到的面板分数与正文最终结算不一致 → 大改（摘要未随正文更新）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("他死了，面板跳出今日可死次数：1/3。复活后他往墟口爬，"
+               "视野角落的今日可死次数：1/3 不再变化。")
+    bad_sum = "陆沉死了一次，面板从 3/3 结算为 2/3，蚀痕延伸一寸。"
+    issues = qc._summary_consistency_issues(content, bad_sum)
+    assert any("摘要与正文最终状态不符" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_summary_consistency_ok():
+    """摘要分数与正文最终一致 / 摘要无分数 → 不报。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "他死了，面板跳出今日可死次数：1/3。"
+    assert qc._summary_consistency_issues(content, "陆沉死了一次，面板结算为 1/3。") == []
+    assert qc._summary_consistency_issues(content, "陆沉在墟底被蚀物袭击，生死未卜。") == []
+    assert qc._summary_consistency_issues(content, "") == []
+
+
+@pytest.mark.p1
+def test_consistency_llm_event_duplicate_detected():
+    """矛盾自检识别"同一事件两版本"（救苏妄言空地版/坡地版）→ 大改。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: (
+        '{"contradictions": [{"type": "事件重复", '
+        '"detail": "前一处写陆沉在墟口空地救苏妄言引开赤尉，'
+        '后一处又写坡地上苏妄言再被赤尉围、陆沉又冲下去救——同一事件两版本"}]}'
+    )
+    qc = QualityChecker(cfg, llm, None)
+    issues = qc._consistency_llm_check(1, "正文若干")
+    assert any("事件重复" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_rewrite_whole_injects_event_dedup_rules():
+    """整章重写注入"每事件只写一遍"纪律：质检含事件重复/两版本 → 重写 prompt 含
+    删除重复版本、事件间因果推进、状态增量要求（4500 字版重写 3 轮修不掉根因）。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: "重写后的正文。\n\n【摘要】最终 2/3"
+    qc = QualityChecker(cfg, llm, None)
+    issues = [
+        {"type": "自相矛盾-事件重复", "detail": "同一事件两版本：救苏妄言石殿版/墟口外版", "level": "大改"},
+        {"type": "写作-字数超出目标", "detail": "正文 4500 字", "level": "中改"},
+    ]
+    out = qc._rewrite_whole(1, "第一章", "目标", "旧正文", issues)
+    assert out
+    prompt = llm.chat.call_args.args[1] if llm.chat.call_args.args else llm.chat.call_args[1]
+    assert "删除重复的事件版本" in prompt
+    assert "禁止回到上一事件开头状态重演" in prompt
+    assert "每个事件的结束状态" in prompt and "增量变化" in prompt
+    # 无事件重复问题时：不注入该纪律块
+    llm2 = MagicMock()
+    llm2.chat.side_effect = lambda *a, **k: "重写后的正文。\n\n【摘要】最终 2/3"
+    qc2 = QualityChecker(cfg, llm2, None)
+    qc2._rewrite_whole(1, "第一章", "目标", "旧正文", [{"type": "写作-字数超出目标", "detail": "4500 字", "level": "中改"}])
+    p2 = llm2.chat.call_args.args[1] if llm2.chat.call_args.args else llm2.chat.call_args[1]
+    assert "删除重复的事件版本" not in p2
+
+
+# ---------- 面板行不再作草稿分界标记（P1-2） ----------
+
+@pytest.mark.p2
+def test_panel_line_not_draft_marker():
+    """面板行（含次数+数字）不作为草稿分界标记：同值复现不判多稿拼接、不触发抢救。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("今日可死次数：2/3。\n\n他往墟口走，雾没过脚踝。\n\n今日可死次数：2/3。\n\n"
+               "他捡起背篓，把散落的铁精矿石拢回去。\n\n今日可死次数：2/3。\n\n他爬残阶。")
+    assert qc._draft_markers(content, min_count=3) == {}
+    issues = qc._self_dup_issues(content)
+    assert not any("章内大量自重复" in (i.get("type", "") or "") for i in issues)
+
+
+@pytest.mark.p2
+def test_panel_line_stacked_not_salvaged(store):
+    """面板行收尾的多稿拼接：信号B 报拼接，但抢救被拒（找不到非面板 marker），
+    原文不被拦腰截断，走重写兜底（防《万墟之上》式误截断）。"""
+    llm, _ = _mk_llm(rewrite_text="")
+    qc = QualityChecker(store.load_config(), llm, store)
+    draft = _mk_draft("第一稿：他往侧边跑。") + "\n\n" + _mk_draft("第二稿：他往侧边跑，记住了方位。")
+    # 把分界标记改回面板行（模拟旧数据/模型爱用面板收尾的拼接稿）
+    stacked = draft.replace("他记住了蚀晶的方位。", "今日可死次数：2。")
+    original_len = len(stacked)
+    chapter, _ = qc.ensure_quality(1, "第一章", "推进", stacked, "摘要", silent=True)
+    # 抢救被拒：正文未被截断为单一草稿（保持拼接原样，交由重写/人工处理）
+    assert len(chapter.content) >= original_len * 0.9
+
+
+@pytest.mark.p2
+def test_salvage_rejects_too_much_loss():
+    """抢救稿 < 原文 40% 时拒绝采用（_SALVAGE_MIN_KEEP 保护，防拦腰截断）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    marker = "他往侧边跑，撞上岩壁。"
+    tails = (
+        "碎石扑了他一脸，他咬着牙往深处挪了半步，把蚀晶揣进怀里，又回头看了一眼来路，"
+        "雾里空荡荡的，只有风在响。他攥紧铁凿，指节发白，心里数着退路。"
+    )
+    chunks = [marker + "\n\n" + f"第{i}稿" + tails for i in range(5)]
+    content = "\n\n".join(chunks)
+    salvaged = qc._salvage_single_draft(content)
+    assert len(salvaged) < len(content) * 0.4
+
+
+# ---------- 重写注入设定上下文（P0-1） ----------
+
+@pytest.mark.p2
+def test_rewrite_whole_injects_context(store):
+    """重写 prompt 注入机制卡/世界观/人物卡/上一章账本（不再真空重写）。"""
+    from novel_gen.store.schemas import World, Character
+    world = World(world_view="万墟之上，下二戍，蚀雾弥漫。",
+                  mechanism_rules="每死一次面板数字递减一，今日可死三次；第三次死亡后当日次数清零。")
+    world.characters = [Character(name="陆沉", role="主角", desc="背负蚀痕的不死学徒")]
+    store.save_world(world)
+    # 账本章号 1 < 当前章 2 → 作为上一章承接状态注入
+    store.save_chapter_state({"chapter": 1, "numbers": ["今日可死次数：1/3"]})
+    llm = MagicMock()
+    llm.chat.return_value = "重写后的正文。\n【摘要】ok"
+    qc = QualityChecker(store.load_config(), llm, store)
+    qc._rewrite_whole(2, "第二章", "推进", "原正文" * 200,
+                      [{"type": "大改", "detail": "面板数字未结算推进"}])
+    user = llm.chat.call_args[0][1]
+    assert "金手指机制卡" in user
+    assert "每死一次面板数字递减一" in user          # 机制结算规则注入
+    assert "今日可死次数：1/3" in user                # 上一章账本数字注入
+    assert "人物卡" in user
+
+
+@pytest.mark.p2
+def test_rewrite_whole_skips_own_chapter_state(store):
+    """重写本章时，本章旧账本（章号 >= 当前章）不得当"上章承接"注入——
+    否则模型会把旧稿数字（如 2/3）当标准答案，数字回跳修不动。"""
+    from novel_gen.store.schemas import World
+    world = World(world_view="万墟之上", mechanism_rules="每死一次面板数字递减一")
+    store.save_world(world)
+    # 账本章号 = 1 = 当前章 → 是本章旧稿账本，不应注入
+    store.save_chapter_state({"chapter": 1, "numbers": ["今日可死次数：2/3"]})
+    llm = MagicMock()
+    llm.chat.return_value = "重写后的正文。\n【摘要】ok"
+    qc = QualityChecker(store.load_config(), llm, store)
+    qc._rewrite_whole(1, "第一章", "推进", "原正文" * 200,
+                      [{"type": "大改", "detail": "面板数字未结算推进"}])
+    user = llm.chat.call_args[0][1]
+    assert "金手指机制卡" in user
+    assert "上一章机制数字" not in user          # 本章旧账本 2/3 不得注入
+    assert "今日可死次数：2/3" not in user
+
+
+# ---------- 自动重写多轮（P0-3） ----------
+
+@pytest.mark.p2
+def test_ensure_quality_max_rewrite_rounds(store):
+    """复检一直不通过 → 最多重写 _MAX_REWRITE 轮（原 1 轮即放行）。"""
+    from novel_gen.pipeline.quality import _MAX_REWRITE
+    cfg = store.load_config()
+    llm = MagicMock()
+    calls = {"n": 0}
+
+    def _chat(system, user, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return '{"issues": [], "追更欲": 4, "一句话感受": "ok"}'
+        return "还是太短的正文。"
+
+    llm.chat.side_effect = _chat
+    qc = QualityChecker(cfg, llm, store)
+    chapter, result = qc.ensure_quality(1, "第一章", "推进", "太短了。", "摘要", silent=True)
+    # 每轮重写：1 次 reader 校验 + 1 次重写；首检 1 次 reader + _MAX_REWRITE 次复检
+    assert calls["n"] >= 1 + 2 * _MAX_REWRITE
+    assert result["passed"] is False
+
+
+# ---------- 章内矛盾 LLM 自检：普通模式降频 + 全文明细（P2） ----------
+
+@pytest.mark.p2
+def test_consistency_llm_every_normal_mode(store):
+    """普通模式 + consistency_llm_check=True → 每 N 章抽 1 次（第1章触发、第2章不触发）。"""
+    cfg = store.load_config()
+    cfg.high_quality_mode = False
+    cfg.consistency_llm_check = True
+    cfg.consistency_llm_every = 3
+    long = "正常内容段落，风从墟口灌进来，他握紧铁凿，往雾里走。" * 40
+    llm = MagicMock()
+    llm.chat.return_value = '{"issues": [], "追更欲": 4, "一句话感受": "ok"}'
+    qc = QualityChecker(cfg, llm, store)
+    qc.check(1, "第一章", "推进", long)
+    assert llm.chat.call_count == 2  # reader + consistency
+    llm.reset_mock()
+    qc.check(2, "第二章", "推进", long)
+    assert llm.chat.call_count == 1  # 仅 reader（2 % 3 == 2 不触发）
+
+
+@pytest.mark.p2
+def test_consistency_uses_full_content(store):
+    """章内矛盾自检输入不再截断 3500：后半章关键状态进入检测视野。"""
+    cfg = store.load_config()
+    cfg.high_quality_mode = True
+    llm = MagicMock()
+    captured = {}
+
+    def _chat(system, user, **kw):
+        captured["user"] = user
+        return '{"contradictions": []}'
+
+    llm.chat.side_effect = _chat
+    qc = QualityChecker(cfg, llm, store)
+    long = ("前段内容" * 400) + "后半章关键状态：蚀痕新延伸一寸，灼烫如炭。"
+    qc.check(1, "第一章", "推进", long)
+    assert "后半章关键状态：蚀痕新延伸一寸" in captured["user"]
+
+
+# ---------- 场景级确定性检测兜底（对话轮重复 + 字数审计） ----------
+
+def _qc_with_cfg(cfg, store=None):
+    return QualityChecker(cfg, MagicMock(), store)
+
+
+@pytest.mark.p1
+def test_dialogue_loop_issues():
+    """同一轮问答/对话序列原样重复（循环拼接）→ 大改。"""
+    from novel_gen.pipeline.quality import QualityChecker as QC
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    qc = _qc_with_cfg(cfg)
+    # 同一轮对话写了五遍（"你死了？→你看错了→我看见数字了"循环），总长 >300 字触发检测
+    dup = ("她盯着他：\n"
+           "“你刚才——死了？”\n"
+           "“你看错了。”\n"
+           "“我看见数字了。从3跳到2。”\n"
+           "她退了一步，转身蹲到同学身边，撕自己右袖，动作利落，牙关咬紧。\n\n") * 5
+    issues = qc._dialogue_loop_issues(dup + "结尾完整。")
+    assert any(i["type"] == "写作-对话轮重复（循环拼接）" and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_dialogue_loop_no_false_positive():
+    """不同台词/有递进的对话 → 不误报。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    qc = _qc_with_cfg(cfg)
+    fine = (
+        "“你刚才——死了？”\n“你看错了。”\n“我看见数字了。从3跳到2。”\n\n"
+        "她没再追问，低头缠布条。\n\n"
+        "“你同学腿上的伤，再不止血就真死了。”\n她抬头看他。\n"
+        "“我知道。”\n"
+    )
+    assert qc._dialogue_loop_issues(fine) == []
+
+
+@pytest.mark.p1
+def test_length_audit_issues():
+    """字数审计：>1.35 倍目标 → 中改提示（不判大改、不触发重写）；正常 → 不报。
+
+    2026-09-30 方向修正：超长 ≠ 质量失败，纯字数不触发整章重写（省 token）；
+    质量硬伤由截断/循环/拼接/矛盾等维度判定。
+    """
+    cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
+    qc = _qc_with_cfg(cfg)
+    # 1.7 倍 → 仅中改（不再大改）
+    issues = qc._length_audit_issues("长" * 1700)
+    assert issues and issues[0]["level"] == "中改" and "字数超出目标" in issues[0]["type"]
+    # 1.4 倍 → 中改
+    mid = qc._length_audit_issues("长" * 1400)
+    assert any(i["level"] == "中改" and "字数超出" in i["type"] for i in mid)
+    # 正常 → 不报
+    assert qc._length_audit_issues("长" * 1200) == []
+
+
+@pytest.mark.p1
+def test_length_audit_ignores_summary():
+    """字数审计剥离【摘要】段，不把摘要计入正文长度。"""
+    cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
+    qc = _qc_with_cfg(cfg)
+    content = "长" * 1200 + "\n\n【摘要】" + "摘" * 500
+    assert qc._length_audit_issues(content) == []

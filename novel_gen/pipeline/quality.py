@@ -16,6 +16,7 @@ ReaderAgent 内置结果自校验（模块4）：输出前自动校验业务质�
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from ..config import NovelConfig
@@ -48,6 +49,32 @@ _REPEAT_HARD_COUNT = 3      # 叙述/对话句出现 ≥3 次 → 大改（触�
 _DIALOG_ALLOWED = 2         # 对话句（口头禅）允许 2 次（writer.md：同一口头禅每章 ≤2 次）
 _PANEL_KEYWORDS = ("次数", "进度", "蚀痕", "剩余", "面板")   # 数字面板行信号
 
+# 机制数字结算校验（REQ-章内自洽与机制账本·扩展）：面板数字跨段同值复现 = 结算未推进
+_PANEL_REPEAT_SPAN = 150    # 同一面板数字两次出现的最小字距（> 视为跨事件复现，而非紧邻强调）
+_PANEL_SPAN_LABEL = 40      # 面板标签参与定位的最大长度（防误把长句当标签）
+# 结算事件锚点：两次同值之间出现"死亡/复活/结算"等强结算词 = 真跨结算点
+# 同值复现 → 结算未推进（大改）；无事件词 = 同一结算值的冗余重复显示（中改，不阻断）。
+# 排除项（实测误命中）："死一次"（"再死一次"=预判非事件）、"咬穿"（回忆/复述他人死亡）、
+# "刷新"（"面板刷新的时候"=设定陈述）——真结算错误时模型通常写"他死了/死亡/复活/结算"。
+_PANEL_EVENT_ANCHORS = re.compile(r"死了|死亡|复活|苏醒|睁眼|醒来|结算|重置")
+# 语境排除：锚点前 12 字内出现回忆/转述/指认/他人预判词 → 不算结算事件
+# （《万墟之上》22:32 版实测 6 处误命中全部是"她看见他死了/你死了/她快死了/
+# 他应该已经死了/感知到了他死亡"等回忆指认，无一是主角实时结算）
+_PANEL_EVENT_RECALL = re.compile(r"看见|看过|见过|说|喊|叫|读|记得|梦见|听说|以为|感知|想起|回忆|幻觉|残留|应该|快死")
+
+# 自动重写轮数（REQ-章内自洽与机制账本·扩展）：检出问题后最多重写 N 轮，通过即停；
+# 全部失败才标记放行（不再"1 次重写不通过即静默交付"）
+_MAX_REWRITE = 3
+
+# 多稿拼接抢救保留下限：抢救稿必须保留原文 ≥ 40%（丢超过 60% 拒绝，
+# 防止把"数字写错/场景重叠"的正常章节拦腰截断）
+_SALVAGE_MIN_KEEP = 0.4
+
+# 章内矛盾 LLM 自检的正文输入上限（字符）：3500→12000，与状态账本抽取
+# 对齐——前 3500 字符只能看到前半章，后半章（第三次死亡/次数用尽）的矛盾
+# 与机制状态会漏检（REQ-章内自洽与机制账本·扩展）。
+_CONSISTENCY_CHARS = 12000
+
 
 def _has_type(issues, keyword: str) -> bool:
     """issues 中是否存在 type 含指定关键词的问题。"""
@@ -69,18 +96,19 @@ class QualityChecker:
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, summary: str, silent: bool = False
                        ) -> tuple[Chapter, dict]:
-        """校验 → 不通过则重写 1 次 → 复检 → 返回 (最终 Chapter, 校验结果)。
+        """校验 → 不通过则自动重写（最多 _MAX_REWRITE 轮，通过即停）→ 复检
+        → 返回 (最终 Chapter, 校验结果)。
 
         校验结果同时落 review.json（与既有格式兼容）与 trace。
         """
-        result = self.check(chapter_no, plan_title, plan_goal, content)
+        result = self.check(chapter_no, plan_title, plan_goal, content, summary)
         issues = result["issues"]
         rewritten_occurred = False
 
         # 事后自愈①：章内多稿拼接 → 确定性单稿抢救（不依赖 LLM，避免重写再次堆稿）
         if _has_type(issues, "章内大量自重复"):
             salvaged = self._salvage_single_draft(content)
-            if salvaged and salvaged != content and len(salvaged) > len(content) * 0.25:
+            if salvaged and salvaged != content and len(salvaged) > len(content) * _SALVAGE_MIN_KEEP:
                 content = salvaged
                 nc, ns = _split_summary(content)
                 if nc:
@@ -90,29 +118,36 @@ class QualityChecker:
                 rewritten_occurred = True
                 if not silent:
                     print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
-                result = self.check(chapter_no, plan_title, plan_goal, content)
+                result = self.check(chapter_no, plan_title, plan_goal, content, summary)
                 issues = result["issues"]
 
-        # 不通过 → 触发 1 次自动重写
-        if not result["passed"]:
+        # 不通过 → 自动重写（最多 _MAX_REWRITE 轮；每轮重写后复检，通过即停；
+        # 全部失败才标记 review.json 放行，不再"1 次重写不通过即静默交付"）
+        rewrite_rounds = 0
+        while not result["passed"] and rewrite_rounds < _MAX_REWRITE:
+            rewrite_rounds += 1
             if not silent:
-                print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发 1 次自动重写...")
+                print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{_MAX_REWRITE} 次自动重写...")
             if self.guard is not None:
                 self.guard.enter_scene("revise")
             rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues)
-            if rewritten and len(rewritten) > len(content) * 0.5:
-                content = rewritten
-                nc, ns = _split_summary(content)
-                if nc:
-                    content = nc
-                if ns:
-                    summary = ns
-                rewritten_occurred = True
-                # 复检
-                result = self.check(chapter_no, plan_title, plan_goal, content)
-                issues = result["issues"]
+            if not rewritten or len(rewritten) <= len(content) * 0.5:
                 if not silent:
-                    print(f"  [自校验] 重写后复检：{'通过' if result['passed'] else '仍存在问题（已标记）'}")
+                    print("  [自校验] 重写结果无效（为空或长度不足），停止重写")
+                break
+            content = rewritten
+            nc, ns = _split_summary(content)
+            if nc:
+                content = nc
+            if ns:
+                summary = ns
+            rewritten_occurred = True
+            # 复检
+            result = self.check(chapter_no, plan_title, plan_goal, content, summary)
+            issues = result["issues"]
+            if not silent:
+                print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
+                      f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
 
         # 结果落库（review.json 兼容既有格式，P2-4：记录实际是否触发重写）
         self._save_review(chapter_no, issues, result, auto_revised=rewritten_occurred)
@@ -125,7 +160,7 @@ class QualityChecker:
 
     # ---------- 校验 ----------
     def check(self, chapter_no: int, plan_title: str, plan_goal: str,
-              content: str) -> dict:
+              content: str, summary: str = "") -> dict:
         """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。"""
         issues: list[dict] = []
         score = 100
@@ -167,6 +202,35 @@ class QualityChecker:
         for it in self._repeat_sentence_issues(content):
             issues.append(it)
             score -= 15
+
+        # 2.8 机制数字结算校验（确定性，REQ-章内自洽与机制账本·扩展）：
+        #    同一面板数字（同标签同数值）跨段复现 = 结算未推进（如"可死次数 2/3"
+        #    在两次死亡后仍显示 2/3）。区别于复读检测（只检同句）、拼接检测（只检
+        #    字面大段重复），这里从"数值账本"角度校验：数字必须随事件严格增减。
+        for it in self._panel_progress_issues(content):
+            issues.append(it)
+            score -= 30
+
+        # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
+        #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
+        for it in self._dialogue_loop_issues(content):
+            issues.append(it)
+            score -= 30
+
+        # 2.10 字数审计（确定性·仅记录）：正文远超章节目标字数 → 中改提示；
+        #    不再判大改（2026-09-30：超长≠质量失败，纯字数不触发整章重写，省 token；
+        #    质量硬伤由其他维度判定，重写时 prompt 字数区间自然压缩）。
+        for it in self._length_audit_issues(content):
+            issues.append(it)
+            score -= 10
+
+        # 2.11 摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致
+        #    （《万墟之上》21:52 版：正文两次死亡最终 1/3，摘要却写"3/3→2/3"——摘要
+        #    未随正文更新，误导后续章节账本与读者）。摘要无分数 → 不报。
+        if summary:
+            for it in self._summary_consistency_issues(content, summary):
+                issues.append(it)
+                score -= 30
 
         # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
         for it in self._ending_issues(content):
@@ -214,8 +278,10 @@ class QualityChecker:
         # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）：
         # 抓确定性规则与读者视角都漏的硬矛盾——身体状态/知觉范围前后不一、
         # 同类生物行为模式不一、方位指代错误、同一意象比喻两版本。
-        # REQ-token优化 P1-3：默认仅高质量模式开启；普通模式保留确定性规则 + 读者 LLM 校验。
-        if getattr(self.cfg, "high_quality_mode", False) or getattr(self.cfg, "consistency_llm_check", False):
+        # 高质量模式每章开启；普通模式按 consistency_llm_every 降频（默认每 3 章 1 次）。
+        _hq = getattr(self.cfg, "high_quality_mode", False)
+        _every = max(1, int(getattr(self.cfg, "consistency_llm_every", 3) or 3))
+        if _hq or (getattr(self.cfg, "consistency_llm_check", False) and chapter_no % _every == 1):
             for it in self._consistency_llm_check(chapter_no, content):
                 issues.append(it)
                 score -= 25
@@ -273,7 +339,10 @@ class QualityChecker:
         pos = 0
         for ln in lines:
             s = ln.strip()
-            if min_line <= len(s) <= max_line:
+            # 面板数字行不作为「草稿分界标记」：同值复现属于"数字结算未推进"
+            # （_panel_progress_issues 专检），不应误判为多稿拼接而拦腰截断
+            if (min_line <= len(s) <= max_line
+                    and not _is_panel_line(_norm_sentence(s))):
                 occ.setdefault(s, []).append(pos)
             pos += len(ln) + 1
         return {s: ps for s, ps in occ.items()
@@ -322,21 +391,24 @@ class QualityChecker:
     def _repeat_sentence_issues(self, content: str) -> list[dict]:
         """章内同句复读（确定性，REQ-章内自洽与机制账本）。
 
-        归一化句子后统计：叙述句（引号外）出现 ≥3 次、或叙述长句 ≥12 字出现 2 次、
-        或数字面板行（含次数/进度/蚀痕/剩余/面板+数字）出现 ≥2 次 → 大改；
-        叙述短句（8~11 字）出现 2 次 → 中改；对话句（口头禅）≥3 次 → 大改、2 次放行。
+        归一化句子后统计：叙述句（引号外）出现 ≥3 次、或叙述长句 ≥12 字出现 2 次
+        → 大改；叙述短句（8~11 字）出现 2 次 → 中改；对话句（口头禅）≥3 次 → 大改、
+        2 次放行。
         聚合为每条类型一条 issue（附最多 3 个例句），避免刷屏。
+
+        P1-2 起数字面板行（含次数/进度/蚀痕/剩余+数字）不再纳入复读统计——面板行
+        重复由 _panel_progress_issues 专检（区分"结算未推进"大改/"冗余显示"中改），
+        复读再判大改会造成双重大改、误触发重写（《万墟之上》22:32 版实测）。
         """
         if not content or len(content) < 100:
             return []
         groups: dict[str, dict[str, list[str]]] = {"叙述": {}, "对话": {}}
         for sentence, in_quote in _iter_sentences(content):
             norm = _norm_sentence(sentence)
-            is_panel = _is_panel_line(norm)
-            if not norm:
+            if not norm or len(norm) < _REPEAT_MIN_LEN:
                 continue
-            if len(norm) < _REPEAT_MIN_LEN and not (is_panel and len(norm) >= 5):
-                continue
+            if _is_panel_line(norm):
+                continue  # 面板行归 _panel_progress_issues 专检
             bucket = "对话" if in_quote else "叙述"
             groups[bucket].setdefault(norm, []).append(sentence.strip())
 
@@ -347,7 +419,7 @@ class QualityChecker:
             if cnt >= _REPEAT_HARD_COUNT:
                 hard.append(f"[{bucket}×{cnt}] {sentences[0]}")
             elif bucket == "叙述" and cnt == 2:
-                if len(norm) >= _REPEAT_LONG_LEN or _is_panel_line(norm):
+                if len(norm) >= _REPEAT_LONG_LEN:
                     hard.append(f"[叙述×2] {sentences[0]}")
                 else:
                     soft.append(f"[叙述×2] {sentences[0]}")
@@ -358,7 +430,7 @@ class QualityChecker:
             issues.append({
                 "type": "写作-同句复读",
                 "detail": "同一句/同一动作整句原样复读（" + "；".join(hard[:3]) + "……）；"
-                          "同一母题不得原样复读，重复必须有递进，数字面板行重复=数字结算未推进",
+                          "同一母题不得原样复读，重复必须有递进",
                 "level": "大改",
             })
         if soft:
@@ -368,6 +440,75 @@ class QualityChecker:
                 "level": "中改",
             })
         return issues
+
+    def _panel_progress_issues(self, content: str) -> list[dict]:
+        """机制数字结算校验（确定性）：同一面板数字（同标签同数值）跨段复现 = 结算未推进。
+
+        如「今日可死次数：2/3」在两次死亡后仍显示「2/3」——数字未随事件递减。
+        与 _repeat_sentence_issues 的区别：这里按「标签+数值」对齐（不要求整句相同），
+        且要求两次出现间隔超过 _PANEL_REPEAT_SPAN（过滤"数字跳了一下"式紧邻强调）。
+        正常递减（3/3→2/3→1/3）不误报。
+
+        事件锚点（2026-09-30 修复）：两次同值之间若出现死亡/复活/刷新等结算事件词
+        → 真"跨结算点同值"→ 大改；若无事件词（如复活后确认、赶路途中再看一眼、
+        章末备注栏变化时数字本就不变）→ 属同一结算值的冗余重复显示 → 降级中改
+        （《万墟之上》21:52 版"1/3"三次显示被判大改属误报，本规则修复）。
+        """
+        if not content or len(content) < _PANEL_REPEAT_SPAN * 2:
+            return []
+        pattern = re.compile(
+            r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|蚀痕|剩余))\s*[：:]\s*"
+            r"([0-9]+(?:\s*[／/]\s*[0-9]+)?)"
+        )
+        hits: dict[tuple[str, str], list[int]] = {}
+        for m in pattern.finditer(content):
+            label = (m.group(1).strip() or "")[-_PANEL_SPAN_LABEL:]
+            num = (m.group(2) or "").replace(" ", "")
+            if not label or not num:
+                continue
+            hits.setdefault((label, num), []).append(m.start())
+        major: list[str] = []   # 跨结算点同值（真未推进）
+        minor: list[str] = []   # 无事件冗余重复显示
+        for (label, num), poss in hits.items():
+            if len(poss) < 2:
+                continue
+            for a, b in zip(poss, poss[1:]):
+                gap = b - a
+                if gap <= _PANEL_REPEAT_SPAN:
+                    continue
+                seg = content[a:b]
+                # 事件锚点须跳过回忆/转述/他人语境（"她看见他死了"不算结算事件）
+                event = False
+                for m in _PANEL_EVENT_ANCHORS.finditer(seg):
+                    # 特判"快死了"=将死未死（非结算）：锚点"死了"前 1 字为"快"
+                    if m.group() == "死了" and seg[max(0, m.start() - 1):m.start()] == "快":
+                        continue
+                    ctx = seg[max(0, m.start() - 16):m.start()]
+                    if not _PANEL_EVENT_RECALL.search(ctx):
+                        event = True
+                        break
+                if event:
+                    major.append(f"{label}：{num}")
+                else:
+                    minor.append(f"{label}：{num}")
+        out: list[dict] = []
+        if major:
+            out.append({
+                "type": "写作-机制数字未结算推进",
+                "detail": "面板数字「" + "；".join(major[:3]) + "」在死亡/结算事件后仍未变化，"
+                          "数值未随事件结算推进（如死亡次数未递减）；"
+                          "数字必须按机制卡随事件严格增减，禁止同值跨结算点复现",
+                "level": "大改",
+            })
+        if minor:
+            out.append({
+                "type": "写作-面板数字重复显示（冗余）",
+                "detail": "面板数字「" + "；".join(minor[:3]) + "」在无新事件时重复显示，"
+                          "稀释面板的紧张感；面板数字只在结算/刷新瞬间出现一次，"
+                          "后续确认状态改用叙述（如'他看了一眼面板，还剩一次'）",
+                "level": "中改",
+            })
+        return out
 
     def _ending_issues(self, content: str) -> list[dict]:
         """结尾完整性（确定性）：正文未以句末标点收尾 → 疑似在句子中途被截断。"""
@@ -381,6 +522,89 @@ class QualityChecker:
                 "level": "大改",
             }]
         return []
+
+    def _dialogue_loop_issues(self, content: str) -> list[dict]:
+        """场景内对话轮重复（确定性兜底，防'同一轮问答写多遍'循环拼接）。
+
+        抓相邻台词对（连续两句台词组成的问答序列）重复出现：同一轮对话若写成
+        「你死了？→你看错了→我看见数字了」多遍（《万墟之上》21:27 版三遍循环），
+        相邻台词对必然 ≥2 次重复。区别于 _repeat_sentence_issues 的单句统计：
+        这里按"两句台词序列"对齐，命中即大改（场景级循环拼接）。
+        """
+        if not content or len(content) < 300:
+            return []
+        lines = [s.strip() for s, in_quote in _iter_sentences(content) if in_quote]
+        norms = [_norm_sentence(s) for s in lines if _norm_sentence(s)]
+        pairs: dict[tuple[str, str], int] = {}
+        for a, b in zip(norms, norms[1:]):
+            if a and b:
+                pairs[(a, b)] = pairs.get((a, b), 0) + 1
+        bad: list[str] = []
+        for (a, b), cnt in pairs.items():
+            if cnt >= 2 and len(a) >= 3 and len(b) >= 3:
+                bad.append(f"「{a}→{b}」×{cnt}")
+        if not bad:
+            return []
+        return [{
+            "type": "写作-对话轮重复（循环拼接）",
+            "detail": "同一轮问答/对话序列原样重复（" + "；".join(bad[:3]) + "）；"
+                      "同一场景的同一轮对话只允许出现一次，重复=循环拼接，必须重写合并",
+            "level": "大改",
+        }]
+
+    def _length_audit_issues(self, content: str) -> list[dict]:
+        """字数审计（确定性·仅记录，不判大改）：正文远超章节目标字数。
+
+        2026-09-30 方向修正（用户确认）：超长 ≠ 质量失败，纯字数不触发整章重写
+        （重写 3 轮全文 + 复检 = 数万 token 浪费，内容质量正常的超长正文应保留）。
+        字数只产出中改记录：①提醒模型后续收敛；②若同时存在质量大改（截断/循环/
+        拼接/矛盾），重写 prompt 已含字数区间约束，重写时自然压缩（4471 字版经此
+        修正后不再为字数被拖去重写）。
+        剥离【摘要】后统计正文；>1.35 倍目标 → 中改提示。
+        """
+        target = int(getattr(self.cfg, "chapter_words", 0) or 0)
+        if target <= 0 or not content:
+            return []
+        import re as _re
+        body = _re.split(r"【摘要】", content)[0].strip()
+        if not body:
+            return []
+        n = len(body)
+        if n > target * 1.35:
+            return [{
+                "type": "写作-字数超出目标",
+                "detail": f"正文 {n} 字，超过本章目标字数 {target} 的 1.35 倍；"
+                          f"内容质量正常时保留（不为此重写），后续章节注意收敛",
+                "level": "中改",
+            }]
+        return []
+
+    def _summary_consistency_issues(self, content: str, summary: str) -> list[dict]:
+        """摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致。
+
+        《万墟之上》21:52 版：正文死亡两次、最终结算 1/3，摘要却写"面板从3/3结算
+        为2/3"——摘要未随正文更新（只提取了第一次死亡）。正文无面板分数或摘要无
+        分数 → 不报（不误伤无机制数字的章节）。
+        """
+        if not content or not summary:
+            return []
+        import re as _re
+        panel = _re.findall(r"可死次数\s*[:：]\s*(\d+)\s*[／/]\s*(\d+)", content)
+        if not panel:
+            return []
+        final_body = "/".join(panel[-1])
+        sum_nums = _re.findall(r"(\d+)\s*[／/]\s*(\d+)", summary)
+        if not sum_nums:
+            return []
+        final_sum = "/".join(sum_nums[-1])
+        if final_sum == final_body:
+            return []
+        return [{
+            "type": "写作-摘要与正文最终状态不符",
+            "detail": f"摘要提到「{final_sum}」，而正文最终结算为「{final_body}」——"
+                      f"摘要未随正文更新，应覆盖本章最终面板状态（死亡次数递减到哪）",
+            "level": "大改",
+        }]
 
     def _salvage_single_draft(self, content: str) -> str:
         """同章多稿首尾拼接 → 确定性抢救出最完整的单一草稿；无拼接则原样返回。
@@ -467,18 +691,24 @@ class QualityChecker:
     def _consistency_llm_check(self, chapter_no: int, content: str) -> list[dict]:
         """通读全章找硬矛盾：①主角身体状态（伤口位置/知觉范围/服饰损坏）前后不一；
         ②同一类生物/配角的行为模式前后不一；③方位/指代错误（人在A地却描述B地）；
-        ④同一意象的比喻出现两个版本。只报硬矛盾，报了即大改。"""
+        ④同一意象的比喻出现两个版本；⑤同一事件出现两个版本（同人物+同冲突+同结果，
+        换地点/换描写重写一遍，如"救苏妄言引开赤尉"空地版后又写坡地版）。
+        只报硬矛盾，报了即大改。"""
         if not content:
             return []
         try:
             sys = (
                 "你是严谨的小说文字编辑，通读本章后只找「前后自相矛盾的硬伤」，不评文笔、不评节奏。\n"
-                "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻\",\"detail\":\"具体矛盾：前一处…后一处…\"}]}。\n"
+                "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻/事件重复\",\"detail\":\"具体矛盾：前一处…后一处…\"}]}。\n"
                 "判定标准：两处描写不能同时为真才算矛盾；比喻措辞不同但喻体相同不算；"
-                "随剧情合理变化的伤口/状态不算矛盾；没有矛盾就输出空数组。"
+                "随剧情合理变化的伤口/状态不算矛盾；没有矛盾就输出空数组。\n"
+                "特别注意⑤同一事件重复：同一人物面对同一冲突对象、做同一件事（救/围/杀/逃）"
+                "结果相同，即使换了地点或改了细节，也算'同一事件两版本'（如先写'救苏妄言引开赤尉'"
+                "后又写一遍'坡地上苏妄言又被赤尉围、陆沉又冲下去救'）——报 type=事件重复，"
+                "detail 写明两处位置与共同的人物/冲突/结果。"
             )
             user = (
-                f"第{chapter_no}章正文：\n{content[:3500]}\n\n"
+                f"第{chapter_no}章正文：\n{content[:_CONSISTENCY_CHARS]}\n\n"
                 "请输出上述 JSON。"
             )
             raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
@@ -521,23 +751,61 @@ class QualityChecker:
 
     def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, issues: list[dict]) -> str:
-        """整章重写（原行为，无定位信息/定点失败时兜底）。"""
+        """整章重写（原行为，无定位信息/定点失败时兜底）。
+
+        注入设定上下文（世界观/机制卡/人物卡/章末账本）——重写不得在"信息真空"
+        中进行，否则模型不知道机制结算规则，数字与矛盾修不动（实测复检仍 5 条）。
+        """
         try:
             target = max(self.cfg.chapter_words, 500)
             issue_block = "\n".join(
                 f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:8]
             )
+            # 2026-10-01：问题含"事件重复/两版本"（矛盾自检事件重复、同句复读整段重复等）
+            # 时，重写必须显式执行"每事件只写一遍"——质检问题清单只有位置描述，
+            # 不注入事件序列纪律，模型会把重复版本换个写法又保留（4500 字版重写 3 轮
+            # 修不掉救人二版/死亡复刻即此类）。
+            has_event_dup = any(
+                "事件重复" in (it.get("type") or "")
+                or "两版本" in (it.get("detail") or "")
+                or "整段" in (it.get("detail") or "")
+                or "原样复刻" in (it.get("detail") or "")
+                for it in issues
+            )
+            dedup_block = (
+                "\n本章存在重复事件/两版本拼接，重写必须执行：\n"
+                "8. 本章每个事件（死亡-复活、救援、逃离、被围等）只允许完整发生一次：\n"
+                "   删除重复的事件版本，保留最完整的一个；同一事件不得以任何形式再次出现"
+                "（包括换地点、换措辞、换细节重写一遍）；被删除版本中不可替代的信息"
+                "（如关键对话、关键状态）合并进保留版本\n"
+                "9. 事件之间必须因果推进：后一事件从上一事件的结局之后开始，"
+                "禁止回到上一事件开头状态重演（连'伏看-犹豫-起手式'都禁止重复）\n"
+                "10. 每个事件的结束状态（面板数字/蚀痕位置/伤势）必须比上一事件结束时有增量变化，"
+                "禁止两事件结束时间一状态\n\n"
+            ) if has_event_dup else ""
+            ctx = self._context_block(chapter_no)
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的正文，"
                 f"质检发现如下问题，请重写本章正文。\n"
                 f"【本章目标】{plan_goal}\n"
-                f"【质检问题】\n{issue_block}\n\n"
+                + (f"\n{ctx}\n" if ctx else "")
+                + f"【质检问题】\n{issue_block}\n\n"
                 f"重写要求：\n"
                 f"1. 保留原有剧情走向、人物设定与关键对话，不推翻前文既定事实\n"
                 f"2. 针对性修复上述每个问题（补足字数/去除重复/修正人物一致性/提升读者体验）\n"
-                f"3. 正文（不含摘要）达到约 {target} 字\n"
-                f"4. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要\n\n"
-                f"【当前正文】\n{content}"
+                f"3. 机制数字（面板/蚀痕等）必须按【金手指机制卡】与【机制初始值/面板标准答案】"
+                f"随事件严格结算推进，禁止同值跨段复现\n"
+                f"4. 正文（不含摘要）控制在约 {target} 字（±15% 以内）：不足则补足，"
+                f"超出则精炼删减；禁止超写注水——超长输出会被截断丢弃\n"
+                f"5. 面板数字（可死次数/蚀痕进度等）只在结算/刷新瞬间显示一次："
+                f"死亡/复活结算后显示新数字，其余场景改用叙述（如'他看了一眼面板，还剩一次'），"
+                f"禁止同一数值重复显示；蚀痕等身体状态用累积口径（'已至小臂中段，比上次多一寸'），"
+                f"禁止同一状态每处重新计量\n"
+                f"6. 同一角色本章外貌/服装/代称全局唯一（不得同一角色两套描述两版本）\n"
+                f"7. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要；"
+                f"摘要必须写本章最终结算后的面板状态（如'死亡次数减至 1/3'）\n"
+                + dedup_block
+                + f"【当前正文】\n{content}"
             )
             text = self.llm.chat(
                 "你是资深网络小说写手，擅长按质检意见重写章节。\n\n"
@@ -560,17 +828,19 @@ class QualityChecker:
             issue_block = "\n".join(
                 f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
             )
+            ctx = self._context_block(chapter_no)
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的一个段落，"
                 f"质检发现如下问题，请只重写这个段落（不要改动上下文，不要输出其他内容）。\n"
                 f"【本章目标】{plan_goal}\n"
-                f"【质检问题】\n{issue_block}\n\n"
+                + (f"\n{ctx}\n" if ctx else "")
+                + f"【质检问题】\n{issue_block}\n\n"
                 f"【段落前文（保持衔接，不要重复）】\n{ctx_before}\n\n"
                 f"【需要重写的段落】\n{problem_seg}\n\n"
                 f"【段落后文（保持衔接，不要提前写）】\n{ctx_after}\n\n"
                 f"重写要求：\n"
                 f"1. 保留剧情走向、人物设定与关键信息，不推翻前文既定事实\n"
-                f"2. 针对性修复上述问题（去重复/修正矛盾/补足内容）\n"
+                f"2. 针对性修复上述问题（去重复/修正矛盾/补足内容）；机制数字必须按机制卡随事件结算\n"
                 f"3. 只输出替换后的这一个段落，不要解释，不要输出【摘要】\n"
                 f"4. 以句末标点完整收尾"
             )
@@ -583,6 +853,54 @@ class QualityChecker:
             return content[:s] + text + content[e:]
         except Exception:
             return ""
+
+    def _context_block(self, chapter_no: int, max_chars: int = 2500) -> str:
+        """重写时的设定上下文（防"真空重写"）：世界观/机制卡/人物卡/章末账本。
+
+        根因（《万墟之上》第1章单章重写实测）：_rewrite_whole/_rewrite_span 原
+        只给【本章目标】+【质检问题】+【当前正文】，模型不知道机制结算规则
+        （如"每死一次减 1"），重写后数字与矛盾修不动，复检仍是同样的 5 条。
+        """
+        parts: list[str] = []
+        try:
+            world = self.store.load_world()
+            if world:
+                wv = getattr(world, "world_view", None)
+                if wv:
+                    parts.append("【世界设定（正文必须遵守）】" + str(wv)[:800])
+                mr = getattr(world, "mechanism_rules", None)
+                if mr:
+                    parts.append("【金手指机制卡（机制数字结算的唯一权威）】" + str(mr)[:1000])
+                mb = getattr(world, "mechanism_baseline", None)
+                if mb:
+                    parts.append("【机制初始值/面板标准答案（正文数字的唯一来源）】" + str(mb)[:600])
+                chars = getattr(world, "characters", None) or []
+                if chars:
+                    blk = "；".join(
+                        f"{getattr(c, 'name', '')}（{getattr(c, 'role', '')}："
+                        f"{(getattr(c, 'desc', '') or '')[:50]}）"
+                        for c in chars[:8] if getattr(c, "name", None)
+                    )
+                    if blk:
+                        parts.append("【人物卡（人物言行/外貌必须一致）】" + blk)
+        except Exception:
+            pass
+        try:
+            st = self.store.load_chapter_state()
+            if st:
+                st_ch = int(st.get("chapter") or 0)
+                # 账本注入仅限「章号 < 当前章」的既有前文状态；账本章号 >= 当前章
+                # 说明是本章旧稿/旧版本的账本，不得当"上章承接"喂给模型——
+                # 否则重写第 1 章会拿到旧稿的「2/3」当标准答案，数字回跳修不动
+                if st_ch and st_ch < chapter_no:
+                    nums = st.get("numbers") or []
+                    if nums:
+                        parts.append("【上一章机制数字（本章必须承接结算，不得回退）】"
+                                     + "；".join(str(x) for x in nums))
+        except Exception:
+            pass
+        joined = "\n".join(parts)
+        return joined[:max_chars]
 
     # ---------- 落库与工具 ----------
     def _save_review(self, chapter_no: int, issues: list[dict], result: dict,

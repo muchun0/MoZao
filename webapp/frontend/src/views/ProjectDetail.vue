@@ -380,10 +380,21 @@ async function regenChapter(c) {
   regenNo.value = c.no
   try {
     const res = await rewriteChapter(pid, c.no)
-    ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
+    // P0-3：质检未通过不再静默交付——明确红标提示，用户可人工改稿或再次重写
+    if (res.quality && !res.quality.passed) {
+      ElMessage.warning(`第${c.no}章已重新生成（${res.words}字），但质检未通过（score=${res.quality.score}，${res.quality.issue_count}个问题），请人工检查后再编辑`)
+    } else {
+      ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
+    }
     loadChapters()
   } catch (e) {
-    ElMessage.error('重生成失败')
+    // 超时 ≠ 失败：重写 3 轮 LLM 调用可能超过 10 分钟前端等待，但后端会继续跑完落盘
+    if (e?.code === 'ECONNABORTED' || (e?.message || '').includes('timeout')) {
+      ElMessage.warning('重生成耗时较长，本次请求已超时；后端仍在处理，请稍后刷新页面查看最新内容')
+      setTimeout(loadChapters, 3000)
+    } else {
+      ElMessage.error('重生成失败')
+    }
   } finally { regenNo.value = 0 }
 }
 function addCharacter() {

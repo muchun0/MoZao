@@ -610,13 +610,17 @@ def test_dialogue_loop_no_false_positive():
 
 @pytest.mark.p1
 def test_length_audit_issues():
-    """字数审计：>1.6 倍目标 → 大改（触发重写压缩）；1.35-1.6 倍 → 中改；正常 → 不报。"""
+    """字数审计：>1.35 倍目标 → 中改提示（不判大改、不触发重写）；正常 → 不报。
+
+    2026-09-30 方向修正：超长 ≠ 质量失败，纯字数不触发整章重写（省 token）；
+    质量硬伤由截断/循环/拼接/矛盾等维度判定。
+    """
     cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
     qc = _qc_with_cfg(cfg)
-    # >1.6 倍 → 大改（22:32 版 4471/2500=1.79 触发重写）
-    big = qc._length_audit_issues("长" * 1700)
-    assert any(i["level"] == "大改" and "字数严重超出" in i["type"] for i in big)
-    # 1.35-1.6 倍 → 中改
+    # 1.7 倍 → 仅中改（不再大改）
+    issues = qc._length_audit_issues("长" * 1700)
+    assert issues and issues[0]["level"] == "中改" and "字数超出目标" in issues[0]["type"]
+    # 1.4 倍 → 中改
     mid = qc._length_audit_issues("长" * 1400)
     assert any(i["level"] == "中改" and "字数超出" in i["type"] for i in mid)
     # 正常 → 不报

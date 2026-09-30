@@ -705,10 +705,15 @@ class QualityChecker:
         try:
             st = self.store.load_chapter_state()
             if st:
-                nums = st.get("numbers") or []
-                if nums:
-                    parts.append("【上一章机制数字（本章必须承接结算，不得回退）】"
-                                 + "；".join(str(x) for x in nums))
+                st_ch = int(st.get("chapter") or 0)
+                # 账本注入仅限「章号 < 当前章」的既有前文状态；账本章号 >= 当前章
+                # 说明是本章旧稿/旧版本的账本，不得当"上章承接"喂给模型——
+                # 否则重写第 1 章会拿到旧稿的「2/3」当标准答案，数字回跳修不动
+                if st_ch and st_ch < chapter_no:
+                    nums = st.get("numbers") or []
+                    if nums:
+                        parts.append("【上一章机制数字（本章必须承接结算，不得回退）】"
+                                     + "；".join(str(x) for x in nums))
         except Exception:
             pass
         joined = "\n".join(parts)

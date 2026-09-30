@@ -375,13 +375,35 @@ def test_salvage_rejects_too_much_loss():
 
 @pytest.mark.p2
 def test_rewrite_whole_injects_context(store):
-    """重写 prompt 注入机制卡/世界观/人物卡/章末账本（不再真空重写）。"""
+    """重写 prompt 注入机制卡/世界观/人物卡/上一章账本（不再真空重写）。"""
     from novel_gen.store.schemas import World, Character
     world = World(world_view="万墟之上，下二戍，蚀雾弥漫。",
                   mechanism_rules="每死一次面板数字递减一，今日可死三次；第三次死亡后当日次数清零。")
     world.characters = [Character(name="陆沉", role="主角", desc="背负蚀痕的不死学徒")]
     store.save_world(world)
-    store.save_chapter_state({"chapter": 1, "numbers": ["今日可死次数：3/3"]})
+    # 账本章号 1 < 当前章 2 → 作为上一章承接状态注入
+    store.save_chapter_state({"chapter": 1, "numbers": ["今日可死次数：1/3"]})
+    llm = MagicMock()
+    llm.chat.return_value = "重写后的正文。\n【摘要】ok"
+    qc = QualityChecker(store.load_config(), llm, store)
+    qc._rewrite_whole(2, "第二章", "推进", "原正文" * 200,
+                      [{"type": "大改", "detail": "面板数字未结算推进"}])
+    user = llm.chat.call_args[0][1]
+    assert "金手指机制卡" in user
+    assert "每死一次面板数字递减一" in user          # 机制结算规则注入
+    assert "今日可死次数：1/3" in user                # 上一章账本数字注入
+    assert "人物卡" in user
+
+
+@pytest.mark.p2
+def test_rewrite_whole_skips_own_chapter_state(store):
+    """重写本章时，本章旧账本（章号 >= 当前章）不得当"上章承接"注入——
+    否则模型会把旧稿数字（如 2/3）当标准答案，数字回跳修不动。"""
+    from novel_gen.store.schemas import World
+    world = World(world_view="万墟之上", mechanism_rules="每死一次面板数字递减一")
+    store.save_world(world)
+    # 账本章号 = 1 = 当前章 → 是本章旧稿账本，不应注入
+    store.save_chapter_state({"chapter": 1, "numbers": ["今日可死次数：2/3"]})
     llm = MagicMock()
     llm.chat.return_value = "重写后的正文。\n【摘要】ok"
     qc = QualityChecker(store.load_config(), llm, store)
@@ -389,9 +411,8 @@ def test_rewrite_whole_injects_context(store):
                       [{"type": "大改", "detail": "面板数字未结算推进"}])
     user = llm.chat.call_args[0][1]
     assert "金手指机制卡" in user
-    assert "每死一次面板数字递减一" in user          # 机制结算规则注入
-    assert "今日可死次数：3/3" in user                # 上一章账本数字注入
-    assert "人物卡" in user
+    assert "上一章机制数字" not in user          # 本章旧账本 2/3 不得注入
+    assert "今日可死次数：2/3" not in user
 
 
 # ---------- 自动重写多轮（P0-3） ----------

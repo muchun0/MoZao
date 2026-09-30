@@ -4,7 +4,9 @@ export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
 export const getChapter = (pid, no) => request.get(`/projects/${pid}/chapters/${no}`)
 export const updateChapterContent = (pid, no, data) => request.put(`/projects/${pid}/chapters/${no}`, data)
 export const regenerateChapter = (pid, no) => request.post(`/projects/${pid}/chapters/${no}/regenerate`)
-export const rewriteChapter = (pid, no) => request.post(`/projects/${pid}/chapters/${no}/rewrite`)
+// 单章重写最多 3 轮质检重写（P0-3），耗时可达数分钟；全局 axios 超时 120s 不够，
+// 单独放大到 10 分钟，避免"后端已成功落盘、前端却超时报重生成失败"
+export const rewriteChapter = (pid, no) => request.post(`/projects/${pid}/chapters/${no}/rewrite`, null, { timeout: 600000 })
 export const batchGenerate = (pid, data) => request.post(`/projects/${pid}/chapters/batch`, data)
 export const getOutline = (pid) => request.get(`/projects/${pid}/outline`)
 export const saveOutline = (pid, data) => request.put(`/projects/${pid}/outline`, data)

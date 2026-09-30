@@ -388,7 +388,13 @@ async function regenChapter(c) {
     }
     loadChapters()
   } catch (e) {
-    ElMessage.error('重生成失败')
+    // 超时 ≠ 失败：重写 3 轮 LLM 调用可能超过 10 分钟前端等待，但后端会继续跑完落盘
+    if (e?.code === 'ECONNABORTED' || (e?.message || '').includes('timeout')) {
+      ElMessage.warning('重生成耗时较长，本次请求已超时；后端仍在处理，请稍后刷新页面查看最新内容')
+      setTimeout(loadChapters, 3000)
+    } else {
+      ElMessage.error('重生成失败')
+    }
   } finally { regenNo.value = 0 }
 }
 function addCharacter() {

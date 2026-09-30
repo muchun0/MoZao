@@ -328,6 +328,62 @@ def test_panel_progress_close_repeat_ok():
     assert qc._panel_progress_issues(content) == []
 
 
+# ---------- 面板事件锚点（2026-09-30：1/3 冗余显示误报修复） ----------
+
+@pytest.mark.p1
+def test_panel_no_event_repeat_is_minor():
+    """同值跨段复现但中间无结算事件（赶路/确认状态）→ 降级中改"冗余显示"，不再误报大改。
+
+    《万墟之上》21:52 版：第二次死亡后结算 1/3，之后赶路/章末备注栏变化时又显示
+    两次 1/3——数字本就不该变，属冗余显示而非结算未推进。
+    """
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    filler = ("他卷起袖子，蚀痕在小臂上蜿蜒，像一条暗紫色的蛛网。灰雾漫过脚踝，"
+              "他攥紧凿子柄，往墟口方向挪了两步，背篓的铁精在身后轻轻晃动，"
+              "矿渣从裂隙口簌簌落下来，砸在碎石堆上，又被风卷走。")
+    content = ("面板在黑暗里浮出来。今日可死次数：1/3。\n\n"
+               + filler * 2
+               + "\n\n他卷起袖子看了一眼面板：今日可死次数：1/3。\n\n"
+               + filler * 2
+               + "\n\n面板闪了一下，备注栏多出四个字，数字没变：今日可死次数：1/3。")
+    issues = qc._panel_progress_issues(content)
+    assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
+
+
+@pytest.mark.p1
+def test_panel_event_between_repeat_still_major():
+    """两次同值之间有死亡/复活等结算事件 → 仍判大改（真结算未推进）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("他死了第一次，视野角落亮起：今日可死次数：2/3。\n\n"
+               + _PAD_C + _PAD_D + _PAD_C
+               + "\n\n他死了第二次，视野角落仍显示：今日可死次数：2/3。\n\n"
+               + _PAD_D)
+    issues = qc._panel_progress_issues(content)
+    assert any("机制数字未结算推进" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_summary_consistency_mismatch():
+    """摘要提到的面板分数与正文最终结算不一致 → 大改（摘要未随正文更新）。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = ("他死了，面板跳出今日可死次数：1/3。复活后他往墟口爬，"
+               "视野角落的今日可死次数：1/3 不再变化。")
+    bad_sum = "陆沉死了一次，面板从 3/3 结算为 2/3，蚀痕延伸一寸。"
+    issues = qc._summary_consistency_issues(content, bad_sum)
+    assert any("摘要与正文最终状态不符" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+
+
+@pytest.mark.p1
+def test_summary_consistency_ok():
+    """摘要分数与正文最终一致 / 摘要无分数 → 不报。"""
+    qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
+    content = "他死了，面板跳出今日可死次数：1/3。"
+    assert qc._summary_consistency_issues(content, "陆沉死了一次，面板结算为 1/3。") == []
+    assert qc._summary_consistency_issues(content, "陆沉在墟底被蚀物袭击，生死未卜。") == []
+    assert qc._summary_consistency_issues(content, "") == []
+
+
 # ---------- 面板行不再作草稿分界标记（P1-2） ----------
 
 @pytest.mark.p2

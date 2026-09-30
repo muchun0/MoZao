@@ -240,7 +240,8 @@ def test_split_prompt_event_dedup_rule():
 
 
 def test_scene_prompt_prevention_rules():
-    """写场景 prompt 含事前硬规则：数字结算时机、术语锁定、同模式动作去重、死亡多样化。"""
+    """写场景 prompt 含事前硬规则：数字结算时机、术语锁定、同模式动作去重、死亡多样化、
+    面板显示纪律、状态度量单一口径、角色身份锁定、摘要覆盖最终状态。"""
     from novel_gen.pipeline.templates import scene_prompt
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
@@ -250,6 +251,10 @@ def test_scene_prompt_prevention_rules():
     assert "术语锁定" in user                           # 禁止'光盾'变'命执盾'
     assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
     assert "死亡多样化" in user                         # 连续死亡死因不同
+    assert "面板显示纪律" in user                       # 数字只在结算瞬间出现一次
+    assert "状态度量单一口径" in user                   # 蚀痕累积口径，禁止多处重新计量
+    assert "角色身份全局锁定" in user                   # 苏妄言青袍短发不得第二套描述
+    assert "摘要覆盖最终状态" in user                   # 摘要写最终结算数字，不写开篇状态
 
 
 def test_split_prompt_word_count_hardcap():

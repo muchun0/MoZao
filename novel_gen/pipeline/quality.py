@@ -16,6 +16,7 @@ ReaderAgent 内置结果自校验（模块4）：输出前自动校验业务质�
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from ..config import NovelConfig
@@ -51,6 +52,11 @@ _PANEL_KEYWORDS = ("次数", "进度", "蚀痕", "剩余", "面板")   # 数字�
 # 机制数字结算校验（REQ-章内自洽与机制账本·扩展）：面板数字跨段同值复现 = 结算未推进
 _PANEL_REPEAT_SPAN = 150    # 同一面板数字两次出现的最小字距（> 视为跨事件复现，而非紧邻强调）
 _PANEL_SPAN_LABEL = 40      # 面板标签参与定位的最大长度（防误把长句当标签）
+# 结算事件锚点：两次同值之间出现"死亡/复活/结算"等强结算词 = 真跨结算点
+# 同值复现 → 结算未推进（大改）；无事件词 = 同一结算值的冗余重复显示（中改，不阻断）。
+# 排除项（实测误命中）："死一次"（"再死一次"=预判非事件）、"咬穿"（回忆/复述他人死亡）、
+# "刷新"（"面板刷新的时候"=设定陈述）——真结算错误时模型通常写"他死了/死亡/复活/结算"。
+_PANEL_EVENT_ANCHORS = re.compile(r"死了|死亡|复活|苏醒|睁眼|醒来|结算|重置")
 
 # 自动重写轮数（REQ-章内自洽与机制账本·扩展）：检出问题后最多重写 N 轮，通过即停；
 # 全部失败才标记放行（不再"1 次重写不通过即静默交付"）
@@ -91,7 +97,7 @@ class QualityChecker:
 
         校验结果同时落 review.json（与既有格式兼容）与 trace。
         """
-        result = self.check(chapter_no, plan_title, plan_goal, content)
+        result = self.check(chapter_no, plan_title, plan_goal, content, summary)
         issues = result["issues"]
         rewritten_occurred = False
 
@@ -108,7 +114,7 @@ class QualityChecker:
                 rewritten_occurred = True
                 if not silent:
                     print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
-                result = self.check(chapter_no, plan_title, plan_goal, content)
+                result = self.check(chapter_no, plan_title, plan_goal, content, summary)
                 issues = result["issues"]
 
         # 不通过 → 自动重写（最多 _MAX_REWRITE 轮；每轮重写后复检，通过即停；
@@ -133,7 +139,7 @@ class QualityChecker:
                 summary = ns
             rewritten_occurred = True
             # 复检
-            result = self.check(chapter_no, plan_title, plan_goal, content)
+            result = self.check(chapter_no, plan_title, plan_goal, content, summary)
             issues = result["issues"]
             if not silent:
                 print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
@@ -150,7 +156,7 @@ class QualityChecker:
 
     # ---------- 校验 ----------
     def check(self, chapter_no: int, plan_title: str, plan_goal: str,
-              content: str) -> dict:
+              content: str, summary: str = "") -> dict:
         """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。"""
         issues: list[dict] = []
         score = 100
@@ -211,6 +217,14 @@ class QualityChecker:
         for it in self._length_audit_issues(content):
             issues.append(it)
             score -= 30
+
+        # 2.11 摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致
+        #    （《万墟之上》21:52 版：正文两次死亡最终 1/3，摘要却写"3/3→2/3"——摘要
+        #    未随正文更新，误导后续章节账本与读者）。摘要无分数 → 不报。
+        if summary:
+            for it in self._summary_consistency_issues(content, summary):
+                issues.append(it)
+                score -= 30
 
         # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
         for it in self._ending_issues(content):
@@ -425,10 +439,14 @@ class QualityChecker:
         与 _repeat_sentence_issues 的区别：这里按「标签+数值」对齐（不要求整句相同），
         且要求两次出现间隔超过 _PANEL_REPEAT_SPAN（过滤"数字跳了一下"式紧邻强调）。
         正常递减（3/3→2/3→1/3）不误报。
+
+        事件锚点（2026-09-30 修复）：两次同值之间若出现死亡/复活/刷新等结算事件词
+        → 真"跨结算点同值"→ 大改；若无事件词（如复活后确认、赶路途中再看一眼、
+        章末备注栏变化时数字本就不变）→ 属同一结算值的冗余重复显示 → 降级中改
+        （《万墟之上》21:52 版"1/3"三次显示被判大改属误报，本规则修复）。
         """
         if not content or len(content) < _PANEL_REPEAT_SPAN * 2:
             return []
-        import re
         pattern = re.compile(
             r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|蚀痕|剩余))\s*[：:]\s*"
             r"([0-9]+(?:\s*[／/]\s*[0-9]+)?)"
@@ -440,22 +458,38 @@ class QualityChecker:
             if not label or not num:
                 continue
             hits.setdefault((label, num), []).append(m.start())
-        bad: list[str] = []
+        major: list[str] = []   # 跨结算点同值（真未推进）
+        minor: list[str] = []   # 无事件冗余重复显示
         for (label, num), poss in hits.items():
             if len(poss) < 2:
                 continue
-            gaps = [b - a for a, b in zip(poss, poss[1:])]
-            if max(gaps, default=0) > _PANEL_REPEAT_SPAN:
-                bad.append(f"{label}：{num}")
-        if not bad:
-            return []
-        return [{
-            "type": "写作-机制数字未结算推进",
-            "detail": "面板数字「" + "；".join(bad[:3]) + "」在正文中跨段重复出现，"
-                      "数值未随事件结算推进（如死亡次数未递减）；"
-                      "数字必须按机制卡随事件严格增减，禁止同值跨段复现",
-            "level": "大改",
-        }]
+            for a, b in zip(poss, poss[1:]):
+                gap = b - a
+                if gap <= _PANEL_REPEAT_SPAN:
+                    continue
+                seg = content[a:b]
+                if _PANEL_EVENT_ANCHORS.search(seg):
+                    major.append(f"{label}：{num}")
+                else:
+                    minor.append(f"{label}：{num}")
+        out: list[dict] = []
+        if major:
+            out.append({
+                "type": "写作-机制数字未结算推进",
+                "detail": "面板数字「" + "；".join(major[:3]) + "」在死亡/结算事件后仍未变化，"
+                          "数值未随事件结算推进（如死亡次数未递减）；"
+                          "数字必须按机制卡随事件严格增减，禁止同值跨结算点复现",
+                "level": "大改",
+            })
+        if minor:
+            out.append({
+                "type": "写作-面板数字重复显示（冗余）",
+                "detail": "面板数字「" + "；".join(minor[:3]) + "」在无新事件时重复显示，"
+                          "稀释面板的紧张感；面板数字只在结算/刷新瞬间出现一次，"
+                          "后续确认状态改用叙述（如'他看了一眼面板，还剩一次'）",
+                "level": "中改",
+            })
+        return out
 
     def _ending_issues(self, content: str) -> list[dict]:
         """结尾完整性（确定性）：正文未以句末标点收尾 → 疑似在句子中途被截断。"""
@@ -528,6 +562,33 @@ class QualityChecker:
                 "level": "中改",
             }]
         return []
+
+    def _summary_consistency_issues(self, content: str, summary: str) -> list[dict]:
+        """摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致。
+
+        《万墟之上》21:52 版：正文死亡两次、最终结算 1/3，摘要却写"面板从3/3结算
+        为2/3"——摘要未随正文更新（只提取了第一次死亡）。正文无面板分数或摘要无
+        分数 → 不报（不误伤无机制数字的章节）。
+        """
+        if not content or not summary:
+            return []
+        import re as _re
+        panel = _re.findall(r"可死次数\s*[:：]\s*(\d+)\s*[／/]\s*(\d+)", content)
+        if not panel:
+            return []
+        final_body = "/".join(panel[-1])
+        sum_nums = _re.findall(r"(\d+)\s*[／/]\s*(\d+)", summary)
+        if not sum_nums:
+            return []
+        final_sum = "/".join(sum_nums[-1])
+        if final_sum == final_body:
+            return []
+        return [{
+            "type": "写作-摘要与正文最终状态不符",
+            "detail": f"摘要提到「{final_sum}」，而正文最终结算为「{final_body}」——"
+                      f"摘要未随正文更新，应覆盖本章最终面板状态（死亡次数递减到哪）",
+            "level": "大改",
+        }]
 
     def _salvage_single_draft(self, content: str) -> str:
         """同章多稿首尾拼接 → 确定性抢救出最完整的单一草稿；无拼接则原样返回。
@@ -692,7 +753,13 @@ class QualityChecker:
                 f"随事件严格结算推进，禁止同值跨段复现\n"
                 f"4. 正文（不含摘要）控制在约 {target} 字（±15% 以内）：不足则补足，"
                 f"超出则精炼删减；禁止超写注水——超长输出会被截断丢弃\n"
-                f"5. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要\n\n"
+                f"5. 面板数字（可死次数/蚀痕进度等）只在结算/刷新瞬间显示一次："
+                f"死亡/复活结算后显示新数字，其余场景改用叙述（如'他看了一眼面板，还剩一次'），"
+                f"禁止同一数值重复显示；蚀痕等身体状态用累积口径（'已至小臂中段，比上次多一寸'），"
+                f"禁止同一状态每处重新计量\n"
+                f"6. 同一角色本章外貌/服装/代称全局唯一（不得同一角色两套描述两版本）\n"
+                f"7. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要；"
+                f"摘要必须写本章最终结算后的面板状态（如'死亡次数减至 1/3'）\n\n"
                 f"【当前正文】\n{content}"
             )
             text = self.llm.chat(

@@ -331,10 +331,56 @@ def test_split_prompt_event_dedup_rule():
     assert "第一步：规划本章事件清单" in user          # 事件清单先行（设计重构根因）
     assert "scene_event_ref" in user                    # 场景逐字引用事件编号（防措辞漂移）
     assert "场景数 = 事件数" in user                    # 1 事件 = 1 场景
+    assert "conflict" in user and "action" in user      # 事件结构化字段（语义槽位去重）
+    assert "final_state" in user                        # 事件结束状态增量标注
     assert "事件去重与机制规划硬规则" in user
     assert "同类事件本章至多一次" in user              # 防"三次救苏妄言"循环
     assert "机制数字规划到场景" in user                # 每场景结束时标注 X/X
     assert "专有名词锁定" in user                       # 光盾/学宫短褐 称谓固定
+
+
+def test_scene_events_semantic_slot_dedup():
+    """事件语义槽位互斥（2026-10-01）：同冲突对象+同动作=重复事件（救苏妄言石殿版/墟口外版），
+    即使 desc 措辞/地点不同；不同动作/不同冲突对象不误报。"""
+    from novel_gen.pipeline.stages import _scene_events_semantically_overlap
+    # 同冲突（三头赤尉）+同动作（救援），地点不同 → 重复（4500 字版根因形态）
+    assert _scene_events_semantically_overlap([
+        {"id": "事件2", "desc": "陆沉在穹顶石殿引开赤尉把苏妄言拖进窄缝", "conflict": "三头赤尉", "action": "救援"},
+        {"id": "事件3", "desc": "陆沉在墟口外碎石坡从围阵中拽走苏妄言", "conflict": "三头赤尉", "action": "救援"},
+    ]) is True
+    # 无结构化字段时从 desc 兜底提取（救 vs 围）→ 救援/围攻不同动作不误报
+    assert _scene_events_semantically_overlap([
+        {"id": "事件1", "desc": "陆沉被灰卒咬穿喉咙，面板3→2，复活"},
+        {"id": "事件2", "desc": "陆沉在石殿救出苏妄言"},
+    ]) is False
+    # 同动作但冲突对象不同（救苏妄言 vs 救受伤弟子）→ 不误报
+    assert _scene_events_semantically_overlap([
+        {"id": "事件2", "desc": "救苏妄言", "conflict": "苏妄言", "action": "救援"},
+        {"id": "事件3", "desc": "救受伤弟子", "conflict": "受伤弟子", "action": "救援"},
+    ]) is False
+
+
+def test_long_sentence_overlap_ratio():
+    """相邻场景长段复刻率（2026-10-01）：场景 2 含上一场景原样长句（局部复刻）→ 命中；
+    全新推进 → 0。"""
+    from novel_gen.pipeline.stages import _long_sentence_overlap_ratio
+    prev = "陆沉伏在墟口往下看，苏妄言被三只赤尉围住，他攥紧短凿，心跳撞着肋骨。"
+    # 场景 2 复刻了上一场景的整句（原样 ≥15 字）+ 新内容 = 局部复刻
+    cur_bad = (
+        "窄缝里一片漆黑，他听见自己的心跳，也听见苏妄言的喘息。"
+        "陆沉伏在墟口往下看，苏妄言被三只赤尉围住，他攥紧短凿，心跳撞着肋骨。"
+        "剧痛从喉管炸开，温热的血涌进气管，视野碎成一片灰白。"
+        "黑暗，冷，矿壁的凉意贴着后背，他猛地睁眼。"
+    )
+    assert _long_sentence_overlap_ratio(prev, cur_bad) > 0.2
+    # 全新推进（仅个别短词相同）→ 0
+    cur_new = (
+        "陆沉已经冲到坡底，一把拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
+        "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。"
+    )
+    assert _long_sentence_overlap_ratio(prev, cur_new) < 0.2
+    # 整段复刻 → 高复刻率
+    assert _long_sentence_overlap_ratio(prev, prev) >= 1.0
 
 
 def test_scene_prompt_prevention_rules():
@@ -343,7 +389,7 @@ def test_scene_prompt_prevention_rules():
     from novel_gen.pipeline.templates import scene_prompt
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
-             "anchors": [], "target_words": 1200}
+             "anchors": [], "target_words": 1200, "final_state": "面板 2/3，蚀痕已越肘弯"}
     _, user = scene_prompt(cfg, 1, "第一章", 1, scene, "前情记忆", "", "")
     assert "机制数字结算时机" in user                   # 死亡瞬间 vs 复活后 数字口径
     assert "术语锁定" in user                           # 禁止'光盾'变'命执盾'
@@ -355,6 +401,7 @@ def test_scene_prompt_prevention_rules():
     assert "角色身份全局锁定" in user                   # 苏妄言青袍短发不得第二套描述
     assert "摘要覆盖最终状态" in user                   # 摘要写最终结算数字，不写开篇状态
     assert "已发生事件禁止重复" in user                 # 本章已发生事件不得再次描写（两版本）
+    assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入（防蚀痕无增量）
 
 
 def test_split_prompt_word_count_hardcap():

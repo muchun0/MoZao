@@ -422,6 +422,33 @@ def test_consistency_llm_event_duplicate_detected():
     assert any("事件重复" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
 
 
+@pytest.mark.p1
+def test_rewrite_whole_injects_event_dedup_rules():
+    """整章重写注入"每事件只写一遍"纪律：质检含事件重复/两版本 → 重写 prompt 含
+    删除重复版本、事件间因果推进、状态增量要求（4500 字版重写 3 轮修不掉根因）。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: "重写后的正文。\n\n【摘要】最终 2/3"
+    qc = QualityChecker(cfg, llm, None)
+    issues = [
+        {"type": "自相矛盾-事件重复", "detail": "同一事件两版本：救苏妄言石殿版/墟口外版", "level": "大改"},
+        {"type": "写作-字数超出目标", "detail": "正文 4500 字", "level": "中改"},
+    ]
+    out = qc._rewrite_whole(1, "第一章", "目标", "旧正文", issues)
+    assert out
+    prompt = llm.chat.call_args.args[1] if llm.chat.call_args.args else llm.chat.call_args[1]
+    assert "删除重复的事件版本" in prompt
+    assert "禁止回到上一事件开头状态重演" in prompt
+    assert "每个事件的结束状态" in prompt and "增量变化" in prompt
+    # 无事件重复问题时：不注入该纪律块
+    llm2 = MagicMock()
+    llm2.chat.side_effect = lambda *a, **k: "重写后的正文。\n\n【摘要】最终 2/3"
+    qc2 = QualityChecker(cfg, llm2, None)
+    qc2._rewrite_whole(1, "第一章", "目标", "旧正文", [{"type": "写作-字数超出目标", "detail": "4500 字", "level": "中改"}])
+    p2 = llm2.chat.call_args.args[1] if llm2.chat.call_args.args else llm2.chat.call_args[1]
+    assert "删除重复的事件版本" not in p2
+
+
 # ---------- 面板行不再作草稿分界标记（P1-2） ----------
 
 @pytest.mark.p2

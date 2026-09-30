@@ -969,16 +969,18 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
         "== 第一步：规划本章事件清单（events，N 个事件 = N 个场景） ==\n"
-        "每个事件用一句话写清『人物 + 冲突对象 + 动作 + 结果』（如\"陆沉在铁精矿脉采掘时被灰卒咬穿喉咙，"
-        "面板 3→2，复活\"）。硬规则：\n"
-        "1. 事件必须两两互斥：同一『人物+冲突对象+动作+结果』本章至多一次；"
+        "每个事件输出结构化字段：id（事件编号）、desc（一句话：人物 + 冲突对象 + 动作 + 结果）、"
+        "conflict（冲突对象，如\"三头赤尉\"）、action（动作类型，如\"救援/围攻/击杀/逃离\"）、"
+        "final_state（本事件结束时的机制状态增量，如\"面板 2/3，蚀痕已越肘弯比上次多一寸\"）。"
+        "硬规则：\n"
+        "1. 事件必须两两互斥：同一『冲突对象 + 动作类型』本章至多一次（如只救一次、只被围一次）；"
         "【本章核心事件】必须被完整覆盖且只覆盖一次\n"
         "2. 事件之间必须因果推进：前一个事件的结果 = 后一个事件的起点；"
         "禁止第 2 个事件重新回到第 1 个事件的开头状态重演一遍（哪怕换了地点、换了措辞）\n"
         "3. 禁止把同一事件拆成两个事件：能发生的独立事件不足时，宁可少拆（最少 2 个场景），"
         "也禁止把\"被围-犹豫-冲上去救\"这类同一过程拆成多个场景\n"
-        "4. 机制数字规划到事件：含结算的事件（死亡-复活、次数增减、进度推进）写明结束时机制数字为 X/X；"
-        "全章机制数字序列只允许严格递减（或按机制卡重置），禁止两个事件结束时间一数值\n"
+        "4. 机制数字规划到事件：final_state 必须写明事件结束时机制数字 X/X 与累积状态位置"
+        "（面板/蚀痕/伤势），且每个事件之间必须有增量变化——禁止两个事件结束时间一数值/同一状态\n"
         "5. 同类事件本章至多一次：同一类剧情动作（救援、被围、死亡-复活、追击、对峙）只允许完整发生一次；"
         "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现\n\n"
         "== 第二步：按事件清单拆场景（scenes） ==\n"
@@ -1018,7 +1020,8 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "【本章人物行动表】再为本章出场人物规划行动表（并入本 JSON 的 characters_action 字段），"
         "每人包含：name（人物名）、goal（本章目标，具体可行动）、key_actions（2-4 个动词驱动的关键行动，"
         "能推进剧情或冲突）、emotion（情绪状态一句话）、dialogue_intent（对话意图：想通过对话达成/试探/隐瞒什么）。\n\n"
-        '输出 JSON：{"events": [{"id": "事件1", "desc": "..."}, ...], '
+        '输出 JSON：{"events": [{"id": "事件1", "desc": "...", "conflict": "...", '
+        '"action": "...", "final_state": "..."}, ...], '
         '"scenes": [{"location": "...", "scene_event_ref": "事件N", "emotion": "...", '
         '"anchors": ["..."], "time_marker": "...", "target_words": 1200}...], '
         '"characters_action": [{"name": "...", "goal": "...", '
@@ -1052,6 +1055,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     anchors = scene.get("anchors", [])
     anchors_str = "；".join(anchors) if anchors else "（无特殊锚点）"
     scene_ev = str(scene.get("event") or "").strip()
+    final_state = str(scene.get("final_state") or "").strip()
     force_block = (
         "\n本场景重试强制规则（上一条输出与上一场景高度重复，已作废）：\n"
         "1. 本场景正文必须以『上一场景结局之后』的时点/动作为起点续写，"
@@ -1063,6 +1067,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【地点】{scene.get('location', '')}\n"
         f"【本场景唯一事件（场景只写这一个事件，从上一场景结局之后开始；"
         f"上一场景的事件已完整发生并结束，禁止重演/复述）】{scene_ev if scene_ev else scene.get('event', '')}\n"
+        f"{'【本场景结束时的机制状态（final_state，正文必须落实该增量，'
+        f'禁止与上一场景结束状态相同——蚀痕/面板/伤势每场景必须有推进）】' + final_state + '\n' if final_state else ''}"
         f"【情绪目标】{scene.get('emotion', '')}\n"
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"

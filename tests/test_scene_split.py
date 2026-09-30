@@ -360,6 +360,17 @@ def test_scene_events_semantic_slot_dedup():
         {"id": "事件2", "desc": "救苏妄言", "conflict": "苏妄言", "action": "救援"},
         {"id": "事件3", "desc": "救受伤弟子", "conflict": "受伤弟子", "action": "救援"},
     ]) is False
+    # 2026-10-01 第四版根因形态：同一"救苏妄言"事件，敌人措辞不同
+    # （'三只灰卒' vs '三只赤尉伴生灰卒'）→ 人物优先判重（旧版按敌人词双漏检）
+    assert _scene_events_semantically_overlap([
+        {"id": "事件2", "desc": "陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、掰开咬住她左臂的灰卒，苏妄言获救", "action": "救援"},
+        {"id": "事件3", "desc": "苏妄言被三只赤尉伴生灰卒围在巨石旁，陆沉冲出去用铁镐砸碎蚀核救她，苏妄言再次获救", "action": "救援"},
+    ]) is True
+    # 同一人物但动作不同（救 vs 察觉）→ 不误报
+    assert _scene_events_semantically_overlap([
+        {"id": "事件2", "desc": "陆沉救出苏妄言", "action": "救援"},
+        {"id": "事件3", "desc": "苏妄言察觉陆沉死而复生的异常", "action": "察觉"},
+    ]) is False
 
 
 def test_long_sentence_overlap_ratio():
@@ -432,6 +443,19 @@ def test_scene_text_rewrites_event():
         "面板浮现：今日可死次数：2/3。"
     )
     assert _scene_text_rewrites_event(text_death, done) == ""
+    # 2026-10-01 第四版根因形态：场景正文复写"救苏妄言"但敌人措辞不同
+    # （赤尉伴生灰卒 vs 灰卒）→ 人物优先命中；纯撤离场景不误报
+    done4 = ["陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、苏妄言获救"]
+    text_dup4 = (
+        "墟口外的空地上，苏妄言被三只赤尉伴生灰卒围在巨石旁，"
+        "陆沉再次冲出去，用铁镐砸碎蚀核救她，她脱险后喘着气看他。"
+    )
+    assert _scene_text_rewrites_event(text_dup4, done4) == done4[0]
+    text_retreat = (
+        "陆沉拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
+        "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。"
+    )
+    assert _scene_text_rewrites_event(text_retreat, done4) == ""
 
 
 def test_scene_prompt_forbid_event():

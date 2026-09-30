@@ -552,6 +552,9 @@ class ChapterWriter:
                 fallback_events = split_data.get("events") or []
                 scenes = split_data.get("scenes", [])
                 action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
+                if not silent:
+                    print(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
+                          f"{len(fallback_events)} 个事件")
             # 2026-09-30 拆场景设计重构（用户指出"一直在打补丁、根因在场景拆分设计"）：
             # 场景拆分 = 事件分配——LLM 先规划互斥事件清单 events，场景 scene_event_ref 逐字
             # 引用事件编号。这里把引用展开为事件原文（sc["event"]），互斥由「事件清单两两
@@ -914,14 +917,16 @@ _SCENE_RESCUE_VERBS = ("救", "引开", "砸", "挡", "扑", "迎")
 
 
 def _event_conflict(text: str) -> str:
-    """提取文本中的冲突对象：优先敌人名词（赤尉/灰卒/蚀兽/蚀卒），其次人物
-    （苏妄言/学员/弟子）。用于场景正文与已完成事件的事件槽位比对。"""
-    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", text or "")
-    if m:
-        return m.group(0)
+    """提取事件槽位核心对象：优先被救/受害人物（苏妄言/学员/弟子/少年/少女），
+    无人物才取敌人词（赤尉/灰卒/蚀兽/蚀卒）；只返回核心词（去量词）——
+    敌人措辞（'三只灰卒' vs '三只赤尉伴生灰卒'）不参与精确比对，
+    同一人物+同一救援动作即判复写（第四版救人岩台版/墟口外版即此类，敌人词不同双漏检）。"""
     m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(苏妄言|学员|弟子|少年|少女)", text or "")
     if m:
-        return m.group(0)
+        return m.group(2)
+    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", text or "")
+    if m:
+        return m.group(2)
     return ""
 
 
@@ -989,25 +994,29 @@ def _scene_event_ordinals(text: str) -> set[str]:
 
 
 def _event_semantic_slots(desc: str, conflict: str = "", action: str = "") -> tuple[str, str]:
-    """提取事件的语义槽位（冲突对象, 归一化动作）。
+    """提取事件的语义槽位（核心对象, 归一化动作）。
 
-    2026-10-01 事件互斥升级：文本相似度挡不住"同冲突对象+同动作、换地点/换措辞"
-    的重复（4500 字版"救苏妄言"石殿版/墟口外版即此类）。事件 desc 或结构化
-    conflict/action 字段任一来源，归一化后两事件（conflict, action）相同 = 重复事件。
+    2026-10-01 改为「被救/受害人物优先」：同一人物+同一动作即判重复（第四版
+    '救苏妄言'岩台版/墟口外版：敌人措辞'三只灰卒'vs'三只赤尉伴生灰卒'，旧版按敌人词
+    比对双漏检——事件清单互斥与场景正文复写检测全失效）。desc 无人物时才回退敌人词
+    （赤尉/灰卒/蚀兽/蚀卒）；只取核心词（去量词）。动作归一化不变。
     """
     import re as _re
-    conflict_v = (conflict or "").strip()
+    conflict_v = ""
     action_v = (action or "").strip()
-    if not conflict_v and desc:
-        # 从 desc 兜底取冲突对象：常见敌人/对象名词（赤尉/灰卒/蚀兽/学员/苏妄言 等）
-        m = _re.search(r"(三头?|三只?|几只?|一头?|一只?|一头?|个)?(赤尉|灰卒|蚀兽|蚀卒|学员|弟子|苏妄言|少年|少女|光盾)", desc)
-        if m:
-            conflict_v = m.group(0)
     if not action_v and desc:
         for w, norm in _SCENE_ACTION_NORM.items():
             if w in desc:
                 action_v = norm
                 break
+    src = desc or ""
+    m = _re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(苏妄言|学员|弟子|少年|少女)", src)
+    if m:
+        conflict_v = m.group(2)
+    else:
+        m = _re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", src or conflict)
+        if m:
+            conflict_v = m.group(2)
     return conflict_v, action_v
 
 

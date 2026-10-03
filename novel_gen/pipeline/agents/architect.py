@@ -23,13 +23,24 @@ class ArchitectAgent(BaseAgent):
 
     def __init__(self, cfg, llm, store):
         super().__init__(cfg, llm, store)
-        persona = self.persona_prefix()
-        self._outline_gen = OutlineGenerator(cfg, llm, store, role_prompt=persona)
-        self._world_gen = WorldGenerator(cfg, llm, store, role_prompt=persona)
+        arch_persona = self.persona_prefix()
         # 多Agent生产层细分：主题人物 / 世界观规则 / 节奏伏笔 三个专项 Agent
         self.theme = ThemeCharacterAgent(cfg, llm, store)
         self.rules = WorldRulesAgent(cfg, llm, store)
         self.pacing = PacingAgent(cfg, llm, store)
+        # 接线（P0-2）：三个细分 Agent 内部零 LLM 调用，其 persona（角色 prompt + 专属
+        # 技能）此前从未被读取。这里把细分角色要求作为 system 上下文注入到对应的 LLM
+        # 生成阶段，让模型生成时遵守细分职责，再由 apply_anchor/plan_* 确定性兜底规范。
+        #   - 世界观阶段：架构师 + 主题人物 + 世界观规则（theme/world_rules 均产出 World 字段）
+        #   - 大纲阶段：架构师 + 节奏伏笔（pacing 产出 Outline.key_nodes/volume_pacing）
+        world_persona = "\n\n".join(
+            p for p in [arch_persona, self.theme.persona_prefix(), self.rules.persona_prefix()] if p
+        )
+        outline_persona = "\n\n".join(
+            p for p in [arch_persona, self.pacing.persona_prefix()] if p
+        )
+        self._outline_gen = OutlineGenerator(cfg, llm, store, role_prompt=outline_persona)
+        self._world_gen = WorldGenerator(cfg, llm, store, role_prompt=world_persona)
 
     def run_outline(self, research: ResearchReport | None, silent: bool = False) -> Outline:
         outline = self.store.load_outline()

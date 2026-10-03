@@ -25,7 +25,8 @@ from .templates import (continue_outline_prompt, expand_chapter_prompt,
 from .trace import TraceRecorder
 from .editor import EditorReviewer
 from .orchestrator import Orchestrator
-from .agents import ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent, StylistAgent
+from .agents import (ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent,
+                     ReaderAgent, StylistAgent)
 from webapp.logger import get_logger
 
 logger = get_logger("pipeline")
@@ -76,6 +77,9 @@ class NovelPipeline:
         self.architect = ArchitectAgent(cfg, llm, store)
         self.writer = WriterAgent(cfg, llm, store, self.memory)
         self.reviewer = ReviewerAgent(cfg, llm, store)
+        # P0-1：读者视角 Agent 作为正式角色成员实例化（正文生成侧已由 writer 注入其 persona，
+        # 这里补充章间校验 `_run_verify` 的读者视角审校，见 _run_verify）
+        self.reader = ReaderAgent(cfg, llm, store)
         # 写作风格角色（风格师）：项目选了风格角色时承载其文风人设与挂载技能
         self.stylist = StylistAgent(cfg, llm, store)
         # 兼容旧引用（现有方法继续用）
@@ -494,9 +498,16 @@ class NovelPipeline:
             chapter_text = ch.content if (ch and ch.content) else ""
             if getattr(self.cfg, "verify_combined", True):
                 from .templates import verify_combined_prompt
+                # P0-1：把 ReaderAgent 角色底色注入读者视角检查（persona 含 reader.md +
+                # reader 专属技能，DB 不可用时返回空串不影响）
+                try:
+                    reader_persona = self.reader.persona_prefix()
+                except Exception:
+                    reader_persona = ""
                 sys_v, user_v = verify_combined_prompt(
                     self.cfg, chapter_no,
                     [s["summary"] for s in recent], world_text, chapter_text[:2000],
+                    reader_persona=reader_persona,
                 )
                 raw = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=1600)
                 data = _parse_json_obj(raw)

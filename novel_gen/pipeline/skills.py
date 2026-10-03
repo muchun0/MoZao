@@ -19,14 +19,19 @@ Agent × Skill 统一注入管线（REQ-技能统一.md，阶段一）。
 from __future__ import annotations
 
 # 角色 → 默认适用阶段（联动接线点；未知角色回退空列表=全阶段生效）
+# 生产层细分 Agent（theme_character/world_rules/pacing）由 ArchitectAgent 编排，
+# 其 persona_prefix() 会经此处路由挂载专属技能；validator 不继承 BaseAgent（纯逻辑校验），
+# 不参与技能注入，故不再登记。
 STAGE_BY_ROLE: dict[str, list[str]] = {
     "researcher": ["research"],
     "architect": ["outline", "world"],
+    "theme_character": ["world"],
+    "world_rules": ["world"],
+    "pacing": ["outline", "world"],
     "writer": ["chapter"],
     "reviewer": ["review"],
     "reader": ["chapter", "review"],
     "stylist": ["chapter", "world"],
-    "validator": ["review"],
 }
 
 

@@ -1185,9 +1185,23 @@ def verify_prompt(cfg, recent_summaries, world):
     return system, user
 
 
-def verify_combined_prompt(cfg, chapter_no, recent_summaries, world_text, chapter_text=""):
+def verify_combined_prompt(cfg, chapter_no, recent_summaries, world_text, chapter_text="",
+                           reader_persona=""):
     """REQ-token优化 P1-5：一致性/读者/编辑三类校验合并为一次调用，替代 3 连独立调用，
-    输入不再把世界观与摘要重复喂 3 遍。"""
+    输入不再把世界观与摘要重复喂 3 遍。
+
+    P0-1：reader_persona 传入时，把 ReaderAgent 的角色底色（reader.md + reader 专属技能）
+    注入到 reader 检查要求之前，让读者视角审校遵循「读者四问 + 分级 + 弃书红线」；
+    不改变输出 JSON schema，保持单次调用（不增 token 调用数）。
+    """
+    reader_block = ""
+    if reader_persona:
+        reader_block = (
+            f"\n\n【读者视角检查要求（角色底色）】\n{reader_persona}\n"
+            "以下 reader 检查必须按上述读者角色执行：只查『读者会不会爽/会不会追/会不会弃书』，"
+            "不查逻辑硬伤；按小改/中改/大改标级，命中弃书红线（主角全程被动/整章无情绪高点/"
+            "章末流水账/情绪与处境严重不符）必须标大改。"
+        )
     system = (
         "你是小说 continuity 总编辑。请基于世界观设定与最近几章摘要，"
         "一次性完成三类检查并输出一个 JSON。只输出 JSON，不要额外解释。"
@@ -1201,8 +1215,9 @@ def verify_combined_prompt(cfg, chapter_no, recent_summaries, world_text, chapte
         + (f"【最新一章正文】\n{chapter_text[:2000]}\n\n" if chapter_text else "")
         + "请执行三类检查：\n"
         "1. consistency：主角人设/已埋伏笔/时间线/人物关系是否前后一致\n"
-        "2. reader：读者视角是否有信息传递问题（哪里看不懂/人物分不清/默认读者知道没讲过的事）\n"
-        "3. editor：编辑视角给最新一章评分（满分10）与弃书风险（低/中/高）\n\n"
+        "2. reader：读者视角是否有信息传递问题（哪里看不懂/人物分不清/默认读者知道没讲过的事）"
+        + reader_block
+        + "\n3. editor：编辑视角给最新一章评分（满分10）与弃书风险（低/中/高）\n\n"
         '输出 JSON：{"issues": [{"problem": "...", "suggestion": "..."}], '
         '"reader": {"confused": bool, "issues": [{"problem": "...", "suggestion": "..."}]}, '
         '"editor": {"score": 0-10, "reader_churn_risk": "低/中/高", '

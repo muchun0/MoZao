@@ -219,6 +219,22 @@ class ProjectStore:
         d = self._read_json(self.research_path(), None)
         return ResearchReport.from_dict(d) if d else None
 
+    # ---------- 拆书库回流素材（P0-3） ----------
+    # 由 webapp 侧在调研前把同题材爆款拆书条目格式化为纯文本写入，
+    # ResearchEngine 读取并并入调研素材（保持 novel_gen 不依赖 webapp 的分层）。
+    def teardown_material_path(self) -> Path:
+        return self.dir / "teardown_material.txt"
+
+    def save_teardown_material(self, text: str) -> None:
+        (self.dir / "teardown_material.txt").write_text(text or "", encoding="utf-8")
+
+    def load_teardown_material(self) -> str:
+        p = self.dir / "teardown_material.txt"
+        try:
+            return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        except Exception:
+            return ""
+
     # ---------- 大纲 ----------
     def outline_path(self) -> Path:
         return self.dir / "outline.json"

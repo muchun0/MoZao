@@ -778,6 +778,46 @@ def _settle_price(store: ProjectStore) -> None:
                     db.get_user(uid)["balance"])
     except Exception:
         logger.exception("结算异常: project=%s", store.dir.name)
+def _inject_teardown_material(store: ProjectStore, cfg) -> None:
+    """P0-3 拆书库回流：调研前把同题材爆款拆书条目格式化为纯文本写入 store，
+    供 ResearchEngine 读取并入调研素材（保持 novel_gen 不依赖 webapp 的分层）。
+    失败静默降级；空库/无同题材则写空（不注入任何素材）。"""
+    try:
+        genre = (getattr(cfg, "genre", "") or "").strip()
+        items = db.list_teardowns(genre=genre, page=1, page_size=5).get("items", [])
+        blocks: list[str] = []
+        for it in items:
+            detail = db.get_teardown(it.get("id"))
+            if not detail:
+                continue
+            content = detail.get("content")
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except Exception:
+                    content = {}
+            if not isinstance(content, dict):
+                content = {}
+            parts = [p for p in [(detail.get("title") or "").strip(),
+                                 (detail.get("summary") or "").strip()] if p]
+            for k in ("opening_strategy", "opening", "pacing"):
+                v = content.get(k)
+                if isinstance(v, str) and v.strip():
+                    parts.append(f"{k}：{v.strip()}")
+            for k in ("trends", "plot_patterns", "styles", "avoid",
+                      "hooks", "takeaways", "dialogue"):
+                v = content.get(k)
+                if isinstance(v, list) and v:
+                    parts.append(f"{k}：" + "；".join(str(x) for x in v if str(x).strip()))
+            if parts:
+                blocks.append("\n".join(parts))
+        store.save_teardown_material("\n\n---\n\n".join(blocks))
+        if blocks:
+            logger.info("拆书库回流素材注入完成: project=%s genre=%s %d 条", store.dir.name, genre, len(blocks))
+    except Exception:
+        logger.exception("拆书库回流素材注入失败（降级跳过）: project=%s", store.dir.name)
+
+
 def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     """只跑 research → outline → editor_review → world，不写正文。
     完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
@@ -789,6 +829,8 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
                 store.dir.name, cfg.effective_title(), trace_id)
     try:
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
+        _inject_teardown_material(store, cfg)
         pipeline.run_research()
         # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
         teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
@@ -866,6 +908,8 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             existing_outline = store.load_outline()
             has_outline = bool(existing_outline and existing_outline.chapters)
             if _research_needed(cfg, has_outline):
+                # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
+                _inject_teardown_material(store, cfg)
                 pipeline.run_research()
                 # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
                 teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)

@@ -44,9 +44,17 @@ class ResearchEngine:
         return results
 
     def _material_text(self, results: list[SourceResult]) -> str:
-        if not results:
-            return "（暂无外部素材，请基于你对网络小说市场的既有认知作答。）"
-        return "\n\n".join(r.to_text() for r in results)
+        base = "（暂无外部素材，请基于你对网络小说市场的既有认知作答。）" if not results \
+            else "\n\n".join(r.to_text() for r in results)
+        # P0-3 拆书库回流：webapp 在调研前把同题材爆款拆书条目写入 store，作为素材并入。
+        # 读取失败/为空静默忽略，绝不阻塞调研。
+        try:
+            td = self.store.load_teardown_material()
+            if td:
+                base += "\n\n【爆款拆书库回流素材（已沉淀的同题材爆款共性拆解，可直接借鉴手法）】\n" + td
+        except Exception:
+            pass
+        return base
 
     # ---------- 主流程 ----------
     def run(self, silent: bool = False) -> ResearchReport:

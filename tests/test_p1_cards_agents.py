@@ -151,14 +151,53 @@ def test_architect_has_opening_ending(store):
 
 @pytest.mark.p1
 def test_memory_injects_cards(store):
-    """P1：物品/等级/结局卡进强约束区。"""
+    """P1（P2 修正后）：物品/等级进注入；结局卡末 5 章才注入（防前期预知终局）。"""
+    cfg = store.load_config()
+    cfg.total_words = 100_000
+    cfg.chapter_words = 1000
+    store.save_config(cfg)      # num_chapters = ceil(100000/1000) = 100（末 5 章窗口 = 95+）
     cfg = store.load_config()
     world = _world_with_cards()
     mem = Memory(store, cfg.memory_window)
+    # 第 3 章：物品/等级注入；结局卡不注入（非末 5 章）
     ctx = mem.build_context(world, up_to_chapter=3, chapter_goal="目标")
-    assert "物品/道具卡" in ctx
+    assert "本章相关物品/道具卡" in ctx
     assert "赤阳果" in ctx
     assert "等级/境界体系" in ctx
     assert "炼气三重" in ctx
-    assert "结局卡" in ctx
-    assert "放弃金手指" in ctx
+    assert "结局卡" not in ctx          # 末 5 章才注入
+    assert "放弃金手指" not in ctx
+    # 第 99 章：结局卡注入（进入末 5 章窗口）
+    ctx2 = mem.build_context(world, up_to_chapter=99, chapter_goal="目标")
+    assert "结局卡" in ctx2
+    assert "放弃金手指" in ctx2
+
+
+@pytest.mark.p2
+def test_setting_cards_items_terminology_trimming(store):
+    """P2 修正：物品/术语卡走 setting_cards 分章命中，命中才注入（不再无条件全量强约束）。"""
+    from novel_gen.pipeline.setting_cards import build_setting_cards
+    from novel_gen.store.schemas import World, ItemCard, TerminologyItem, Outline, ChapterPlan
+    cfg = store.load_config()
+    world = World(
+        world_view="设定",
+        items=[ItemCard(name="赤阳果", effect="回复体力"), ItemCard(name="断刀", effect="攻击")],
+        terminology=[TerminologyItem(name="墟口", aliases=["墟口门"]),
+                     TerminologyItem(name="天元", aliases=["天元界"])],
+    )
+    outline = Outline(title="T", intro="I", chapters=[
+        ChapterPlan(no=1, title="一", goal="用赤阳果救主角，经墟口离开"),
+        ChapterPlan(no=2, title="二", goal="决斗"),
+    ])
+    data = build_setting_cards(store, world, outline)
+    assert data, "索引应构建"
+    ch1 = next(c for c in data["chapters"] if c["no"] == 1)
+    assert "赤阳果" in ch1["items"]
+    assert "墟口" in ch1["terminology"]
+    assert "断刀" not in ch1["items"]       # 第1章不涉及断刀
+    store.save_setting_cards(data)
+    mem = Memory(store, cfg.memory_window)
+    ctx = mem.build_context(world, up_to_chapter=1, chapter_goal="用赤阳果救主角，经墟口离开")
+    assert "赤阳果" in ctx
+    assert "断刀" not in ctx                # 本章未命中断刀，不注入
+    assert "墟口" in ctx

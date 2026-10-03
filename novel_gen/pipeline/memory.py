@@ -89,6 +89,9 @@ class Memory:
             sub_locations = _scd.get("locations") if sc_ch else None
             sub_factions = _scd.get("factions") if sc_ch else None
             sub_fs = _scd.get("foreshadows") if sc_ch else None
+            # P2 修正：物品/术语卡也走分章命中（如生物/地点/势力，命中才注入，不再无条件进强约束区）
+            sub_items = _scd.get("items") if sc_ch else None
+            sub_terminology = _scd.get("terminology") if sc_ch else None
             reveals = getattr(world, "world_reveals", None) or []
             if reveals:
                 # 跟随主角视角逐步展开，三段式：潜伏期 → 铺垫期 → 揭示期。
@@ -231,6 +234,53 @@ class Memory:
                         w_normal.append("【势力卡·成员行为须符合此卡】\n" + "；".join(f_lines))
             except Exception:
                 pass
+            # P2 修正：物品卡（防万能工具）按分章命中注入（sub_items=None=索引缺失回退全量；
+            # 空列表=本章无命中不注入）；不再是"永不裁剪"强约束区
+            try:
+                items = getattr(world, "items", None) or []
+                if sub_items is not None:
+                    items = [it for it in items if getattr(it, "name", "") in sub_items]
+                if items:
+                    item_lines = []
+                    for it in items:
+                        _i = getattr(it, "name", "") or ""
+                        _eff = getattr(it, "effect", "") or ""
+                        _cost = getattr(it, "cost", "") or ""
+                        _res = getattr(it, "restriction", "") or ""
+                        if _i:
+                            item_lines.append(
+                                f"{_i}｜作用：{_eff}｜代价：{_cost}｜限制：{_res}"
+                            )
+                    if item_lines:
+                        w_normal.append(
+                            "【本章相关物品/道具卡·静态属性不得违背，不得写成万能工具，使用须付出代价并受限制约束】\n"
+                            + "\n".join(item_lines)
+                        )
+            except Exception:
+                pass
+            # P2 修正：术语统一卡按分章命中注入（命中才注入，避免每章全量塞专有名词表）
+            try:
+                terminology = getattr(world, "terminology", None) or []
+                if sub_terminology is not None:
+                    terminology = [t for t in terminology if getattr(t, "name", "") in sub_terminology]
+                if terminology:
+                    term_lines = []
+                    for t in terminology:
+                        _n = getattr(t, "name", "") or ""
+                        if not _n:
+                            continue
+                        _aliases = [str(x) for x in (getattr(t, "aliases", None) or []) if str(x).strip()]
+                        _line = f"{_n}" + (f"（禁止写法：{'、'.join(_aliases)}）" if _aliases else "")
+                        if getattr(t, "definition", ""):
+                            _line += f"｜{t.definition}"
+                        term_lines.append(_line)
+                    if term_lines:
+                        w_normal.append(
+                            "【本章相关术语统一·以下专有名词本章必须用标准写法，禁止出现别名/其他写法】\n"
+                            + "\n".join(term_lines)
+                        )
+            except Exception:
+                pass
             if world.foreshadowing:
                 def _fs(x):
                     # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
@@ -327,42 +377,6 @@ class Memory:
             style_taboos = getattr(world, "style_taboos", []) or []
             if style_taboos:
                 key_parts.append("【语言风格禁忌·以下词语/表达绝对禁止出现】\n" + "；".join(str(t) for t in style_taboos))
-            # P2 术语统一卡：专有名词（译名/招式名/地名/称呼）全文只能一种写法
-            terminology = getattr(world, "terminology", None) or []
-            if terminology:
-                term_lines = []
-                for t in terminology:
-                    _n = getattr(t, "name", "") or ""
-                    if not _n:
-                        continue
-                    _aliases = [str(x) for x in (getattr(t, "aliases", None) or []) if str(x).strip()]
-                    _line = f"{_n}" + (f"（禁止写法：{'、'.join(_aliases)}）" if _aliases else "")
-                    if getattr(t, "definition", ""):
-                        _line += f"｜{t.definition}"
-                    term_lines.append(_line)
-                if term_lines:
-                    key_parts.append(
-                        "【术语统一·以下专有名词全文必须用标准写法，禁止出现别名/其他写法，保持译名/招式名/地名一致】\n"
-                        + "\n".join(term_lines)
-                    )
-            # P1-3 物品卡（防万能工具）：道具静态属性进强约束区，正文使用不得超出边界/代价
-            items = getattr(world, "items", None) or []
-            if items:
-                item_lines = []
-                for it in items:
-                    _i = getattr(it, "name", "") or ""
-                    _eff = getattr(it, "effect", "") or ""
-                    _cost = getattr(it, "cost", "") or ""
-                    _res = getattr(it, "restriction", "") or ""
-                    if _i:
-                        item_lines.append(
-                            f"{_i}｜作用：{_eff}｜代价：{_cost}｜限制：{_res}"
-                        )
-                if item_lines:
-                    key_parts.append(
-                        "【物品/道具卡·静态属性全文不可违背，不得写成万能工具，使用必须付出代价并受限制约束】\n"
-                        + "\n".join(item_lines)
-                    )
             # P1-3 等级/境界体系卡（防战力崩坏）：境界阶梯与主角当前境界进强约束区
             ps = getattr(world, "power_system", None)
             if ps is not None and (getattr(ps, "levels", None) or getattr(ps, "protagonist_level", "")):
@@ -382,9 +396,13 @@ class Memory:
                         "【等级/境界体系·战力提升必须在此阶梯内递增，禁止凭空跳阶/战力崩坏】\n"
                         + "\n".join(ps_lines)
                     )
-            # P1-2 结局卡（强约束）：末几章写手按终局方向收束，防烂尾
+            # P1-2 结局卡（末 N 章才注入，P2 修正）：终局方向只在末 5 章注入，避免写第 1 章时
+            # 模型就预知结局（与 world_reveals「未揭示设定进强约束区禁剧透」逻辑一致：
+            # 终局属未揭示的高阶设定，不应全程暴露）；num_chapters 未知时保守始终注入
             ec = getattr(world, "ending_card", None)
-            if ec is not None and (getattr(ec, "end_state", "") or getattr(ec, "protagonist_choice", "")):
+            _nc = int(getattr(cfg_d, "num_chapters", 0) or 0)
+            _inject_end = (_nc <= 0) or (up_to_chapter >= _nc - 5)
+            if ec is not None and _inject_end and (getattr(ec, "end_state", "") or getattr(ec, "protagonist_choice", "")):
                 ec_lines = []
                 if getattr(ec, "end_state", ""):
                     ec_lines.append(f"终局状态：{ec.end_state}")

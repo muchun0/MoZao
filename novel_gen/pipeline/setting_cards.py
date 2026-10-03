@@ -34,6 +34,8 @@ def _match_items(items: list, keywords: set, goal_blob: str) -> list:
                 "desc", "form", "senses", "behavior", "kill",
                 "terrain", "light", "exits", "goal", "relation_to_mc",
                 "content", "hint",
+                "effect", "cost", "restriction", "origin",   # ItemCard 物品卡字段
+                "aliases", "definition",                      # TerminologyItem 术语卡字段
             )
         )
         if (name and goal_blob and name in goal_blob) or \
@@ -52,6 +54,8 @@ def build_setting_cards(store, world, outline) -> dict:
         locations = list(world.locations or [])
         factions = list(world.factions or [])
         fs = list(world.foreshadowing or [])
+        items = list(world.items or [])
+        terminology = list(world.terminology or [])
         try:
             summaries = [s.get("summary", "") for s in store.load_summaries()]
         except Exception:
@@ -82,6 +86,8 @@ def build_setting_cards(store, world, outline) -> dict:
             ch_enemies = [e.name for e in _match_items(enemies, keywords, goal_blob)]
             ch_locations = [l.name for l in _match_items(locations, keywords, goal_blob)]
             ch_factions = [f.name for f in _match_items(factions, keywords, goal_blob)]
+            ch_items = [it.name for it in _match_items(items, keywords, goal_blob)]
+            ch_terminology = [t.name for t in _match_items(terminology, keywords, goal_blob)]
             ch_fs = []
             for x in fs:
                 if hasattr(x, "content"):
@@ -98,6 +104,8 @@ def build_setting_cards(store, world, outline) -> dict:
                 "locations": ch_locations,
                 "factions": ch_factions,
                 "foreshadows": ch_fs,
+                "items": ch_items,
+                "terminology": ch_terminology,
             })
         return {"version": 1, "chapters": chapters}
     except Exception:

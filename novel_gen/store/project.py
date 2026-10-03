@@ -235,6 +235,18 @@ class ProjectStore:
         except Exception:
             return ""
 
+    # ---------- 场景落盘（P2-4）：分章场景清单 + 场景状态，供回看/编辑/复用 ----------
+    def scenes_path(self) -> Path:
+        return self.dir / "scenes.json"
+
+    def save_scenes(self, chapter_no: int, scenes: list, scene_state: dict | None = None) -> None:
+        data = self._read_json(self.scenes_path(), {})
+        data[str(chapter_no)] = {"scenes": scenes or [], "state": scene_state or {}}
+        self._write_json(self.scenes_path(), data)
+
+    def load_scenes(self) -> dict:
+        return self._read_json(self.scenes_path(), {})
+
     # ---------- 大纲 ----------
     def outline_path(self) -> Path:
         return self.dir / "outline.json"

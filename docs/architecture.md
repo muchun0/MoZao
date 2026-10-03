@@ -38,7 +38,7 @@
 | `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计 | `base.py`、`factory.py`、`providers.py`、`usage.py` |
 | `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告；**P0-3 拆书库回流**：读取 store 的 `teardown_material.txt`（webapp 调研前写入的同题材爆款拆书条目）并入调研素材 | `research.py`、`sources.py`、`schemas.py` |
 | `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
-| `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角） | `project.py`（`ProjectStore`）、`schemas.py` |
+| `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角）；**P2** `ProjectStore` 新增场景落盘（`scenes.json` 分章场景清单+状态，供回看/编辑/复用）、`teardown_material.txt`（P0-3 拆书库回流素材） | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
 | `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
 | `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘 | — |
@@ -59,8 +59,9 @@
 | `agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色：调研 / 三级大纲+人物世界观+时间线（`OutlineGenerator` 生成后按分卷区间回填 `volume_no`；世界观产出 `world_reveals` 阶段揭示计划）/ 逐章正文（叠加 Stylist 人设）/ 一致性·逻辑·合规审校 / 读者视角 / 风格师（写作风格角色：人设+挂载技能） |
 | `agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分（REQ）：主题与人物 Agent（主题命题/三层冲突/主角弧光/配角动机）/ 世界观与规则 Agent（世界观/金手指五要素/设定禁忌）/ 节奏与伏笔 Agent（关键节点/分卷节奏/伏笔回收闭环）；`ArchitectAgent` 收敛为骨架生产者并编排三者；**P0-2 接线**：architect 编排时把三者 persona（角色 prompt + 专属技能）分别注入 WorldGenerator（theme+rules）/OutlineGenerator（pacing），使细分角色要求真正进入 LLM 生成阶段（此前未读取，完全不生效） |
 | `agents/opening.py` `ending.py` | **P1 新增两个专项 Agent**：开篇 Agent（黄金三章强开篇设计——第1章立主角+冲突点燃/第2章冲突升级+主动选择/第3章小闭环+强钩子，回填前三章 core_event/goal，architect.run_outline 编排）+ 结局 Agent（终局设计卡——终局状态/主题落点/主角最终选择/人物归宿/基调，写入 world.ending_card，architect.run_world 编排，末几章写手按此收束防烂尾）；二者均继承 BaseAgent 挂专属技能（opening→outline 阶段、ending→outline/world 阶段） |
+| `agents/dialogue.py` | **P2 对白 Agent**：聚合全书人物 speech_style 生成对话风格指南（口吻区分+节奏规则），写回 world.dialogue_guideline，architect.run_world 编排，memory 强约束区注入正文生成；确定性聚合（零 LLM、不增 token 调用数），挂 dialogue 专属技能 |
 | `agents/prompts/*.md` | 各角色专属提示词（修改角色行为改这里） |
-| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物当前状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实，账本章号<当前章才注入）+ 配角动机卡注入出场人物区 + **分章设定卡子集注入**（REQ-token优化 P1-1：有 `setting_cards.json` 时按章只注入命中人物/生物/地点/势力/伏笔，空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区机制卡/主题/弧光/金手指/禁忌/时钟永不裁剪）+ 世界观**跟随主角视角分层注入**（有 `world_reveals` 时：已揭示进普通区、未揭示进强约束区禁剧透；无则回退全量注入）+ **P1 物品卡/等级体系卡/结局卡进强约束区**（物品卡防万能工具、等级体系防战力崩坏、结局卡约束末几章收束方向） |
+| `memory.py` | 长文一致性：设定库（世界观/人物卡/伏笔）+ 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物当前状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实，账本章号<当前章才注入）+ 配角动机卡注入出场人物区 + **分章设定卡子集注入**（REQ-token优化 P1-1：有 `setting_cards.json` 时按章只注入命中人物/生物/地点/势力/伏笔，空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区机制卡/主题/弧光/金手指/禁忌/时钟永不裁剪）+ 世界观**跟随主角视角分层注入**（有 `world_reveals` 时：已揭示进普通区、未揭示进强约束区禁剧透；无则回退全量注入）+ **P1 物品卡/等级体系卡/结局卡进强约束区**（物品卡防万能工具、等级体系防战力崩坏、结局卡约束末几章收束方向）+ **P2 术语统一卡/对话风格进强约束区** |
 | `setting_cards.py` | **分章设定卡索引**（REQ-token优化 P1-1，纯 Python 前置确定性脚本）：world 落盘后构建 `projects/<id>/setting_cards.json`——出场人物沿用 `memory.predict_appearing_chars` 预测，生物/地点/势力/伏笔按「名称直判（本章 goal/core/出场人物名含其名）+ 关键词包含」双条件匹配；manager 幂等接入（world 后 + 惰性两种路径），构建失败/关闭静默降级全量注入 |
 | `character_state.py` | 人物动态状态快照（P0-2）：每章后确定性出场记录 + 可选 LLM 状态细节抽取（`_should_llm_extract` 按 `state_extract_frequency` 降频，默认每 3 章 1 次 LLM），失败静默降级，写入 character_states.json |
 | `chapter_state.py` | **章内/章间状态账本**（REQ-章内自洽与机制账本）：章末/场景状态抽取（机制数字/人物生死/物品归属/时间锚点/已发生事实），LLM 主抽取（`_should_llm_extract` 按 `state_extract_frequency` 降频）+ 确定性面板正则兜底 + 失败降级；manager 写章循环落 `chapter_state.json`，stages 场景级生成逐场景累积「已推进状态」注入后续场景（防面板数字漏减、角色死而复生、物品归属错乱） |
@@ -73,7 +74,7 @@
 | `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规/章内同句复读）+ 读者视角 LLM 校验（章内矛盾自检 `consistency_llm_check` 默认仅高质量模式）+ 1 次自动重写；**定点重写**（REQ-token优化 P1-4）：`_locate_problem_spans` 按 issue pos 段落→detail 原句锚点定位窗口 ±200 字，窗口覆盖 <60% 正文才局部重写并 Python 拼回，无定位/跨度过大回退 `_rewrite_whole` 整章重出；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4）；章内同句复读（REQ-章内自洽）：叙述≥3次/长句2次/面板行2次→大改触发重写，对话口头禅≤2豁免 |
 | `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
 | `skills.py` | **技能统一注入管线**（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照（均读统一表 `skills`，source 区分 platform/user），按角色默认阶段（STAGE_BY_ROLE）过滤（技能 applicable_stages 空=全量）、统一清洗、产出 manifest（供 `agent_trace` 归因）；**P0-2**：STAGE_BY_ROLE 补 theme_character/world_rules/pacing 三 key、移除 validator 死配置（非 BaseAgent 不参与技能注入）；`agents/base.py` 与 `templates._skill_append` 均经此管线 |
-| `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`（开篇/结局 Agent 任务提示词）；P0-1 `verify_combined_prompt` 支持 `reader_persona` 注入 |
+| `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`（开篇/结局 Agent 任务提示词）；P0-1 `verify_combined_prompt` 支持 `reader_persona` 注入；**P2** 大纲 prompt（open/expand/continue）chapters 字段新增 `cliffhanger`（章末钩子） |
 
 ### 2.3 webapp/（SaaS Web 服务）
 

@@ -327,6 +327,24 @@ class Memory:
             style_taboos = getattr(world, "style_taboos", []) or []
             if style_taboos:
                 key_parts.append("【语言风格禁忌·以下词语/表达绝对禁止出现】\n" + "；".join(str(t) for t in style_taboos))
+            # P2 术语统一卡：专有名词（译名/招式名/地名/称呼）全文只能一种写法
+            terminology = getattr(world, "terminology", None) or []
+            if terminology:
+                term_lines = []
+                for t in terminology:
+                    _n = getattr(t, "name", "") or ""
+                    if not _n:
+                        continue
+                    _aliases = [str(x) for x in (getattr(t, "aliases", None) or []) if str(x).strip()]
+                    _line = f"{_n}" + (f"（禁止写法：{'、'.join(_aliases)}）" if _aliases else "")
+                    if getattr(t, "definition", ""):
+                        _line += f"｜{t.definition}"
+                    term_lines.append(_line)
+                if term_lines:
+                    key_parts.append(
+                        "【术语统一·以下专有名词全文必须用标准写法，禁止出现别名/其他写法，保持译名/招式名/地名一致】\n"
+                        + "\n".join(term_lines)
+                    )
             # P1-3 物品卡（防万能工具）：道具静态属性进强约束区，正文使用不得超出边界/代价
             items = getattr(world, "items", None) or []
             if items:
@@ -383,6 +401,10 @@ class Memory:
                         "【结局卡·全书终局方向，末几章必须按此收束，禁止自行发明与终局矛盾的方向】\n"
                         + "\n".join(ec_lines)
                     )
+            # P2 对白 Agent：对话风格指南（人物口吻区分+节奏，进强约束区）
+            dlg = getattr(world, "dialogue_guideline", "") or ""
+            if dlg:
+                key_parts.append("【对话风格·人物口吻区分与对话节奏，正文对话必须遵守】\n" + dlg)
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 

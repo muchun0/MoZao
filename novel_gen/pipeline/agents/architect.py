@@ -18,6 +18,7 @@ from .world_rules import WorldRulesAgent
 from .pacing import PacingAgent
 from .ending import EndingAgent
 from .opening import OpeningAgent
+from .dialogue import DialogueAgent
 
 
 class ArchitectAgent(BaseAgent):
@@ -32,6 +33,7 @@ class ArchitectAgent(BaseAgent):
         self.pacing = PacingAgent(cfg, llm, store)
         self.ending = EndingAgent(cfg, llm, store)
         self.opening = OpeningAgent(cfg, llm, store)
+        self.dialogue = DialogueAgent(cfg, llm, store)
         # 接线（P0-2）：三个细分 Agent 内部零 LLM 调用，其 persona（角色 prompt + 专属
         # 技能）此前从未被读取。这里把细分角色要求作为 system 上下文注入到对应的 LLM
         # 生成阶段，让模型生成时遵守细分职责，再由 apply_anchor/plan_* 确定性兜底规范。
@@ -76,6 +78,7 @@ class ArchitectAgent(BaseAgent):
                 world, _ = self.pacing.plan_foreshadow(outline, world)
             # P1-2 结局 Agent：终局设计卡（已存在则幂等复用）
             world, _ = self.ending.apply(world, outline)
+            world, _ = self.dialogue.build_guideline(world)
             self.store.save_world(world)
             return world
         self.logger.info("人物世界观设计开始（架构师）")
@@ -90,6 +93,8 @@ class ArchitectAgent(BaseAgent):
         world, _ = self.pacing.plan_foreshadow(outline or Outline(), world)
         # P1-2 结局 Agent：终局设计卡（防烂尾）
         world, _ = self.ending.apply(world, outline)
+        # P2-1 对白 Agent：对话风格指南（口吻区分+节奏）
+        world, _ = self.dialogue.build_guideline(world)
         self.store.save_world(world)
         self.logger.info("人物世界观设计完成（%d 个人物）", len(world.characters))
         return world

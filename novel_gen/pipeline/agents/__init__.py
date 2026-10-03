@@ -23,6 +23,7 @@ from .reader import ReaderAgent
 from .stylist import StylistAgent
 from .ending import EndingAgent
 from .opening import OpeningAgent
+from .dialogue import DialogueAgent
 
 __all__ = [
     "BaseAgent",
@@ -37,4 +38,5 @@ __all__ = [
     "StylistAgent",
     "EndingAgent",
     "OpeningAgent",
+    "DialogueAgent",
 ]

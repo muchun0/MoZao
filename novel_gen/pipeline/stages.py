@@ -314,6 +314,11 @@ class ChapterWriter:
             outline = self.store.load_outline()
             if outline and chapter_no - 1 < len(outline.chapters):
                 plan_core_event = outline.chapters[chapter_no - 1].core_event or ""
+                # P2 章末钩子：注入当前章章末钩子（writer 写章末须兑现，防流水账结尾）
+                _cliff = getattr(outline.chapters[chapter_no - 1], "cliffhanger", "") or ""
+                if _cliff:
+                    _hook_block = "【本章章末钩子·本章结尾必须兑现此钩子，制造'想看下一章'的冲动】\n" + _cliff
+                    memory_context = memory_context + "\n\n" + _hook_block if memory_context else _hook_block
             if outline and outline.timelines:
                 from .templates import timeline_hint_for_chapter
                 plan_tl = ""
@@ -442,6 +447,14 @@ class ChapterWriter:
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
+        # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；普通模式无 scenes 则跳过）
+        try:
+            _sc = locals().get("scenes")
+            if _sc:
+                _ss = locals().get("scene_state_acc") or {}
+                self.store.save_scenes(chapter_no, _sc, _ss)
+        except Exception:
+            pass
         if summary:
             self.store.append_summary(chapter_no, summary)
         if not silent:

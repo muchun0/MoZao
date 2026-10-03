@@ -11,8 +11,21 @@ REQ-多Agent协作分层优化：负责「全本关键节点时间线（激励�
 """
 from __future__ import annotations
 
-from ...store.schemas import (ForeshadowItem, KeyNode, Outline, VolumePacing, World)
+from ...store.schemas import (EmotionBeat, ForeshadowItem, KeyNode, Outline, VolumePacing, World)
 from .base import BaseAgent
+
+
+def _map_emotion(emotion: str, tag: str) -> str:
+    """把单章 emotion/tag 归一到情绪类型（爽点/虐点/悬念/笑点/平淡）。"""
+    s = f"{emotion} {tag}"
+    for kw, etype in (("爽", "爽点"), ("打脸", "爽点"), ("升级", "爽点"), ("收获", "爽点"),
+                      ("反击", "爽点"), ("反转", "爽点"),
+                      ("虐", "虐点"), ("悲", "虐点"), ("牺牲", "虐点"), ("痛", "虐点"),
+                      ("悬念", "悬念"), ("钩子", "悬念"), ("揭秘", "悬念"), ("疑", "悬念"),
+                      ("笑", "笑点"), ("轻松", "平淡"), ("日常", "平淡")):
+        if kw in s:
+            return etype
+    return "平淡"
 
 
 class PacingAgent(BaseAgent):
@@ -64,7 +77,33 @@ class PacingAgent(BaseAgent):
         vp.sort(key=lambda x: x.volume_no)
         outline.volume_pacing = vp
 
-        summary = {"key_nodes": len(outline.key_nodes), "volume_pacing": len(outline.volume_pacing)}
+        # 情绪曲线卡（P2）：基于各章 emotion/tag 聚合成跨章 EmotionBeat 区间（零 LLM）。
+        # 只补缺失（已有 emotion_curve 不覆盖）；产出全本爽点/虐点/悬念分布，供章节情绪配比。
+        if chapters and not (getattr(outline, "emotion_curve", None) or []):
+            curve: list[EmotionBeat] = []
+            cur: dict | None = None
+            for c in sorted(chapters, key=lambda x: int(getattr(x, "no", 0) or 0)):
+                no = int(getattr(c, "no", 0) or 0)
+                etype = _map_emotion((getattr(c, "emotion", "") or "").strip(),
+                                     (getattr(c, "tag", "") or "").strip())
+                if cur and cur["type"] == etype and no - cur["to"] <= 1:
+                    cur["to"] = no
+                    continue
+                if cur:
+                    curve.append(EmotionBeat(ch_from=cur["from"], ch_to=cur["to"],
+                                             emotion_type=cur["type"], intensity=cur["intensity"],
+                                             note=cur["note"]))
+                tag = (getattr(c, "tag", "") or "").strip()
+                cur = {"from": no, "to": no, "type": etype, "intensity": 3,
+                       "note": f"第{no}章" + (f"（{tag}）" if tag else "")}
+            if cur:
+                curve.append(EmotionBeat(ch_from=cur["from"], ch_to=cur["to"],
+                                         emotion_type=cur["type"], intensity=cur["intensity"],
+                                         note=cur["note"]))
+            outline.emotion_curve = curve
+
+        summary = {"key_nodes": len(outline.key_nodes), "volume_pacing": len(outline.volume_pacing),
+                   "emotion_curve": len(outline.emotion_curve)}
         return outline, summary
 
     def plan_foreshadow(self, outline: Outline, world: World) -> tuple[World, int]:

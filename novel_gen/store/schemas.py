@@ -71,6 +71,8 @@ class ChapterPlan:
     transition: str = ""        # 转场提示：与前后章节的衔接方式
     tag: str = ""              # 节点标签：高潮/过渡/伏笔/爽点/反转/虐点等
     volume_no: int = 0        # 所属分卷编号，0=未分配
+    cliffhanger: str = ""      # 章末钩子（P2）：本章章末钩子的事前设计（冲突一触即发/真相将揭/危险降临），
+                               # writer 写章末须兑现；reader 校验钩子是否有真正勾人效果
 
     def to_dict(self) -> dict:
         return {
@@ -78,7 +80,7 @@ class ChapterPlan:
             "core_event": self.core_event, "conflict": self.conflict,
             "character_moves": self.character_moves, "foreshadowing": self.foreshadowing,
             "emotion": self.emotion, "transition": self.transition, "tag": self.tag,
-            "volume_no": self.volume_no,
+            "volume_no": self.volume_no, "cliffhanger": self.cliffhanger,
         }
 
     @classmethod
@@ -96,6 +98,7 @@ class ChapterPlan:
             transition=d.get("transition", ""),
             tag=d.get("tag", ""),
             volume_no=int(d.get("volume_no", 0)),
+            cliffhanger=d.get("cliffhanger", ""),
         )
 
 
@@ -138,6 +141,32 @@ class StoryUnit:
 
 
 @dataclass
+class EmotionBeat:
+    """情绪曲线卡节点（P2）：全本爽点/虐点/悬念分布（跨章区间的情绪节奏设计）。
+    单章 emotion 是字段，这里把全本的情绪类型/强度/间隔结构化，pacing 据此防情绪失衡。"""
+    ch_from: int = 0
+    ch_to: int = 0
+    emotion_type: str = ""   # 爽点/虐点/悬念/笑点/平淡
+    intensity: int = 3       # 强度 1-5
+    note: str = ""           # 说明/触发点
+
+    def to_dict(self) -> dict:
+        return {"ch_from": self.ch_from, "ch_to": self.ch_to,
+                "emotion_type": self.emotion_type, "intensity": self.intensity,
+                "note": self.note}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EmotionBeat":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            ch_from=int(d.get("ch_from", 0)), ch_to=int(d.get("ch_to", 0)),
+            emotion_type=d.get("emotion_type", ""), intensity=int(d.get("intensity", 3)),
+            note=d.get("note", ""),
+        )
+
+
+@dataclass
 class Outline:
     """整本书的大纲（三级：总纲intro → 分卷volumes → 章节chapters）。"""
     title: str = ""
@@ -150,6 +179,7 @@ class Outline:
     units: list[StoryUnit] = field(default_factory=list)
     key_nodes: list[KeyNode] = field(default_factory=list)        # 全本关键节点时间线（REQ 骨架层）
     volume_pacing: list[VolumePacing] = field(default_factory=list)  # 分卷节奏梯次（REQ 节奏层）
+    emotion_curve: list[EmotionBeat] = field(default_factory=list)   # 全本情绪曲线卡（P2 情绪层）
 
     def to_dict(self) -> dict:
         return {
@@ -163,6 +193,7 @@ class Outline:
             "units": [u.to_dict() for u in self.units],
             "key_nodes": [k.to_dict() for k in self.key_nodes],
             "volume_pacing": [v.to_dict() for v in self.volume_pacing],
+            "emotion_curve": [e.to_dict() for e in self.emotion_curve],
         }
 
     @classmethod
@@ -178,6 +209,7 @@ class Outline:
             units=[StoryUnit.from_dict(u) for u in d.get("units", [])],
             key_nodes=[KeyNode.from_dict(k) for k in d.get("key_nodes", [])],
             volume_pacing=[VolumePacing.from_dict(v) for v in d.get("volume_pacing", [])],
+            emotion_curve=[EmotionBeat.from_dict(e) for e in d.get("emotion_curve", [])],
         )
 
 
@@ -623,6 +655,31 @@ class FactionCard:
 
 
 @dataclass
+class TerminologyItem:
+    """术语统一卡（P2）：专有名词（译名/招式名/地名/称呼）的标准写法与禁用别名。
+    style_taboos 是"禁用词"，术语卡是"统一写法"——同一专有名词全文只能一种写法。"""
+    name: str = ""                       # 标准写法（正文统一用此）
+    aliases: list[str] = field(default_factory=list)  # 别名/译名（禁止其他写法）
+    definition: str = ""                 # 定义/说明
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "aliases": list(self.aliases),
+                "definition": self.definition}
+
+    @classmethod
+    def from_dict(cls, d) -> "TerminologyItem":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")),
+                aliases=[_norm_str(x) for x in (d.get("aliases") or [])],
+                definition=_norm_str(d.get("definition", "")),
+            )
+        return cls()
+
+
+@dataclass
 class ItemCard:
     """物品/道具卡：重要道具的静态定义（来源/代价/限制/作用），防写成万能工具。
     只定义"静态属性"；物品的动态归属流水在 chapter_state 账本承接。"""
@@ -762,6 +819,10 @@ class World:
     power_system: PowerLevelSystem | None = None                  # 等级/境界体系卡（防战力崩坏）
     # ---- P1-2 结局卡 ----
     ending_card: EndingCard | None = None                         # 结局卡（终局锚点，防烂尾）
+    # ---- P2 术语统一卡 ----
+    terminology: list[TerminologyItem] = field(default_factory=list)  # 专有名词统一表（防译名/招式名/地名多写法）
+    # ---- P2 对白 Agent ----
+    dialogue_guideline: str = ""   # 对话风格指南（对白 Agent 聚合人物口吻+节奏规则，注入正文生成）
 
     def to_dict(self) -> dict:
         return {
@@ -786,6 +847,8 @@ class World:
             "items": [i.to_dict() for i in self.items],
             "power_system": self.power_system.to_dict() if self.power_system else None,
             "ending_card": self.ending_card.to_dict() if self.ending_card else None,
+            "terminology": [t.to_dict() for t in self.terminology],
+            "dialogue_guideline": self.dialogue_guideline,
         }
 
     @classmethod
@@ -820,6 +883,9 @@ class World:
             items=[ItemCard.from_dict(i) for i in (d.get("items") or []) if isinstance(i, (dict, str))],
             power_system=PowerLevelSystem.from_dict(ps) if isinstance(ps := d.get("power_system"), dict) else None,
             ending_card=EndingCard.from_dict(ec) if isinstance(ec := d.get("ending_card"), dict) else None,
+            terminology=[TerminologyItem.from_dict(t) for t in (d.get("terminology") or [])
+                         if isinstance(t, (dict, str))],
+            dialogue_guideline=d.get("dialogue_guideline", "") or "",
         )
 
 

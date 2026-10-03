@@ -45,13 +45,15 @@
 | `pipeline/validator.py` | 独立逻辑校验 `LogicValidator`：设定一致性/OOC/主线偏移/重复≤5%/伏笔完整性 5 类校验 + 机制卡三要素（语义/结算/代价终局，REQ-章内自洽） + 分级 |
 | `pipeline/issue_triage.py` | 问题分级 `IssueItem`(fatal/major/minor) + triage/has_fatal/sort 纯函数 |
 | `pipeline/report.py` | 成果整合：落盘 4 份设计文档到 `projects/<id>/design/`（核心设定册/骨架大纲/节奏手册/质量报告） |
-| `pipeline/stages.py` | 阶段定义/推进；场景级生成逐场景累积「本章已推进状态」注入后续场景（REQ-章内自洽）；**REQ-token优化**：行动表并入拆场景输出 `characters_action`（`action_plan_first=False` 默认无独立调用）、场景状态抽取按 `scene_state_mode` 分流（auto=普通确定性/高质量 LLM）、普通模式整章润色默认关（polish_hq_only）、场景 prompt 按 `scene_delta_inject` 分层注入（首场景全量 memory、后续场景增量块） |
+| `pipeline/stages.py` | 阶段定义/推进；场景级生成逐场景累积「本章已推进状态」注入后续场景（REQ-章内自洽）；**REQ-token优化**：行动表并入拆场景输出 `characters_action`（`action_plan_first=False` 默认无独立调用）、场景状态抽取按 `scene_state_mode` 分流（auto=普通确定性/高质量 LLM）、普通模式整章润色默认关（polish_hq_only）、场景 prompt 按 `scene_delta_inject` 分层注入（首场景全量 memory、后续场景增量块）；**P2 场景落盘**（拆场景结果+场景状态累积写入 store.scenes.json）、章末钩子注入（ChapterWriter 读取当前章 cliffhanger 并入 memory_context） |
 | `pipeline/agents/base.py` | Agent 基类（人设+技能 → System Prompt） |
 | `pipeline/agents/researcher.py` `architect.py` `writer.py` `reviewer.py` `reader.py` `stylist.py` | 六角色实现（调研/大纲/正文/审校/读者/风格师） |
 | `pipeline/agents/theme_character.py` `world_rules.py` `pacing.py` | 生产层细分：主题与人物 / 世界观与规则 / 节奏与伏笔 专项 Agent（认领结构化锚点 + 确定性推导关键节点/分卷节奏/伏笔回收闭环）；**P0-2** architect 编排时把三者 persona+技能注入对应生成阶段 |
 | `pipeline/agents/opening.py` `ending.py` | **P1 专项 Agent**：开篇 Agent（前三章强开篇 core_event/goal 设计）/ 结局 Agent（终局设计卡写入 world.ending_card）；architect 分别于 run_outline/run_world 编排 |
+| `pipeline/agents/dialogue.py` | **P2 对白 Agent**：聚合人物 speech_style 生成对话风格指南写回 world.dialogue_guideline，architect.run_world 编排，memory 强约束区注入（确定性聚合、零 LLM） |
+| `pipeline/agents/pacing.py` | 节奏与伏笔 Agent：推导关键节点/分卷节奏/伏笔回收闭环；**P2** plan_outline 额外聚合全本情绪曲线卡（Outline.emotion_curve，零 LLM） |
 | `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**） |
-| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实）+ 配角动机卡注入 + **分章设定卡子集注入**（REQ-token优化 P1-1：按章只注入命中人物/生物/地点/势力/伏笔；空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区永不裁剪）+ **P1 物品/等级/结局卡进强约束区** |
+| `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实）+ 配角动机卡注入 + **分章设定卡子集注入**（REQ-token优化 P1-1：按章只注入命中人物/生物/地点/势力/伏笔；空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区永不裁剪）+ **P1 物品/等级/结局卡进强约束区**；**P2 术语统一卡/对话风格进强约束区** |
 | `pipeline/setting_cards.py` | **分章设定卡索引**（REQ-token优化 P1-1，纯 Python 前置确定性）：world 后构建 `setting_cards.json`，出场人物用 `memory.predict_appearing_chars` 预测，生物/地点/势力/伏笔按「名称直判+关键词包含」匹配；失败/关闭静默降级全量注入 |
 | `pipeline/character_state.py` | 人物动态状态快照（P0-2）：确定性出场记录 + 可选 LLM 状态细节抽取（`_should_llm_extract` 按 `state_extract_frequency` 默认每 3 章 1 次），失败降级 |
 | `pipeline/chapter_state.py` | **章内/章间状态账本**（REQ-章内自洽）：章末/场景状态抽取（机制数字/生死/物品/时间/事实），LLM 主抽取（`_should_llm_extract` 降频）+ 确定性面板正则兜底；章间承接防数字断链、场景间推进防死而复生 |
@@ -63,11 +65,11 @@
 | `pipeline/guard.py` | 成本防护（模块2）：AgentGuard 循环/Token 阈值 |
 | `pipeline/quality.py` | 结果自校验（模块4）：QualityChecker + 1 次自动重写；含章内同句复读检测（叙述≥3/长句2/面板行2→大改，对话口头禅≤2豁免）；章内矛盾 LLM 自检默认仅高质量模式（consistency_llm_check）；**定点重写**（REQ-token优化 P1-4：issue pos/原句锚点定位窗口 ±200 字，<60% 正文局部重写拼回，无定位回退整章）；`auto_revised` 真值落 review.json（P2-4） |
 | `pipeline/ai_taste.py` | AI 痕迹量化检测（P1-4）：连接词堆砌/情绪词直白/句式排比/段落雷同（纯函数，供质检扣分） |
-| `pipeline/skills.py` | 技能统一注入管线（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照，按角色默认阶段过滤（applicable_stages 空=全量）、清洗、产出 manifest（供 trace 归因）；**P0-2/P1** STAGE_BY_ROLE 补 theme_character/world_rules/pacing/ending/opening、移除 validator 死配置 |
-| `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`；P0-1 `verify_combined_prompt` reader_persona |
-| `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2）；`setting_cards.json` 读写（REQ-token优化 P1-1：`setting_cards_path`/`save_setting_cards`/`load_setting_cards`）；**P0-3** `teardown_material.txt` 读写（拆书库回流素材） |
+| `pipeline/skills.py` | 技能统一注入管线（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照，按角色默认阶段过滤（applicable_stages 空=全量）、清洗、产出 manifest（供 trace 归因）；**P0-2/P1** STAGE_BY_ROLE 补 theme_character/world_rules/pacing/ending/opening、移除 validator 死配置；**P2** 补 dialogue |
+| `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`；P0-1 `verify_combined_prompt` reader_persona；**P2** 大纲 prompt chapters 新增 cliffhanger（open/expand/continue） |
+| `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2）；`setting_cards.json` 读写（REQ-token优化 P1-1：`setting_cards_path`/`save_setting_cards`/`load_setting_cards`）；**P0-3** `teardown_material.txt` 读写（拆书库回流素材）；**P2 场景落盘**（`scenes.json` 分章场景清单+状态） |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |
-| `store/schemas.py` | 项目数据结构；多Agent协作扩展：`World` 新增 theme_proposition/conflict_matrix/protagonist_arc/character_motives/goldfinger_rules(五要素)/setting_taboos，`foreshadowing` 升级为结构化 `ForeshadowItem`(buried_ch/reveal_ch/level)，`Outline` 新增 key_nodes/volume_pacing；**P1**：`World` 再增 items（ItemCard）/power_system（PowerLevelSystem）/ending_card（EndingCard）；全部 from_dict 兼容旧数据 |
+| `store/schemas.py` | 项目数据结构；多Agent协作扩展：`World` 新增 theme_proposition/conflict_matrix/protagonist_arc/character_motives/goldfinger_rules(五要素)/setting_taboos，`foreshadowing` 升级为结构化 `ForeshadowItem`(buried_ch/reveal_ch/level)，`Outline` 新增 key_nodes/volume_pacing；**P1**：`World` 再增 items（ItemCard）/power_system（PowerLevelSystem）/ending_card（EndingCard）；**P2**：`World` 增 terminology（TerminologyItem）/dialogue_guideline，`Outline` 增 emotion_curve（EmotionBeat），`ChapterPlan` 增 cliffhanger；全部 from_dict 兼容旧数据 |
 | `export/book_formats.py` | TXT/EPUB/DOCX 导出 |
 | `export/cover.py` | AI 封面生成（Pillow） |
 | `utils/chapter_splitter.py` | 章节切分 |

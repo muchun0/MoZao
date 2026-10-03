@@ -818,6 +818,15 @@ def world_prompt(
         f"- factions：前期出场的势力/组织数组（2-4 个）。每项 {{\"name\":势力名, \"goal\":目标, \"members\":关键成员, \"relation_to_mc\":与主角关系}}；"
         f"主角遇到该势力成员时，行为必须符合此卡\n"
         f"- style_taboos：语言风格禁忌数组（5-10 条，本书绝对禁用的出戏词，如'走位''视野CD''刷新''开挂'等现代游戏术语、时代错乱物品、作者内心吐槽）\n"
+        f"- items：本书重要道具/物品卡数组（作品含关键道具则产出 1-5 个，否则空数组）。"
+        f"每项 {{\"name\":道具名, \"origin\":来源/来历, \"cost\":使用代价（每次使用的消耗）, "
+        f"\"restriction\":限制/触发条件（不能无限制使用，明确边界，禁'万能''无所不能'模糊表述）, "
+        f"\"effect\":作用/能力（明确边界）}}；道具的静态属性一经写死全文一致，动态归属由章级状态账本承接，不得把道具写成万能工具\n"
+        f"- power_system：等级/境界体系卡对象（作品为升级流/有明确境界战力体系则产出，否则空对象）。"
+        f"字段：{{\"levels\":[{{\"name\":境界名, \"range\":数值区间或阶段描述, "
+        f"\"requirement\":突破到本境界的条件, \"capability\":本境界能力/战力上限（写死）}}], "
+        f"\"protagonist_level\":主角当前境界, \"progression_rule\":突破规则（如何升级/是否跳跃/瓶颈限制）}}；"
+        f"境界阶梯由低到高写全、数值区间无歧义，长篇后期战力提升必须在此框架内递增，禁止凭空跳阶/战力崩坏\n"
         f"设定要求：与大纲严格一致，人物动机清晰，伏笔在后期能回收，避雷元素不得出现。"
         f"{('每个重要人物的 desc 必须按「人物立体化·角色卡要求」写全：身份标签/经历背景/性格核心/欲望软肋/行为范式/压力反应，保证人物有辨识度、行为有依据。' if cfg.character_depth else '')}"
     )
@@ -1288,6 +1297,76 @@ def revise_verify_prompt(cfg, chapter_no, content, original_issues):
     return system, user
 
 
+def opening_prompt(cfg, outline):
+    """开篇 Agent 提示词（P1-1）：为大纲前三章设计强开篇（每章 core_event + goal）。"""
+    head_text = "\n".join(
+        f"第{c.no}章《{c.title}》：{c.goal}" for c in outline.chapters[:8]
+    )
+    system = (
+        "你是一位擅长网文开篇的主编。前 3 章是追读率分水岭，你要把大纲前三章的"
+        "具体事件与本章目标设计到极致，让写手照此写出强开篇。只输出 JSON，"
+        "只改前 3 章，其他章节保持原样。"
+    )
+    user = (
+        f"【题材】{cfg.genre}\n"
+        f"【书名/简介】{outline.title}｜{outline.intro}\n"
+        f"【大纲前 8 章】\n{head_text}\n\n"
+        "请为前三章设计强开篇，JSON 字段如下：\n"
+        '{"chapters": [{"no": 1, "core_event": "本章具体发生的事件（正文必须覆盖，禁抽象）", '
+        '"goal": "本章目标（强化，突出开篇钩子）"}, {"no": 2, ...}, {"no": 3, ...}]}\n'
+        "设计要求：\n"
+        "1. 第 1 章：500 字内立住主角（欲望/困境/人格钩子），核心冲突首章点燃，抛必追悬念；忌背景铺垫\n"
+        "2. 第 2 章：冲突升级，主角做出第一个主动选择，世界观/金手指第一层自然揭示\n"
+        "3. 第 3 章：形成小闭环 + 章末强钩子（冲突一触即发/真相即将揭晓/危险悄然降临）\n"
+        "红线：前 3 章节奏快、少设定堆砌、主角每章至少一个主动选择、每章章末必须有钩子；"
+        "与用户强约束（背景/主角/避雷）严格一致。"
+    )
+    return system, user
+
+
+def ending_prompt(cfg, outline, world):
+    """结局卡设计提示词（P1-2）：基于主题/弧光/大纲关键节点，产出终局设计卡 JSON。"""
+    outline_text = "\n".join(
+        f"第{c.no}章《{c.title}》：{c.goal}" for c in outline.chapters
+    )
+    theme = getattr(world, "theme_proposition", "") or ""
+    arc = getattr(world, "protagonist_arc", None)
+    arc_block = ""
+    if arc is not None:
+        _parts = [p for p in [getattr(arc, "belief", ""), getattr(arc, "flaw", "")]
+                  if p]
+        if getattr(arc, "final_insight", ""):
+            _parts.append(f"最终认知：{arc.final_insight}")
+        if _parts:
+            arc_block = "；".join(_parts)
+    gf = getattr(world, "goldfinger_rules", None)
+    gf_end = ""
+    if gf is not None and (getattr(gf, "growth_path", "") or getattr(gf, "upper_limit", "")):
+        gf_end = f"成长路径：{gf.growth_path}；能力上限：{gf.upper_limit}"
+    system = (
+        "你是一位擅长终局设计的小说主编。基于主题命题、主角弧光与大纲关键节点，"
+        "为全书设计一张结局卡，作为末几章写手的终局锚点。只输出 JSON。"
+    )
+    user = (
+        f"【书名/简介】{outline.title}｜{outline.intro}\n"
+        f"【核心主题命题】{theme}\n"
+        + (f"【主角弧光】{arc_block}\n" if arc_block else "")
+        + (f"【金手指终局条件】{gf_end}\n" if gf_end else "")
+        + f"【大纲关键节点】\n{outline_text}\n\n"
+        "请设计结局卡，JSON 字段如下：\n"
+        "- end_state：终局世界状态（核心冲突如何解决、旧秩序如何变化，1-2 句具体）\n"
+        "- theme_landing：主题落点（结局如何回归核心主题命题）\n"
+        "- protagonist_choice：主角最终选择（必须符合弧光最终认知，是弧光落点）\n"
+        "- character_fates：主要人物归宿数组（含反派，每人一句）\n"
+        "- tone：结局基调（悲/喜/开放式/遗憾，与作品基调一致）\n"
+        "要求：结局呼应开篇激励事件与首章困境；伏笔 large 级在结局前回收；"
+        "结局与主题、弧光、金手指终局条件自洽，不得烂尾或自然收束失控。"
+        "只输出 JSON：{\"end_state\": \"\", \"theme_landing\": \"\", "
+        "\"protagonist_choice\": \"\", \"character_fates\": [], \"tone\": \"\"}"
+    )
+    return system, user
+
+
 def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
     """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。"""
     system = (
@@ -1459,6 +1538,13 @@ def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[st
         f"- character_motives：核心配角动机数组，每项 {{\"name\", \"goal\", \"behavior_logic\", \"link_to_protagonist\"}}\n"
         f"- goldfinger_rules：金手指五要素 {{\"trigger\", \"upper_limit\", \"lower_limit\", \"cost\", \"growth_path\"}}（无金手指则空对象）\n"
         f"- setting_taboos：设定禁忌清单数组（正文明确禁止出现的吃设定行为）\n"
+        f"- items：从正文提炼的重要道具/物品卡数组（正文有关键道具则产出 1-5 个，否则空数组）。"
+        f"每项 {{\"name\":道具名, \"origin\":来源, \"cost\":使用代价, \"restriction\":限制/边界, "
+        f"\"effect\":作用（明确边界）}}；道具静态属性与正文一致，禁写成万能工具\n"
+        f"- power_system：从正文提炼的等级/境界体系卡对象（正文有升级/境界战力体系则产出，否则空对象）。"
+        f"字段：{{\"levels\":[{{\"name\":境界名, \"range\":数值区间, \"requirement\":突破条件, "
+        f"\"capability\":能力/战力上限}}], \"protagonist_level\":主角当前境界, "
+        f"\"progression_rule\":突破规则}}；境界阶梯与正文一致，防后期战力崩坏\n"
         f"要求：与用户正文严格一致，人物动机有据可查，避免凭空新增与正文矛盾的世界观。"
     )
     system += _skill_append(cfg)

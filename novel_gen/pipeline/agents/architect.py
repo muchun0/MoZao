@@ -16,6 +16,8 @@ from .base import BaseAgent
 from .theme_character import ThemeCharacterAgent
 from .world_rules import WorldRulesAgent
 from .pacing import PacingAgent
+from .ending import EndingAgent
+from .opening import OpeningAgent
 
 
 class ArchitectAgent(BaseAgent):
@@ -28,6 +30,8 @@ class ArchitectAgent(BaseAgent):
         self.theme = ThemeCharacterAgent(cfg, llm, store)
         self.rules = WorldRulesAgent(cfg, llm, store)
         self.pacing = PacingAgent(cfg, llm, store)
+        self.ending = EndingAgent(cfg, llm, store)
+        self.opening = OpeningAgent(cfg, llm, store)
         # 接线（P0-2）：三个细分 Agent 内部零 LLM 调用，其 persona（角色 prompt + 专属
         # 技能）此前从未被读取。这里把细分角色要求作为 system 上下文注入到对应的 LLM
         # 生成阶段，让模型生成时遵守细分职责，再由 apply_anchor/plan_* 确定性兜底规范。
@@ -47,12 +51,16 @@ class ArchitectAgent(BaseAgent):
         if outline is not None and outline.chapters:
             # 骨架阶段：补齐关键节点/分卷节奏（幂等，只补缺失）
             outline, _ = self.pacing.plan_outline(outline)
+            # P1-1 开篇 Agent：前三章强开篇设计（前 3 章 core_event 非空则幂等复用）
+            outline, _ = self.opening.apply(outline)
             self.store.save_outline(outline)
             return outline
         self.logger.info("大纲生成开始（架构师）")
         outline = self._outline_gen.run(research, silent=silent)
         # 节奏与伏笔 Agent：推导关键节点时间线 + 分卷节奏梯次（只补缺失）
         outline, _ = self.pacing.plan_outline(outline)
+        # P1-1 开篇 Agent：前三章强开篇设计（黄金三章决定生死）
+        outline, _ = self.opening.apply(outline)
         self.store.save_outline(outline)
         self.logger.info("大纲生成完成，共 %d 章", len(outline.chapters))
         return outline
@@ -66,6 +74,8 @@ class ArchitectAgent(BaseAgent):
             outline = self.store.load_outline()
             if outline is not None:
                 world, _ = self.pacing.plan_foreshadow(outline, world)
+            # P1-2 结局 Agent：终局设计卡（已存在则幂等复用）
+            world, _ = self.ending.apply(world, outline)
             self.store.save_world(world)
             return world
         self.logger.info("人物世界观设计开始（架构师）")
@@ -78,6 +88,8 @@ class ArchitectAgent(BaseAgent):
         world, _ = self.rules.apply_anchor(world)
         # 节奏与伏笔 Agent：伏笔回收闭环（只埋不收 → 卷末/全篇回收）
         world, _ = self.pacing.plan_foreshadow(outline or Outline(), world)
+        # P1-2 结局 Agent：终局设计卡（防烂尾）
+        world, _ = self.ending.apply(world, outline)
         self.store.save_world(world)
         self.logger.info("人物世界观设计完成（%d 个人物）", len(world.characters))
         return world

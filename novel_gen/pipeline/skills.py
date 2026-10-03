@@ -28,6 +28,8 @@ STAGE_BY_ROLE: dict[str, list[str]] = {
     "theme_character": ["world"],
     "world_rules": ["world"],
     "pacing": ["outline", "world"],
+    "ending": ["outline", "world"],
+    "opening": ["outline"],
     "writer": ["chapter"],
     "reviewer": ["review"],
     "reader": ["chapter", "review"],

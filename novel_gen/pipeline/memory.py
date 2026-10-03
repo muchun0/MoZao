@@ -327,6 +327,62 @@ class Memory:
             style_taboos = getattr(world, "style_taboos", []) or []
             if style_taboos:
                 key_parts.append("【语言风格禁忌·以下词语/表达绝对禁止出现】\n" + "；".join(str(t) for t in style_taboos))
+            # P1-3 物品卡（防万能工具）：道具静态属性进强约束区，正文使用不得超出边界/代价
+            items = getattr(world, "items", None) or []
+            if items:
+                item_lines = []
+                for it in items:
+                    _i = getattr(it, "name", "") or ""
+                    _eff = getattr(it, "effect", "") or ""
+                    _cost = getattr(it, "cost", "") or ""
+                    _res = getattr(it, "restriction", "") or ""
+                    if _i:
+                        item_lines.append(
+                            f"{_i}｜作用：{_eff}｜代价：{_cost}｜限制：{_res}"
+                        )
+                if item_lines:
+                    key_parts.append(
+                        "【物品/道具卡·静态属性全文不可违背，不得写成万能工具，使用必须付出代价并受限制约束】\n"
+                        + "\n".join(item_lines)
+                    )
+            # P1-3 等级/境界体系卡（防战力崩坏）：境界阶梯与主角当前境界进强约束区
+            ps = getattr(world, "power_system", None)
+            if ps is not None and (getattr(ps, "levels", None) or getattr(ps, "protagonist_level", "")):
+                ps_lines = []
+                for lv in (getattr(ps, "levels", None) or []):
+                    _lv_name = getattr(lv, "name", "") or ""
+                    if _lv_name:
+                        ps_lines.append(
+                            f"{_lv_name}（{getattr(lv, 'range', '') or ''}）｜突破条件：{getattr(lv, 'requirement', '') or ''}｜能力上限：{getattr(lv, 'capability', '') or ''}"
+                        )
+                if getattr(ps, "protagonist_level", ""):
+                    ps_lines.append(f"主角当前境界：{ps.protagonist_level}")
+                if getattr(ps, "progression_rule", ""):
+                    ps_lines.append(f"突破规则：{ps.progression_rule}")
+                if ps_lines:
+                    key_parts.append(
+                        "【等级/境界体系·战力提升必须在此阶梯内递增，禁止凭空跳阶/战力崩坏】\n"
+                        + "\n".join(ps_lines)
+                    )
+            # P1-2 结局卡（强约束）：末几章写手按终局方向收束，防烂尾
+            ec = getattr(world, "ending_card", None)
+            if ec is not None and (getattr(ec, "end_state", "") or getattr(ec, "protagonist_choice", "")):
+                ec_lines = []
+                if getattr(ec, "end_state", ""):
+                    ec_lines.append(f"终局状态：{ec.end_state}")
+                if getattr(ec, "theme_landing", ""):
+                    ec_lines.append(f"主题落点：{ec.theme_landing}")
+                if getattr(ec, "protagonist_choice", ""):
+                    ec_lines.append(f"主角最终选择：{ec.protagonist_choice}")
+                if getattr(ec, "character_fates", None):
+                    ec_lines.append("人物归宿：" + "；".join(str(x) for x in ec.character_fates))
+                if getattr(ec, "tone", ""):
+                    ec_lines.append(f"结局基调：{ec.tone}")
+                if ec_lines:
+                    key_parts.append(
+                        "【结局卡·全书终局方向，末几章必须按此收束，禁止自行发明与终局矛盾的方向】\n"
+                        + "\n".join(ec_lines)
+                    )
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 

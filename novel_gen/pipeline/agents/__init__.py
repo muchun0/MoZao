@@ -21,6 +21,8 @@ from .writer import WriterAgent
 from .reviewer import ReviewerAgent
 from .reader import ReaderAgent
 from .stylist import StylistAgent
+from .ending import EndingAgent
+from .opening import OpeningAgent
 
 __all__ = [
     "BaseAgent",
@@ -33,4 +35,6 @@ __all__ = [
     "ReviewerAgent",
     "ReaderAgent",
     "StylistAgent",
+    "EndingAgent",
+    "OpeningAgent",
 ]

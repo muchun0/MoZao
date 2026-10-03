@@ -623,6 +623,111 @@ class FactionCard:
 
 
 @dataclass
+class ItemCard:
+    """物品/道具卡：重要道具的静态定义（来源/代价/限制/作用），防写成万能工具。
+    只定义"静态属性"；物品的动态归属流水在 chapter_state 账本承接。"""
+    name: str = ""
+    origin: str = ""          # 来源/来历
+    cost: str = ""            # 使用代价（每次使用的代价/消耗）
+    restriction: str = ""     # 限制/触发条件（不能无限制使用，明确边界）
+    effect: str = ""          # 作用/能力（明确边界，禁模糊万能表述）
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "origin": self.origin, "cost": self.cost,
+                "restriction": self.restriction, "effect": self.effect}
+
+    @classmethod
+    def from_dict(cls, d) -> "ItemCard":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")), origin=_norm_str(d.get("origin", "")),
+                cost=_norm_str(d.get("cost", "")), restriction=_norm_str(d.get("restriction", "")),
+                effect=_norm_str(d.get("effect", "")),
+            )
+        return cls()
+
+
+@dataclass
+class PowerLevel:
+    """单个境界/等级阶梯。"""
+    name: str = ""            # 境界名（如 炼气/筑基/金丹）
+    range: str = ""           # 数值区间或阶段描述（如"1-9 重"）
+    requirement: str = ""     # 突破到本境界的条件
+    capability: str = ""      # 本境界能力/战力上限（写死，防崩坏）
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "range": self.range,
+                "requirement": self.requirement, "capability": self.capability}
+
+    @classmethod
+    def from_dict(cls, d) -> "PowerLevel":
+        if isinstance(d, str):
+            return cls(name=_norm_str(d))
+        if isinstance(d, dict):
+            return cls(
+                name=_norm_str(d.get("name", "")), range=_norm_str(d.get("range", "")),
+                requirement=_norm_str(d.get("requirement", "")),
+                capability=_norm_str(d.get("capability", "")),
+            )
+        return cls()
+
+
+@dataclass
+class PowerLevelSystem:
+    """等级/境界体系卡：境界阶梯 + 数值区间 + 主角当前境界，防长篇后期战力崩坏。
+    仅升级流题材产出；非升级文保持 None。"""
+    levels: list[PowerLevel] = field(default_factory=list)  # 境界阶梯（由低到高）
+    protagonist_level: str = ""   # 主角当前境界
+    progression_rule: str = ""    # 突破规则（如何升级/是否跳跃/瓶颈限制）
+
+    def to_dict(self) -> dict:
+        return {"levels": [l.to_dict() for l in self.levels],
+                "protagonist_level": self.protagonist_level,
+                "progression_rule": self.progression_rule}
+
+    @classmethod
+    def from_dict(cls, d) -> "PowerLevelSystem":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            levels=[PowerLevel.from_dict(x) for x in (d.get("levels") or [])
+                    if isinstance(x, (dict, str))],
+            protagonist_level=_norm_str(d.get("protagonist_level", "")),
+            progression_rule=_norm_str(d.get("progression_rule", "")),
+        )
+
+
+@dataclass
+class EndingCard:
+    """结局卡：终局状态/主题落点/主角最终选择/主要人物归宿。
+    全书末尾几章写手的终局锚点，防烂尾与自然收束失控。"""
+    end_state: str = ""            # 终局世界状态（故事结束时世界处于什么状态）
+    theme_landing: str = ""        # 主题落点（结局如何回归核心主题命题）
+    protagonist_choice: str = ""   # 主角最终选择（终局的关键抉择）
+    character_fates: list[str] = field(default_factory=list)  # 主要人物归宿（每人一句）
+    tone: str = ""                 # 结局基调（悲/喜/开放式/遗憾）
+
+    def to_dict(self) -> dict:
+        return {"end_state": self.end_state, "theme_landing": self.theme_landing,
+                "protagonist_choice": self.protagonist_choice,
+                "character_fates": list(self.character_fates), "tone": self.tone}
+
+    @classmethod
+    def from_dict(cls, d) -> "EndingCard":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            end_state=_norm_str(d.get("end_state", "")),
+            theme_landing=_norm_str(d.get("theme_landing", "")),
+            protagonist_choice=_norm_str(d.get("protagonist_choice", "")),
+            character_fates=[_norm_str(x) for x in (d.get("character_fates") or [])],
+            tone=_norm_str(d.get("tone", "")),
+        )
+
+
+@dataclass
 class World:
     """世界观 + 人物卡 + 伏笔清单 + 锁定设定（记忆系统的「设定库」）。
 
@@ -652,6 +757,11 @@ class World:
     clock: ClockCard | None = None                                # 时钟规则（静态）
     factions: list[FactionCard] = field(default_factory=list)    # 势力卡
     style_taboos: list[str] = field(default_factory=list)         # 语言风格禁忌（时代/术语禁用词）
+    # ---- P1-3 物品卡 + 等级体系卡 ----
+    items: list[ItemCard] = field(default_factory=list)           # 物品/道具卡（防万能工具）
+    power_system: PowerLevelSystem | None = None                  # 等级/境界体系卡（防战力崩坏）
+    # ---- P1-2 结局卡 ----
+    ending_card: EndingCard | None = None                         # 结局卡（终局锚点，防烂尾）
 
     def to_dict(self) -> dict:
         return {
@@ -673,6 +783,9 @@ class World:
             "clock": self.clock.to_dict() if self.clock else None,
             "factions": [f.to_dict() for f in self.factions],
             "style_taboos": list(self.style_taboos),
+            "items": [i.to_dict() for i in self.items],
+            "power_system": self.power_system.to_dict() if self.power_system else None,
+            "ending_card": self.ending_card.to_dict() if self.ending_card else None,
         }
 
     @classmethod
@@ -704,6 +817,9 @@ class World:
             clock=ClockCard.from_dict(ck) if isinstance(ck := d.get("clock"), dict) else None,
             factions=[FactionCard.from_dict(f) for f in (d.get("factions") or []) if isinstance(f, (dict, str))],
             style_taboos=[_norm_str(x) for x in (d.get("style_taboos", []) or [])],
+            items=[ItemCard.from_dict(i) for i in (d.get("items") or []) if isinstance(i, (dict, str))],
+            power_system=PowerLevelSystem.from_dict(ps) if isinstance(ps := d.get("power_system"), dict) else None,
+            ending_card=EndingCard.from_dict(ec) if isinstance(ec := d.get("ending_card"), dict) else None,
         )
 
 

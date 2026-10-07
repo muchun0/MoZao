@@ -661,3 +661,36 @@ def test_length_audit_ignores_summary():
     qc = _qc_with_cfg(cfg)
     content = "长" * 1200 + "\n\n【摘要】" + "摘" * 500
     assert qc._length_audit_issues(content) == []
+
+
+# ---------- 方案1：事件重复判定标准收紧（2026-10-07） ----------
+
+@pytest.mark.p2
+def test_consistency_prompt_excludes_decision_vs_action():
+    """方案1：事件重复判定 prompt 收紧——排除条款注入。
+
+    同一冲突对象下「内心决定/犹豫」与「实际行动」属'抉择→行动'因果弧光、
+    可以同时为真，不判同一事件两版本；未执行的念头不算事件发生；
+    无两处实际行为原句不得输出事件重复。LLM 据该 prompt 不再把
+    '决定绕走'（未执行的念头）当成'冲出去救人'的重复版本（第1章误报根因）。
+    """
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    seen = {}
+
+    def _chat(system, user, **kw):
+        seen["sys"] = system
+        return '{"contradictions": []}'
+
+    llm.chat.side_effect = _chat
+    qc = QualityChecker(cfg, llm, None)
+    qc._consistency_llm_check(1, "正文若干")
+    sys = seen["sys"]
+    # 排除条款三要素
+    assert "内心决定/犹豫/退缩念头" in sys
+    assert "抉择→行动" in sys
+    assert "未执行的念头" in sys and "不算'事件发生'" in sys
+    assert "实际发生的行为" in sys
+    assert "不得输出事件重复" in sys
+    # 事件重复仍要求引用两处实际行为原句（防误报也防漏报）
+    assert "实际发生的行为原句" in sys

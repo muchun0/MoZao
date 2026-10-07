@@ -456,6 +456,7 @@ class ChapterWriter:
 
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
         guard_cfg = getattr(self.cfg, "agent_guard", None)
+        qc_passed = True
         if guard_cfg is not None and guard_cfg.quality_check and content:
             try:
                 from .quality import QualityChecker
@@ -465,9 +466,28 @@ class ChapterWriter:
                     chapter_no, plan_title, plan_goal, content, summary, silent=silent
                 )
                 content, summary = chapter.content, chapter.summary
+                qc_passed = bool(_qc.get("passed", True))
             except Exception as qe:
                 if not silent:
                     print(f"  [自校验] 跳过: {qe}")
+
+        # 方案4（落盘分流）：质检未通过且该章已有旧版 → 保留旧版正文，不覆盖
+        # （坏章不得顶掉用户已有的可用版本；仅首次生成/无旧版时才落盘新稿）。
+        # 质检结果已由 ensure_quality 落 review.json（passed=false + issues），
+        # 前端据 quality 字段显示红标并提示"已保留旧版"。
+        kept_previous = False
+        if not qc_passed:
+            prev = None
+            try:
+                prev = self.store.load_chapter(chapter_no)
+            except Exception:
+                prev = None
+            if prev is not None and getattr(prev, "content", ""):
+                content, summary = prev.content, prev.summary
+                kept_previous = True
+                if not silent:
+                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                          f"保留上一版正文（{len(content)} 字），不覆盖旧章")
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)

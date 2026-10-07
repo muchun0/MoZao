@@ -29,6 +29,8 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     _check_regen_limit(store, project_id)
 
     plan = outline.chapters[no - 1]
+    prev_ch = store.load_chapter(no)  # 重写前的旧版（方案4：质检未通过时保留）
+    prev_content = prev_ch.content if prev_ch is not None else ""
     try:
         pipeline = _open_pipeline(store)
         research = store.load_research()
@@ -43,6 +45,10 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     except Exception as e:
         logger.exception("单章重写失败: project=%s no=%d", project_id, no)
         raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+
+    # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖，
+    # 返回 content 与重写前一致即为 kept_previous（前端据此提示"已保留旧版"）
+    kept_previous = bool(prev_content) and chapter.content == prev_content
 
     logger.info("章节重写: uid=%d project=%s no=%d words=%d",
                 user["id"], project_id, no, len(chapter.content))
@@ -69,7 +75,7 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
             "summary": chapter.summary, "words": len(chapter.content),
             "balance_warning": stop_reason if should_stop else "",
-            "quality": quality}
+            "quality": quality, "kept_previous": kept_previous}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")

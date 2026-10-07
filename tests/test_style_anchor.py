@@ -23,6 +23,8 @@ sys.path.insert(0, str(ROOT))
 
 from novel_gen.config import NovelConfig
 from novel_gen.pipeline import templates
+from novel_gen.pipeline.memory import Memory
+from novel_gen.pipeline.stages import ChapterWriter
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, TEARDOWN_ANCHOR_HEADER,
     build_teardown_anchor, extract_personal_anchor, wrap_style_anchor,
@@ -175,6 +177,24 @@ def test_scene_prompt_injects_teardown_anchor():
 
 
 @pytest.mark.p1
+def test_scene_prompt_injects_personal_anchor():
+    cfg = NovelConfig(title="测试", total_words=10000)
+    sys_p, _ = scene_prompt(
+        cfg, 1, "第一章", 1, _scene(), "记忆", "", "",
+        personal_anchor="本人旧稿片段XYZ",
+    )
+    assert PERSONAL_ANCHOR_HEADER in sys_p
+    assert "本人旧稿片段XYZ" in sys_p
+
+
+@pytest.mark.p1
+def test_scene_prompt_skips_empty_personal_anchor():
+    cfg = NovelConfig(title="测试", total_words=10000)
+    sys_p, _ = scene_prompt(cfg, 1, "第一章", 1, _scene(), "记忆", "", "")
+    assert PERSONAL_ANCHOR_HEADER not in sys_p
+
+
+@pytest.mark.p1
 def test_scene_prompt_skips_empty_anchor():
     cfg = NovelConfig(title="测试", total_words=10000)
     sys_p, _ = scene_prompt(cfg, 1, "第一章", 1, _scene(), "记忆", "", "")
@@ -202,6 +222,34 @@ def test_chapter_prompt_injects_teardown_anchor():
     )
     assert TEARDOWN_ANCHOR_HEADER in sys_p
     assert "题材锚文本ABC" in sys_p
+
+
+@pytest.mark.p1
+def test_chapter_prompt_injects_personal_anchor():
+    cfg = NovelConfig(title="测试", total_words=10000)
+    sys_p, _ = chapter_prompt(
+        cfg, 1, "第一章", "目标", "调研", "记忆", "上一章尾",
+        personal_anchor="本人旧稿片段ABC",
+    )
+    assert PERSONAL_ANCHOR_HEADER in sys_p
+    assert "本人旧稿片段ABC" in sys_p
+
+
+@pytest.mark.p1
+def test_chapter_writer_personal_anchor_lazy(store):
+    """ChapterWriter 懒提取个人旧稿锚：无人工编辑章返回空，有则只含 user_edited 章，
+    二次调用走缓存（内容不变）。"""
+    writer = ChapterWriter(store.load_config(), None, store, Memory(store, 5))
+    assert writer._personal_anchor() == ""
+
+    store.save_chapter(_ch(1, "用户精修段落。" * 30, user_edited=True))
+    store.save_chapter(_ch(2, "AI 原文未改。" * 30))
+    writer2 = ChapterWriter(store.load_config(), None, store, Memory(store, 5))
+    out = writer2._personal_anchor()
+    assert "用户精修段落" in out
+    assert "AI 原文未改" not in out
+    # 懒缓存：再调返回相同内容
+    assert writer2._personal_anchor() == out
 
 
 @pytest.mark.p1

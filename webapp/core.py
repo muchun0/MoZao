@@ -946,6 +946,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 store.dir.name, cfg.effective_title(), start_from, trace_id)
     try:
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        # REQ-双锚风格锚定：所有生成入口统一注入题材锚（start_from>0 从第 N 章重生成、
+        # 复用大纲继续生成也生效；重复注入幂等，失败静默降级）
+        _inject_teardown_style_anchor(store, cfg)
 
         if start_from > 0:
             done = start_from - 1
@@ -956,8 +959,6 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             if _research_needed(cfg, has_outline):
                 # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
                 _inject_teardown_material(store, cfg)
-                # REQ-双锚风格锚定：拆书库题材文风锚（写手阶段消费，失败降级）
-                _inject_teardown_style_anchor(store, cfg)
                 pipeline.run_research()
                 # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
                 teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)

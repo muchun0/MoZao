@@ -1043,7 +1043,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", teardown_anchor=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1062,6 +1062,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
     if getattr(cfg, "teardown_style_anchor", True):
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:
@@ -1432,6 +1434,7 @@ def chapter_prompt(
     is_final: bool = False,
     chapter_core_event: str = "",
     chapter_events: str = "",
+    personal_anchor: str = "",
     teardown_anchor: str = "",
 ) -> tuple[str, str]:
     system = (
@@ -1491,6 +1494,8 @@ def chapter_prompt(
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
     if getattr(cfg, "teardown_style_anchor", True):
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:

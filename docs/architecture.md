@@ -38,7 +38,7 @@
 | `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计 | `base.py`、`factory.py`、`providers.py`、`usage.py` |
 | `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告；**P0-3 拆书库回流**：读取 store 的 `teardown_material.txt`（webapp 调研前写入的同题材爆款拆书条目）并入调研素材 | `research.py`、`sources.py`、`schemas.py` |
 | `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
-| `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角）；**P2** `ProjectStore` 新增场景落盘（`scenes.json` 分章场景清单+状态，供回看/编辑/复用）、`teardown_material.txt`（P0-3 拆书库回流素材） | `project.py`（`ProjectStore`）、`schemas.py` |
+| `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角）；**P2** `ProjectStore` 新增场景落盘（`scenes.json` 分章场景清单+状态，供回看/编辑/复用）、`teardown_material.txt`（P0-3 拆书库回流素材）；**REQ-双锚** `teardown_style_anchor.txt`（题材文风锚，webapp 写/novel_gen 读）；`Chapter.user_edited`（用户编辑保存=人工修订标记，个人风格锚来源） | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
 | `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
 | `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘 | — |
@@ -50,7 +50,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；**校验合并**（REQ-token优化 P1-5）：`_run_verify` 默认 `verify_combined_prompt` 一次调用输出 consistency/reader/editor 三类（verify_combined=False 回退原 3 连调用），一致性校验频率 `verify_every` 默认 5；**P0-1**：实例化 `ReaderAgent` 为正式角色成员，`_run_verify` 把其 persona（reader.md + reader 专属技能）注入读者视角检查（不增调用数）；`_build_setting_cards` 幂等接入分章设定卡索引；`_parse_json_obj` 容错解析；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace |
+| `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；**校验合并**（REQ-token优化 P1-5）：`_run_verify` 默认 `verify_combined_prompt` 一次调用输出 consistency/reader/editor 三类（verify_combined=False 回退原 3 连调用），一致性校验频率 `verify_every` 默认 5；**P0-1**：实例化 `ReaderAgent` 为正式角色成员，`_run_verify` 把其 persona（reader.md + reader 专属技能）注入读者视角检查（不增调用数）；`_build_setting_cards` 幂等接入分章设定卡索引；`_parse_json_obj` 容错解析；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace；**REQ-双锚** 章节扩写循环注入个人旧稿锚（`extract_personal_anchor`）+ 题材锚（store 文件） |
 | `orchestrator.py` | 架构总控 `Orchestrator`：任务拆解、**阶段门禁 StageGate**（产出→准出校验→不合格自动重生成≤N轮→超限仲裁放行）、跨模块冲突仲裁（主题>人物>世界观）；`manager.run_world/run_outline` 接入门禁（mock provider 默认跳过，保持离线行为一致） |
 | `validator.py` | 独立第三方逻辑校验 Agent `LogicValidator`：5 类专项校验（设定一致性/人物OOC/主线偏移/重复情节≤5%/伏笔完整性）+ 机制卡三要素校验（语义/结算/代价终局，REQ-章内自洽），输出分级问题清单，供 StageGate 与质量报告复用 |
 | `issue_triage.py` | 问题分级模型 `IssueItem`（fatal/major/minor）+ triage/has_fatal/sort 纯函数 |
@@ -69,19 +69,20 @@
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正）；**diff 式修正**（REQ-token优化 P1-6）：`_revise_diff` 只输出 `{"updates":[{no,title?,intro?,goal?}]}`（max_tokens 4096→1200），`_apply_updates` Python 合并回原大纲，解析失败/关闭回退 `_revise_whole` 整章重出 |
 | `reviser.py` | 单章重写/审校入口 |
 | `repetition.py` | 防同质化常驻提示词、防重复 |
+| `style_anchor.py` | 双锚风格锚定（REQ-双锚风格锚定）：个人旧稿锚 `extract_personal_anchor`（只抽 `user_edited` 章、限段限长）+ 题材锚组装 `build_teardown_anchor`（styles/takeaways/excerpts）+ 统一包装 `wrap_style_anchor`；`ChapterWriter`（stages.py）懒提取个人锚 `_personal_anchor` + 懒读 store 题材锚，经 `personal_anchor`/`teardown_anchor` 参数注入 scene/chapter prompt——**覆盖正文生成、单章重写、从第 N 章重生成全部写章路径** |
 | `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
 | `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规/章内同句复读）+ 读者视角 LLM 校验（章内矛盾自检 `consistency_llm_check` 默认仅高质量模式）+ 1 次自动重写；**定点重写**（REQ-token优化 P1-4）：`_locate_problem_spans` 按 issue pos 段落→detail 原句锚点定位窗口 ±200 字，窗口覆盖 <60% 正文才局部重写并 Python 拼回，无定位/跨度过大回退 `_rewrite_whole` 整章重出；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4）；章内同句复读（REQ-章内自洽）：叙述≥3次/长句2次/面板行2次→大改触发重写，对话口头禅≤2豁免 |
 | `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
 | `skills.py` | **技能统一注入管线**（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照（均读统一表 `skills`，source 区分 platform/user），按角色默认阶段（STAGE_BY_ROLE）过滤（技能 applicable_stages 空=全量）、统一清洗、产出 manifest（供 `agent_trace` 归因）；**P0-2**：STAGE_BY_ROLE 补 theme_character/world_rules/pacing 三 key、移除 validator 死配置（非 BaseAgent 不参与技能注入）；`agents/base.py` 与 `templates._skill_append` 均经此管线 |
-| `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`（开篇/结局 Agent 任务提示词）；P0-1 `verify_combined_prompt` 支持 `reader_persona` 注入；**P2** 大纲 prompt（open/expand/continue）chapters 字段新增 `cliffhanger`（章末钩子） |
+| `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`（开篇/结局 Agent 任务提示词）；P0-1 `verify_combined_prompt` 支持 `reader_persona` 注入；**P2** 大纲 prompt（open/expand/continue）chapters 字段新增 `cliffhanger`（章末钩子）；**REQ-双锚** scene/chapter 注入题材锚（`teardown_anchor` 参数，开关 `teardown_style_anchor` 控制）、`expand_chapter_prompt` 补风格范文+个人锚+题材锚（弱约束，空不注入） |
 
 ### 2.3 webapp/（SaaS Web 服务）
 
 | 文件 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
-| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费） |
+| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚） |
 | `routers/` | 按域拆分路由（见 2.4） |
 | `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
@@ -104,7 +105,7 @@
 | `style_roles.py` | 风格角色 | 风格师增删改 + 技能挂载 + `reference_text` 范文透传（P2-1） |
 | `projects_base.py` | 项目管理 | 列表/创建/详情/退费/归档/克隆/删除/下载（8）；建书快照 `style_role_reference` 进 config（P2-1） |
 | `projects_outline.py` | 大纲 | 三级大纲/快照/重生成（7） |
-| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2） |
+| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记 |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4） |

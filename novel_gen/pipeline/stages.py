@@ -14,6 +14,7 @@ from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
+from .style_anchor import extract_personal_anchor
 from .templates import (
     chapter_prompt,
     outline_prompt,
@@ -291,6 +292,8 @@ class ChapterWriter:
         self.guard = guard
         #: REQ-双锚风格锚定：拆书库题材锚懒读取缓存（None=未读）
         self._anchor_loaded: str | None = None
+        #: REQ-双锚风格锚定：个人旧稿锚懒提取缓存（None=未读）
+        self._personal_loaded: str | None = None
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
@@ -298,6 +301,16 @@ class ChapterWriter:
         if self._anchor_loaded is None:
             self._anchor_loaded = self.store.load_teardown_style_anchor()
         return self._anchor_loaded
+
+    def _personal_anchor(self) -> str:
+        """REQ-双锚风格锚定：懒提取个人旧稿锚（用户人工编辑过的章节片段）。
+        无人工编辑章返回空串（调用方不注入）；提取失败静默返回空串（不阻塞生成）。"""
+        if self._personal_loaded is None:
+            try:
+                self._personal_loaded = extract_personal_anchor(self.store.list_chapters())
+            except Exception:
+                self._personal_loaded = ""
+        return self._personal_loaded
 
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
@@ -405,6 +418,7 @@ class ChapterWriter:
                 is_final=is_final,
                 chapter_core_event=plan_core_event,
                 teardown_anchor=self._teardown_anchor(),
+                personal_anchor=self._personal_anchor(),
             )
             system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
@@ -624,6 +638,7 @@ class ChapterWriter:
                 chapter_core_event=plan_core_event,
                 chapter_events=ev_block,
                 teardown_anchor=self._teardown_anchor(),
+                personal_anchor=self._personal_anchor(),
             )
             system = self._sys(system)
             return self.llm.chat(system, user, temperature=0.85,
@@ -665,6 +680,7 @@ class ChapterWriter:
                 core_event=plan_core_event,
                 scene_state_hint=scene_state_hint,
                 teardown_anchor=self._teardown_anchor(),
+                personal_anchor=self._personal_anchor(),
             )
             sys_c = self._sys(sys_c)
             try:

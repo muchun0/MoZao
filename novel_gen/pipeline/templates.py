@@ -16,6 +16,7 @@ import random as _random
 
 from ..config import NovelConfig
 from ..store.schemas import Outline
+from .style_anchor import PERSONAL_ANCHOR_HEADER, TEARDOWN_ANCHOR_HEADER, wrap_style_anchor
 
 
 def _hard_constraints(cfg: NovelConfig) -> str:
@@ -1042,7 +1043,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", teardown_anchor=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1061,6 +1062,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1427,6 +1432,7 @@ def chapter_prompt(
     is_final: bool = False,
     chapter_core_event: str = "",
     chapter_events: str = "",
+    teardown_anchor: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1485,6 +1491,10 @@ def chapter_prompt(
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1599,8 +1609,14 @@ def expand_chapter_prompt(
     chapter_title: str,
     content: str,
     target_words: int,
+    personal_anchor: str = "",
+    teardown_anchor: str = "",
 ) -> tuple[str, str]:
-    """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。"""
+    """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。
+
+    REQ-双锚风格锚定：注入风格范文（_style_reference）+ 个人旧稿锚（personal_anchor）
+    + 拆书库题材锚（teardown_anchor），全部为弱约束（只模仿语感，严禁抄袭内容）。
+    """
     system = (
         "你是资深小说扩写编辑。用户给出「已有章节正文」，你要在【不改变情节走向、"
         "不删减已有内容、不改变人物性格与对话原意】的前提下，把正文扩写到目标字数。"
@@ -1613,6 +1629,15 @@ def expand_chapter_prompt(
             "扩写文字要有真人作者的质感：细节具体、对话有潜台词，"
             "避免AI腔（连接词堆砌、强行升华、句式整齐）。"
         )
+    ref = _style_reference(cfg)
+    if ref:
+        system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:

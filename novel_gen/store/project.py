@@ -235,6 +235,20 @@ class ProjectStore:
         except Exception:
             return ""
 
+    # ---------- 拆书库题材文风锚（REQ-双锚风格锚定）：webapp 写、novel_gen 读 ----------
+    def teardown_style_anchor_path(self) -> Path:
+        return self.dir / "teardown_style_anchor.txt"
+
+    def save_teardown_style_anchor(self, text: str) -> None:
+        (self.dir / "teardown_style_anchor.txt").write_text(text or "", encoding="utf-8")
+
+    def load_teardown_style_anchor(self) -> str:
+        p = self.dir / "teardown_style_anchor.txt"
+        try:
+            return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        except Exception:
+            return ""
+
     # ---------- 场景落盘（P2-4）：分章场景清单 + 场景状态，供回看/编辑/复用 ----------
     def scenes_path(self) -> Path:
         return self.dir / "scenes.json"

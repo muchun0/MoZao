@@ -2,6 +2,9 @@
 """projects_chapters路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from novel_gen.pipeline.style_anchor import (
+    PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
+from novel_gen.pipeline.templates import _style_reference
 
 
 @app.post("/api/projects/{project_id}/chapters/{no}/rewrite")
@@ -86,6 +89,14 @@ def expand_selection(project_id: str, req: dict, user: dict = Depends(_require_u
             sys = "你是一位网络小说写手。基于以下文字，自然续写一段，保持文风和情节连贯，100-300字。不要重复原文。"
         else:
             sys = "你是一位网络小说写手。将以下文字扩写得更细腻生动，增加感官细节和情绪，保持原意和文风，扩写后200-500字。"
+        # REQ-双锚风格锚定：注入风格范文（建书时选的风格角色）+ 个人旧稿锚（用户人工编辑过的章节）。
+        # 两者皆无则只保留原文（行为降级不报错）；个人锚为弱约束（只模仿语感，严禁抄袭内容）。
+        ref = _style_reference(cfg)
+        if ref:
+            sys += "\n\n" + ref
+        personal = extract_personal_anchor(store.list_chapters())
+        if personal:
+            sys += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal)
         user_msg = f"【原文】\n{selected}\n\n【请输出】"
         result = llm.chat(sys, user_msg, temperature=0.7, max_tokens=600)
     except Exception as e:
@@ -277,6 +288,8 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
         if new_summary:
             ch.summary = new_summary
 
+    # REQ-双锚风格锚定：用户编辑保存 = 人工修订标记（个人风格锚来源）
+    ch.user_edited = True
     store.save_chapter(ch)
     if ch.summary:
         store.append_summary(no, ch.summary)

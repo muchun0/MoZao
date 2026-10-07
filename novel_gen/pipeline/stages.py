@@ -289,6 +289,15 @@ class ChapterWriter:
         #: 模块1/2：埋点与成本防护（由 NovelPipeline 注入）
         self.trace = trace
         self.guard = guard
+        #: REQ-双锚风格锚定：拆书库题材锚懒读取缓存（None=未读）
+        self._anchor_loaded: str | None = None
+
+    def _teardown_anchor(self) -> str:
+        """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
+        首次读取后缓存；文件缺失/读取失败返回空串（调用方不注入，行为降级安全）。"""
+        if self._anchor_loaded is None:
+            self._anchor_loaded = self.store.load_teardown_style_anchor()
+        return self._anchor_loaded
 
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
@@ -395,6 +404,7 @@ class ChapterWriter:
                 prev_tail=prev_tail,
                 is_final=is_final,
                 chapter_core_event=plan_core_event,
+                teardown_anchor=self._teardown_anchor(),
             )
             system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
@@ -613,6 +623,7 @@ class ChapterWriter:
                 prev_tail=prev_tail, is_final=is_final,
                 chapter_core_event=plan_core_event,
                 chapter_events=ev_block,
+                teardown_anchor=self._teardown_anchor(),
             )
             system = self._sys(system)
             return self.llm.chat(system, user, temperature=0.85,
@@ -653,6 +664,7 @@ class ChapterWriter:
                 mem_for_this, running_tail, dynamic,
                 core_event=plan_core_event,
                 scene_state_hint=scene_state_hint,
+                teardown_anchor=self._teardown_anchor(),
             )
             sys_c = self._sys(sys_c)
             try:

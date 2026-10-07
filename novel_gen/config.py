@@ -66,6 +66,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "action_plan_first", False, "正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出，不再独立调用；True=恢复独立调用）"),
     FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
     FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
+    FeatureFlag("writing", "teardown_style_anchor", True, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
@@ -267,6 +268,7 @@ class NovelConfig:
     action_plan_first: bool = feature_default("action_plan_first")  # 正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出）
     scene_split: bool = feature_default("scene_split")              # 场景级生成下沉普通模式（单章≥2000字自动拆；P1-2）
     polish_hq_only: bool = feature_default("polish_hq_only")        # 整章润色仅高质量模式（REQ-token优化 P0-3）
+    teardown_style_anchor: bool = feature_default("teardown_style_anchor")  # 拆书库题材文风锚：写手阶段注入同题材爆款文风与手法（REQ-双锚风格锚定）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）

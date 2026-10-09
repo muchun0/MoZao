@@ -15,6 +15,7 @@ from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .style_anchor import extract_personal_anchor
+from .beats import _extract_beat_sequence, _beats_rewrite_detected
 from .templates import (
     chapter_prompt,
     outline_prompt,
@@ -546,6 +547,37 @@ class ChapterWriter:
             out.append(res if res else blk)
         return "\n\n".join(out)
 
+    def _fallback_whole_chapter(self, chapter_no, plan_title, plan_goal,
+                                memory_context, prev_tail, is_final,
+                                plan_core_event, fallback_events, silent=False) -> str:
+        """拆场景失败 / 场景正文重演重试耗尽的整章回退路径。
+
+        2026-10-01：events 已从拆场景输出救回时注入整章 prompt（拆场景失败不再丢事件）；
+        2026-10-09：场景连续 2 次重试仍重演完整循环时同样回退整章——整章单次生成
+        无场景间越权消费问题，重演由质检 2.12 情节级检测兜底。
+        """
+        from .templates import chapter_prompt
+        ev_block = ""
+        if fallback_events:
+            ev_block = "\n".join(
+                f"事件{i + 1}（{e.get('id', '')}）：{e.get('desc', '')}"
+                f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
+                for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
+            ) or ""
+        system, user = chapter_prompt(
+            self.cfg, chapter_no=chapter_no,
+            chapter_title=plan_title, chapter_goal=plan_goal,
+            research_block="", memory_context=memory_context,
+            prev_tail=prev_tail, is_final=is_final,
+            chapter_core_event=plan_core_event,
+            chapter_events=ev_block,
+            teardown_anchor=self._teardown_anchor(),
+            personal_anchor=self._personal_anchor(),
+        )
+        system = self._sys(system)
+        return self.llm.chat(system, user, temperature=0.85,
+                             frequency_penalty=0.3, presence_penalty=0.15)
+
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
                                  dynamic_module_used: bool = True,
@@ -708,31 +740,11 @@ class ChapterWriter:
             scenes = []
 
         if not scenes:
-            # 拆场景失败，回退到普通整章生成。2026-10-01：若 events 已从拆场景输出
-            # 救回（拆场景 JSON 截断常见），注入整章 prompt——拆场景失败不再丢事件
-            # （否则"救苏妄言"等核心事件被整章生成遗漏，或模型自发挥写重复）。
-            # 同时注入"每事件只写一遍"纪律，整章生成也受事件序列约束（事前规避）。
-            from .templates import chapter_prompt
-            ev_block = ""
-            if fallback_events:
-                ev_block = "\n".join(
-                    f"事件{i + 1}（{e.get('id', '')}）：{e.get('desc', '')}"
-                    f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
-                    for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
-                ) or ""
-            system, user = chapter_prompt(
-                self.cfg, chapter_no=chapter_no,
-                chapter_title=plan_title, chapter_goal=plan_goal,
-                research_block="", memory_context=memory_context,
-                prev_tail=prev_tail, is_final=is_final,
-                chapter_core_event=plan_core_event,
-                chapter_events=ev_block,
-                teardown_anchor=self._teardown_anchor(),
-                personal_anchor=self._personal_anchor(),
-            )
-            system = self._sys(system)
-            return self.llm.chat(system, user, temperature=0.85,
-                                 frequency_penalty=0.3, presence_penalty=0.15)
+            # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。
+            return self._fallback_whole_chapter(
+                chapter_no, plan_title, plan_goal,
+                memory_context, prev_tail, is_final,
+                plan_core_event, fallback_events, silent)
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
@@ -743,7 +755,8 @@ class ChapterWriter:
         mem_for_scene = memory_context
         if action_plan_block:
             mem_for_scene = (mem_for_scene + "\n\n" if mem_for_scene else "") + \
-                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan_block
+                "【本章人物行动表（全章总体动线：每个场景只落实与本场景唯一事件直接相关的行动，" \
+                "禁止在多个场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block
         # REQ-章内自洽与机制账本：场景间累积「已推进状态」（面板数字/人物生死/物品/时间），
         # 注入后续场景，防「三次死亡只减两次数字」「疤脸死而复生」等章内状态断裂。
         scene_state_acc: dict = {}
@@ -753,15 +766,24 @@ class ChapterWriter:
         # （《万墟之上》22:32 版空地版/坡地版双版本）。这里把本章已规划场景事件做成
         # 确定性事件清单，逐场景累积注入后续场景，零 LLM 成本。
         done_events: list[str] = []
+        # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
+        # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
+        # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
+        # 指纹，后续场景与之比对——场景1越权写完事件2~4 后，场景2~4 直接感知并拦截。
+        done_beat_seqs: list[list[str]] = []
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
         for idx, sc in enumerate(scenes, start=1):
+            # REQ-scene-plan-align §7.3 措施1：事件进度硬约束——本章共 N 个事件/场景，
+            # 本场景只允许推进本场景唯一事件，禁止提前写后续事件完整流程（防"越权消费"）
+            event_progress = f"本章共 {len(scenes)} 个事件/场景，本场景为第 {idx}/{len(scenes)} 个。"
             if idx == 1 or not scene_delta_on:
                 mem_for_this = mem_for_scene
             elif action_plan_block:
                 mem_for_this = ("【前情记忆】已在第1个场景完整注入，本场景不再重复全文。\n"
-                                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致）】\n" + action_plan_block)
+                                "【本章人物行动表（仅参考：本场景只落实与『本场景唯一事件』直接相关的行动，"
+                                "禁止跨场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block)
             else:
                 mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
             sys_c, user_c = scene_prompt(
@@ -771,6 +793,7 @@ class ChapterWriter:
                 scene_state_hint=scene_state_hint,
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
+                event_progress=event_progress,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -859,9 +882,57 @@ class ChapterWriter:
                         retry3 = _strip_html_tags(retry3)
                         if retry3 and not _scene_text_rewrites_event(retry3, done_events):
                             piece = retry3
+                # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
+                # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
+                # 文本相似度/救援动词防线全漏检（§7.2 根因 C/D/E），用节拍序列指纹比对；
+                # 命中 → 重试（forbid_event=本场景唯一事件，强制只推进本场景事件）；
+                # 同一场景连续 2 次重试仍重演 → 整章回退（整章单次生成无场景间越权消费）。
+                if piece and done_beat_seqs:
+                    _seq = _extract_beat_sequence(piece)
+                    if _seq and _beats_rewrite_detected(_seq, done_beat_seqs):
+                        _beat_ok = False
+                        for _try in (1, 2):
+                            if not silent:
+                                print(f"  [场景] 第{idx}个场景节拍序列与已发生场景重合"
+                                      f"（{'→'.join(_seq)}），疑似换措辞重演完整循环，"
+                                      f"重试第{_try}次强制只写本场景唯一事件")
+                            _ev_desc = str(sc.get("event") or "").strip() or "本场景唯一事件"
+                            sys_c4, user_c4 = scene_prompt(
+                                self.cfg, chapter_no, plan_title, idx, sc,
+                                mem_for_this, running_tail, dynamic,
+                                core_event=plan_core_event,
+                                scene_state_hint=scene_state_hint,
+                                force_new_progression=True,
+                                forbid_event=_ev_desc,
+                                event_progress=event_progress,
+                            )
+                            retry4 = self.llm.chat(
+                                self._sys(sys_c4), user_c4,
+                                temperature=0.7,
+                                max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                                frequency_penalty=0.4,
+                                presence_penalty=0.25,
+                            )
+                            retry4 = _strip_html_tags(retry4)
+                            _seq4 = _extract_beat_sequence(retry4) if retry4 else []
+                            if not (_seq4 and _beats_rewrite_detected(_seq4, done_beat_seqs)):
+                                piece = retry4
+                                _beat_ok = True
+                                break
+                        if not _beat_ok:
+                            if not silent:
+                                print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
+                            return self._fallback_whole_chapter(
+                                chapter_no, plan_title, plan_goal,
+                                memory_context, prev_tail, is_final,
+                                plan_core_event, fallback_events, silent)
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
+                # 正文级节拍序列登记（措施3）：最终采用场景正文的节拍指纹，供后续场景比对
+                _bs = _extract_beat_sequence(piece) if piece else []
+                if _bs:
+                    done_beat_seqs.append(_bs)
                 # 跨场景事件清单：本场景规划事件（拆场景时定义）追加为"已发生事件"，
                 # 拼入 scene_state_hint 注入后续场景——同一事件不得再次发生/重复描写。
                 ev = str(sc.get("event") or "").strip()

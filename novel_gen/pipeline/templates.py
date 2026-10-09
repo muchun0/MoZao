@@ -1079,7 +1079,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1136,6 +1136,11 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
         f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n\n"
+        f"{'【事件进度（硬约束：本章事件按编号顺序各对应一个场景、各只推进一次；'
+        f'本场景只允许推进本场景唯一事件的正文，禁止把后续事件的完整流程提前写完——'
+        f'后续事件（如死亡-复活-对峙-包扎-离场等完整循环）必须留给各自场景推进，'
+        f'即使本场景事件是前置节拍（进入/扫描/试探），也只写该节拍本身及与下一事件的直接衔接）】\n'
+        f'{event_progress}\n\n' if event_progress else ''}"
         f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
         f"{'【本章已推进状态（后续场景必须延续，禁止回退或重复叙述已发生事实）】\n' + scene_state_hint + '\n\n' if scene_state_hint else ''}"
@@ -1158,7 +1163,9 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
            "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场；"
            "本场景的事件在时间线上位于上一场景事件之后，必须从上一场景的『结局之后』续写，"
            "禁止回到上一场景更早的时点重演其已写情节（哪怕换地点、换措辞、补细节，"
-           "连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）\n")
+           "连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）；"
+           "同时禁止把本章后续事件的完整流程提前写完——本场景只写本场景唯一事件，"
+           "后续事件（死亡-复活-对峙-包扎-离场等完整循环）必须留给各自场景推进\n")
         + "8. 情节连续：场景内和场景间不得出现'上一幕还在A地，下一句已在B地'式断层，"
         "所有换场都要有可感知的衔接动作或时间过渡\n"
         "9. 状态衔接（硬约束）：本场景的机制数字（面板/蚀痕）、人物生死、物品归属必须与"

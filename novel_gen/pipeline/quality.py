@@ -24,6 +24,7 @@ from ..llm.base import LLMClient
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter
 from .templates import reader_review_prompt, _output_discipline
+from .beats import _beat_cycle_issues
 from .trace import TraceRecorder
 
 # 校验阈值（确定性规则）
@@ -214,6 +215,14 @@ class QualityChecker:
         # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
         #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
         for it in self._dialogue_loop_issues(content):
+            issues.append(it)
+            score -= 30
+
+        # 2.12 情节级重演检测（确定性，2026-10-09）：同一「节拍序列」（盘问→戳穿→
+        #    失控→挡死→死亡→复活→面板→离场 等完整循环）在章内非重叠出现 ≥2 次
+        #    = 同事件多版本重演（换措辞循环；文本 n-gram/整句复读/对话轮检测全漏检，
+        #    文本相似度盲区见 REQ-scene-plan-align §7.2）。
+        for it in _beat_cycle_issues(content):
             issues.append(it)
             score -= 30
 

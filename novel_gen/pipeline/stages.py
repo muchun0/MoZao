@@ -332,10 +332,14 @@ class ChapterWriter:
 
         # 注入时间线提示
         plan_core_event = ""
+        plan_moves = ""
         try:
             outline = self.store.load_outline()
             if outline and chapter_no - 1 < len(outline.chapters):
                 plan_core_event = outline.chapters[chapter_no - 1].core_event or ""
+                # REQ-scene-plan-align：人物动线（逐拍动作序列）注入拆场景规划层，
+                # 事件清单从此确定性派生（唯一性最强的骨架不再被丢弃）
+                plan_moves = getattr(outline.chapters[chapter_no - 1], "character_moves", "") or ""
                 # P2 章末钩子：注入当前章章末钩子（writer 写章末须兑现，防流水账结尾）
                 _cliff = getattr(outline.chapters[chapter_no - 1], "cliffhanger", "") or ""
                 if _cliff:
@@ -403,6 +407,7 @@ class ChapterWriter:
                 memory_context, prev_tail, is_final,
                 dynamic_module_used=hq_mode,
                 plan_core_event=plan_core_event,
+                plan_moves=plan_moves,
                 silent=silent,
             )
             system = ""
@@ -545,11 +550,16 @@ class ChapterWriter:
                                  memory_context, prev_tail, is_final,
                                  dynamic_module_used: bool = True,
                                  plan_core_event: str = "",
+                                 plan_moves: str = "",
                                  silent: bool = False):
         """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
 
         高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
         普通模式只启用拆场景→逐场景→润色基础链路。拆场景失败自动回退整章生成。
+
+        REQ-scene-plan-align：plan_moves 非空且开关开启时，事件清单由大纲 character_moves
+        确定性派生（_derive_events_from_moves），模型只做场景切分与细节补充——
+        杜绝"每次生成事件清单不一样 + 同一冲突拆成多个版本"。
         """
         import json
         from .templates import (
@@ -560,10 +570,21 @@ class ChapterWriter:
         # 1. 拆场景（低温 0.4；REQ-token优化 P0-2：顺带产出本章人物行动表，不再独立调用）
         action_plan_block = ""
         fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
+        # REQ-scene-plan-align：从大纲 character_moves 确定性派生事件清单（硬骨架）。
+        # 派生成功 → 模型无权增删/改写事件，只做补字段 + 拆场景；失败 → 回退原 LLM 规划路径。
+        derived_events: list = []
+        skeleton_arg = ""
+        if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
+            derived_events = _derive_events_from_moves(plan_moves)
+            if derived_events:
+                # 骨架文本：编号 + desc 逐条列出，明示事件数与"场景数=事件数"约束
+                skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
+                    "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
         try:
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
+                moves=skeleton_arg,
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
@@ -618,13 +639,51 @@ class ChapterWriter:
             # 不同 + 引用唯一性 + 场景数/字数校验」结构化保证，不再依赖文本相似度猜重叠
             # （6316 字版"苏妄言被围"被拆成 5 个换措辞场景即旧校验盲区）。
             events_list = split_data.get("events") or [] if split_data else []
+            # REQ-scene-plan-align：派生模式下事件清单以大纲 character_moves 为准（确定性），
+            # desc/id 以骨架为准（模型无权增删/改写事件）；模型输出同 id 事件的结构化字段
+            # （conflict/action/final_state，尤其机制数字增量）按 id 合并保留——
+            # 骨架锁住"事件是什么"，模型只补"冲突对象/动作/机制状态增量"。
+            # 回退整章注入的事件序列同样用合并后事件（防丢事件/换措辞重演）。
+            if derived_events:
+                model_by_id = {
+                    str(e.get("id") or ""): e
+                    for e in events_list if isinstance(e, dict) and e.get("id")
+                }
+                events_list = []
+                for de in derived_events:
+                    de = dict(de)
+                    mo = model_by_id.get(str(de.get("id") or ""))
+                    if mo:
+                        for k in ("conflict", "action", "final_state"):
+                            if mo.get(k):
+                                de[k] = mo[k]
+                    events_list.append(de)
+                fallback_events = events_list
             _expand_scene_event_refs(scenes, events_list)
             # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
             # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
             # 防"救苏妄言"拆成石殿版/墟口外版两场景）：
             # 不合格 = 同一事件拆成两场景（同事件两版本拼接源头），回退整章生成
             ok_plan, why_bad = _validate_scene_plan(scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
-            sem_dup = _scene_events_semantically_overlap(events_list)
+            # REQ-scene-plan-align：派生模式下事件互斥改用 desc（骨架原文）相似度兜底——
+            # 模型补充的 conflict/action 可能把同一人物交互的递进拍标成同动作（如"扫描/
+            # 装傻"都标"试探"），槽位检查会误杀回退；desc 是骨架逐拍原文，互斥由"两拍
+            # 原文明显不同"保证，相似度 >0.55 才视为重复（防大纲拍本身重复）。
+            if derived_events:
+                import difflib as _difflib
+                _norms = [_norm_scene_event(e.get("desc") or "") for e in events_list]
+                sem_dup = False
+                for _i in range(len(_norms)):
+                    for _j in range(_i + 1, len(_norms)):
+                        if _norms[_i] and _norms[_j] and _difflib.SequenceMatcher(
+                            None, _norms[_i], _norms[_j]
+                        ).ratio() > _SCENE_EVENT_OVERLAP_RATIO:
+                            sem_dup = True
+                            break
+                    if sem_dup:
+                        break
+            else:
+                sem_dup = _scene_events_semantically_overlap(events_list)
             if scenes and not ok_plan:
                 if not silent:
                     print(f"  [拆场景] 场景规划校验不通过（{why_bad}），回退整章生成")
@@ -634,6 +693,17 @@ class ChapterWriter:
                     print("  [拆场景] 事件清单语义槽位重叠（同冲突对象+同动作=重复事件），"
                           "回退整章生成")
                 scenes = []
+            elif derived_events and scenes:
+                # REQ-scene-plan-align：派生模式下场景 scene_event_ref 必须恰好覆盖派生
+                # 事件 id 集合（无遗漏/无重复/无新增）。模型自造 id、漏引用、重复引用
+                # 均视为不遵守骨架 → 回退整章（整章路径仍注入派生事件序列兜底）。
+                refs = {str(sc.get("scene_event_ref") or "").strip() for sc in scenes if isinstance(sc, dict)}
+                derived_ids = {str(e.get("id") or "").strip() for e in derived_events}
+                if refs != derived_ids:
+                    if not silent:
+                        print(f"  [拆场景] 场景事件引用与派生事件骨架不一致"
+                              f"（refs={sorted(refs)} vs derived={sorted(derived_ids)}），回退整章生成")
+                    scenes = []
         except Exception:
             scenes = []
 
@@ -1052,6 +1122,54 @@ def _scene_event_ordinals(text: str) -> set[str]:
     """
     import re
     return set(re.findall(_SCENE_ORDINAL_PATTERN, text))
+
+
+# REQ-scene-plan-align：character_moves 因果粘连拍标记（后拍含以下词 → 并入前拍，
+# 死亡-复活/昏迷-苏醒这类因果必须同事件，禁止拆成两个"独立事件"造成重演空间）
+_CAUSAL_BEAT_RE = re.compile(r"复活|苏醒|醒来|回神|缓过神|回过神来|睁眼|醒转")
+
+
+def _derive_events_from_moves(moves: str) -> list[dict]:
+    """REQ-scene-plan-align：把大纲 character_moves（逐拍动作序列）确定性切分为事件清单。
+
+    - 每拍 = 一个事件（id 按序编号、desc 逐字保留骨架原文，conflict/action 复用语义槽位提取）；
+    - 拍数 >4 时合并到 ≤4：因果粘连拍（死亡-复活等）优先并入前拍，再合并最短拍；
+    - 输入为空 / 切分后 <2 拍 / 合并后仍 <2 拍 → 返回 []（调用方回退原 LLM 规划路径）。
+
+    确定性保证：纯字符串切分 + 固定合并规则，无 LLM 采样，同一输入恒得同一输出。
+    """
+    if not moves or not str(moves).strip():
+        return []
+    text = str(moves).strip()
+    if "→" in text:
+        beats = [b.strip() for b in text.split("→")]
+    else:
+        beats = [b.strip() for b in re.split(r"[。；;]", text) if b.strip()]
+    beats = [b for b in beats if b]
+    if len(beats) < 2:
+        return []
+    # 因果粘连一次性合并：含复活/苏醒标记的拍并入前拍（死亡-复活必须同事件）。
+    # 合并产物仍含"复活"字样，但不再触发粘连检查（跳过产物），防连锁吞并整章。
+    i = len(beats) - 1
+    while i >= 1 and len(beats) > 4:
+        if _CAUSAL_BEAT_RE.search(beats[i]):
+            beats[i - 1] = f"{beats[i - 1]}→{beats[i]}"
+            del beats[i]
+            i -= 2  # 跳过合并产物（新文本含标记，不得再次触发）
+        else:
+            i -= 1
+    # 仍 >4 → 合并最短拍到其前拍（保因果顺序）
+    while len(beats) > 4:
+        j = min(range(1, len(beats)), key=lambda k: len(beats[k]))
+        beats[j - 1] = f"{beats[j - 1]}→{beats[j]}"
+        del beats[j]
+    if len(beats) < 2:
+        return []
+    events = []
+    for i, b in enumerate(beats, start=1):
+        c, a = _event_semantic_slots(b)
+        events.append({"id": f"事件{i}", "desc": b, "conflict": c, "action": a, "final_state": ""})
+    return events
 
 
 def _event_semantic_slots(desc: str, conflict: str = "", action: str = "") -> tuple[str, str]:

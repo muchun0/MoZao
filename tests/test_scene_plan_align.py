@@ -289,3 +289,99 @@ def test_scene_plan_align_flag_off_regression(store):
     assert "规划本章事件清单" in split_user            # 回退原路径
     assert "已由编辑按人物动线确定" not in split_user
     assert "苏妄言盘问" in ch.content
+
+
+# ---------- P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮） ----------
+
+@pytest.mark.p1
+def test_ca_truncated_triggers_single_field_fill(store):
+    """整体 JSON 截断（characters_action 丢失且无法救回）→ 单字段补全调用，
+    行动表成功注入场景 prompt（措辞层约束真正生效）。"""
+    _save_outline(store, "")                             # moves 为空，原规划路径
+    llm = MagicMock()
+    # 截断 JSON：events/scenes 数组完整可救回，尾部（characters_action + }）丢失
+    truncated_json = (
+        '{"events": [{"id": "事件1", "desc": "苏妄言盘问陆沉", "conflict": "苏妄言", '
+        '"action": "试探", "final_state": "面板2/2"}],'
+        ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "警惕",'
+        ' "anchors": [], "time_marker": "清晨", "target_words": 2500}], '
+    )
+    fill_json = (
+        '[{"name": "陆沉", "goal": "蒙混过关", "key_actions": ["装傻应付盘问", "遮掩蚀痕"],'
+        ' "emotion": "警惕", "dialogue_intent": "隐瞒执能"}]'
+    )
+    llm.chat.side_effect = [
+        truncated_json,          # 拆场景（截断）
+        fill_json,               # 单字段补全 characters_action
+        "场景正文：苏妄言盘问。" * 280,
+        "场景链路摘要",
+    ]
+    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 4                      # 拆场景 + 补全 + 场景 + 摘要
+    scene_user = llm.chat.call_args_list[2][0][1]
+    assert "装傻应付盘问" in scene_user                  # 补全的行动表注入场景 prompt
+    assert "遮掩蚀痕" in scene_user
+    assert "苏妄言盘问" in ch.content
+
+
+@pytest.mark.p1
+def test_ca_empty_but_json_ok_no_extra_call(store):
+    """整体 JSON 解析成功但 characters_action 为空数组（模型真未规划）→ 不触发补全
+    （无谓的额外 LLM 调用）。"""
+    _save_outline(store, "")
+    llm = MagicMock()
+    simple_json = (
+        '{"events": [{"id": "事件1", "desc": "林小满抵达落霞城", "conflict": "", '
+        '"action": "", "final_state": ""}],'
+        ' "scenes": [{"location": "落霞城", "scene_event_ref": "事件1", "emotion": "疲惫",'
+        ' "anchors": [], "time_marker": "清晨", "target_words": 2500}],'
+        ' "characters_action": []}'
+    )
+    llm.chat.side_effect = [
+        simple_json,
+        "场景正文：林小满抵达。" * 280,
+        "场景链路摘要",
+    ]
+    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 3                      # 拆场景 + 场景 + 摘要（无补全）
+    assert "林小满抵达" in ch.content
+
+
+# ---------- P0-1 事件消费账本注入（2026-10-09 生成端第三轮） ----------
+
+@pytest.mark.p1
+def test_event_ledger_consumed_upcoming_injected(store):
+    """事件消费账本：场景1 注入「后续事件预览」（禁提前消费），场景2 注入
+    「已消费事件」（只许回响），治跨场景分布型重演。"""
+    _save_outline(store, "")
+    llm = MagicMock()
+    two_scene_json = (
+        '{"events": [{"id": "事件1", "desc": "苏妄言盘问陆沉，陆沉装傻糊弄", "conflict": "苏妄言", '
+        '"action": "试探", "final_state": ""},'
+        ' {"id": "事件2", "desc": "苏妄言留铜牌征召，陆沉心里骂娘", "conflict": "苏妄言", '
+        '"action": "征召", "final_state": "执刑司征召令已下"}],'
+        ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "警惕",'
+        ' "anchors": [], "time_marker": "清晨", "target_words": 1250},'
+        ' {"location": "铁匠铺门口", "scene_event_ref": "事件2", "emotion": "压抑",'
+        ' "anchors": [], "time_marker": "稍后", "target_words": 1250}],'
+        ' "characters_action": []}'
+    )
+    llm.chat.side_effect = [
+        two_scene_json,
+        "苏妄言推门进来，盘问了两句。陆沉装傻糊弄过去。" * 120,
+        "陆沉把铜牌收进怀里，骂了一句，跟着她出了门。" * 120,
+        "场景链路摘要",
+    ]
+    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert llm.chat.call_count == 4                      # 拆场景 + 场景1 + 场景2 + 摘要
+    scene1_user = llm.chat.call_args_list[1][0][1]
+    scene2_user = llm.chat.call_args_list[2][0][1]
+    # 场景1：注入后续事件预览（事件2 desc），无已消费事件
+    assert "本章后续事件预览" in scene1_user
+    assert "苏妄言留铜牌征召，陆沉心里骂娘" in scene1_user
+    assert "本章已消费事件" not in scene1_user
+    # 场景2：注入已消费事件（事件1 desc），无后续预览
+    assert "本章已消费事件" in scene2_user
+    assert "苏妄言盘问陆沉，陆沉装傻糊弄" in scene2_user
+    assert "本章后续事件预览" not in scene2_user
+    assert "苏妄言推门进来" in ch.content

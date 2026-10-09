@@ -187,3 +187,12 @@
   4. `_fallback_whole_chapter` 生成后即时校验：`_beat_cycle_issues` + 字数超限（>1.35×目标）→ 重试至多 2 次（注入重复节拍证据 + 压缩字数目标），不再把重演全部押给质检重写。
 - 验证：test_scene_anti_repeat.py +7 用例（局部重合命中/不误报/短序列/空 done、done_beats 注入/不注入、场景1内部两遍→重试、整章回退生成后重试），相关 35 用例全绿，全量 P0+P1 279 绿；真实文本回验行为不回归（第1/3/4章命中、第5/6/7章干净、第2章短节拍为正常节奏误报）。
 - 待办：真实重生成 1-7 章验证生成端第二轮是否消除重演→评估签约；行动表 JSON 解析失败修复；§7.3 措施6（机制一致性可检测项）后续专项；master 回退（5190063）是否 push origin/master 未定。
+
+## 2026-10-09 生成端第三轮：事件消费账本 + 面板数字确定性闭环 + characters_action 补全（外部调研后用户拍板"生成端的优化都做"）
+- 背景：第三次真实重生成（22:39-22:53）双验证仍 5/7 章重演（第2/5/7章从"干净"回归"重演"，生成端第二轮未根治），另有系统性面板账本崩坏（第2章起死亡不扣次数、蚀化98→97/99→97回退、2→0跳变）。用户要求先调研市面产品/开源/学术怎么做，OrganizerAgent 四路并行调研（NovelAI/Sudowrite/Goink/AutoNovel/LongWriter/Re3/SimCTG/DOC + vLLM/Outlines 等 12+ 对象，关键来源独立核验），产出《竞品对比分析_防重演方案_20261009.md》。五条主线：规划层"指针制"防越权、正文层真实前文+采样抑制、检测层词面→语义指纹、状态层确定性账本契约（**全行业无人做机制数字确定性计算=差异化机会**）、校验层独立审稿。用户拍板实施生成端三项（P0-2 语义指纹属检测端，不在本轮）。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，未提交）：
+  1. **P0-1 事件消费账本状态机（治 a 跨场景分布型重演）**：`done_events`（list[str]）升级为 `event_ledger`（{desc, consumed_scene_idx}）；`scene_prompt` 新增 `consumed_events`/`upcoming_events` 参数与两块注入——【本章已消费事件（只许一句话回响，禁再展开完整流程）】【本章后续事件预览（禁提前消费，只许铺垫提及）】。对标 AgentWrite `$STEP$` 指针制（计划全文可见、每次只给当前一个执行单元）与 Goink 伏笔账本状态机。
+  2. **P0-3 面板数字确定性状态闭环（治 c，差异化机会）**：`chapter_state.py` 新增 `panel_baseline_dict`/`panel_direction_violations`/`panel_numbers_sequence`（零 LLM：次数/剩余只许递减、0→N 视为子时重置放行；蚀化/进度只许递增）；`scene_prompt` 新增 `panel_baseline`（机制数字基线注入）+`panel_violations`（带错重试）；场景循环防线4：正文机制数字违反方向规则→带错重试至多 2 次（注入基线+违规描述），仍违反用最后稿（质检 2.x 二次拦截）。工程对标：Observed→Propose→Verify→Commit 闭环 + Re3 属性-值字典矛盾纠偏。
+  3. **P0-4 characters_action 单字段补全（清 7 章行动表全部解析失败待办）**：拆场景大 JSON 长输出截断只丢尾部 characters_action（"Expecting ',' delimiter"）时，新增 `_fill_characters_action` + `characters_action_fill_prompt` 让模型只输出行动表数组（小调用低截断风险，最多重试 1 次，仍失败返回 [] 不阻塞）；**仅整体 JSON 解析失败且救回为空时触发**（整体成功但为空数组=模型真未规划，不补全，防无谓额外 LLM 调用——首版无条件补全致既有用例 side_effect 错乱的教训）。行动表 key_actions 与事件清单逐条对应（每事件至多一个 key_action，防行动表诱导跨场景重复落实）。
+- 验证：专项 47 用例全绿（35 基线 + 12 新增：P0-4 截断补全/空数组不补全、P0-1 双块注入、P0-3 单元 7 例 + 集成重试 1 例）；全量 506 用例 505 绿（1 例 test_final_review_llm_error_safe Windows 文件锁瞬时失败，单独重跑通过，与本轮改动无关）。已踩坑：①characters_action 无条件补全会额外消耗 llm.chat 调用破坏 side_effect；②测试占位文本若含节拍词（铜牌/跟上/离去）且 80 遍重复会形成 160 拍内部循环误触发防线3——测试文本须避开节拍词；③场景 target_words 和超章节 ±10% 会回退整章（2×2500 vs 目标 2500）。
+- 待办：验证通过后触发第四次真实重生成（双验证：节拍检测器+逐章通读全文）→ 评估签约 → 达标后走 devtest→master 合并；P0-2 语义指纹并联（检测端，bge-small-zh 本地或云 embed、阈值 0.60-0.70 需自建标定集）留待后续；§7.3 措施6 蚀痕位置全局唯一/小九禁说人话仍待专项；master 回退（5190063）是否 push origin/master 未定。

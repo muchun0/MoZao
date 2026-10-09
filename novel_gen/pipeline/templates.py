@@ -1079,7 +1079,41 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats=""):
+def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
+                                  core_event="", events_text="", prev_tail=""):
+    """P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮）。
+
+    拆场景大 JSON 长输出截断通常只丢尾部 characters_action（"Expecting ',' delimiter"
+    实证）；本 prompt 让模型**只输出 characters_action 数组**（小调用、低截断风险），
+    成功后并入拆场景结果——不再整段重试（省 token），行动表措辞层约束真正生效。
+    """
+    system = (
+        "你是一位小说结构编辑。根据本章事件清单与人物，输出本章人物的行动表 JSON 数组。"
+        "严格按 JSON 数组格式输出，不要额外解释、不要代码块标记。"
+    )
+    user = (
+        f"【本章】第{chapter_no}章《{chapter_title}》\n"
+        f"【本章目标】{chapter_goal}\n"
+        f"【本章核心事件】\n{core_event if core_event else '（无）'}\n"
+        f"【本章事件清单（事件=场景，逐条推进，禁止同一事件重复演绎）】\n"
+        f"{events_text if events_text else '（无）'}\n"
+        f"【上一章结尾】\n{prev_tail if prev_tail else '（无）'}\n\n"
+        "输出要求：\n"
+        "1. 为本章出场人物规划行动表，每人一条，含：name（人物名）、"
+        "goal（本章目标，具体可行动）、key_actions（2-4 个动词驱动的关键行动，"
+        "能推进剧情或冲突）、emotion（情绪状态一句话）、"
+        "dialogue_intent（对话意图：想通过对话达成/试探/隐瞒什么）\n"
+        "2. key_actions 必须与事件清单逐条对应：每个事件至多被一个 key_action 覆盖，"
+        "禁止同一个人物对同一事件安排多个 key_action（防行动表诱导跨场景重复落实）\n"
+        "3. 只输出 JSON 数组，不要输出其他文字\n\n"
+        '示例：[{"name": "陆沉", "goal": "摸清苏妄言来意", '
+        '"key_actions": ["装傻应付盘问", "遮掩左臂蚀痕"], '
+        '"emotion": "警惕", "dialogue_intent": "隐瞒昨日在墟口的死亡经历"}]'
+    )
+    return system, user
+
+
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1131,6 +1165,29 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"必须改写为与前面场景完全不同的新进展；若确有'应被压缩'的旧进展，用一句叙述带过"
         f"而不是重演完整过程）】\n{done_beats}\n"
     ) if done_beats else ""
+    # P0-1 事件消费账本（2026-10-09 生成端第三轮，对标 AgentWrite $STEP$ 指针制）：
+    # 已消费事件只许一句话回响；后续事件预览只许铺垫提及，禁提前消费完整流程。
+    consumed_block = (
+        f"\n【本章已消费事件（硬约束：以下事件已在本章前面的场景正文中完整发生并结束，"
+        f"本场景禁止再次发生/禁止展开其完整流程——换地点、换措辞、换细节再写一遍"
+        f"同样视为重演；如需呼应，只用一句话带过结果）】\n{consumed_events}\n"
+    ) if consumed_events else ""
+    upcoming_block = (
+        f"\n【本章后续事件预览（禁提前消费：以下事件留给各自的场景推进，本场景正文"
+        f"禁止写出它们的完整流程、动作、冲突或结果；只可做一句铺垫性提及，"
+        f"不得展开演绎）】\n{upcoming_events}\n"
+    ) if upcoming_events else ""
+    # P0-3 面板数字确定性闭环（2026-10-09 生成端第三轮）：权威基线注入 + 违反方向规则重试。
+    panel_baseline_block = (
+        f"\n【机制数字基线（本场景开始时的权威数字，硬约束：正文中的机制数字必须从这些值"
+        f"开始推进——次数类（含可死次数/剩余）只许递减，蚀化/进度类只许递增（只增不减，"
+        f"子时重置除外）；禁止出现与方向规则相反的值、禁止同值跨结算点重复显示）】\n"
+        f"{panel_baseline}\n"
+    ) if panel_baseline else ""
+    panel_violation_block = (
+        f"\n【重试强制规则（上一条正文中机制数字违反方向规则，已作废）】\n"
+        f"{panel_violations}\n"
+    ) if panel_violations else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1154,6 +1211,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{force_block}"
         f"{forbid_block}"
         f"{done_beats_block}"
+        f"{consumed_block}"
+        f"{upcoming_block}"
+        f"{panel_baseline_block}"
+        f"{panel_violation_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"

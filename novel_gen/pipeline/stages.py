@@ -660,6 +660,10 @@ class ChapterWriter:
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
+            # P0-4：仅当「整体 JSON 解析失败」（尾部截断证据）且救回 characters_action
+            # 为空时才触发单字段补全；整体解析成功但 characters_action 为空数组 =
+            # 模型真未规划（合法），不补全（避免无谓的额外 LLM 调用）。
+            _ca_needs_fill = False
             try:
                 split_data = json.loads(_strip_json_block(raw))
             except Exception:
@@ -679,6 +683,8 @@ class ChapterWriter:
                     if events_fb:
                         split_data["events"] = events_fb
                     split_data["characters_action"] = _extract_json_field(raw, "characters_action")
+                    if not split_data.get("characters_action"):
+                        _ca_needs_fill = True
                 else:
                     if not silent:
                         print("  [拆场景] JSON 解析失败，重试 1 次（温度 0.5）...")
@@ -698,10 +704,23 @@ class ChapterWriter:
                         }
                         if not split_data:
                             split_data = None
+                        elif not split_data.get("characters_action"):
+                            _ca_needs_fill = True
             if isinstance(split_data, dict):
                 fallback_events = split_data.get("events") or []
                 scenes = split_data.get("scenes", [])
-                action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
+                ca = split_data.get("characters_action") or []
+                # P0-4 characters_action 单字段补全（2026-10-09）：
+                # 大 JSON 长输出截断只丢尾部 characters_action 时（_extract_json_field
+                # 救回为空/损坏），单独让模型只输出行动表数组——措辞层约束真正生效。
+                if not ca and _ca_needs_fill and scenes:
+                    if not silent:
+                        print("  [行动表] characters_action 截断救回失败，单字段补全调用...")
+                    ca = self._fill_characters_action(
+                        chapter_no, plan_title, plan_goal,
+                        plan_core_event, fallback_events, prev_tail, silent=silent,
+                    )
+                action_plan_block = _format_action_plan(ca or [])
                 if not silent:
                     print(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
                           f"{len(fallback_events)} 个事件")
@@ -806,6 +825,12 @@ class ChapterWriter:
         # （《万墟之上》22:32 版空地版/坡地版双版本）。这里把本章已规划场景事件做成
         # 确定性事件清单，逐场景累积注入后续场景，零 LLM 成本。
         done_events: list[str] = []
+        # P0-1 事件消费账本状态机（2026-10-09 生成端第三轮，对标 AgentWrite $STEP$ 指针制）：
+        # 每个规划事件登记 {desc, consumed_scene_idx}；场景生成前把「已消费事件」与
+        # 「后续事件预览」注入 prompt（已消费只许一句话回响、后续只许铺垫提及，
+        # 禁提前消费完整流程）——治"跨场景分布型重演"（事件无 consumed 标记 +
+        # 模型对已写事件仍有完整执行权，decisions.md 2026-10-09 §7.2 根因 A）。
+        event_ledger: list[dict] = []
         # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
         # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
@@ -829,6 +854,26 @@ class ChapterWriter:
                                 "禁止跨场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block)
             else:
                 mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
+            # P0-1 事件消费账本注入：已消费事件（只许回响）/ 后续事件预览（禁提前消费）
+            consumed_events_text = "\n".join(
+                f"- {e.get('desc','')}" for e in event_ledger if e.get("desc")
+            )
+            upcoming_events_text = "\n".join(
+                f"- {str(s.get('event') or '').strip()}"
+                for s in scenes[idx:] if str(s.get("event") or "").strip()
+            )
+            # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
+            panel_baseline_text = ""
+            _panel_base: dict = {}
+            try:
+                from .chapter_state import panel_baseline_dict as _pbd
+                _panel_base = _pbd((scene_state_acc or {}).get("numbers") or [])
+                if _panel_base:
+                    panel_baseline_text = "\n".join(
+                        f"- {k}：{v}" for k, v in _panel_base.items()
+                    )
+            except Exception:
+                _panel_base, panel_baseline_text = {}, ""
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 mem_for_this, running_tail, dynamic,
@@ -838,6 +883,9 @@ class ChapterWriter:
                 personal_anchor=self._personal_anchor(),
                 event_progress=event_progress,
                 done_beats=done_beats_text,
+                consumed_events=consumed_events_text,
+                upcoming_events=upcoming_events_text,
+                panel_baseline=panel_baseline_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -879,6 +927,9 @@ class ChapterWriter:
                             scene_state_hint=scene_state_hint,
                             force_new_progression=True,
                             done_beats=done_beats_text,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -916,6 +967,9 @@ class ChapterWriter:
                             scene_state_hint=scene_state_hint,
                             force_new_progression=True,
                             forbid_event=dup_ev,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
                         )
                         retry3 = self.llm.chat(
                             self._sys(sys_c3), user_c3,
@@ -962,6 +1016,9 @@ class ChapterWriter:
                             forbid_event=_ev_desc,
                             event_progress=event_progress,
                             done_beats=done_beats_text,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
                         )
                         retry4 = self.llm.chat(
                             self._sys(sys_c4), user_c4,
@@ -989,6 +1046,57 @@ class ChapterWriter:
                             chapter_no, plan_title, plan_goal,
                             memory_context, prev_tail, is_final,
                             plan_core_event, fallback_events, silent)
+                # P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮，治面板账本崩坏）：
+                # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
+                # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；
+                # 仍违反用最后一次（不做整章回退——质检 2.x 仍会二次拦截）。
+                if piece and _panel_base:
+                    try:
+                        from .chapter_state import panel_direction_violations as _pdv
+                        _viols = _pdv(piece, _panel_base)
+                    except Exception:
+                        _viols = []
+                    if _viols:
+                        _panel_ok = False
+                        for _try in (1, 2):
+                            if not silent:
+                                print(f"  [场景] 第{idx}个场景机制数字违反方向规则"
+                                      f"（{_viols[0]}），重试第{_try}次强制按基线推进")
+                            _viol_text = "\n".join(f"- {v}" for v in _viols[:4])
+                            sys_c5, user_c5 = scene_prompt(
+                                self.cfg, chapter_no, plan_title, idx, sc,
+                                mem_for_this, running_tail, dynamic,
+                                core_event=plan_core_event,
+                                scene_state_hint=scene_state_hint,
+                                force_new_progression=True,
+                                event_progress=event_progress,
+                                done_beats=done_beats_text,
+                                consumed_events=consumed_events_text,
+                                upcoming_events=upcoming_events_text,
+                                panel_baseline=panel_baseline_text,
+                                panel_violations=_viol_text,
+                            )
+                            retry5 = self.llm.chat(
+                                self._sys(sys_c5), user_c5,
+                                temperature=0.7,
+                                max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                                frequency_penalty=0.4,
+                                presence_penalty=0.25,
+                            )
+                            retry5 = _strip_html_tags(retry5)
+                            _viol5 = []
+                            if retry5:
+                                try:
+                                    _viol5 = _pdv(retry5, _panel_base)
+                                except Exception:
+                                    _viol5 = []
+                            if retry5 and not _viol5:
+                                piece = retry5
+                                _panel_ok = True
+                                break
+                        if not _panel_ok and not silent:
+                            print(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
+                                  f"采用最后稿（质检层二次拦截）")
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
@@ -1008,6 +1116,10 @@ class ChapterWriter:
                                "重复描写同一事件；同人物+同冲突+同结果=重复；如需呼应用一句话带过）】\n"
                                + "\n".join(f"{i}. {e}" for i, e in enumerate(done_events, 1)))
                     scene_state_hint = (scene_state_hint + ev_hint) if scene_state_hint else ev_hint
+                # P0-1 事件消费账本登记：本场景事件标记 consumed（供后续场景「已消费事件」
+                # 注入；desc 为空时用规划事件文本，避免账本缺环）
+                if ev:
+                    event_ledger.append({"desc": ev, "consumed_scene_idx": idx})
                 # 场景状态推进抽取（REQ-token优化 P0-1）：
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。
@@ -1087,6 +1199,44 @@ class ChapterWriter:
         except Exception as e:
             print(f"  [行动表] 生成失败，回退原流程: {e}")
             return ""
+
+    def _fill_characters_action(self, chapter_no, plan_title, plan_goal,
+                                core_event, events_list, prev_tail, silent=False) -> list:
+        """P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮）。
+
+        拆场景大 JSON 长输出截断通常只丢尾部 characters_action（"Expecting ',' delimiter"
+        实证：7 章行动表全部解析失败，措辞层约束从未生效）；这里让模型**只输出
+        characters_action 数组**（小调用、低截断风险），成功后并入拆场景结果。
+        最多重试 1 次，仍失败返回 []（不阻塞主流程，落 trace 告警）。
+        """
+        try:
+            import json
+            from .templates import characters_action_fill_prompt
+            events_text = "\n".join(
+                f"{e.get('id','')}：{e.get('desc','')}"
+                for e in (events_list or []) if isinstance(e, dict) and e.get("desc")
+            ) or "（无）"
+            sys_f, user_f = characters_action_fill_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal,
+                core_event=core_event, events_text=events_text, prev_tail=prev_tail,
+            )
+            for _try in (1, 2):
+                raw = self.llm.chat(sys_f, user_f, temperature=0.3, max_tokens=600)
+                try:
+                    arr = json.loads(_strip_json_block(raw))
+                except Exception:
+                    arr = _extract_json_field(raw, "characters_action")
+                if isinstance(arr, list) and arr:
+                    return [c for c in arr if isinstance(c, dict) and c.get("name")]
+                if not silent:
+                    print(f"  [行动表补全] 第{_try}次解析失败，重试 1 次...")
+            if not silent:
+                print("  [行动表补全] 两次均失败，本次不注入行动表（记录 trace 告警）")
+            return []
+        except Exception as e:
+            if not silent:
+                print(f"  [行动表补全] 补全调用异常：{e}")
+            return []
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
         """字数兜底：正文不足目标 90% 时，让模型扩写一次到目标字数。

@@ -273,6 +273,106 @@ def _deterministic_numbers(text: str) -> list[str]:
     return out
 
 
+# ---------- P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮） ----------
+# 机制卡硬规则：蚀化只增不减、每死一次次数递减、禁止面板数字自相矛盾。
+# 由管线按"标签→方向规则"确定性校验（零 LLM），违反即带错重试（生成端拦截）。
+_PANEL_DIR_RULES = (
+    ("次数", "decrease"),   # 今日可死次数 / 可死次数：只许递减（子时重置 0→N 放行）
+    ("剩余", "decrease"),
+    ("蚀化", "increase"),   # 距离蚀化：只增不减（97→98→99…）
+    ("进度", "increase"),
+)
+_PANEL_DIR_NUM_RE = re.compile(
+    r"([\u4e00-\u9fff]{0,14}?(?:次数|剩余|蚀化|进度))\s*[：:]\s*"
+    r"([0-9]+(?:\s*[／/]\s*[0-9]+)?)"
+)
+
+
+def _panel_dir_label(label: str) -> str | None:
+    """按关键词把面板标签归并到方向规则；不认识的标签返回 None（不校验）。"""
+    for kw, _rule in _PANEL_DIR_RULES:
+        if kw in (label or ""):
+            return kw
+    return None
+
+
+def panel_numbers_sequence(text: str, baseline: dict[str, int]) -> dict[str, list[int]]:
+    """抽取正文中机制数字序列（每个标签一条序列，前置基线值）。
+
+    - baseline：{归一标签: 基线数值}（场景开始前的权威数字，来自上一场景结算）；
+    - 返回 {规则关键词: [基线, 正文值1, 正文值2, ...]}（只含出现在正文的标签）。
+    """
+    out: dict[str, list[int]] = {}
+    if not text:
+        return out
+    for m in _PANEL_DIR_NUM_RE.finditer(text):
+        label = _panel_dir_label(m.group(1).strip())
+        if not label:
+            continue
+        try:
+            val = int(str(m.group(2)).split("/")[0].split("／")[0].strip())
+        except Exception:
+            continue
+        seq = out.setdefault(label, [])
+        if not seq:
+            base = baseline.get(label)
+            if base is not None:
+                seq.append(base)
+        seq.append(val)
+    return out
+
+
+def panel_direction_violations(text: str, baseline: dict[str, int]) -> list[str]:
+    """面板数字方向校验：正文中机制数字序列违反方向规则 → 返回违规描述列表。
+
+    - 次数/剩余（decrease）：序列中后值 > 前值 = 回升违规；但前值 == 0 且后值更大
+      视为"子时重置"（机制允许）放行；
+    - 蚀化/进度（increase）：序列中后值 < 前值 = 回退违规（只增不减，严格）；
+    - 无基线或标签未识别 → 不校验（避免误伤）。
+    """
+    if not text or not baseline:
+        return []
+    out: list[str] = []
+    for label, seq in panel_numbers_sequence(text, baseline).items():
+        rule = dict(_PANEL_DIR_RULES)[label]
+        if len(seq) < 2:
+            continue
+        for a, b in zip(seq, seq[1:]):
+            if rule == "decrease" and b > a and a != 0:
+                out.append(f"面板「{label}」应从基线 {seq[0]} 递减，正文出现回升 {a}→{b}")
+            elif rule == "increase" and b < a:
+                out.append(f"面板「{label}」应只增不减（基线 {seq[0]}），正文出现回退 {a}→{b}")
+    return out
+
+
+def panel_baseline_dict(numbers: list[str]) -> dict[str, int]:
+    """把累计 numbers（["可死次数：2", "距离蚀化：98%"]）归一化为基线 dict（每标签取最后值）。
+
+    返回 {规则关键词: 数值}，供注入文本与方向校验共用（同一份基线，杜绝口径漂移）。
+    """
+    last: dict[str, int] = {}
+    for s in numbers or []:
+        m = _PANEL_DIR_NUM_RE.search(str(s))
+        if not m:
+            continue
+        label = _panel_dir_label(m.group(1).strip())
+        if not label:
+            continue
+        try:
+            last[label] = int(str(m.group(2)).split("/")[0].split("／")[0].strip())
+        except Exception:
+            continue
+    return last
+
+
+def panel_baseline_text(numbers: list[str]) -> str:
+    """把累计 numbers 归一化为基线文本（每标签取最后值）；无识别标签返回空串。"""
+    last = panel_baseline_dict(numbers)
+    if not last:
+        return ""
+    return "\n".join(f"- {label}：{val}" for label, val in last.items())
+
+
 def detect_reveal_hits(text: str, reveal) -> bool:
     """REQ-揭示执行跟踪：正文是否命中 reveal 的真相锚定词（keywords 任一子串）。
 

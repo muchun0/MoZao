@@ -1079,7 +1079,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1125,6 +1125,12 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"2. 本场景只写本场景唯一事件；上一事件之后人物已经离开/脱险/换了处境，"
         f"必须从该事件结局之后续写新的情节\n"
     ) if forbid_event else ""
+    done_beats_block = (
+        f"\n【本章已发生节拍序列（硬约束：以下节拍组合已在前面的场景正文中完整发生过，"
+        f"本场景正文禁止再次出现相同顺序的节拍组合——同一情节换措辞/换细节演绎即重演，"
+        f"必须改写为与前面场景完全不同的新进展；若确有'应被压缩'的旧进展，用一句叙述带过"
+        f"而不是重演完整过程）】\n{done_beats}\n"
+    ) if done_beats else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1147,6 +1153,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{'【本场景时间锚点】' + scene.get('time_marker', '') + '\n\n' if scene.get('time_marker') else ''}"
         f"{force_block}"
         f"{forbid_block}"
+        f"{done_beats_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"

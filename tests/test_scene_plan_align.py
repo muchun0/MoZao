@@ -231,7 +231,7 @@ def test_derived_ref_incomplete_falls_back_to_whole(store):
     llm = MagicMock()
     llm.chat.side_effect = [
         bad_json,
-        "整章回退正文。" * 520 + "【摘要】回退摘要",
+        "整章回退正文。" * 400 + "【摘要】回退摘要",
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
     assert llm.chat.call_count == 2                    # 拆场景失败 → 整章

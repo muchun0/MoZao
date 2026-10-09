@@ -25,7 +25,8 @@ from novel_gen.store.project import ProjectStore
 from novel_gen.store.schemas import ChapterPlan, Outline
 from novel_gen.pipeline.memory import Memory
 from novel_gen.pipeline.beats import (
-    _extract_beat_sequence, _beats_rewrite_detected, _beat_cycle_issues,
+    _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
+    _beat_cycle_issues,
 )
 from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
@@ -240,7 +241,7 @@ def test_scene_beat_retry_twice_falls_back_whole(store):
     """场景2 连续 2 次重试仍重演完整循环 → 回退整章生成（整章单次生成无场景间越权消费）。"""
     _save_outline(store, _CH2_MOVES)
     llm = MagicMock()
-    whole = "整章回退正文：陆沉装傻糊弄，苏妄言失控，陆沉挡死复活，她留铜牌。" * 200 + "【摘要】回退摘要"
+    whole = "整章回退正文：陆沉装傻糊弄苏妄言。" * 150 + "【摘要】回退摘要"
     llm.chat.side_effect = [
         _SPLIT_JSON,    # 0 拆场景
         _CYCLE_A,       # 1 场景1（登记长序列）
@@ -274,3 +275,119 @@ def test_scene2_plus_action_plan_no_full_implementation(store):
     assert "本场景只落实与『本场景唯一事件』直接相关的行动" in scene2_user
     assert "禁止跨场景重复落实同一行动/同一节拍" in scene2_user
     assert "写手必须逐条落实" not in scene2_user
+
+
+# ---------- 生成端修复（2026-10-09 第二轮：局部子序列重合 / done_beats 事前注入 / 内部循环 / 整章回退重试） ----------
+
+#: 重试稿"压缩重演段+稀释"逃逸案例：done 为 9 拍完整循环，seq 只复现前 6 拍
+#: （整序列 LCS/min = 6/9 = 0.667 < 0.7 逃逸整序列检测，但 6 拍子序列被完整复现 → 局部命中）
+_DONE_9 = ["盘问", "戳穿", "失控", "挡死", "死亡", "复活", "面板", "留牌", "离场"]
+_SEQ_ESCAPED = ["盘问", "戳穿", "失控", "挡死", "死亡", "复活", "诊脉", "药包", "暗格", "地图", "结拜", "约定"]
+
+
+@pytest.mark.p1
+def test_beats_local_rewrite_detected_compressed_escape():
+    """重试稿压缩重演段使整序列 LCS 占比 <0.7（逃逸整序列检测）→ 局部子序列重合仍命中。"""
+    assert _beats_rewrite_detected(_SEQ_ESCAPED, [_DONE_9]) is False  # 整序列逃逸
+    assert _beats_local_rewrite_detected(_SEQ_ESCAPED, [_DONE_9]) is True  # 局部兜底命中
+
+
+@pytest.mark.p1
+def test_beats_local_rewrite_detected_different():
+    """完全不同事件（无重合节拍）→ 局部检测不误报。"""
+    other = ["结拜", "约定", "离场", "诊脉", "药包", "暗格"]
+    assert _beats_local_rewrite_detected(other, [_DONE_9]) is False
+
+
+@pytest.mark.p1
+def test_beats_local_rewrite_detected_short():
+    """新序列 <4 拍 → 局部检测不触发。"""
+    short = ["盘问", "离场"]
+    assert _beats_local_rewrite_detected(short, [_DONE_9]) is False
+
+
+@pytest.mark.p1
+def test_beats_local_rewrite_detected_empty_done():
+    """无已登记序列 → False。"""
+    assert _beats_local_rewrite_detected(_SEQ_ESCAPED, []) is False
+
+
+# ---------- scene_prompt done_beats 事前约束注入 ----------
+
+@pytest.mark.p1
+def test_scene_prompt_done_beats_injected():
+    """done_beats 非空 → user 注入【本章已发生节拍序列（硬约束）】，含'禁止再次出现相同顺序'。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500)
+    sc = {"location": "铁匠铺", "event": "陆沉装晕", "emotion": "警惕",
+          "anchors": [], "target_words": 620, "time_marker": "紧随其后"}
+    _, user = scene_prompt(
+        cfg, 1, "第一章", 2, sc, "前情", "上一场景结尾", "",
+        core_event="核心事件", scene_state_hint="", event_progress="本章共 4 个事件/场景，本场景为第 2/4 个。",
+        done_beats="- 盘问→戳穿→失控→挡死\n- 死亡→复活→面板→留牌",
+    )
+    assert "本章已发生节拍序列" in user
+    assert "禁止再次出现相同顺序的节拍组合" in user
+    assert "盘问→戳穿→失控→挡死" in user
+
+
+@pytest.mark.p1
+def test_scene_prompt_done_beats_absent_when_empty():
+    """done_beats 为空 → 不注入该块（行为不变）。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500)
+    sc = {"location": "铁匠铺", "event": "陆沉装晕", "emotion": "警惕",
+          "anchors": [], "target_words": 620, "time_marker": "紧随其后"}
+    _, user = scene_prompt(
+        cfg, 1, "第一章", 2, sc, "前情", "上一场景结尾", "",
+        core_event="核心事件", scene_state_hint="", event_progress="",
+    )
+    assert "本章已发生节拍序列" not in user
+
+
+# ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------
+
+@pytest.mark.p1
+def test_scene1_internal_cycle_triggers_retry(store):
+    """场景1（首个场景，无已登记序列可比对）自身正文内同一节拍序列出现 2 次
+    （_beat_cycle_issues 命中）→ 重试强制只写本场景事件；重试合规版被采用。"""
+    _save_outline(store, _CH2_MOVES)
+    llm = MagicMock()
+    scene1_bad = _CYCLE_A + "\n\n" + _CYCLE_B          # 场景1初版：内部两遍
+    scene1_ok = _NORMAL_SCENE + "她没再追问，转身走了。"  # 场景1重试：短序列合规
+    llm.chat.side_effect = [
+        _SPLIT_JSON,      # 0 拆场景
+        scene1_bad,       # 1 场景1初版：内部循环 → 命中重试
+        scene1_ok,        # 2 场景1重试：合规
+        "场景2正文：陆沉装晕，苏妄言以为他被震晕。" * 80,
+        "场景3正文：陆沉替她挡下术法碎片死了一次。" * 80,
+        "场景4正文：苏妄言留下铜牌，陆沉捏着铜牌。" * 80,
+        "场景链路摘要",
+    ]
+    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert scene1_ok in ch.content            # 重试版被采用
+    assert "执能再次失控" not in ch.content     # 内部两遍初版被丢弃
+    assert llm.chat.call_count == 7
+
+
+# ---------- 集成：整章回退生成后节拍检测 → 重试 → 合规版采用 ----------
+
+@pytest.mark.p1
+def test_fallback_whole_retry_on_cycle(store):
+    """场景防线连续 2 次重试仍重演 → 回退整章；整章版1 内部仍两遍（生成端即时检测命中）
+    → 整章重试版2 合规被采用（生成端兜底，不再等质检重写）。"""
+    _save_outline(store, _CH2_MOVES)
+    llm = MagicMock()
+    whole_bad = _CYCLE_A + "\n\n" + _CYCLE_B                        # 整章版1：内部两遍
+    whole_ok = "整章重试合规：陆沉装傻糊弄苏妄言。" * 150 + "【摘要】回退摘要"  # 整章版2：合规
+    llm.chat.side_effect = [
+        _SPLIT_JSON,      # 0 拆场景
+        _CYCLE_A,         # 1 场景1（登记长序列）
+        _CYCLE_B,         # 2 场景2初版：重演
+        _CYCLE_B,         # 3 场景2重试1：仍重演
+        _CYCLE_B,         # 4 场景2重试2：仍重演 → 回退整章
+        whole_bad,        # 5 整章版1：内部两遍 → 生成端即时检测命中 → 重试
+        whole_ok,         # 6 整章版2：合规 → 采用
+    ]
+    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert "整章重试合规" in ch.content
+    assert "执能再次失控" not in ch.content
+    assert llm.chat.call_count == 7

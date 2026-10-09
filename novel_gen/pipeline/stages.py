@@ -15,7 +15,10 @@ from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .style_anchor import extract_personal_anchor
-from .beats import _extract_beat_sequence, _beats_rewrite_detected
+from .beats import (
+    _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
+    _beat_cycle_issues,
+)
 from .templates import (
     chapter_prompt,
     outline_prompt,
@@ -575,8 +578,45 @@ class ChapterWriter:
             personal_anchor=self._personal_anchor(),
         )
         system = self._sys(system)
-        return self.llm.chat(system, user, temperature=0.85,
-                             frequency_penalty=0.3, presence_penalty=0.15)
+        # 2026-10-09 生成端兜底（REQ-scene-plan-align §7.3 措施3/5 生成端）：
+        # 整章回退路径无场景级实时拦截（场景防线只在场景循环内），生成后立即做
+        # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）检测——命中 →
+        # 重试至多 2 次（注入重复节拍证据 + 压缩字数目标），仍命中 → 返回交给质检
+        # 2.12 兜底（质检重写为修复端第二层，见 §7.4）。
+        _text = self.llm.chat(system, user, temperature=0.85,
+                              frequency_penalty=0.3, presence_penalty=0.15) or ""
+        for _try in (1, 2):
+            _text = _strip_html_tags(_text)
+            _issues = _beat_cycle_issues(_text)
+            _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
+            if not _issues and not _over:
+                break
+            if not silent:
+                _why = ("情节级重演：" + str(_issues[0]["detail"]) if _issues else "") + \
+                       (f"；字数超限（{len(_text)} 字）" if _over else "")
+                print(f"  [回退整章] 第{chapter_no}章生成后检出{_why}，重试第{_try}次")
+            if _issues:
+                _dedup = (
+                    "\n\n【整章回退重试强制规则（上一条输出未通过节拍检测，已作废）】\n"
+                    "1. 上文【本章事件序列】中的每个事件只允许完整发生一次；上一版把同一情节"
+                    "（死亡-复活-对峙-包扎-离场等完整循环）演绎了两遍，检测到重复节拍："
+                    f"『{_issues[0].get('detail', '')}』——本次必须删除重复版本，保留最完整的一个，"
+                    "被删版本中不可替代的信息（关键对话/关键状态）合并进保留版本\n"
+                    "2. 事件之间必须因果推进，后一事件从上一事件结局之后开始，禁止回到上一事件开头状态重演\n"
+                    "3. 每个事件结束状态（面板/蚀痕/伤势）必须比上一事件结束时有增量变化\n"
+                    f"4. 正文控制在约 {self.cfg.chapter_words} 字（±15%），禁止超写注水——"
+                    "宁精炼也禁止把同一情节写两遍凑字数\n"
+                )
+            else:
+                _dedup = (
+                    "\n\n【整章回退重试强制规则（上一条输出超长，已作废）】\n"
+                    f"1. 正文控制在约 {self.cfg.chapter_words} 字（±15%）以内，禁止超写；"
+                    "宁精炼删减也禁止注水\n"
+                    "2. 每个事件只写一遍，事件间因果推进，禁止同一事件两遍演绎\n"
+                )
+            _text = self.llm.chat(system, user + _dedup, temperature=0.85,
+                                  frequency_penalty=0.4, presence_penalty=0.2) or ""
+        return _text
 
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
@@ -771,6 +811,9 @@ class ChapterWriter:
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
         # 指纹，后续场景与之比对——场景1越权写完事件2~4 后，场景2~4 直接感知并拦截。
         done_beat_seqs: list[list[str]] = []
+        # 2026-10-09 生成端事前约束：已发生节拍序列文本（注入后续场景 prompt，
+        # 让模型知道前面场景已写过哪些节拍组合，禁止再演）——事后比对升级为事前告知。
+        done_beats_text: str = ""
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
@@ -794,6 +837,7 @@ class ChapterWriter:
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
                 event_progress=event_progress,
+                done_beats=done_beats_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -834,6 +878,7 @@ class ChapterWriter:
                             core_event=plan_core_event,
                             scene_state_hint=scene_state_hint,
                             force_new_progression=True,
+                            done_beats=done_beats_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -885,47 +930,65 @@ class ChapterWriter:
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
                 # 文本相似度/救援动词防线全漏检（§7.2 根因 C/D/E），用节拍序列指纹比对；
+                # 触发条件三重叠加：
+                #  ① _beat_cycle_issues(piece)：本场景正文自身内部循环（同一节拍序列≥2次，
+                #     堵"场景1内部写两遍"盲区——done_beat_seqs 为空时无比对对象）；
+                #  ② _beats_rewrite_detected：整序列 LCS 重合（完整循环重演）；
+                #  ③ _beats_local_rewrite_detected：局部子序列重合（重试稿压缩重演段/插序逃逸兜底）。
                 # 命中 → 重试（forbid_event=本场景唯一事件，强制只推进本场景事件）；
                 # 同一场景连续 2 次重试仍重演 → 整章回退（整章单次生成无场景间越权消费）。
-                if piece and done_beat_seqs:
-                    _seq = _extract_beat_sequence(piece)
-                    if _seq and _beats_rewrite_detected(_seq, done_beat_seqs):
-                        _beat_ok = False
-                        for _try in (1, 2):
-                            if not silent:
-                                print(f"  [场景] 第{idx}个场景节拍序列与已发生场景重合"
-                                      f"（{'→'.join(_seq)}），疑似换措辞重演完整循环，"
-                                      f"重试第{_try}次强制只写本场景唯一事件")
-                            _ev_desc = str(sc.get("event") or "").strip() or "本场景唯一事件"
-                            sys_c4, user_c4 = scene_prompt(
-                                self.cfg, chapter_no, plan_title, idx, sc,
-                                mem_for_this, running_tail, dynamic,
-                                core_event=plan_core_event,
-                                scene_state_hint=scene_state_hint,
-                                force_new_progression=True,
-                                forbid_event=_ev_desc,
-                                event_progress=event_progress,
-                            )
-                            retry4 = self.llm.chat(
-                                self._sys(sys_c4), user_c4,
-                                temperature=0.7,
-                                max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
-                                frequency_penalty=0.4,
-                                presence_penalty=0.25,
-                            )
-                            retry4 = _strip_html_tags(retry4)
-                            _seq4 = _extract_beat_sequence(retry4) if retry4 else []
-                            if not (_seq4 and _beats_rewrite_detected(_seq4, done_beat_seqs)):
-                                piece = retry4
-                                _beat_ok = True
-                                break
-                        if not _beat_ok:
-                            if not silent:
-                                print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
-                            return self._fallback_whole_chapter(
-                                chapter_no, plan_title, plan_goal,
-                                memory_context, prev_tail, is_final,
-                                plan_core_event, fallback_events, silent)
+                _inner_issue = _beat_cycle_issues(piece) if piece else None
+                _seq = _extract_beat_sequence(piece) if piece else []
+                _dup_beat = bool(
+                    _seq and done_beat_seqs
+                    and (_beats_rewrite_detected(_seq, done_beat_seqs)
+                         or _beats_local_rewrite_detected(_seq, done_beat_seqs))
+                )
+                if _inner_issue or _dup_beat:
+                    _beat_ok = False
+                    for _try in (1, 2):
+                        if not silent:
+                            _why = "本场景内部循环重演" if _inner_issue else "与已发生场景节拍重合"
+                            print(f"  [场景] 第{idx}个场景{_why}"
+                                  f"（{'→'.join(_seq)}），疑似换措辞重演完整循环，"
+                                  f"重试第{_try}次强制只写本场景唯一事件")
+                        _ev_desc = str(sc.get("event") or "").strip() or "本场景唯一事件"
+                        sys_c4, user_c4 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=_ev_desc,
+                            event_progress=event_progress,
+                            done_beats=done_beats_text,
+                        )
+                        retry4 = self.llm.chat(
+                            self._sys(sys_c4), user_c4,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.4,
+                            presence_penalty=0.25,
+                        )
+                        retry4 = _strip_html_tags(retry4)
+                        _seq4 = _extract_beat_sequence(retry4) if retry4 else []
+                        _inner4 = _beat_cycle_issues(retry4) if retry4 else None
+                        _dup4 = bool(
+                            _seq4 and done_beat_seqs
+                            and (_beats_rewrite_detected(_seq4, done_beat_seqs)
+                                 or _beats_local_rewrite_detected(_seq4, done_beat_seqs))
+                        )
+                        if retry4 and not _inner4 and not _dup4:
+                            piece = retry4
+                            _beat_ok = True
+                            break
+                    if not _beat_ok:
+                        if not silent:
+                            print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
+                        return self._fallback_whole_chapter(
+                            chapter_no, plan_title, plan_goal,
+                            memory_context, prev_tail, is_final,
+                            plan_core_event, fallback_events, silent)
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
@@ -933,6 +996,9 @@ class ChapterWriter:
                 _bs = _extract_beat_sequence(piece) if piece else []
                 if _bs:
                     done_beat_seqs.append(_bs)
+                    # 事前约束文本：最近若干场景的已发生节拍组合（注入后续场景 prompt 禁止再演）
+                    _recent = done_beat_seqs[-3:]
+                    done_beats_text = "\n".join(f"- {'→'.join(s)}" for s in _recent)
                 # 跨场景事件清单：本场景规划事件（拆场景时定义）追加为"已发生事件"，
                 # 拼入 scene_state_hint 注入后续场景——同一事件不得再次发生/重复描写。
                 ev = str(sc.get("event") or "").strip()

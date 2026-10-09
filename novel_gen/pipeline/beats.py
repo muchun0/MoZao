@@ -95,6 +95,34 @@ def _beats_rewrite_detected(seq: list[str], done_seqs: list[list[str]]) -> bool:
     return False
 
 
+#: 局部子序列重合阈值：已完成序列中任一 4-7 拍子序列被新场景复现 ≥0.8 即判局部重演
+#: （重试稿可能压缩重演段/插入新节拍使整序列 LCS 不达标而逃逸——子序列级兜底）
+_BEAT_LOCAL_MIN = 4
+_BEAT_LOCAL_RATIO = 0.8
+
+
+def _beats_local_rewrite_detected(seq: list[str], done_seqs: list[list[str]]) -> bool:
+    """局部子序列重合检测：已完成场景节拍序列中任一长度 4-7 的子序列，
+    在新场景节拍序列中基本复现（LCS ≥ max(4, 0.8×子序列长)）→ 局部重演。
+
+    与 _beats_rewrite_detected 互补：整序列 LCS 要求占比 ≥0.7，重试稿若把
+    重演段压缩（子序列仍完整但整体占比下降）或插入新节拍（稀释 LCS 占比）
+    即逃逸；本函数按子序列粒度复核，命中即重演。
+    """
+    if not seq or len(seq) < _BEAT_LOCAL_MIN:
+        return False
+    for d in done_seqs:
+        if not d or len(d) < _BEAT_LOCAL_MIN:
+            continue
+        nd = len(d)
+        for start in range(nd - _BEAT_LOCAL_MIN + 1):
+            for L in range(_BEAT_LOCAL_MIN, min(_BEAT_LOCAL_MIN + 4, nd - start) + 1):
+                sub = d[start:start + L]
+                if _lcs_len(sub, seq) >= max(_BEAT_LOCAL_MIN, int(L * _BEAT_LOCAL_RATIO)):
+                    return True
+    return False
+
+
 def _beat_cycle_issues(content: str) -> list[dict]:
     """质检 2.12 情节级重演检测（确定性）：整章正文内同一长度 ≥4 节拍序列
     （非重叠）出现 ≥2 次 = 同事件多版本重演（换措辞循环，文本 n-gram 漏检）。

@@ -988,9 +988,11 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
             "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现"
         )
         skeleton_block = (
-            "【本章事件清单（已由编辑按人物动线确定，硬骨架：id 与 desc 不得修改，"
-            "不得增删事件；场景 scene_event_ref 必须逐字引用下方 id）】\n"
-            f"{moves}"
+            "【本章事件清单（已由编辑按人物动线确定，硬骨架，逐条对应一个场景）】\n"
+            f"{moves}\n"
+            "硬规则：JSON 的 events 必须逐字沿用下方 id 与 desc（禁止增删/合并/改写）；"
+            "scenes 数量必须与 events 数量完全一致（每条事件 = 一个场景，逐条对应，"
+            "禁止多拆、少拆、合并场景）；scene_event_ref 必须逐字引用下方 id。"
         )
     else:
         step1 = (
@@ -1023,8 +1025,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
         f"【本章核心事件（事件清单必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n"
-        + (skeleton_block + "\n\n" if skeleton_block else "")
-        + f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
+        f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
         f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
         + step1
@@ -1072,6 +1073,9 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         '"characters_action": [{"name": "...", "goal": "...", '
         '"key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
     )
+    # REQ-scene-plan-align：骨架块置顶（最高权重），模型必须先看到事件清单再规划场景
+    if skeleton_block:
+        user = skeleton_block + "\n\n" + user
     return system, user
 
 

@@ -573,13 +573,18 @@ class ChapterWriter:
         # REQ-scene-plan-align：从大纲 character_moves 确定性派生事件清单（硬骨架）。
         # 派生成功 → 模型无权增删/改写事件，只做补字段 + 拆场景；失败 → 回退原 LLM 规划路径。
         derived_events: list = []
+        skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
             derived_events = _derive_events_from_moves(plan_moves)
+            if derived_events:
+                # 骨架文本：编号 + desc 逐条列出，明示事件数与"场景数=事件数"约束
+                skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
+                    "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
         try:
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
-                moves=plan_moves if derived_events else "",
+                moves=skeleton_arg,
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None

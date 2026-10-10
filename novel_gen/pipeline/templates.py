@@ -1082,6 +1082,69 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     return system, user
 
 
+def scene_split_review_prompt(cfg, chapter_no, chapter_title, chapter_goal,
+                              events_text: str, scenes_text: str = "") -> tuple[str, str]:
+    """P0-10 拆场景评审（2026-10-10 混合方案①）：骨架产出后独立评审 agent。
+
+    治 v7 第 5 章药铺三重拼接根因：拆场景把同一「进店→诊脉→试探→给药包→离开」
+    过程拆成 3 个 desc 不同（查药粉/诊脉/探脉枕）但语义同构的事件，desc 相似度
+    预筛（>0.55）逃过、正文节拍单遍 3 拍又逃过 4 拍阈值——规划层就埋了重复。
+
+    本 agent 只判「事件两两是否语义同构」（同一过程换措辞/换切入点），输出
+    重复对清单；代码按清单确定性合并（不重复调用模型重拆，省 token、可复现）。
+    正常递进拍（冲突升级、结果不同、因果承接）不算重复——防误杀大纲自身节奏。
+    """
+    system = (
+        "你是小说结构编辑，负责检查本章拆场景规划是否存在「同一事件被拆成多个"
+        "语义同构场景」的规划缺陷。\n"
+        "判定规则：\n"
+        "1. 两个事件如果本质是「同一人物在同一个地方做同一件事，只是换措辞/换切入点/"
+        "换细节重写」→ 判重复（如：进店查药粉 / 进店诊脉试探 / 进店探脉枕验毒，"
+        "同一过程三遍）\n"
+        "2. 两个事件如果因果递进（后一事件从上一事件的结果继续：冲突升级/结果不同/"
+        "换地点换对手/新信息揭示）→ 不判重复\n"
+        "3. 宁可漏报不误杀：拿不准的不列\n"
+        "只输出合法 JSON：{\"duplicate_pairs\":[{\"i\":0,\"j\":2,"
+        "\"reason\":\"同是药铺诊脉试探，仅换措辞\"}],\"note\":\"\"}。"
+        "没有重复输出 {\"duplicate_pairs\":[]}。不要输出代码块标记、解释或省略号。"
+    )
+    user = (
+        f"第{chapter_no}章《{chapter_title}》本章目标：{chapter_goal}\n"
+        "【本章事件清单（每个事件 = 一个场景）】\n"
+        f"{events_text}\n"
+        + (f"【场景分配】\n{scenes_text}\n" if scenes_text else "")
+        + "请检查事件两两是否语义同构（同一过程换措辞拆多遍），输出重复对清单。"
+    )
+    return system, user
+
+
+def rewrite_diagnose_prompt(content: str) -> tuple[str, str]:
+    """P0-10 重写前诊断（2026-10-10 混合方案②）：重写前独立审稿判重复结构。
+
+    治 v4 教训（重写 1 把拼接写得更严重：第四轮第 5 章 2 个问题→4 个问题）——
+    原链路是「重写 → 复检」，重写 agent 在"信息真空"里自由发挥，自校验查不出
+    同构场景/拼接。本 agent 在重写**前**独立诊断正文的重复结构（多稿拼接/
+    对话循环），输出明确「删除哪段、保留哪段」，重写 prompt 按诊断执行——
+    把"自由重写"变成"按清单删除+合并"，从概率上杜绝越改越差。
+    """
+    system = (
+        "你是小说质检编辑，只诊断不改写。阅读正文，定位两类结构缺陷：\n"
+        "1. 多稿拼接/重复版本：同一场景或事件（同一地点/同一批人/同一过程）"
+        "换措辞写了 ≥2 遍——标记其中重复的版本段落（action=删除），保留最完整的一遍\n"
+        "2. 对话循环：同一组问答/对峙对话（同角色、近同措辞）重复 ≥2 次——"
+        "标记重复轮次（action=删除）\n"
+        "输出规则：\n"
+        "- start/end 为字符索引（0-based，正文从 0 开始）；每个 finding 的 start<end\n"
+        "- 每个缺陷独立一条；拼接按「保留段之外的重复段」输出（每条 action=删除）\n"
+        "- 拿不准的不要报（宁可漏报不误删正常递进内容）\n"
+        "只输出合法 JSON：{\"findings\":[{\"type\":\"拼接|对话循环\",\"start\":0,"
+        "\"end\":200,\"action\":\"删除\",\"reason\":\"与第 X 段同一诊脉过程仅换措辞\"}],"
+        "\"note\":\"\"}。无缺陷输出 {\"findings\":[]}。不要代码块标记、解释、省略号。"
+    )
+    user = f"【待重写正文】\n{content}\n\n请诊断上述正文中的多稿拼接与对话循环，输出删除清单。"
+    return system, user
+
+
 def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
                                   core_event="", events_text="", prev_tail=""):
     """P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮）。
@@ -1116,7 +1179,7 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1199,6 +1262,11 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     book_canon_block = (
         f"\n{book_canon}\n"
     ) if book_canon else ""
+    # P0-10 机制数字确定性锚（代码按账本累计算出：蚀化当前应 = 起始基线 + 累计死亡；
+    # 治 v7 第 6 章蚀化跨章口径——LLM 只写这个数，不自由发挥）
+    state_anchor_block = (
+        f"\n{state_anchor}\n"
+    ) if state_anchor else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1228,6 +1296,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{panel_violation_block}"
         f"{book_pitfalls_block}"
         f"{book_canon_block}"
+        f"{state_anchor_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -1501,8 +1570,15 @@ def ending_prompt(cfg, outline, world):
     return system, user
 
 
-def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
-    """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。"""
+def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content,
+                         book_pitfalls: str = ""):
+    """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。
+
+    P0-10（混合方案③）：注入本作历史错误（pitfalls 记忆）+ 三项专项检查
+    （同构场景/对话循环/数字口径）——v7 ch5 三重拼接与 ch3 对话循环是读者
+    视角最敏感的"注水感"来源，须显式点名检查（历轮读者审校对同构场景
+    检出率不足，需专项指令引导）。
+    """
     system = (
         "你是一位挑剔的网文追更读者，在手机上刷文，3秒决定要不要划走。"
         "你只做读者体验问题定位，不改写正文。按 JSON 输出问题清单。"
@@ -1517,13 +1593,19 @@ def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
         "3. 章末钩子：结尾有没有让读者想看下一章？还是流水账就结束了？\n"
         "4. 阅读障碍：有没有大段设定堆砌？长句绕口？节奏拖沓想快进？\n"
         "5. 主角主动性：主角是主动选择推进剧情，还是全程被动挨打？\n\n"
-        '输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], '
-        '"追更欲": 1-5, "一句话感受": "..."}\n'
+        "6. 同构场景（专项）：同一场景/同一过程（同地点同批人，仅换措辞）"
+        "是否写了 ≥2 遍？——读者视角的注水感头号来源，如「进药铺诊脉试探→给药包→离开」"
+        "写三遍；发现请标记每段的起止行（level 至少中改）\n"
+        "7. 对话循环（专项）：同一组问答/对峙对话（同角色、近同措辞）是否重复 ≥2 次？"
+        "如「你不对劲→命大」反复多轮；发现请标记重复轮次（level 至少中改）\n"
+        "8. 机制数字口径（专项）：蚀化/蚀痕/次数等机制数字在本章内前后是否口径一致"
+        "（无冲突、无自相矛盾）；发现冲突请标记位置（level 大改）\n"
+        + (f"\n【本作历史错误（本书踩坑账本——重点检查这些是否又犯了）】\n{book_pitfalls}\n" if book_pitfalls else "")
+        + '\n输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], "'
+        '"追更欲": 1-5, "一句话感受": "..."}\n"'
         "level 判定：小改=句子级瑕疵；中改=某段不爽但还能看；大改=整章想划走。"
     )
     return system, user
-
-
 def blind_check_prompt(cfg, chapter_no, recent_summaries, world_text):
     """读者视角自检：三问。低温 0.3。"""
     system = (

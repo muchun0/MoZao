@@ -412,6 +412,32 @@ def death_signals(text: str) -> bool:
     return False
 
 
+def death_count(text: str) -> int:
+    """P0-10：正文死亡结算次数（确定性统计，供机制状态账本入账）。
+
+    与 death_signals 同规则，但统计每次命中（"死了…复活…又死了"=2 次）；
+    相邻 50 字内的多次命中视为同一次结算（"他被贯穿…彻底死了"连写不重复计）。
+    """
+    t = (text or "")
+    if not t:
+        return 0
+    count = 0
+    last_end = -1_000_000   # 远负初值：否则第一条命中（start-(-1)<50）恒被相邻去重吞掉
+    for m in _PANEL_DEATH_RE.finditer(t):
+        span = t[max(0, m.start() - 8):m.end() + 8]
+        if _PANEL_DEATH_EXCLUDE.search(span):
+            continue
+        ctx = t[max(0, m.start() - 12):m.start()]
+        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
+            continue
+        if m.start() - last_end < 50:
+            last_end = max(last_end, m.end())
+            continue
+        count += 1
+        last_end = m.end()
+    return count
+
+
 def panel_causal_violations(text: str, baseline: dict[str, int], death: bool) -> list[str]:
     """死亡-结算因果校验：发生死亡事件时，次数必须较基线 -1、蚀化必须 +1。
 
@@ -470,3 +496,45 @@ def detect_reveal_hits(text: str, reveal) -> bool:
         return False
     t = (text or "").lower()
     return any(k and k.lower() in t for k in kws)
+
+
+# ---------- P0-10 蚀化跨章累计校验（2026-10-10，治 v7 第 6 章口径冲突）----------
+# v7 第 6 章实证：ch1/3/4 共死亡 3 次，蚀化应 97→100%，但正文仍写「距离蚀化：97%」
+# 且章内出现「第 98 次蚀化满」自相矛盾——单章内 panel_causal_violations 只校验
+# 「本章死亡→本章+1」，跨章累计死亡不入账，LLM 对跨章数字自由发挥。本函数做
+# 确定性跨章累计校验：正文蚀化值必须 = 起始蚀化 + 截至本章累计死亡（代码计算）。
+_EROSION_SEQ_RE = re.compile(
+    r"(?:蚀化|进度|蚀痕)\s*[：:]\s*([0-9]+)"
+)
+
+
+def erosion_cumulative_check(text: str, baseline_erosion: int,
+                             cumulative_deaths: int) -> list[str]:
+    """蚀化跨章累计校验（零 LLM）：正文所有「蚀化/进度」显示值中最高者，
+    必须等于 起始蚀化 + 截至本章累计死亡；低于期望 = 未按死亡累计推进，
+    高于期望 = 超发。无基线/无正文数字/无累计死亡 → 不校验（降级安全）。
+
+    返回违规 detail 列表（与 panel_direction_violations 同风格），供重写回灌。
+    """
+    if not text or baseline_erosion <= 0:
+        return []
+    vals = [int(m.group(1)) for m in _EROSION_SEQ_RE.finditer(text or "")]
+    if not vals:
+        return []
+    expect = baseline_erosion + max(0, cumulative_deaths)
+    peak = max(vals)
+    out: list[str] = []
+    if peak < expect:
+        out.append(
+            f"蚀化跨章累计违规：起始蚀化 {baseline_erosion}%，截至本章已累计死亡 "
+            f"{cumulative_deaths} 次（每死 +1%），蚀化应为 {expect}%，"
+            f"但正文最高只显示 {peak}%——蚀化未按死亡累计推进，正确应为 {expect}%"
+        )
+    elif peak > expect:
+        out.append(
+            f"蚀化跨章累计违规：起始蚀化 {baseline_erosion}%，截至本章已累计死亡 "
+            f"{cumulative_deaths} 次（每死 +1%），蚀化应为 {expect}%，"
+            f"正文却出现 {peak}%——蚀化超发，正确应为 {expect}%"
+        )
+    # 章内递减（如 100%→97% 回退）已由 panel_direction_violations 单章校验覆盖，不重复
+    return out

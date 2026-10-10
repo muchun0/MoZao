@@ -368,14 +368,16 @@ def test_event_ledger_consumed_upcoming_injected(store):
     )
     llm.chat.side_effect = [
         two_scene_json,
+        '{"duplicate_pairs": []}',   # P0-10：拆场景评审（无同构事件）
         "苏妄言推门进来，盘问了两句。陆沉装傻糊弄过去。" * 120,
         "陆沉把铜牌收进怀里，骂了一句，跟着她出了门。" * 120,
         "场景链路摘要",
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 4                      # 拆场景 + 场景1 + 场景2 + 摘要
-    scene1_user = llm.chat.call_args_list[1][0][1]
-    scene2_user = llm.chat.call_args_list[2][0][1]
+    # P0-10 混合方案：5 = 拆场景 + 评审 + 场景1 + 场景2 + 摘要（场景路径内部）
+    assert llm.chat.call_count == 5
+    scene1_user = llm.chat.call_args_list[2][0][1]
+    scene2_user = llm.chat.call_args_list[3][0][1]
     # 场景1：注入后续事件预览（事件2 desc），无已消费事件
     assert "本章后续事件预览" in scene1_user
     assert "苏妄言留铜牌征召，陆沉心里骂娘" in scene1_user

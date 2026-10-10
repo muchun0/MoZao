@@ -17,7 +17,7 @@ from .memory import Memory
 from .style_anchor import extract_personal_anchor
 from .beats import (
     _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
-    _beat_cycle_issues,
+    _beats_scene_isomorphic, _beat_cycle_issues,
 )
 from .templates import (
     chapter_prompt,
@@ -25,6 +25,7 @@ from .templates import (
     world_prompt,
     split_scenes_prompt,
     scene_prompt,
+    scene_split_review_prompt,
     polish_chapter_prompt,
     verify_prompt,
     _pick_dynamic_module,
@@ -503,11 +504,12 @@ class ChapterWriter:
                 content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
             except Exception as e:
                 print(f'  [改稿] 跳过: {e}')
-            # 读者视角审校（只记录不改正文）
+            # 读者视角审校（只记录不改正文；P0-10 注入本作记忆 + 三项专项检查）
             try:
                 from .reviser import ReaderReviewer
                 reader = ReaderReviewer(self.cfg, self.llm, self.store,
-                                        role_prompt=self.reader_role_prompt)
+                                        role_prompt=self.reader_role_prompt,
+                                        memory=self._memory())
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 print(f'  [读者审校] 跳过: {e}')
@@ -572,6 +574,21 @@ class ChapterWriter:
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
+        # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
+        # 治 v7 第 6 章蚀化跨章口径——代码累计入账后，下章拆场景/场景/重写 prompt
+        # 注入「蚀化应 = 起始基线 + 累计死亡」确定性锚，LLM 不再自由发挥跨章数字。
+        try:
+            _mem_st = self._memory()
+            if _mem_st is not None:
+                from .chapter_state import death_count as _dc, _EROSION_SEQ_RE as _eseq
+                _deaths = _dc(content)
+                _eros = None
+                _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
+                if _mv:
+                    _eros = max(_mv)
+                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros)
+        except Exception:
+            pass
         # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；普通模式无 scenes 则跳过）
         try:
             _sc = locals().get("scenes")
@@ -756,11 +773,20 @@ class ChapterWriter:
                 skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
                     "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
         try:
+            # P0-10 拆场景层注入机制数字锚（蚀化当前应 = 起始基线 + 截至上一章累计死亡），
+            # 规划事件 final_state 时模型据此写机制状态增量，不自造跨章口径
+            _split_anchor = ""
+            try:
+                _msplit = self._memory()
+                if _msplit is not None:
+                    _split_anchor = _msplit.erosion_anchor(max(0, int(chapter_no) - 1))
+            except Exception:
+                _split_anchor = ""
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
                 moves=skeleton_arg,
-                book_canon=self._book_canon(),
+                book_canon=self._book_canon() + (_split_anchor if _split_anchor else ""),
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
@@ -857,6 +883,19 @@ class ChapterWriter:
                     events_list.append(de)
                 fallback_events = events_list
             _expand_scene_event_refs(scenes, events_list)
+            # P0-10 拆场景评审（混合方案①，2026-10-10）：独立评审 agent 判事件
+            # 语义同构 → 代码确定性合并。治 v7 ch5 药铺三重拼接规划层根因——
+            # desc 相似度预筛（>0.55）对「查药粉/诊脉/探脉枕」三个不同原文不命中，
+            # 需语义级判断；派生模式 desc 是骨架原文（合并会破坏 id 对应）→ 只告警。
+            if not derived_events and events_list and scenes and len(events_list) >= 2:
+                _pairs = self._scene_split_review(
+                    chapter_no, plan_title, plan_goal, events_list, scenes, silent
+                )
+                if _pairs:
+                    _merged = _merge_duplicate_events(events_list, scenes, _pairs)
+                    if _merged:
+                        events_list, scenes = _merged
+                        fallback_events = events_list
             # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
             # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
             # 防"救苏妄言"拆成石殿版/墟口外版两场景）：
@@ -946,6 +985,11 @@ class ChapterWriter:
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
         # 指纹，后续场景与之比对——场景1越权写完事件2~4 后，场景2~4 直接感知并拦截。
         done_beat_seqs: list[list[str]] = []
+        # P0-10 跨场景同构检测（治 v7 第 5 章药铺三重拼接）：历史场景序列全集。
+        # 与 done_beat_seqs（供整序列/局部子序列 LCS，4 拍阈值）互补——单遍 3 拍
+        # 核心节拍（诊脉→药包→离场）写 3 遍时 4 拍阈值全部漏检，本账本按
+        # 「3 拍 + 非通用拍 ≥2」判同构场景。每章重置（跨章由事件账本/蚀化锚管）。
+        scene_beat_ledger: list[list[str]] = []
         # 2026-10-09 生成端事前约束：已发生节拍序列文本（注入后续场景 prompt，
         # 让模型知道前面场景已写过哪些节拍组合，禁止再演）——事后比对升级为事前告知。
         done_beats_text: str = ""
@@ -958,12 +1002,16 @@ class ChapterWriter:
         # P0-8 小说级记忆：机制基线注入块（蚀痕位置等权威口径；拆场景已注入 canon 全文，
         # 场景层只注入机制基线，避免 terms/disciplines 重复刷屏）
         book_canon_text = ""
+        # P0-10 机制数字确定性锚：蚀化当前应 = 起始基线 + 截至上一章累计死亡（代码计算，
+        # 治 v7 第 6 章蚀化跨章口径）。本章自身死亡由场景防线 panel_causal_violations 管。
+        state_anchor_text = ""
         try:
             _mem = self._memory()
             if _mem is not None:
                 book_canon_text = _mem.baseline_block()
+                state_anchor_text = _mem.erosion_anchor(max(0, int(chapter_no) - 1))
         except Exception:
-            book_canon_text = ""
+            book_canon_text, state_anchor_text = "", ""
         for idx, sc in enumerate(scenes, start=1):
             # REQ-scene-plan-align §7.3 措施1：事件进度硬约束——本章共 N 个事件/场景，
             # 本场景只允许推进本场景唯一事件，禁止提前写后续事件完整流程（防"越权消费"）
@@ -1010,6 +1058,7 @@ class ChapterWriter:
                 panel_baseline=panel_baseline_text,
                 book_pitfalls=book_pitfalls_text,
                 book_canon=book_canon_text,
+                state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -1056,6 +1105,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -1098,6 +1148,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
                         )
                         retry3 = self.llm.chat(
                             self._sys(sys_c3), user_c3,
@@ -1126,7 +1177,13 @@ class ChapterWriter:
                     and (_beats_rewrite_detected(_seq, done_beat_seqs)
                          or _beats_local_rewrite_detected(_seq, done_beat_seqs))
                 )
-                if _inner_issue or _dup_beat:
+                # P0-10：跨场景同构（治 v7 ch5 药铺三重拼接）——单遍 3 拍核心节拍
+                # 换措辞写多遍时，整序列/局部子序列（4 拍阈值）漏检，按同构判据拦截
+                _iso_scene = bool(
+                    _seq and scene_beat_ledger
+                    and _beats_scene_isomorphic(_seq, scene_beat_ledger)
+                )
+                if _inner_issue or _dup_beat or _iso_scene:
                     _beat_ok = False
                     for _try in (1, 2):
                         if not silent:
@@ -1149,6 +1206,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
                         )
                         retry4 = self.llm.chat(
                             self._sys(sys_c4), user_c4,
@@ -1165,7 +1223,11 @@ class ChapterWriter:
                             and (_beats_rewrite_detected(_seq4, done_beat_seqs)
                                  or _beats_local_rewrite_detected(_seq4, done_beat_seqs))
                         )
-                        if retry4 and not _inner4 and not _dup4:
+                        _iso4 = bool(
+                            _seq4 and scene_beat_ledger
+                            and _beats_scene_isomorphic(_seq4, scene_beat_ledger)
+                        )
+                        if retry4 and not _inner4 and not _dup4 and not _iso4:
                             piece = retry4
                             _beat_ok = True
                             break
@@ -1223,6 +1285,7 @@ class ChapterWriter:
                                 panel_violations=_viol_text,
                                 book_pitfalls=book_pitfalls_text,
                                 book_canon=book_canon_text,
+                                state_anchor=state_anchor_text,
                             )
                             retry5 = self.llm.chat(
                                 self._sys(sys_c5), user_c5,
@@ -1254,6 +1317,7 @@ class ChapterWriter:
                 _bs = _extract_beat_sequence(piece) if piece else []
                 if _bs:
                     done_beat_seqs.append(_bs)
+                    scene_beat_ledger.append(_bs)  # P0-10 跨场景同构账本
                     # 事前约束文本：最近若干场景的已发生节拍组合（注入后续场景 prompt 禁止再演）
                     _recent = done_beat_seqs[-3:]
                     done_beats_text = "\n".join(f"- {'→'.join(s)}" for s in _recent)
@@ -1425,6 +1489,52 @@ class ChapterWriter:
         except Exception as e:
             if not silent:
                 print(f"  [行动表补全] 补全调用异常：{e}")
+            return []
+
+    def _scene_split_review(self, chapter_no, plan_title, plan_goal,
+                            events_list, scenes, silent=False) -> list[tuple[int, int, str]]:
+        """P0-10 拆场景评审（混合方案①，2026-10-10）：独立评审 agent 判事件同构。
+
+        治 v7 第 5 章药铺三重拼接的规划层根因——desc 相似度预筛（>0.55）对
+        「查药粉/诊脉/探脉枕」三个不同原文不命中，需要语义级判断。评审只输出
+        重复对清单（JSON），代码按清单确定性合并（_merge_duplicate_events），
+        不重复调用模型重拆（省 token、可复现）。任何失败降级空列表（不阻塞）。
+        """
+        try:
+            import json
+            if not events_list or len(events_list) < 2:
+                return []
+            ev_text = "\n".join(
+                f"{i}. {e.get('id','')}｜{e.get('desc','')}"
+                for i, e in enumerate(events_list) if isinstance(e, dict)
+            )
+            sc_text = ""
+            if scenes:
+                sc_text = "\n".join(
+                    f"- scene {sc.get('id','')}: ref={sc.get('scene_event_ref','')}"
+                    for sc in scenes if isinstance(sc, dict)
+                )
+            sys_r, user_r = scene_split_review_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal, ev_text, sc_text
+            )
+            raw = self.llm.chat(sys_r, user_r, temperature=0.2, max_tokens=800)
+            d = json.loads(_strip_json_block(raw))
+            pairs = d.get("duplicate_pairs") or []
+            out: list[tuple[int, int, str]] = []
+            for p in pairs:
+                try:
+                    i, j = int(p["i"]), int(p["j"])
+                except Exception:
+                    continue
+                if 0 <= i < len(events_list) and 0 <= j < len(events_list) and i != j:
+                    out.append((i, j, str(p.get("reason") or "")))
+            if out and not silent:
+                print(f"  [拆场景] 评审发现 {len(out)} 组语义同构事件（"
+                      + "; ".join(f"{i}≈{j}:{r[:20]}" for i, j, r in out) + "），代码合并去重")
+            return out
+        except Exception as e:
+            if not silent:
+                print(f"  [拆场景] 评审调用失败（降级不阻塞）: {e}")
             return []
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
@@ -1694,6 +1804,38 @@ def _scene_events_semantically_overlap(events: list[dict]) -> bool:
             if ai and aj and ai == aj and ci and cj and (ci == cj or ci in cj or cj in ci):
                 return True
     return False
+
+
+def _merge_duplicate_events(events_list: list, scenes: list,
+                            pairs: list[tuple[int, int, str]]) -> tuple[list, list] | None:
+    """P0-10 拆场景评审合并（确定性，零额外 LLM）：按评审重复对合并事件。
+
+    - 保留 idx 小者的 desc/结构化字段，删除 idx 大者（换措辞版本）；
+    - 引用被删 id 的场景一并删除（与保留场景语义同构，删除防正文再写一遍）；
+    - 返回 (新 events_list, 新 scenes)；无有效合并返回 None（调用方不动作）。
+    """
+    if not events_list or not pairs:
+        return None
+    drop_idx: set[int] = set()
+    for i, j, _r in pairs:
+        if 0 <= i < len(events_list) and 0 <= j < len(events_list) and i != j:
+            drop_idx.add(j)
+    if not drop_idx:
+        return None
+    new_events = [e for idx, e in enumerate(events_list) if idx not in drop_idx]
+    drop_ids = {str(events_list[idx].get("id") or "") for idx in drop_idx}
+    new_scenes: list = []
+    for sc in scenes or []:
+        if not isinstance(sc, dict):
+            continue
+        ref = str(sc.get("scene_event_ref") or "").strip()
+        if ref in drop_ids:
+            continue  # 该场景对应被删事件 → 一并删除（同构版本）
+        new_scenes.append(sc)
+    if len(new_events) < 2 or not new_scenes:
+        # 合并后不足以成章 → 不合并（走后续校验/回退兜底）
+        return None
+    return new_events, new_scenes
 
 
 def _expand_scene_event_refs(scenes: list, events_list: list) -> None:

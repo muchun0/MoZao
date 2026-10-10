@@ -435,3 +435,79 @@ def _store():
     from novel_gen.store.project import ProjectStore as _PS
     cfg = _NC(title="P0-8测试书", chapter_words=2500, total_words=10000)
     return _PS.create(_P(tempfile.mkdtemp()) / "sc", cfg)
+
+
+# ---------- P0-10 机制状态账本（2026-10-10 混合方案④） ----------
+
+def _obj_baseline():
+    """真实 World 的 mechanism_baseline 形态（pydantic 对象，非 dict）。"""
+    from novel_gen.store.schemas import MechanismBaseline
+    return MechanismBaseline(
+        scar_start="左手腕内侧",
+        scar_per_death="每死一次延伸约一寸",
+        scar_current="已延伸三十七寸（从手腕到肘弯，距心脏约一寸）",
+        scar_end="蚀痕延伸至心脏即彻底异化，不可逆",
+        panel_format="今日可死次数：3；距离蚀化：97%",
+        reset_rule="每日子时重置'今日可死次数'为3；'距离蚀化'永久累计不重置",
+    )
+
+
+@pytest.mark.p1
+def test_sync_baseline_object_model():
+    """P0-10 修复实证：world.mechanism_baseline 是对象（非 dict）时也必须同步进 canon。
+    此前 isinstance(wb, dict) 恒 False → 基线从未入账（v7 蚀化跨章口径冲突的根因之一）。"""
+    store = _store()
+    mem = _memory(store)
+    world = MagicMock()
+    world.mechanism_baseline = _obj_baseline()
+    mem.sync_baseline(world)
+    canon = mem.load()["canon"]["mechanism_baseline"]
+    assert canon["panel_format"].startswith("今日可死次数：3")
+    assert "scar_current" in canon and "已延伸三十七寸" in canon["scar_current"]
+
+
+@pytest.mark.p1
+def test_record_chapter_state_and_cumulative():
+    """章末机制状态入账 + 累计死亡（代码求和，零 LLM）。"""
+    store = _store()
+    mem = _memory(store)
+    mem.sync_baseline(MagicMock(mechanism_baseline=_obj_baseline()))
+    mem.record_chapter_state(1, deaths=1, erosion=98)
+    mem.record_chapter_state(2, deaths=0)
+    mem.record_chapter_state(3, deaths=1, erosion=100)
+    assert mem.cumulative_deaths(2) == 1
+    assert mem.cumulative_deaths(3) == 2
+    st = mem.load()["state"]
+    assert st["erosion_start"] == 97
+    # 同章覆盖不重复计
+    mem.record_chapter_state(3, deaths=1)
+    assert len([c for c in st["chapters"] if c["ch"] == 3]) == 1
+
+
+@pytest.mark.p1
+def test_erosion_anchor_deterministic():
+    """确定性数字锚：蚀化 = 起始97% + 累计死亡；蚀痕寸数 = 37 + 累计死亡。"""
+    store = _store()
+    mem = _memory(store)
+    mem.sync_baseline(MagicMock(mechanism_baseline=_obj_baseline()))
+    mem.record_chapter_state(1, deaths=1)
+    mem.record_chapter_state(3, deaths=1)
+    mem.record_chapter_state(4, deaths=1)
+    anchor = mem.erosion_anchor(6)
+    assert "97%" in anchor and "100%" in anchor and "3 次" in anchor
+    assert "已伸" in anchor and "40 寸" in anchor   # 37 + 3
+    # 全新 store（无 state 账本、无基线）→ 空串不注入
+    store2 = _store()
+    mem2 = _memory(store2)
+    assert mem2.erosion_anchor(6) == ""
+
+
+@pytest.mark.p1
+def test_parse_cn_number():
+    from novel_gen.pipeline.book_memory import _parse_cn_number
+    assert _parse_cn_number("已伸三十七寸") == 37
+    assert _parse_cn_number("已伸二十寸") == 20
+    assert _parse_cn_number("已伸十寸") == 10
+    assert _parse_cn_number("37寸") == 37
+    assert _parse_cn_number("无数字") == 0
+    assert _parse_cn_number("") == 0

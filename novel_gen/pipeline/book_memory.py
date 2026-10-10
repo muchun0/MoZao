@@ -23,6 +23,7 @@
   "events":   {"consumed": [{desc, ch}]},
   "pitfalls": [{pattern, trigger, fix, example, count, last_ch, recent_rounds}],
   "taste":    {"chapters": [{ch, score, issue_types}]},
+  "state":    {"chapters": [{ch, deaths, erosion, scratch}], "erosion_start": 0},
 }
 """
 from __future__ import annotations
@@ -40,6 +41,31 @@ _NUM_VIOL_RE = re.compile(
     r"面板「(.+?)」应从基线 (\d+) (递增|递减)，正文出现(?:回退|回升) (\d+)→(\d+)"
 )
 
+#: 中文数字解析（蚀痕基线「已伸三十七寸」→ 37；支持 0-99 常见写法）
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _parse_cn_number(text: str) -> int:
+    """从文本中解析第一个中文/阿拉伯数字（如「已伸三十七寸」→ 37）；未解析到返回 0。"""
+    if not text:
+        return 0
+    m = re.search(r"(\d+)", text)
+    if m:
+        return int(m.group(1))
+    # 中文数字：找「X十Y」/「十X」/单字
+    m = re.search(r"([零一二两三四五六七八九]?)(十)([零一二两三四五六七八九]?)", text)
+    if m:
+        tens = _CN_DIGITS.get(m.group(1), 0)
+        ones = _CN_DIGITS.get(m.group(3), 0)
+        if tens:
+            return tens * 10 + ones
+        return 10 + ones
+    for ch in text:
+        if ch in _CN_DIGITS:
+            return _CN_DIGITS[ch]
+    return 0
+
 
 def _empty() -> dict:
     return {
@@ -48,6 +74,7 @@ def _empty() -> dict:
         "events": {"consumed": []},
         "pitfalls": [],
         "taste": {"chapters": []},
+        "state": {"chapters": [], "erosion_start": 0},
     }
 
 
@@ -214,7 +241,15 @@ class BookMemory:
             return
         mb: dict[str, str] = {}
         try:
-            wb = getattr(world, "mechanism_baseline", None) or {}
+            wb = getattr(world, "mechanism_baseline", None)
+            # 2026-10-10 P0-10 修复：world.mechanism_baseline 是 MechanismBaseline
+            # pydantic 对象而非 dict——原实现 isinstance(wb, dict) 恒 False，
+            # 基线从未同步进 canon（v7 蚀化跨章口径冲突的部分根因；此前排查
+            # "plan_re 为什么少了蚀化"的答案即此）。对象 → to_dict 再遍历。
+            if hasattr(wb, "to_dict"):
+                wb = wb.to_dict()
+            if wb is None:
+                return
             if isinstance(wb, dict):
                 for k, v in wb.items():
                     ks, vs = str(k or "").strip(), str(v or "").strip()
@@ -305,6 +340,92 @@ class BookMemory:
         })
         data["taste"]["chapters"] = chapters[-20:]  # 只留最近 20 章，防膨胀
         self.save()
+
+    # ---------- 机制状态账本（P0-10，确定性数字锚）----------
+    # v7 第 6 章实证：正文死亡 3 次（ch1/3/4）未反映到蚀化（ch6 仍 97%），且章内
+    # 「38 次到心口 vs 第 98 次蚀化满」口径冲突——LLM 对"跨章累计数字"自由发挥。
+    # 本账本把每章末机制状态（死亡次数/蚀化值/蚀痕位置）确定性入账，由代码累计
+    # （零 LLM），注入「当前蚀化应 = 起始基线 + 累计死亡」的确定性锚，供拆场景/
+    # 场景/重写 prompt 遵守；蚀化累计校验（chapter_state.erosion_cumulative_check）
+    # 用同一账本做兜底。写入时机 = 每章生成完成（stages.write 末尾）。
+    def record_chapter_state(self, chapter_no: int, deaths: int = 0,
+                             erosion: int | None = None, scratch: str = "") -> None:
+        """登记本章末机制状态（死亡次数、正文蚀化值、蚀痕位置）。同章覆盖；
+        首次入账时若 canon 机制基线含蚀化起始值则解析为 erosion_start。"""
+        if not self.enabled:
+            return
+        data = self.load()
+        st = data.setdefault("state", {"chapters": [], "erosion_start": 0})
+        chapters = [c for c in st["chapters"] if int(c.get("ch", 0)) != int(chapter_no)]
+        chapters.append({
+            "ch": int(chapter_no),
+            "deaths": max(0, int(deaths or 0)),
+            "erosion": int(erosion) if erosion is not None else None,
+            "scratch": str(scratch or "").strip(),
+        })
+        chapters.sort(key=lambda c: int(c.get("ch", 0)))
+        st["chapters"] = chapters[-200:]  # 全书长度上限防膨胀
+        # 蚀化起始值：优先已有 → 从 canon.mechanism_baseline.panel_format 解析
+        if not st.get("erosion_start"):
+            st["erosion_start"] = self._erosion_start_from_baseline()
+        self.save()
+
+    def cumulative_deaths(self, up_to_ch: int) -> int:
+        """截至某章的累计死亡次数（代码求和，零 LLM；账本无记录返回 0）。"""
+        data = self.load()
+        st = data.get("state") or {}
+        return sum(
+            max(0, int(c.get("deaths", 0)))
+            for c in st.get("chapters", [])
+            if int(c.get("ch", 0)) <= int(up_to_ch)
+        )
+
+    def erosion_anchor(self, up_to_ch: int) -> str:
+        """确定性数字锚：蚀化当前应 = 起始基线 + 截至本章累计死亡次数；
+        蚀痕已伸 = 起始寸数 + 累计死亡（每死一寸）。空账本/关闭 → 空串。
+
+        治 v7 第 6 章蚀化跨章口径——把「每死一次蚀化+1%」的累计值算好注入，
+        模型只负责在正文里写这个数，不自由发挥。
+        """
+        if not self.enabled:
+            return ""
+        data = self.load()
+        st = data.get("state") or {}
+        start = int(st.get("erosion_start", 0) or 0)
+        deaths = self.cumulative_deaths(up_to_ch)
+        if not start and not deaths:
+            return ""
+        lines = []
+        if start:
+            lines.append(f"- 距离蚀化：起始 {start}%，每死亡一次 +1%；截至第{up_to_ch}章已累计死亡 {deaths} 次，"
+                         f"蚀化当前应为 {start + deaths}%（正文结算值必须等于此数，禁止自造其它口径）")
+        # 蚀痕起始寸数：canon.mechanism_baseline 蚀痕字段含「已伸X寸」（中文数字；
+        # 英文键 scar_current/scar_start 兼容——P0-10 实测 world 基线键为英文）
+        base = data["canon"].get("mechanism_baseline") or {}
+        scratch_line = str(base.get("蚀痕") or base.get("蚀痕基线")
+                           or base.get("scar_current") or "")
+        if scratch_line:
+            start_inch = _parse_cn_number(scratch_line)  # 0=未解析出寸数（跳过寸数断言，只保留基线原文）
+            inch_tail = f"；每死亡一次再伸一寸（累计已伸 {start_inch + deaths} 寸）" if start_inch else ""
+            lines.append(f"- 蚀痕基线（唯一口径）：{scratch_line}{inch_tail}；"
+                         "正文位置描述必须与此连续（起点+累计长度），禁止同一状态每处重新计量")
+        if not lines:
+            return ""
+        return ("【机制数字确定性锚（代码按账本累计算出，正文必须逐字遵守——"
+                "禁止自造蚀化/蚀痕口径）】\n" + "\n".join(lines))
+
+    def _erosion_start_from_baseline(self) -> int:
+        """从 canon.mechanism_baseline 的 panel_format（如「距离蚀化：97%」）解析起始蚀化。"""
+        try:
+            data = self.load()
+            base = data["canon"].get("mechanism_baseline") or {}
+            pf = str(base.get("panel_format") or base.get("面板格式") or "")
+            m = re.search(r"蚀化[：:]\s*(\d+)\s*%", pf)
+            if m:
+                return max(0, int(m.group(1)))
+            return 0
+        except Exception:
+            return 0
 
     # ---------- 注入组装 ----------
     def pitfall_block(self, top_n: int = 5, min_count: int = 1,

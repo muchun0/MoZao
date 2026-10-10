@@ -123,6 +123,48 @@ def _beats_local_rewrite_detected(seq: list[str], done_seqs: list[list[str]]) ->
     return False
 
 
+# ---------- P0-10 跨场景同构场景检测（2026-10-10） ----------
+# v7 第 5 章「瑶光界药铺」三重拼接实证：同一「诊脉→药包→离场」核心节拍写了 3 遍，
+# 但单遍节拍仅 3 拍 < _BEAT_LCS_MIN(4)，整序列/局部子序列检测全部漏检；且三遍
+# desc（查药粉/诊脉/探脉枕）相似度 <0.55 也逃过拆场景预筛。本函数按「核心节拍 +
+# 非通用拍数量」判跨场景同构——放宽到 3 拍，但公共节拍中必须有 ≥2 拍是
+# 场景特异性词（面板/诊脉/药包/结拜/留牌等），防「对峙→离场」式通用拍误判。
+
+#: 通用节拍：几乎所有场景都会出现的骨架拍（仅凭它们不得判同构）
+_SCENE_GENERIC_BEATS = {"离场", "对峙", "复活", "死亡", "挡死", "盘问", "失控"}
+#: 跨场景同构判据：公共子序列 LCS ≥ 3 且占比 ≥0.8 且非通用拍 ≥2
+_SCENE_ISO_MIN = 3
+_SCENE_ISO_RATIO = 0.8
+_SCENE_ISO_SPECIFIC_MIN = 2
+
+
+def _beats_scene_isomorphic(seq: list[str], scene_ledger: list[list[str]]) -> bool:
+    """新场景节拍序列 vs 历史场景序列全集（跨场景）：任一公共子序列达到
+    「3 拍 + 占比 0.8 + ≥2 个非通用拍」即判同构场景（同一场景换措辞重复写）。
+
+    治 v7 第 5 章药铺三重拼接：三遍诊脉场景节拍均为「诊脉→药包→离场」，
+    LCS=3、占比=1.0、非通用拍=诊脉+药包=2 → 命中；两个普通场景各含「对峙→离场」
+    → 非通用拍=0 → 不误判。场景防线与整章回退路径复用。
+    """
+    if not seq or len(seq) < _SCENE_ISO_MIN:
+        return False
+    for d in scene_ledger:
+        if not d or len(d) < _SCENE_ISO_MIN:
+            continue
+        if _lcs_len(seq, d) < _SCENE_ISO_MIN:
+            continue
+        # 公共子序列 = 两序列中同时出现的节拍（保序集合交集即可，无需 DP 回溯）
+        common = [b for b in seq if b in set(d)]
+        if len(common) < _SCENE_ISO_MIN:
+            continue
+        # 公共子序列占新场景序列的比例（近似 LCS 占比，够用）
+        ratio = len(common) / min(len(seq), len(d))
+        specific = sum(1 for b in common if b not in _SCENE_GENERIC_BEATS)
+        if ratio >= _SCENE_ISO_RATIO and specific >= _SCENE_ISO_SPECIFIC_MIN:
+            return True
+    return False
+
+
 def _beat_cycle_issues(content: str) -> list[dict]:
     """质检 2.12 情节级重演检测（确定性）：整章正文内同一长度 ≥4 节拍序列
     （非重叠）出现 ≥2 次 = 同事件多版本重演（换措辞循环，文本 n-gram 漏检）。

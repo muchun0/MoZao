@@ -145,15 +145,22 @@ def test_panel_violation_triggers_retry_and_adopts_clean(store):
     )
     llm.chat.side_effect = [
         two_scene_json,
+        '{"duplicate_pairs": []}',   # P0-10：拆场景评审（无同构事件）
         "炉火映着铁匠铺的墙，苏妄言推门进来，绕着陆沉走了半圈。陆沉低头打铁，装作没看见，心里盘算着怎么糊弄过去。面板浮现在他眼前，上面写着可死次数：3。" * 60,
         "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：4。" * 60,
         "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：2。" * 60,
+        # P0-10：扩写稿——每句带不同序号避免复读触发整章重写（干净长文）
+        ("炉火映着铁匠铺的墙，苏妄言推门进来，绕着陆沉走了半圈。陆沉低头打铁，装作没看见。\n"
+         + "\n".join(f"他往门口那边望了一眼，第{i}阵风卷着沙粒打在窗棂上，火星子跳了跳。\n"
+                    for i in range(150))
+         + "面板浮现在他眼前，上面写着可死次数：2。"),
         "场景链路摘要",
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 5                      # 拆场景 + 场景1 + 场景2(违规) + 重试稿 + 摘要
+    # P0-10 混合方案：6 = 拆场景 + 评审 + 场景1 + 场景2(违规) + 重试稿 + 摘要（正文达标不扩写）
+    assert llm.chat.call_count == 6
     # 重试调用（第4次）注入违规说明
-    retry_user = llm.chat.call_args_list[3][0][1]
+    retry_user = llm.chat.call_args_list[4][0][1]
     assert "违反方向规则" in retry_user or "重试强制规则" in retry_user
     # 采用合法重试稿（可死次数：2），违规稿（可死次数：4）被丢弃
     assert "可死次数：2" in ch.content
@@ -225,3 +232,47 @@ def test_causal_reset_after_zero():
 @pytest.mark.p1
 def test_causal_no_baseline_skip():
     assert panel_causal_violations("死了", {}, True) == []
+
+
+# ---------- P0-10 蚀化跨章累计校验 + 死亡计数（2026-10-10 混合方案⑥） ----------
+
+from novel_gen.pipeline.chapter_state import erosion_cumulative_check, death_count  # noqa: E402
+
+
+@pytest.mark.p1
+def test_erosion_cumulative_low_violation():
+    """v7 ch6 实证：起始97% + 累计死3次 = 应100%，正文仍 97% → 违规。"""
+    text = "面板亮起：距离蚀化：97%。第98次蚀化满。"
+    out = erosion_cumulative_check(text, 97, 3)
+    assert len(out) == 1 and "97%" in out[0] and "100%" in out[0]
+
+
+@pytest.mark.p1
+def test_erosion_cumulative_ok():
+    text = "距离蚀化：98%。他死了。距离蚀化：100%。"
+    assert erosion_cumulative_check(text, 97, 3) == []
+
+
+@pytest.mark.p1
+def test_erosion_cumulative_over():
+    """超发：正文 102% > 期望 100%。"""
+    out = erosion_cumulative_check("距离蚀化：102%。", 97, 3)
+    assert out and "超发" in out[0]
+
+
+@pytest.mark.p1
+def test_erosion_cumulative_skip_cases():
+    assert erosion_cumulative_check("没有数字", 97, 3) == []       # 无正文数字
+    assert erosion_cumulative_check("距离蚀化：97%", 0, 3) == []   # 无基线
+    assert erosion_cumulative_check("距离蚀化：97%", 97, 0) == []  # 无累计死亡且值=基线
+
+
+@pytest.mark.p1
+def test_death_count_multiple_and_excluded():
+    """死亡计数：多次死亡计数（间距>50 字独立计）、否定/比喻语境排除。"""
+    text = ("他死了，面板次数降到2。他挣扎着爬起，往墟口外退了三步，靠在石壁上喘了半刻，"
+            "又摸黑往前走了二十来丈，绕过那堆塌下来的碎石，才在雾里找到一条窄缝，"
+            "挤进去喘匀了气。胸口那道白光还没散。又死了，次数降到1。")
+    assert death_count(text) >= 2
+    assert death_count("他拼死抵抗，不怕死，视死如归。") == 0
+    assert death_count("") == 0

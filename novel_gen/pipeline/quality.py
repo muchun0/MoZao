@@ -286,6 +286,30 @@ class QualityChecker:
             except Exception:
                 pass
 
+        # 2.8c 蚀化跨章累计校验（P0-10，2026-10-10，治 v7 第 6 章口径冲突）：
+        #    正文蚀化值最高必须 = 起始蚀化 + 累计死亡（每死 +1，代码从记忆 state
+        #    账本取累计，零 LLM）。v7 ch6 实证：ch1/3/4 死 3 次蚀化应 97→100%，
+        #    正文仍写 97% 且章内"第 98 次蚀化满"自相矛盾——单章因果校验（2.8b）
+        #    只查"本章死亡→本章+1"，跨章累计不入账；这里按账本累计兜底。
+        if baseline and self.memory is not None:
+            try:
+                from .chapter_state import (erosion_cumulative_check as _ecc,
+                                            death_count as _dc2)
+                _st = self.memory.load().get("state") or {}
+                _eros_start = int(_st.get("erosion_start", 0) or 0)
+                _cumu = self.memory.cumulative_deaths(int(chapter_no) - 1)
+                _cumu += _dc2(content)  # 本章自身死亡也计入（正文已含死亡事件）
+                if _eros_start > 0:
+                    for _it in _ecc(content, _eros_start, _cumu):
+                        issues.append({
+                            "type": "写作-机制数字方向违规",
+                            "detail": _it,
+                            "level": "大改",
+                        })
+                        score -= 30
+            except Exception:
+                pass
+
         # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
         #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
         for it in self._dialogue_loop_issues(content):
@@ -865,6 +889,66 @@ class QualityChecker:
         except Exception:
             return ""
 
+    def _diagnose_rewrite(self, content: str) -> list[dict]:
+        """P0-10 重写前诊断（混合方案②，2026-10-10）：重写前独立审稿判重复结构。
+
+        治 v4 教训（重写 1 把拼接写得更严重：第四轮第 5 章 2 个问题→4 个问题）——
+        原链路「重写 → 复检」让重写 agent 在信息真空里自由发挥，自校验查不出
+        同构场景/拼接。本 agent 在重写**前**独立诊断，输出「删除哪段、保留哪段」，
+        重写 prompt 按诊断执行。任何失败降级空列表（不阻塞）。
+        """
+        try:
+            import json
+            from .templates import rewrite_diagnose_prompt
+            sys_d, user_d = rewrite_diagnose_prompt(content or "")
+            raw = self.llm.chat(sys_d, user_d, temperature=0.2, max_tokens=1200)
+            t = raw.strip()
+            if t.startswith("```"):
+                lines = t.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                t = "\n".join(lines).strip()
+            d = json.loads(t)
+            out = []
+            for f in d.get("findings") or []:
+                try:
+                    s, e = int(f["start"]), int(f["end"])
+                except Exception:
+                    continue
+                if 0 <= s < e <= len(content or ""):
+                    out.append({
+                        "type": str(f.get("type") or ""),
+                        "start": s, "end": e,
+                        "action": str(f.get("action") or "删除"),
+                        "reason": str(f.get("reason") or "")[:80],
+                    })
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _diag_block(findings: list[dict]) -> str:
+        """重写前诊断注入块：按诊断清单逐条「删除哪段、保留哪段」确定性指令。"""
+        if not findings:
+            return ""
+        lines = []
+        for f in findings[:6]:
+            s, e = f.get("start", 0), f.get("end", 0)
+            t = f.get("type", "")
+            reason = f.get("reason", "")
+            if "拼接" in t or "重复" in t:
+                lines.append(f"- 删除正文 [{s}:{e}] 的重复版本（{reason}）；"
+                             "只保留最完整的一遍，被删版本的不可替代信息合并进保留版本")
+            elif "对话" in t or "循环" in t:
+                lines.append(f"- 删除正文 [{s}:{e}] 的重复对话轮（{reason}）；"
+                             "同一组问答/对峙只保留一次")
+            else:
+                lines.append(f"- 按诊断修正 [{s}:{e}]（{reason}）")
+        return ("【重写前诊断（独立审稿，先于重写执行：正文存在以下重复结构，"
+                "重写必须按此删除后再连贯成篇）】\n" + "\n".join(lines))
+
     def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, issues: list[dict]) -> str:
         """整章重写（原行为，无定位信息/定点失败时兜底）。
@@ -908,6 +992,10 @@ class QualityChecker:
                 "禁止两事件结束时间一状态\n\n"
             ) if has_event_dup else ""
             mem_block = self._memory_block(issues)
+            # P0-10 重写前诊断（混合方案②）：独立审稿判多稿拼接/对话循环 →
+            # 注入"删除哪段、保留哪段"确定性指令（治 v4 重写越改越差）
+            _diag = self._diagnose_rewrite(content)
+            _diag_text = self._diag_block(_diag) if _diag else ""
             ctx = self._context_block(chapter_no)
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的正文，"
@@ -915,6 +1003,7 @@ class QualityChecker:
                 f"【本章目标】{plan_goal}\n"
                 + (f"\n{ctx}\n" if ctx else "")
                 + (f"\n{mem_block}\n" if mem_block else "")
+                + (f"\n{_diag_text}\n" if _diag_text else "")
                 + f"【质检问题】\n{issue_block}\n\n"
                 f"重写要求：\n"
                 f"1. 保留原有剧情走向、人物设定与关键对话，不推翻前文既定事实\n"

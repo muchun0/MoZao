@@ -161,3 +161,27 @@ def test_run_generation_guard_error_keeps_output(tmp_path, monkeypatch):
     assert failed.exists()
     data = __import__("json").loads(failed.read_text(encoding="utf-8"))
     assert data.get("guard") is True
+
+
+# ---------- P0-8 按章重置场景计数（2026-10-10） ----------
+
+@pytest.mark.p1
+def test_reset_scene_counts_only_scene():
+    """reset_scene_counts 只清场景计数，保留全局 loop/token 上限
+    （v6 第 4-7 章 review 跨章累计 25 次被拦、一致性校验全停的修复）。"""
+    guard = AgentGuard(AgentGuardConfig(max_loops=10, scene_limits={"review": 3}))
+    guard.enter_scene("review")
+    guard.before_call()
+    guard.before_call()
+    guard.before_call()
+    with pytest.raises(AgentGuardError):
+        guard.before_call()
+    # 按章重置：场景计数清零，全局 loop 计数保留
+    guard.reset_scene_counts()
+    guard.enter_scene("review")
+    guard.before_call()                      # 不抛（场景配额恢复）
+    assert guard.loop_count == 5             # 全局计数未清零（3 次正常 + 1 次抛错前 + 重置后 1 次）
+    # 全局上限仍生效
+    with pytest.raises(AgentGuardError):
+        for _ in range(6):
+            guard.before_call()

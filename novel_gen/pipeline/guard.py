@@ -47,6 +47,16 @@ class AgentGuard:
         self.total_tokens = 0
         self._scene_counts.clear()
 
+    def reset_scene_counts(self) -> None:
+        """P0-8：只清场景计数（保留全局 loop/token 上限）。
+
+        背景：v6 第 4-7 章「场景[review]调用次数超过上限（25 次）」——review 场景
+        计数跨章累计（guard 生命周期=单任务），第 1-3 章已耗尽 25 次配额，后续章
+        一致性校验（_run_verify）全部被 guard 拦停。生成每章开始时调用一次，
+        让每章享有独立场景配额；全局 loop/token 上限不受影响。
+        """
+        self._scene_counts.clear()
+
     # ---------- LLMClient 模板方法驱动 ----------
     def before_call(self) -> None:
         if not self.enabled:

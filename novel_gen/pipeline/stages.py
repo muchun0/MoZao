@@ -15,12 +15,17 @@ from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .style_anchor import extract_personal_anchor
+from .beats import (
+    _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
+    _beats_scene_isomorphic, _beat_cycle_issues,
+)
 from .templates import (
     chapter_prompt,
     outline_prompt,
     world_prompt,
     split_scenes_prompt,
     scene_prompt,
+    scene_split_review_prompt,
     polish_chapter_prompt,
     verify_prompt,
     _pick_dynamic_module,
@@ -294,6 +299,42 @@ class ChapterWriter:
         self._anchor_loaded: str | None = None
         #: REQ-双锚风格锚定：个人旧稿锚懒提取缓存（None=未读）
         self._personal_loaded: str | None = None
+        #: P0-7 小说级记忆：懒加载 BookMemory（None=未初始化；关闭/失败 → None 跳过）
+        self._book_memory = None
+        #: P0-8：最近一章场景累计机制数字基线（_generate_chapter_scenes 写入，
+        #: write() 质检透传用；未走场景路径时为空 dict）
+        self._scene_state_acc: dict = {}
+
+    def _memory(self):
+        """P0-7 懒加载小说级记忆；book_memory 开关关闭/初始化失败 → None（行为降级安全）。"""
+        if self._book_memory is None and getattr(self.cfg, "book_memory", True):
+            try:
+                from .book_memory import BookMemory
+                self._book_memory = BookMemory(self.store, self.cfg)
+            except Exception:
+                self._book_memory = None
+        return self._book_memory
+
+    def _book_canon(self, max_chars: int = 800) -> str:
+        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
+        mem = self._memory()
+        if mem is None:
+            return ""
+        try:
+            return mem.canon_block(max_chars=max_chars)
+        except Exception:
+            return ""
+
+    def _book_pitfalls(self, top_n: int = 3, min_count: int = 2) -> str:
+        """P0-7：本作历史错误（场景生成纪律）注入块——只注入已反复出现（≥2 次）
+        的踩坑，避免低频问题过度束缚正常生成。空则空串。"""
+        mem = self._memory()
+        if mem is None:
+            return ""
+        try:
+            return mem.pitfall_block(top_n=top_n, min_count=min_count)
+        except Exception:
+            return ""
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
@@ -325,6 +366,19 @@ class ChapterWriter:
         is_final: bool = False,
     ) -> Chapter:
         world = self.store.load_world()
+        # P0-8：每章开始——①机制基线同步进记忆设定账本（蚀痕位置等权威口径）；
+        # ②场景计数按章重置（v6 第 4-7 章 review 超 25 次被 guard 拦停一致性校验的根因）
+        try:
+            _mem = self._memory()
+            if _mem is not None:
+                _mem.sync_baseline(world)
+        except Exception:
+            pass
+        try:
+            if self.guard is not None:
+                self.guard.reset_scene_counts()
+        except Exception:
+            pass
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
         )
@@ -425,6 +479,10 @@ class ChapterWriter:
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
             )
+            # P0-15/16 通用版（2026-10-10）：普通整章路径同样注入机制面板字段白名单
+            _wl = self._panel_whitelist_block()
+            if _wl:
+                user = user + _wl
             system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
@@ -440,6 +498,17 @@ class ChapterWriter:
         if not summary:
             # 模型漏输出【摘要】时兜底：单独调用一次生成摘要，保证记忆库完整
             summary = self._gen_summary(chapter_no, plan_title, content)
+        else:
+            # P0-17 摘要一致性校验（2026-10-10，治 v9 ch6 摘要写大纲词「忘忧阁密报」
+            # 而正文是不问阁）：模型自带的摘要若含 ≥2 个正文完全没有的 3 字连续词
+            # （多为自创专有名词/大纲残留），判为摘要与正文脱节 → 基于正文重生成。
+            if content and _summary_invented_words(summary, content) < 0.35:
+                _regen_summary = self._gen_summary(chapter_no, plan_title, content)
+                if _regen_summary:
+                    if not silent:
+                        print(f"  [摘要] 模型自带摘要与正文脱节（含正文未出现的 3 字词），"
+                              f"基于正文重生成摘要")
+                    summary = _regen_summary
 
         # 高质量模式：自动改稿（小改自动改，中改以上只记录）
         if getattr(self.cfg, 'high_quality_mode', False) and content:
@@ -450,11 +519,12 @@ class ChapterWriter:
                 content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
             except Exception as e:
                 print(f'  [改稿] 跳过: {e}')
-            # 读者视角审校（只记录不改正文）
+            # 读者视角审校（只记录不改正文；P0-10 注入本作记忆 + 三项专项检查）
             try:
                 from .reviser import ReaderReviewer
                 reader = ReaderReviewer(self.cfg, self.llm, self.store,
-                                        role_prompt=self.reader_role_prompt)
+                                        role_prompt=self.reader_role_prompt,
+                                        memory=self._memory())
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 print(f'  [读者审校] 跳过: {e}')
@@ -466,20 +536,47 @@ class ChapterWriter:
             try:
                 from .quality import QualityChecker
                 qc = QualityChecker(self.cfg, self.llm, self.store,
-                                    trace=self.trace, guard=self.guard)
+                                    trace=self.trace, guard=self.guard,
+                                    memory=self._memory())
+                # P0-5（2026-10-10）：把场景循环累计的机制数字基线透传给质检层——
+                # 重写/改稿产物在 check 内叠加面板方向校验（蚀化回退/次数回升二次兜底）。
+                # P0-8（2026-10-10）修复透传 bug：write() 的 locals() 拿不到
+                # _generate_chapter_scenes 内部的 scene_state_acc（原实现 _bl 恒为空，
+                # 质检层方向校验从未生效）；改为实例属性 self._scene_state_acc。
+                _bl: dict = {}
+                try:
+                    from .chapter_state import panel_baseline_dict as _pbd
+                    _bl = _pbd((self._scene_state_acc or {}).get("numbers") or [])
+                except Exception:
+                    _bl = {}
                 chapter, _qc = qc.ensure_quality(
-                    chapter_no, plan_title, plan_goal, content, summary, silent=silent
+                    chapter_no, plan_title, plan_goal, content, summary,
+                    silent=silent, baseline=_bl or None,
+                    core_event=plan_core_event or None,
                 )
                 content, summary = chapter.content, chapter.summary
                 qc_passed = bool(_qc.get("passed", True))
+                # P0-7 小说级记忆：记录本章评分与问题分布（经验账本）+ 踩坑降权
+                # （零 LLM，失败静默不阻塞）
+                try:
+                    _mem = self._memory()
+                    if _mem is not None:
+                        _mem.record_taste(chapter_no, int(_qc.get("score", 0) or 0),
+                                          _qc.get("issues") or [])
+                        _mem.decay(chapter_no)
+                except Exception:
+                    pass
             except Exception as qe:
                 if not silent:
                     print(f"  [自校验] 跳过: {qe}")
 
         # 方案4（落盘分流）：质检未通过且该章已有旧版 → 保留旧版正文，不覆盖
         # （坏章不得顶掉用户已有的可用版本；仅首次生成/无旧版时才落盘新稿）。
-        # 质检结果已由 ensure_quality 落 review.json（passed=false + issues），
-        # 前端据 quality 字段显示红标并提示"已保留旧版"。
+        # v11 实证（2026-10-10）：旧版必须健康才保留——v10 ch6 旧稿含「累计死亡
+        # 次数：37」幻觉行（注册表外字段违规），v11 新稿质检未过时无脑回退旧版 =
+        # 病稿复用。旧版健康检查（零 LLM：未知字段/重复节拍/链式账本），不健康
+        # → 落盘新稿（ensure_quality 重写后的最优候选），宁要新稿 2 个问题不要
+        # 旧版幻觉行。
         kept_previous = False
         if not qc_passed:
             prev = None
@@ -488,14 +585,73 @@ class ChapterWriter:
             except Exception:
                 prev = None
             if prev is not None and getattr(prev, "content", ""):
-                content, summary = prev.content, prev.summary
-                kept_previous = True
-                if not silent:
-                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
-                          f"保留上一版正文（{len(content)} 字），不覆盖旧章")
+                _prev_ok = self._chapter_healthy(prev.content, chapter_no)
+                if _prev_ok:
+                    content, summary = prev.content, prev.summary
+                    kept_previous = True
+                    if not silent:
+                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                              f"保留上一版正文（{len(content)} 字），不覆盖旧章")
+                else:
+                    kept_previous = False
+                    if not silent:
+                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                              f"上一版正文（{len(prev.content)} 字）健康检查未通过"
+                              "（含注册表外字段/重复节拍/链式账本违规），"
+                              f"改落盘本轮重写最优候选（{len(content)} 字）")
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
+        # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
+        # 治 v7 第 6 章蚀化跨章口径——代码累计入账后，下章拆场景/场景/重写 prompt
+        # 注入「蚀化应 = 起始基线 + 累计死亡」确定性锚，LLM 不再自由发挥跨章数字。
+        # P0-14（2026-10-10）根因修复：账本 deaths 改「本章末蚀化 - 上一章末蚀化」
+        # 蚀化差反推——v8 实证旧版用 death_count 词面计数入账被污染（ch1 重复段落
+        # 多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板误计）→ 累计虚高 → 锚正反馈
+        # 放大。蚀化差只跟随正文面板链（面板正确性由质检 2.8c「本章死亡必+1、
+        # 未死亡必不变」保证），账本与面板永远一致。
+        try:
+            _mem_st = self._memory()
+            if _mem_st is not None:
+                from .chapter_state import _EROSION_SEQ_RE as _eseq
+                _eros = None
+                _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
+                if _mv:
+                    _eros = max(_mv)
+                _prev_eros = None
+                try:
+                    _st0 = _mem_st.load().get("state") or {}
+                    _prev_ch = [c for c in _st0.get("chapters", [])
+                                if int(c.get("ch", 0)) < int(chapter_no)]
+                    if _prev_ch:
+                        _prev_eros = _prev_ch[-1].get("erosion")
+                except Exception:
+                    _prev_eros = None
+                # v11 实证（2026-10-10）：ch5 无面板 → erosion=None 断链 → 质检 2.8c
+                # _base 回落起始 97 → ch6 蚀化差误算 101-97=4（把 ch3/ch4 死亡计入 ch6）
+                # → ledger_check 报「4 次死亡」误伤。无面板=无事件=蚀化不变：缺失时
+                # 继承上一章末（与 numbers 链式 chapter_ledger 同口径，账本永不破链）。
+                if _eros is None and _prev_eros is not None:
+                    _eros = int(_prev_eros)
+                _deaths = 0
+                if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
+                    _deaths = _eros - int(_prev_eros or 0)
+                # P0-15/16 通用版：注册字段末值链式入账（ledger_extract_numbers 零 LLM
+                # 抽取；本章未提及字段由 chapter_ledger 继承上一章末值，治 ch5 断链）
+                _nums = {}
+                try:
+                    from .chapter_state import (mechanism_field_registry as _mreg2,
+                                                ledger_extract_numbers as _lex)
+                    _canon2 = (_mem_st.load().get("canon") or {})
+                    _reg2 = _mreg2(_canon2.get("mechanism_baseline") or {})
+                    if _reg2:
+                        _nums = _lex(content or "", _reg2)
+                except Exception:
+                    _nums = {}
+                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros,
+                                             numbers=_nums)
+        except Exception:
+            pass
         # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；普通模式无 scenes 则跳过）
         try:
             _sc = locals().get("scenes")
@@ -546,6 +702,207 @@ class ChapterWriter:
             out.append(res if res else blk)
         return "\n\n".join(out)
 
+    def _chapter_healthy(self, content: str, chapter_no: int) -> bool:
+        """v11 实证新增：旧版健康检查（保留旧版前判定，零 LLM）。
+
+        旧版带病（注册表外字段幻觉行/重复节拍/链式账本违规）时不得作为
+        「可用版本」回退——否则病稿跨轮复用。任何书通用。
+        """
+        if not content:
+            return False
+        try:
+            from .chapter_state import (mechanism_field_registry as _mreg_h,
+                                        unknown_mechanism_fields as _unk_h,
+                                        ledger_check as _lchk_h,
+                                        _registry_initial as _rin_h,
+                                        _EROSION_SEQ_RE as _eseq_h)
+            _mem_h = self._memory()
+            if _mem_h is None:
+                return True  # 无记忆体系（未启用记忆）不判病，维持旧路径行为
+            _canon_h = (_mem_h.load().get("canon") or {})
+            _reg_h = _mreg_h(_canon_h.get("mechanism_baseline") or {})
+            # 1) 注册表外字段（累计死亡次数类幻觉行）
+            if _reg_h and _unk_h(content, _reg_h):
+                return False
+            # 2) 重复节拍（同事件循环重演）
+            if _beat_cycle_issues(content):
+                return False
+            # 3) 链式账本（蚀化差口径，与质检 2.8c 一致）
+            if _reg_h:
+                _st_h = (_mem_h.load().get("state") or {})
+                _prev_h = _mem_h.chapter_ledger(chapter_no - 1)
+                _eros_h = max((int(_m.group(1)) for _m in _eseq_h.finditer(content or "")),
+                              default=0)
+                _base_h = 0
+                try:
+                    _pc = [c for c in _st_h.get("chapters", [])
+                           if int(c.get("ch", 0)) < int(chapter_no)]
+                    _pe = next((c.get("erosion") for c in reversed(_pc)
+                                if c.get("erosion") is not None), None)
+                    _base_h = int(_pe) if _pe is not None else \
+                        int(_st_h.get("erosion_start", 0) or 0)
+                except Exception:
+                    pass
+                _cumu_h = max(0, _eros_h - _base_h) if _base_h > 0 else 0
+                _init_h = _rin_h(_canon_h.get("mechanism_baseline") or {}, _reg_h)
+                if _lchk_h(content, _prev_h, _reg_h, _cumu_h, _init_h):
+                    return False
+        except Exception:
+            return True
+        return True
+
+    def _panel_whitelist_block(self) -> str:
+        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world）。
+
+        基线声明的字段才允许出现在正文面板，禁止累计死亡次数类自造标签；
+        次数/剩余类字段为 0 时本章不得再安排死亡。从 memory canon 注册表派生，
+        任何书通用；无记忆/无基线 → 空串。
+        """
+        try:
+            _mem_w = self._memory()
+            if _mem_w is not None:
+                from .chapter_state import mechanism_field_registry as _mregw
+                _canonw = (_mem_w.load().get("canon") or {})
+                _regw = _mregw(_canonw.get("mechanism_baseline") or {})
+                if _regw:
+                    _blk = (
+                        "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下字段："
+                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如「累计死亡次数」"
+                        "「死亡总次数」等自造标签）；字段格式必须为「字段名：数字」（带分母"
+                        "写法禁止）。"
+                    )
+                    if any(k.endswith("次数") or "剩余" in k for k in _regw):
+                        _blk += (
+                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生死亡结算"
+                            "（次数用尽后死亡=违规）；如确有死亡，必须先声明字段为 1 以上。"
+                        )
+                    return _blk
+        except Exception:
+            pass
+        return ""
+
+    def _fallback_whole_chapter(self, chapter_no, plan_title, plan_goal,
+                                memory_context, prev_tail, is_final,
+                                plan_core_event, fallback_events, silent=False,
+                                panel_baseline: dict | None = None) -> str:
+        """拆场景失败 / 场景正文重演重试耗尽的整章回退路径。
+
+        2026-10-01：events 已从拆场景输出救回时注入整章 prompt（拆场景失败不再丢事件）；
+        2026-10-09：场景连续 2 次重试仍重演完整循环时同样回退整章——整章单次生成
+        无场景间越权消费问题，重演由质检 2.12 情节级检测兜底。
+        2026-10-10 P0-8：新增 panel_baseline——回退整章路径生成后同样做面板方向 +
+        死亡-结算因果校验（v6 第 6 章蚀化 99→97 跨章回跳正是整章路径绕过基线校验的
+        实证），违反 → 带错重试（数字修复回灌），堵"回退路径 = 数字失控通道"。
+        """
+        from .templates import chapter_prompt
+        ev_block = ""
+        if fallback_events:
+            ev_block = "\n".join(
+                f"事件{i + 1}（{e.get('id', '')}）：{e.get('desc', '')}"
+                f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
+                for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
+            ) or ""
+        # P0-7 小说级记忆：回退整章路径同样注入本作历史错误（重写措辞 + 数字回灌
+        # 由 quality 层做；这里注入场景级纪律，防整章单次生成重演本书高频错误）
+        _mem = memory_context
+        _bmem = self._book_pitfalls(top_n=5, min_count=1)
+        if _bmem:
+            _mem = (_mem + "\n\n" if _mem else "") + _bmem
+        system, user = chapter_prompt(
+            self.cfg, chapter_no=chapter_no,
+            chapter_title=plan_title, chapter_goal=plan_goal,
+            research_block="", memory_context=_mem,
+            prev_tail=prev_tail, is_final=is_final,
+            chapter_core_event=plan_core_event,
+            chapter_events=ev_block,
+            teardown_anchor=self._teardown_anchor(),
+            personal_anchor=self._personal_anchor(),
+        )
+        system = self._sys(system)
+        # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
+        # （closed-world：基线声明的字段才允许出现，禁止累计死亡次数类自造标签；
+        # 次数/剩余类字段为 0 时本章不得再安排死亡）——v10 实证 ch3/ch6 幻觉行
+        # 「累计死亡次数：39/37」出现在回退整章正文，正是该路径缺白名单预防。
+        _whitelist_block = self._panel_whitelist_block()
+        if _whitelist_block:
+            user = user + _whitelist_block
+        # 2026-10-09 生成端兜底（REQ-scene-plan-align §7.3 措施3/5 生成端）：
+        # 整章回退路径无场景级实时拦截（场景防线只在场景循环内），生成后立即做
+        # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）+ P0-8 机制数字
+        # 方向/因果校验——命中 → 重试至多 2 次（注入重复节拍证据 + 压缩字数目标 +
+        # 数字修复回灌），仍命中 → 返回交给质检 2.12 兜底（见 §7.4）。
+        _text = self.llm.chat(system, user, temperature=0.85,
+                              frequency_penalty=0.3, presence_penalty=0.15) or ""
+        for _try in (1, 2):
+            _text = _strip_html_tags(_text)
+            _issues = _beat_cycle_issues(_text)
+            _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
+            _viols: list[str] = []
+            if _text:
+                try:
+                    from .chapter_state import (panel_direction_violations as _pdv,
+                                                panel_causal_violations as _pcv,
+                                                death_signals as _deathsig,
+                                                book_death_signals as _bdeathsig,
+                                                mechanism_field_registry as _mregf,
+                                                unknown_mechanism_fields as _unkf)
+                    _ev_text = " ".join(
+                        str(e.get(k) or "") for e in (fallback_events or [])
+                        for k in ("desc", "conflict", "final_state")
+                    )
+                    _sigs = self._memory().book_signals() if self._memory() is not None else []
+                    # P0-14 修正：通用标准（词面）OR 个性化标准（本书机制词）——两套独立
+                    _death = _deathsig(_text) or _bdeathsig(_text, _sigs) or \
+                        _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
+                    if panel_baseline:
+                        _viols = _pdv(_text, panel_baseline)
+                        if _death:
+                            _viols = _viols + _pcv(_text, panel_baseline, True)
+                    # P0-15/16 通用版：注册表外字段（累计死亡次数类）回退整章同样拦截
+                    _regf = _mregf((self._memory().load().get("canon") or {})
+                                   .get("mechanism_baseline") or {}) \
+                        if self._memory() is not None else {}
+                    if _regf:
+                        _viols = _viols + _unkf(_text, _regf)
+                except Exception:
+                    _viols = []
+            # P0-14（2026-10-10）：字数超限不再触发整章回退重写——用户约束"如果生成的
+            # 质量过关，就不需要整章回退重写"（v8 实证 ch5 3680/ch7 3682 字数超但质量
+            # 好，回退纯浪费 token；历轮重写越改越差教训）。字数仅作附注展示。
+            if not _issues and not _viols:
+                break
+            if not silent:
+                _why = ("情节级重演：" + str(_issues[0]["detail"]) if _issues else "") + \
+                       (f"；字数超限（{len(_text)} 字）" if _over else "") + \
+                       (f"；机制数字违规（{_viols[0]}）" if _viols else "")
+                print(f"  [回退整章] 第{chapter_no}章生成后检出{_why}，重试第{_try}次")
+            _dedup_parts = []
+            if _issues:
+                _dedup_parts.append(
+                    "1. 上文【本章事件序列】中的每个事件只允许完整发生一次；上一版把同一情节"
+                    "（死亡-复活-对峙-包扎-离场等完整循环）演绎了两遍，检测到重复节拍："
+                    f"『{_issues[0].get('detail', '')}』——本次必须删除重复版本，保留最完整的一个，"
+                    "被删版本中不可替代的信息（关键对话/关键状态）合并进保留版本\n"
+                    "2. 事件之间必须因果推进，后一事件从上一事件结局之后开始，禁止回到上一事件开头状态重演\n"
+                    "3. 每个事件结束状态（面板/蚀痕/伤势）必须比上一事件结束时有增量变化\n"
+                )
+            if _over:
+                _dedup_parts.append(
+                    f"4. 正文控制在约 {self.cfg.chapter_words} 字（±15%），禁止超写注水——"
+                    "宁精炼也禁止把同一情节写两遍凑字数\n"
+                )
+            if _viols:
+                _viol_text = "\n".join(f"- {v}" for v in _viols[:4])
+                _dedup_parts.append(
+                    f"5. 机制数字（面板/蚀化等）必须按基线确定性结算，上一条正文违反：\n"
+                    f"{_viol_text}\n——本次按上述修正值改，禁止再犯同类数字错误\n"
+                )
+            _dedup = ("\n\n【整章回退重试强制规则（上一条输出未通过检测，已作废）】\n"
+                      + "\n".join(_dedup_parts)) if _dedup_parts else ""
+            _text = self.llm.chat(system, user + _dedup, temperature=0.85,
+                                  frequency_penalty=0.4, presence_penalty=0.2) or ""
+        return _text
+
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
                                  memory_context, prev_tail, is_final,
                                  dynamic_module_used: bool = True,
@@ -581,13 +938,27 @@ class ChapterWriter:
                 skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
                     "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
         try:
+            # P0-10 拆场景层注入机制数字锚（蚀化当前应 = 起始基线 + 截至上一章累计死亡），
+            # 规划事件 final_state 时模型据此写机制状态增量，不自造跨章口径
+            _split_anchor = ""
+            try:
+                _msplit = self._memory()
+                if _msplit is not None:
+                    _split_anchor = _msplit.erosion_anchor(max(0, int(chapter_no) - 1))
+            except Exception:
+                _split_anchor = ""
             sys_s, user_s = split_scenes_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
                 moves=skeleton_arg,
+                book_canon=self._book_canon() + (_split_anchor if _split_anchor else ""),
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
+            # P0-4：仅当「整体 JSON 解析失败」（尾部截断证据）且救回 characters_action
+            # 为空时才触发单字段补全；整体解析成功但 characters_action 为空数组 =
+            # 模型真未规划（合法），不补全（避免无谓的额外 LLM 调用）。
+            _ca_needs_fill = False
             try:
                 split_data = json.loads(_strip_json_block(raw))
             except Exception:
@@ -607,6 +978,8 @@ class ChapterWriter:
                     if events_fb:
                         split_data["events"] = events_fb
                     split_data["characters_action"] = _extract_json_field(raw, "characters_action")
+                    if not split_data.get("characters_action"):
+                        _ca_needs_fill = True
                 else:
                     if not silent:
                         print("  [拆场景] JSON 解析失败，重试 1 次（温度 0.5）...")
@@ -626,10 +999,25 @@ class ChapterWriter:
                         }
                         if not split_data:
                             split_data = None
+                        elif not split_data.get("characters_action"):
+                            _ca_needs_fill = True
             if isinstance(split_data, dict):
                 fallback_events = split_data.get("events") or []
                 scenes = split_data.get("scenes", [])
-                action_plan_block = _format_action_plan(split_data.get("characters_action") or [])
+                ca = split_data.get("characters_action") or []
+                # P0-4 characters_action 单字段补全（2026-10-09）：
+                # 大 JSON 长输出截断只丢尾部 characters_action 时（_extract_json_field
+                # 救回为空/损坏），单独让模型只输出行动表数组——措辞层约束真正生效。
+                if not ca and _ca_needs_fill and scenes:
+                    if not silent:
+                        print("  [行动表] characters_action 截断救回失败，单字段补全调用...")
+                    ca = self._fill_characters_action(
+                        chapter_no, plan_title, plan_goal,
+                        plan_core_event, fallback_events, prev_tail, silent=silent,
+                    )
+                    if not silent and ca:
+                        print(f"  [行动表] 补全成功，行动表注入 {len(ca)} 条（措辞层约束生效）")
+                action_plan_block = _format_action_plan(ca or [])
                 if not silent:
                     print(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
                           f"{len(fallback_events)} 个事件")
@@ -660,11 +1048,27 @@ class ChapterWriter:
                     events_list.append(de)
                 fallback_events = events_list
             _expand_scene_event_refs(scenes, events_list)
+            # P0-10 拆场景评审（混合方案①，2026-10-10）：独立评审 agent 判事件
+            # 语义同构 → 代码确定性合并。治 v7 ch5 药铺三重拼接规划层根因——
+            # desc 相似度预筛（>0.55）对「查药粉/诊脉/探脉枕」三个不同原文不命中，
+            # 需语义级判断；派生模式 desc 是骨架原文（合并会破坏 id 对应）→ 只告警。
+            if not derived_events and events_list and scenes and len(events_list) >= 2:
+                _pairs = self._scene_split_review(
+                    chapter_no, plan_title, plan_goal, events_list, scenes, silent
+                )
+                if _pairs:
+                    _merged = _merge_duplicate_events(events_list, scenes, _pairs)
+                    if _merged:
+                        events_list, scenes = _merged
+                        fallback_events = events_list
             # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
             # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
-            # 防"救苏妄言"拆成石殿版/墟口外版两场景）：
+            # 防"救苏妄言"拆成石殿版/墟口外版两场景）+ P0-17 大纲核心事件覆盖校验：
             # 不合格 = 同一事件拆成两场景（同事件两版本拼接源头），回退整章生成
-            ok_plan, why_bad = _validate_scene_plan(scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
+            ok_plan, why_bad = _validate_scene_plan(
+                scenes, int(getattr(self.cfg, "chapter_words", 0) or 0),
+                core_event=str(plan_core_event or ""),
+            )
             # REQ-scene-plan-align：派生模式下事件互斥改用 desc（骨架原文）相似度兜底——
             # 模型补充的 conflict/action 可能把同一人物交互的递进拍标成同动作（如"扫描/
             # 装傻"都标"试探"），槽位检查会误杀回退；desc 是骨架逐拍原文，互斥由"两拍
@@ -708,31 +1112,15 @@ class ChapterWriter:
             scenes = []
 
         if not scenes:
-            # 拆场景失败，回退到普通整章生成。2026-10-01：若 events 已从拆场景输出
-            # 救回（拆场景 JSON 截断常见），注入整章 prompt——拆场景失败不再丢事件
-            # （否则"救苏妄言"等核心事件被整章生成遗漏，或模型自发挥写重复）。
-            # 同时注入"每事件只写一遍"纪律，整章生成也受事件序列约束（事前规避）。
-            from .templates import chapter_prompt
-            ev_block = ""
-            if fallback_events:
-                ev_block = "\n".join(
-                    f"事件{i + 1}（{e.get('id', '')}）：{e.get('desc', '')}"
-                    f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
-                    for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
-                ) or ""
-            system, user = chapter_prompt(
-                self.cfg, chapter_no=chapter_no,
-                chapter_title=plan_title, chapter_goal=plan_goal,
-                research_block="", memory_context=memory_context,
-                prev_tail=prev_tail, is_final=is_final,
-                chapter_core_event=plan_core_event,
-                chapter_events=ev_block,
-                teardown_anchor=self._teardown_anchor(),
-                personal_anchor=self._personal_anchor(),
-            )
-            system = self._sys(system)
-            return self.llm.chat(system, user, temperature=0.85,
-                                 frequency_penalty=0.3, presence_penalty=0.15)
+            # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。
+            # P0-8：整章回退路径补基线校验——self._scene_state_acc 此时仍是上一章章末
+            # 数字（本章场景循环尚未写入），恰为"本章开始权威基线"（v6 第 6 章蚀化
+            # 99→97 回跳即整章路径绕过基线校验的实证）。
+            return self._fallback_whole_chapter(
+                chapter_no, plan_title, plan_goal,
+                memory_context, prev_tail, is_final,
+                plan_core_event, fallback_events, silent,
+                panel_baseline=self._scene_state_acc or None)
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
@@ -743,7 +1131,8 @@ class ChapterWriter:
         mem_for_scene = memory_context
         if action_plan_block:
             mem_for_scene = (mem_for_scene + "\n\n" if mem_for_scene else "") + \
-                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan_block
+                "【本章人物行动表（全章总体动线：每个场景只落实与本场景唯一事件直接相关的行动，" \
+                "禁止在多个场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block
         # REQ-章内自洽与机制账本：场景间累积「已推进状态」（面板数字/人物生死/物品/时间），
         # 注入后续场景，防「三次死亡只减两次数字」「疤脸死而复生」等章内状态断裂。
         scene_state_acc: dict = {}
@@ -753,17 +1142,82 @@ class ChapterWriter:
         # （《万墟之上》22:32 版空地版/坡地版双版本）。这里把本章已规划场景事件做成
         # 确定性事件清单，逐场景累积注入后续场景，零 LLM 成本。
         done_events: list[str] = []
+        # P0-1 事件消费账本状态机（2026-10-09 生成端第三轮，对标 AgentWrite $STEP$ 指针制）：
+        # 每个规划事件登记 {desc, consumed_scene_idx}；场景生成前把「已消费事件」与
+        # 「后续事件预览」注入 prompt（已消费只许一句话回响、后续只许铺垫提及，
+        # 禁提前消费完整流程）——治"跨场景分布型重演"（事件无 consumed 标记 +
+        # 模型对已写事件仍有完整执行权，decisions.md 2026-10-09 §7.2 根因 A）。
+        event_ledger: list[dict] = []
+        # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
+        # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
+        # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
+        # 指纹，后续场景与之比对——场景1越权写完事件2~4 后，场景2~4 直接感知并拦截。
+        done_beat_seqs: list[list[str]] = []
+        # P0-10 跨场景同构检测（治 v7 第 5 章药铺三重拼接）：历史场景序列全集。
+        # 与 done_beat_seqs（供整序列/局部子序列 LCS，4 拍阈值）互补——单遍 3 拍
+        # 核心节拍（诊脉→药包→离场）写 3 遍时 4 拍阈值全部漏检，本账本按
+        # 「3 拍 + 非通用拍 ≥2」判同构场景。每章重置（跨章由事件账本/蚀化锚管）。
+        scene_beat_ledger: list[list[str]] = []
+        # 2026-10-09 生成端事前约束：已发生节拍序列文本（注入后续场景 prompt，
+        # 让模型知道前面场景已写过哪些节拍组合，禁止再演）——事后比对升级为事前告知。
+        done_beats_text: str = ""
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
+        # P0-7 小说级记忆：本作历史错误（已反复出现 ≥2 次的踩坑）注入场景 prompt，
+        # 在生成点抑制已知高频错误（换措辞重演/数字回退等）；空账本 → 空串不注入。
+        book_pitfalls_text = self._book_pitfalls()
+        # P0-8 小说级记忆：机制基线注入块（蚀痕位置等权威口径；拆场景已注入 canon 全文，
+        # 场景层只注入机制基线，避免 terms/disciplines 重复刷屏）
+        book_canon_text = ""
+        # P0-10 机制数字确定性锚：蚀化当前应 = 起始基线 + 截至上一章累计死亡（代码计算，
+        # 治 v7 第 6 章蚀化跨章口径）。本章自身死亡由场景防线 panel_causal_violations 管。
+        state_anchor_text = ""
+        try:
+            _mem = self._memory()
+            if _mem is not None:
+                book_canon_text = _mem.baseline_block()
+                state_anchor_text = _mem.erosion_anchor(max(0, int(chapter_no) - 1))
+        except Exception:
+            book_canon_text, state_anchor_text = "", ""
         for idx, sc in enumerate(scenes, start=1):
+            # REQ-scene-plan-align §7.3 措施1：事件进度硬约束——本章共 N 个事件/场景，
+            # 本场景只允许推进本场景唯一事件，禁止提前写后续事件完整流程（防"越权消费"）
+            event_progress = f"本章共 {len(scenes)} 个事件/场景，本场景为第 {idx}/{len(scenes)} 个。"
             if idx == 1 or not scene_delta_on:
                 mem_for_this = mem_for_scene
             elif action_plan_block:
                 mem_for_this = ("【前情记忆】已在第1个场景完整注入，本场景不再重复全文。\n"
-                                "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致）】\n" + action_plan_block)
+                                "【本章人物行动表（仅参考：本场景只落实与『本场景唯一事件』直接相关的行动，"
+                                "禁止跨场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block)
             else:
                 mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
+            # P0-1 事件消费账本注入：已消费事件（只许回响）/ 后续事件预览（禁提前消费）
+            consumed_events_text = "\n".join(
+                f"- {e.get('desc','')}" for e in event_ledger if e.get("desc")
+            )
+            upcoming_events_text = "\n".join(
+                f"- {str(s.get('event') or '').strip()}"
+                for s in scenes[idx:] if str(s.get("event") or "").strip()
+            )
+            # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
+            panel_baseline_text = ""
+            _panel_base: dict = {}
+            try:
+                from .chapter_state import panel_baseline_dict as _pbd
+                _panel_base = _pbd((scene_state_acc or {}).get("numbers") or [])
+                if _panel_base:
+                    panel_baseline_text = "\n".join(
+                        f"- {k}：{v}" for k, v in _panel_base.items()
+                    )
+            except Exception:
+                _panel_base, panel_baseline_text = {}, ""
+            # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段
+            # 才允许出现在正文面板；禁止自造字段（累计死亡次数类）；次数类字段为 0
+            # 时本章不得再安排死亡（基线未声明该边界行为）。
+            _wl3 = self._panel_whitelist_block()
+            if _wl3:
+                panel_baseline_text += _wl3
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 mem_for_this, running_tail, dynamic,
@@ -771,6 +1225,14 @@ class ChapterWriter:
                 scene_state_hint=scene_state_hint,
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
+                event_progress=event_progress,
+                done_beats=done_beats_text,
+                consumed_events=consumed_events_text,
+                upcoming_events=upcoming_events_text,
+                panel_baseline=panel_baseline_text,
+                book_pitfalls=book_pitfalls_text,
+                book_canon=book_canon_text,
+                state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -811,6 +1273,13 @@ class ChapterWriter:
                             core_event=plan_core_event,
                             scene_state_hint=scene_state_hint,
                             force_new_progression=True,
+                            done_beats=done_beats_text,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -848,6 +1317,12 @@ class ChapterWriter:
                             scene_state_hint=scene_state_hint,
                             force_new_progression=True,
                             forbid_event=dup_ev,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
                         )
                         retry3 = self.llm.chat(
                             self._sys(sys_c3), user_c3,
@@ -859,9 +1334,198 @@ class ChapterWriter:
                         retry3 = _strip_html_tags(retry3)
                         if retry3 and not _scene_text_rewrites_event(retry3, done_events):
                             piece = retry3
+                # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
+                # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
+                # 文本相似度/救援动词防线全漏检（§7.2 根因 C/D/E），用节拍序列指纹比对；
+                # 触发条件三重叠加：
+                #  ① _beat_cycle_issues(piece)：本场景正文自身内部循环（同一节拍序列≥2次，
+                #     堵"场景1内部写两遍"盲区——done_beat_seqs 为空时无比对对象）；
+                #  ② _beats_rewrite_detected：整序列 LCS 重合（完整循环重演）；
+                #  ③ _beats_local_rewrite_detected：局部子序列重合（重试稿压缩重演段/插序逃逸兜底）。
+                # 命中 → 重试（forbid_event=本场景唯一事件，强制只推进本场景事件）；
+                # 同一场景连续 2 次重试仍重演 → 整章回退（整章单次生成无场景间越权消费）。
+                _inner_issue = _beat_cycle_issues(piece) if piece else None
+                _seq = _extract_beat_sequence(piece) if piece else []
+                _dup_beat = bool(
+                    _seq and done_beat_seqs
+                    and (_beats_rewrite_detected(_seq, done_beat_seqs)
+                         or _beats_local_rewrite_detected(_seq, done_beat_seqs))
+                )
+                # P0-10：跨场景同构（治 v7 ch5 药铺三重拼接）——单遍 3 拍核心节拍
+                # 换措辞写多遍时，整序列/局部子序列（4 拍阈值）漏检，按同构判据拦截
+                _iso_scene = bool(
+                    _seq and scene_beat_ledger
+                    and _beats_scene_isomorphic(_seq, scene_beat_ledger)
+                )
+                if _inner_issue or _dup_beat or _iso_scene:
+                    _beat_ok = False
+                    for _try in (1, 2):
+                        if not silent:
+                            _why = "本场景内部循环重演" if _inner_issue else "与已发生场景节拍重合"
+                            print(f"  [场景] 第{idx}个场景{_why}"
+                                  f"（{'→'.join(_seq)}），疑似换措辞重演完整循环，"
+                                  f"重试第{_try}次强制只写本场景唯一事件")
+                        _ev_desc = str(sc.get("event") or "").strip() or "本场景唯一事件"
+                        sys_c4, user_c4 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=_ev_desc,
+                            event_progress=event_progress,
+                            done_beats=done_beats_text,
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            state_anchor=state_anchor_text,
+                        )
+                        retry4 = self.llm.chat(
+                            self._sys(sys_c4), user_c4,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.4,
+                            presence_penalty=0.25,
+                        )
+                        retry4 = _strip_html_tags(retry4)
+                        _seq4 = _extract_beat_sequence(retry4) if retry4 else []
+                        _inner4 = _beat_cycle_issues(retry4) if retry4 else None
+                        _dup4 = bool(
+                            _seq4 and done_beat_seqs
+                            and (_beats_rewrite_detected(_seq4, done_beat_seqs)
+                                 or _beats_local_rewrite_detected(_seq4, done_beat_seqs))
+                        )
+                        _iso4 = bool(
+                            _seq4 and scene_beat_ledger
+                            and _beats_scene_isomorphic(_seq4, scene_beat_ledger)
+                        )
+                        if retry4 and not _inner4 and not _dup4 and not _iso4:
+                            piece = retry4
+                            _beat_ok = True
+                            break
+                    if not _beat_ok:
+                        if not silent:
+                            print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
+                        # P0-8：回退整章补基线校验——用本章场景累计数字（已推进场景的
+                        # 结算值）做权威基线，整章正文数字必须从这些值继续单调推进
+                        return self._fallback_whole_chapter(
+                            chapter_no, plan_title, plan_goal,
+                            memory_context, prev_tail, is_final,
+                            plan_core_event, fallback_events, silent,
+                            panel_baseline=scene_state_acc or None)
+                # P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮，治面板账本崩坏）：
+                # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
+                # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；
+                # 仍违反用最后一次（不做整章回退——质检 2.x 仍会二次拦截）。
+                # P0-15/16 通用版（2026-10-10）：叠加「机制字段注册表」未知字段检测——
+                # 基线没声明的面板字段（如「累计死亡次数」）出现即违规，任何书通用。
+                if piece and _panel_base:
+                    try:
+                        from .chapter_state import (panel_direction_violations as _pdv,
+                                                    panel_causal_violations as _pcv,
+                                                    death_signals as _deathsig,
+                                                    book_death_signals as _bdeathsig,
+                                                    mechanism_field_registry as _mreg,
+                                                    unknown_mechanism_fields as _unk)
+                        _reg = {}
+                        try:
+                            _mem0 = self._memory()
+                            if _mem0 is not None:
+                                _canon = (_mem0.load().get("canon") or {})
+                                _reg = _mreg(_canon.get("mechanism_baseline") or {})
+                        except Exception:
+                            _reg = {}
+                        # P0-8 死亡-结算因果校验（v6 实证：第 2 章死亡后次数 2→0 超扣、
+                        # 第 3 章死亡后蚀化 98→98 未递增、第 7 章死亡后次数 1→1 死而不扣——
+                        # 方向校验只报"回退/回升"，"未变化/超扣"不触发）。死亡信号 =
+                        # 正文显式死亡表达 OR 本场景事件层信号（event/conflict/final_state，
+                        # 覆盖正文隐式死亡"很冷。然后是黑"式）。
+                        _ev_text = " ".join(
+                            str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
+                        )
+                        _sigs = self._memory().book_signals() if self._memory() is not None else []
+                        # P0-14 修正：通用标准 OR 个性化标准（两套独立，不并入通用词表）
+                        _death = _deathsig(piece) or _bdeathsig(piece, _sigs) or \
+                            _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
+                        _viols = _pdv(piece, _panel_base)
+                        if _death:
+                            _viols = _viols + _pcv(piece, _panel_base, True)
+                        # P0-15/16 通用版：注册表外机制字段违规（closed-world 白名单）
+                        if _reg:
+                            _viols = _viols + _unk(piece, _reg)
+                    except Exception:
+                        _viols = []
+                    if _viols:
+                        _panel_ok = False
+                        for _try in (1, 2):
+                            if not silent:
+                                print(f"  [场景] 第{idx}个场景机制数字违反方向规则"
+                                      f"（{_viols[0]}），重试第{_try}次强制按基线推进")
+                            _viol_text = "\n".join(f"- {v}" for v in _viols[:4])
+                            sys_c5, user_c5 = scene_prompt(
+                                self.cfg, chapter_no, plan_title, idx, sc,
+                                mem_for_this, running_tail, dynamic,
+                                core_event=plan_core_event,
+                                scene_state_hint=scene_state_hint,
+                                force_new_progression=True,
+                                event_progress=event_progress,
+                                done_beats=done_beats_text,
+                                consumed_events=consumed_events_text,
+                                upcoming_events=upcoming_events_text,
+                                panel_baseline=panel_baseline_text,
+                                panel_violations=_viol_text,
+                                book_pitfalls=book_pitfalls_text,
+                                book_canon=book_canon_text,
+                                state_anchor=state_anchor_text,
+                            )
+                            retry5 = self.llm.chat(
+                                self._sys(sys_c5), user_c5,
+                                temperature=0.7,
+                                max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                                frequency_penalty=0.4,
+                                presence_penalty=0.25,
+                            )
+                            retry5 = _strip_html_tags(retry5)
+                            _viol5 = []
+                            if retry5:
+                                try:
+                                    _viol5 = _pdv(retry5, _panel_base)
+                                    if not _viol5 and _death:
+                                        _viol5 = _pcv(retry5, _panel_base, True)
+                                except Exception:
+                                    _viol5 = []
+                            if retry5 and not _viol5:
+                                piece = retry5
+                                _panel_ok = True
+                                break
+                        if not _panel_ok and not silent:
+                            print(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
+                                  f"采用最后稿（质检层二次拦截）")
+                # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
+                # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
+                # 数字、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留
+                # （不做整章回退——质量过关优先，字数不触发整章回退）。
+                # 整句复读型注水（"正文"×N 同句重复）由节拍防线/质检 2.7 处理，
+                # slim 只服务"剧情推进完整但字数超限"的真实超长场景。
+                if (piece and not _is_repetitive_text(piece)
+                        and len(piece) > max(600, int(sc.get("target_words") or 1200) * 1.5)):
+                    _slim = self._slim_scene(piece, sc, chapter_no, plan_title, idx, silent)
+                    if _slim and len(_slim) < len(piece):
+                        piece = _slim
+                        running_tail = piece[-120:] if piece else running_tail
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
+                # 正文级节拍序列登记（措施3）：最终采用场景正文的节拍指纹，供后续场景比对
+                _bs = _extract_beat_sequence(piece) if piece else []
+                if _bs:
+                    done_beat_seqs.append(_bs)
+                    scene_beat_ledger.append(_bs)  # P0-10 跨场景同构账本
+                    # 事前约束文本：最近若干场景的已发生节拍组合（注入后续场景 prompt 禁止再演）
+                    _recent = done_beat_seqs[-3:]
+                    done_beats_text = "\n".join(f"- {'→'.join(s)}" for s in _recent)
                 # 跨场景事件清单：本场景规划事件（拆场景时定义）追加为"已发生事件"，
                 # 拼入 scene_state_hint 注入后续场景——同一事件不得再次发生/重复描写。
                 ev = str(sc.get("event") or "").strip()
@@ -871,6 +1535,17 @@ class ChapterWriter:
                                "重复描写同一事件；同人物+同冲突+同结果=重复；如需呼应用一句话带过）】\n"
                                + "\n".join(f"{i}. {e}" for i, e in enumerate(done_events, 1)))
                     scene_state_hint = (scene_state_hint + ev_hint) if scene_state_hint else ev_hint
+                # P0-1 事件消费账本登记：本场景事件标记 consumed（供后续场景「已消费事件」
+                # 注入；desc 为空时用规划事件文本，避免账本缺环）
+                if ev:
+                    event_ledger.append({"desc": ev, "consumed_scene_idx": idx})
+                    # P0-7 小说级记忆：跨章持久化事件消费（零 LLM，失败静默）
+                    try:
+                        _mem = self._memory()
+                        if _mem is not None:
+                            _mem.record_event_consumed(ev, chapter_no)
+                    except Exception:
+                        pass
                 # 场景状态推进抽取（REQ-token优化 P0-1）：
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。
@@ -922,19 +1597,46 @@ class ChapterWriter:
         if summary:
             chapter_text = chapter_text + "\n\n【摘要】" + summary
 
+        # P0-8：场景累计机制数字基线暴露给 write()（质检层透传，修复原 locals() 拿不到）
+        self._scene_state_acc = scene_state_acc
         return chapter_text
 
     def _gen_action_plan(self, chapter_no, plan_title, plan_goal, memory_context) -> str:
-        """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。"""
+        """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。
+
+        P0-8（2026-10-10）：v6 实证 7 章行动表全部失败——`Expecting ',' delimiter:
+        line 25/26 column 6 (char ~1000-1200)` = 输出在 ~1000-1200 字符处被截断
+        （max_tokens=800 对中文约 400-500 字，行动表多人物时常超）。修复：max_tokens
+        800→2000；解析失败增加数组级救回（_extract_json_field "characters"）+ 重试 1 次。
+        """
         try:
             import json
             from .templates import action_plan_prompt
             sys_a, user_a = action_plan_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal, memory_context,
             )
-            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=800)
-            data = json.loads(_strip_json_block(raw))
-            chars = data.get("characters") or []
+            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=2000)
+            data = None
+            try:
+                data = json.loads(_strip_json_block(raw))
+            except Exception:
+                # P0-8：长输出截断救回——characters 数组通常完整（截断多在尾部说明）
+                _ca = _extract_json_field(raw, "characters")
+                if _ca:
+                    data = {"characters": _ca}
+            if data is None:
+                # P0-8：整体解析失败 → 重试 1 次（提高温度与上限）
+                raw = self.llm.chat(
+                    sys_a, user_a + "\n\n再次提醒：只输出一个合法的 JSON 对象，"
+                    "不要输出任何代码块标记、注释、省略号或尾逗号。",
+                    temperature=0.5, max_tokens=2000,
+                )
+                try:
+                    data = json.loads(_strip_json_block(raw))
+                except Exception:
+                    data = _extract_json_field(raw, "characters") and {
+                        "characters": _extract_json_field(raw, "characters")}
+            chars = (data or {}).get("characters") or []
             lines = []
             for c in chars:
                 if not isinstance(c, dict) or not c.get("name"):
@@ -950,6 +1652,95 @@ class ChapterWriter:
         except Exception as e:
             print(f"  [行动表] 生成失败，回退原流程: {e}")
             return ""
+
+    def _fill_characters_action(self, chapter_no, plan_title, plan_goal,
+                                core_event, events_list, prev_tail, silent=False) -> list:
+        """P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮）。
+
+        拆场景大 JSON 长输出截断通常只丢尾部 characters_action（"Expecting ',' delimiter"
+        实证：7 章行动表全部解析失败，措辞层约束从未生效）；这里让模型**只输出
+        characters_action 数组**（小调用、低截断风险），成功后并入拆场景结果。
+        最多重试 1 次，仍失败返回 []（不阻塞主流程，落 trace 告警）。
+        """
+        try:
+            import json
+            from .templates import characters_action_fill_prompt
+            events_text = "\n".join(
+                f"{e.get('id','')}：{e.get('desc','')}"
+                for e in (events_list or []) if isinstance(e, dict) and e.get("desc")
+            ) or "（无）"
+            sys_f, user_f = characters_action_fill_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal,
+                core_event=core_event, events_text=events_text, prev_tail=prev_tail,
+            )
+            for _try in (1, 2):
+                raw = self.llm.chat(sys_f, user_f, temperature=0.3, max_tokens=600)
+                try:
+                    arr = json.loads(_strip_json_block(raw))
+                except Exception:
+                    arr = _extract_json_field(raw, "characters_action")
+                if isinstance(arr, list) and arr:
+                    ok = [c for c in arr if isinstance(c, dict) and c.get("name")]
+                    # P0-5（2026-10-10）：补成功日志——此前只有失败日志，
+                    # 无法区分"独立行动表调用失败回退"与"拆场景救回+单字段补全成功"。
+                    if not silent:
+                        print(f"  [行动表补全] 第{_try}次补全成功：注入 {len(ok)} 条行动（原解析截断救回）")
+                    return ok
+                if not silent:
+                    print(f"  [行动表补全] 第{_try}次解析失败，重试 1 次...")
+            if not silent:
+                print("  [行动表补全] 两次均失败，本次不注入行动表（记录 trace 告警）")
+            return []
+        except Exception as e:
+            if not silent:
+                print(f"  [行动表补全] 补全调用异常：{e}")
+            return []
+
+    def _scene_split_review(self, chapter_no, plan_title, plan_goal,
+                            events_list, scenes, silent=False) -> list[tuple[int, int, str]]:
+        """P0-10 拆场景评审（混合方案①，2026-10-10）：独立评审 agent 判事件同构。
+
+        治 v7 第 5 章药铺三重拼接的规划层根因——desc 相似度预筛（>0.55）对
+        「查药粉/诊脉/探脉枕」三个不同原文不命中，需要语义级判断。评审只输出
+        重复对清单（JSON），代码按清单确定性合并（_merge_duplicate_events），
+        不重复调用模型重拆（省 token、可复现）。任何失败降级空列表（不阻塞）。
+        """
+        try:
+            import json
+            if not events_list or len(events_list) < 2:
+                return []
+            ev_text = "\n".join(
+                f"{i}. {e.get('id','')}｜{e.get('desc','')}"
+                for i, e in enumerate(events_list) if isinstance(e, dict)
+            )
+            sc_text = ""
+            if scenes:
+                sc_text = "\n".join(
+                    f"- scene {sc.get('id','')}: ref={sc.get('scene_event_ref','')}"
+                    for sc in scenes if isinstance(sc, dict)
+                )
+            sys_r, user_r = scene_split_review_prompt(
+                self.cfg, chapter_no, plan_title, plan_goal, ev_text, sc_text
+            )
+            raw = self.llm.chat(sys_r, user_r, temperature=0.2, max_tokens=800)
+            d = json.loads(_strip_json_block(raw))
+            pairs = d.get("duplicate_pairs") or []
+            out: list[tuple[int, int, str]] = []
+            for p in pairs:
+                try:
+                    i, j = int(p["i"]), int(p["j"])
+                except Exception:
+                    continue
+                if 0 <= i < len(events_list) and 0 <= j < len(events_list) and i != j:
+                    out.append((i, j, str(p.get("reason") or "")))
+            if out and not silent:
+                print(f"  [拆场景] 评审发现 {len(out)} 组语义同构事件（"
+                      + "; ".join(f"{i}≈{j}:{r[:20]}" for i, j, r in out) + "），代码合并去重")
+            return out
+        except Exception as e:
+            if not silent:
+                print(f"  [拆场景] 评审调用失败（降级不阻塞）: {e}")
+            return []
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
         """字数兜底：正文不足目标 90% 时，让模型扩写一次到目标字数。
@@ -1001,6 +1792,41 @@ class ChapterWriter:
         if not prev or not prev.content:
             return ""
         return prev.content.strip()[-300:]
+
+    def _slim_scene(self, piece: str, sc: dict, chapter_no: int, plan_title: str,
+                    idx: int, silent: bool = False) -> str:
+        """P0-18 单场景精简重写（2026-10-10）：场景超 target_words×1.5 时调用。
+
+        保留剧情主干/人物行为/机制数字/伏笔，删除重复措辞、注水对话、无效描写与
+        自我复读，压缩到 target×1.2 左右；不改变情节走向、不新增情节。失败返回空串
+        （调用方保留原稿）。
+        """
+        if not piece:
+            return ""
+        target = max(600, int(sc.get("target_words") or 1200) * 12 // 10)
+        try:
+            sys_p = ("你是小说精修编辑。对给定场景做「去水压缩」：只删除重复措辞、"
+                     "注水对话轮、无效环境/心理描写、同一信息的多遍复述；保留全部剧情"
+                     "主干、人物行为逻辑、机制面板数字、伏笔与钩子；不得改变情节走向、"
+                     "不得新增情节、不得改机制数字。输出压缩后的正文。")
+            user_p = (
+                f"第{chapter_no}章《{plan_title}》第{idx}个场景，当前 {len(piece)} 字"
+                f"（目标 ≤ {target} 字）：\n{piece}\n\n"
+                "请压缩到目标字数内（如原文明显超长），保持事件推进与人物一致，"
+                "直接输出压缩后正文。"
+            )
+            out = self.llm.chat(
+                sys_p, user_p, temperature=0.5, max_tokens=max(3000, target * 2)
+            )
+            out = _strip_html_tags(out)
+            if out and 0.5 * len(piece) <= len(out) <= len(piece) and len(out) <= target * 1.3:
+                if not silent:
+                    print(f"  [场景] 第{idx}个场景超长（{len(piece)} 字），"
+                          f"精简重写为 {len(out)} 字")
+                return out
+            return ""
+        except Exception:
+            return ""
 
 
 def _format_action_plan(chars: list) -> str:
@@ -1220,6 +2046,38 @@ def _scene_events_semantically_overlap(events: list[dict]) -> bool:
     return False
 
 
+def _merge_duplicate_events(events_list: list, scenes: list,
+                            pairs: list[tuple[int, int, str]]) -> tuple[list, list] | None:
+    """P0-10 拆场景评审合并（确定性，零额外 LLM）：按评审重复对合并事件。
+
+    - 保留 idx 小者的 desc/结构化字段，删除 idx 大者（换措辞版本）；
+    - 引用被删 id 的场景一并删除（与保留场景语义同构，删除防正文再写一遍）；
+    - 返回 (新 events_list, 新 scenes)；无有效合并返回 None（调用方不动作）。
+    """
+    if not events_list or not pairs:
+        return None
+    drop_idx: set[int] = set()
+    for i, j, _r in pairs:
+        if 0 <= i < len(events_list) and 0 <= j < len(events_list) and i != j:
+            drop_idx.add(j)
+    if not drop_idx:
+        return None
+    new_events = [e for idx, e in enumerate(events_list) if idx not in drop_idx]
+    drop_ids = {str(events_list[idx].get("id") or "") for idx in drop_idx}
+    new_scenes: list = []
+    for sc in scenes or []:
+        if not isinstance(sc, dict):
+            continue
+        ref = str(sc.get("scene_event_ref") or "").strip()
+        if ref in drop_ids:
+            continue  # 该场景对应被删事件 → 一并删除（同构版本）
+        new_scenes.append(sc)
+    if len(new_events) < 2 or not new_scenes:
+        # 合并后不足以成章 → 不合并（走后续校验/回退兜底）
+        return None
+    return new_events, new_scenes
+
+
 def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
     """拆场景设计重构（2026-09-30）：场景 scene_event_ref 逐字引用事件清单编号，
     这里把引用展开为事件原文（sc["event"]）。事件互斥由「事件清单两两不同 + 引用唯一性」
@@ -1248,13 +2106,17 @@ def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
                     sc[k] = e[k]
 
 
-def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, str]:
+def _validate_scene_plan(scenes: list, chapter_words: int = 0,
+                         core_event: str = "") -> tuple[bool, str]:
     """拆场景结构校验（零 LLM 成本，2026-09-30 从文本相似度升级为结构化校验）：
     1. 场景数 ≤ 4（拆出 5-6 个场景 = 把同一事件拆多遍凑场景数，《万墟之上》6316 字版根因；
        单场景不视为失败——拆不出时按整章单场景写，交由后续字数/质量审计兜底）
     2. 多场景时 target_words 之和 ∈ [chapter_words ±10%]（拆场景字数规划失效迹象）
     3. 事件互斥：新格式按 scene_event_ref 引用唯一性（同一事件编号被 ≥2 场景引用=重叠）；
        旧格式（无 ref）降级按 event 文本归一化相似度（>0.55 判重叠）
+    4. P0-17（2026-10-10）：大纲核心事件覆盖校验——core_event 分段后每段与事件清单
+       并集做 2 字以上最长公共子串匹配，命中段占比 <60% = 拆场景丢失大纲核心事件
+       （v9 ch6 实证：大纲「忘忧阁阁主密报」被替换为自创「不问阁」→ 覆盖不足应回退）
     返回 (是否通过, 失败原因)；不通过由调用方回退整章生成。
     """
     if not scenes:
@@ -1265,6 +2127,19 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, st
         total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
         if total > 0 and abs(total - chapter_words) > chapter_words * _SCENE_WORDS_TOLERANCE:
             return False, f"场景 target_words 之和 {total} 偏离目标 {chapter_words} 超 ±10%"
+    # P0-17：大纲核心事件覆盖校验（通用，任何书有 core_event 即校验）
+    if core_event:
+        segs = [s.strip() for s in re.split(r"[→，,。；;]", core_event)
+                if len(s.strip()) >= 4]
+        if segs:
+            ev_all = " ".join(
+                str(sc.get("event") or "") for sc in scenes if isinstance(sc, dict)
+            )
+            hit = sum(1 for s in segs if _lcs_len(s, ev_all) >= 2)
+            if hit * 10 < len(segs) * 6:   # 命中段 ≥60% 才通过（2 段 1 命中=50% 判未覆盖）
+                miss = [s for s in segs if _lcs_len(s, ev_all) < 2]
+                return False, (f"拆场景未覆盖大纲核心事件（命中 {hit}/{len(segs)} 段，"
+                               f"未覆盖段：{' / '.join(miss[:3])}）")
     # 事件互斥：优先引用唯一性，缺失 ref 降级文本相似度
     refs: list[str] = []
     texts: list[tuple[str, set[str]]] = []
@@ -1298,6 +2173,19 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, st
     return True, ""
 
 
+def _lcs_len(a: str, b: str) -> int:
+    """两文本最长公共子串长度（≥2 字视为「段被事件清单覆盖」；O(n*m) 小文本直算）。"""
+    if not a or not b:
+        return 0
+    if len(a) > len(b):   # 短串作窗口，长串作母串
+        a, b = b, a
+    for w in range(len(a), 1, -1):
+        for i in range(len(a) - w + 1):
+            if a[i:i + w] in b:
+                return w
+    return 0
+
+
 def _scene_events_overlap(scenes: list) -> bool:
     """兼容别名：仅事件互斥维度（旧测试/调用沿用）。"""
     ok, _ = _validate_scene_plan(scenes, chapter_words=0)
@@ -1313,6 +2201,36 @@ def _split_summary(text: str) -> tuple[str, str]:
         summary = text[idx + len(marker):].strip().replace("\n", " ")
         return content, summary
     return text.strip(), ""
+
+
+def _is_repetitive_text(text: str) -> bool:
+    """整句复读型注水检测：唯一 2-gram 占比 <15% = 同一句反复堆叠（测试构造
+    "正文"×N / 模型无意义复读），此时 slim 无意义，交由节拍防线/质检处理。
+    """
+    if not text or len(text) < 200:
+        return False
+    grams = {text[i:i + 2] for i in range(max(0, len(text) - 1))}
+    return len(grams) < len(text) * 0.15
+
+
+def _summary_invented_words(summary: str, content: str) -> float:
+    """P0-17 摘要一致性：摘要 2-gram 与正文 2-gram 的命中率。
+
+    模型自带的摘要若大量使用正文完全没有的表述（多为自创专有名词/大纲残留，如
+    v9 ch6 摘要「忘忧阁阁主密报」而正文是不问阁），命中率会显著低于正常摘要。
+    返回命中率（0.0~1.0）；调用方以 <0.35 判「摘要与正文脱节 → 基于正文重生成」。
+    """
+    if not summary or not content:
+        return 1.0
+    if len(summary) < 8:
+        return 1.0
+    grams = {summary[i:i + 2] for i in range(max(0, len(summary) - 1))}
+    if len(grams) < 4 or len(summary) < 8:   # 太短无统计意义（测试/占位摘要防误触发重生成）
+        return 1.0
+    body = {content[i:i + 2] for i in range(max(0, len(content) - 1))}
+    if not body:
+        return 1.0
+    return sum(1 for g in grams if g in body) / len(grams)
 
 
 def _strip_html_tags(text: str) -> str:

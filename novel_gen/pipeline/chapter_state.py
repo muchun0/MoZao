@@ -835,9 +835,12 @@ def ledger_check(content: str, prev_ledger: dict, registry: dict[str, str],
                         f"机制字段「{core}」上一章末已为 0，本章仍发生死亡（次数用尽后"
                         "不得再安排死亡，基线未声明该边界行为）"
                     )
-            elif rule == "increase" and val < prev + max(0, deaths):
+            elif rule == "increase" and "寸" not in core and val < prev + max(0, deaths):
                 out.append(
                     f"机制字段「{core}」本章发生 {deaths} 次死亡，值 {val} 应 ≥ 上一章末"
                     f" {prev} + {deaths}（每死 +1，随死亡累计递增）"
                 )
+            # 寸单位字段：有事件时不校验增量（增量依赖机制基线自由文本——碎片/外力/
+            # 剩余描述均可合法影响寸数，无法通用推导「应 ≥ prev+deaths」；无事件回退
+            # 已在上方 increase 分支拦截，治 v9 ch4 四十一寸→ch5 三十七寸矛盾）
     return out

@@ -186,3 +186,67 @@ class TestSummaryConsistency:
     def test_empty_summary_safe(self):
         assert stages._summary_invented_words("", "正文") == 1.0
         assert stages._summary_invented_words("摘要", "") == 1.0
+
+
+class TestV10Regression:
+    """v10 真实重生成回归（2026-10-10）：
+
+    - ch3/ch6 回退整章路径「累计死亡次数：39/37」幻觉行：质检 2.8c 原条件
+      `if baseline and memory` 在回退整章（scene_state_acc 空 → baseline=None）
+      整段跳过 → 漏检。修复：2.8c 只依赖 memory。
+    - 死亡次数口径统一：词面计数（复活/死于多词命中虚高）→ 蚀化差反推，
+      与 stages 账本入账同口径（治 v10 ch3 实际死 2 次词面计 6 的误报）。
+    - 寸字段有事件增量豁免（增量依赖基线自由文本，无法通用推导）。
+    - 回退整章/普通整章路径注入面板白名单（_panel_whitelist_block）。
+    """
+
+    def test_unknown_fields_no_baseline_still_blocks(self):
+        # 回退整章路径 baseline=None 时，注册表外字段（累计死亡次数）仍必须拦截
+        content = "陆沉低头，面板在脑中亮起。累计死亡次数：39。\n今日可死次数：0。"
+        reg = cs.mechanism_field_registry(BASELINE)
+        out = cs.unknown_mechanism_fields(content, reg)
+        assert any("累计死亡次数" in i for i in out)
+
+    def test_death_count_by_erosion_delta(self):
+        # v10 ch3：上一章末蚀化 98，本章正文蚀化 100 → 蚀化差=2（实际死 2 次）
+        content = "第一次死于赤尉之手。\n第二次又死了一次。\n距离蚀化：100%。"
+        from novel_gen.pipeline.chapter_state import _EROSION_SEQ_RE
+        eros = max((int(m.group(1)) for m in _EROSION_SEQ_RE.finditer(content)),
+                   default=0)
+        assert eros == 100
+        assert max(0, eros - 98) == 2
+
+    def test_ledger_check_no_false_positive_on_valid_erosion(self):
+        # v10 ch3 合法 98→100（死 2 次）：蚀化不报；寸字段有事件增量豁免
+        content = ("今日可死次数：1；距离蚀化：99%。\n"
+                   "今日可死次数：0；距离蚀化：100%。\n"
+                   "蚀痕从手腕往肘弯又爬了一寸。")
+        out = cs.ledger_check(
+            content, {"可死次数": 2, "蚀化": 98}, cs.mechanism_field_registry(BASELINE),
+            2, {"可死次数": 3, "蚀化": 97, "寸": 37})
+        assert not any("蚀化" in i for i in out)
+        # 寸（37+2 应 ≥39，正文无累计寸数 → 抽取 None 不校验），不误报
+        assert all("寸" not in i for i in out)
+
+    def test_inch_regression_still_blocked_without_event(self):
+        # v9 ch4 四十一寸→ch5 三十七寸：无事件时寸回退必须拦截
+        content = "蚀痕从手腕往肘弯，只剩三十七寸。"
+        out = cs.ledger_check(
+            content, {"可死次数": 0, "蚀化": 101, "寸": 41},
+            cs.mechanism_field_registry(BASELINE), 0, {"可死次数": 0, "蚀化": 101, "寸": 41})
+        assert any("寸" in i and "回退" in i for i in out)
+
+    def test_panel_whitelist_block_content(self):
+        # 回退整章/普通整章白名单注入块：含注册表字段与禁止自造标签
+        import types as _types
+        mem = _types.SimpleNamespace()
+        mem._load = lambda: {"canon": {"mechanism_baseline": BASELINE}}
+        mem.load = lambda: {"canon": {"mechanism_baseline": BASELINE}}
+        mem.book_signals = lambda: []
+        fake = _types.SimpleNamespace()
+        fake._memory = lambda: mem
+        blk = stages.ChapterWriter.__dict__["_panel_whitelist_block"]
+        out = blk(fake)
+        assert "可死次数" in out and "蚀化" in out and "寸" in out
+        assert "累计死亡次数" in out
+        assert "0 时，本章不得再发生死亡结算" in out

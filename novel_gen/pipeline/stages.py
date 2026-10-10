@@ -479,6 +479,10 @@ class ChapterWriter:
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
             )
+            # P0-15/16 通用版（2026-10-10）：普通整章路径同样注入机制面板字段白名单
+            _wl = self._panel_whitelist_block()
+            if _wl:
+                user = user + _wl
             system = self._sys(system)
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
@@ -680,6 +684,36 @@ class ChapterWriter:
             out.append(res if res else blk)
         return "\n\n".join(out)
 
+    def _panel_whitelist_block(self) -> str:
+        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world）。
+
+        基线声明的字段才允许出现在正文面板，禁止累计死亡次数类自造标签；
+        次数/剩余类字段为 0 时本章不得再安排死亡。从 memory canon 注册表派生，
+        任何书通用；无记忆/无基线 → 空串。
+        """
+        try:
+            _mem_w = self._memory()
+            if _mem_w is not None:
+                from .chapter_state import mechanism_field_registry as _mregw
+                _canonw = (_mem_w.load().get("canon") or {})
+                _regw = _mregw(_canonw.get("mechanism_baseline") or {})
+                if _regw:
+                    _blk = (
+                        "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下字段："
+                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如「累计死亡次数」"
+                        "「死亡总次数」等自造标签）；字段格式必须为「字段名：数字」（带分母"
+                        "写法禁止）。"
+                    )
+                    if any(k.endswith("次数") or "剩余" in k for k in _regw):
+                        _blk += (
+                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生死亡结算"
+                            "（次数用尽后死亡=违规）；如确有死亡，必须先声明字段为 1 以上。"
+                        )
+                    return _blk
+        except Exception:
+            pass
+        return ""
+
     def _fallback_whole_chapter(self, chapter_no, plan_title, plan_goal,
                                 memory_context, prev_tail, is_final,
                                 plan_core_event, fallback_events, silent=False,
@@ -718,6 +752,13 @@ class ChapterWriter:
             personal_anchor=self._personal_anchor(),
         )
         system = self._sys(system)
+        # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
+        # （closed-world：基线声明的字段才允许出现，禁止累计死亡次数类自造标签；
+        # 次数/剩余类字段为 0 时本章不得再安排死亡）——v10 实证 ch3/ch6 幻觉行
+        # 「累计死亡次数：39/37」出现在回退整章正文，正是该路径缺白名单预防。
+        _whitelist_block = self._panel_whitelist_block()
+        if _whitelist_block:
+            user = user + _whitelist_block
         # 2026-10-09 生成端兜底（REQ-scene-plan-align §7.3 措施3/5 生成端）：
         # 整章回退路径无场景级实时拦截（场景防线只在场景循环内），生成后立即做
         # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）+ P0-8 机制数字
@@ -730,12 +771,14 @@ class ChapterWriter:
             _issues = _beat_cycle_issues(_text)
             _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
             _viols: list[str] = []
-            if _text and panel_baseline:
+            if _text:
                 try:
                     from .chapter_state import (panel_direction_violations as _pdv,
                                                 panel_causal_violations as _pcv,
                                                 death_signals as _deathsig,
-                                                book_death_signals as _bdeathsig)
+                                                book_death_signals as _bdeathsig,
+                                                mechanism_field_registry as _mregf,
+                                                unknown_mechanism_fields as _unkf)
                     _ev_text = " ".join(
                         str(e.get(k) or "") for e in (fallback_events or [])
                         for k in ("desc", "conflict", "final_state")
@@ -744,9 +787,16 @@ class ChapterWriter:
                     # P0-14 修正：通用标准（词面）OR 个性化标准（本书机制词）——两套独立
                     _death = _deathsig(_text) or _bdeathsig(_text, _sigs) or \
                         _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
-                    _viols = _pdv(_text, panel_baseline)
-                    if _death:
-                        _viols = _viols + _pcv(_text, panel_baseline, True)
+                    if panel_baseline:
+                        _viols = _pdv(_text, panel_baseline)
+                        if _death:
+                            _viols = _viols + _pcv(_text, panel_baseline, True)
+                    # P0-15/16 通用版：注册表外字段（累计死亡次数类）回退整章同样拦截
+                    _regf = _mregf((self._memory().load().get("canon") or {})
+                                   .get("mechanism_baseline") or {}) \
+                        if self._memory() is not None else {}
+                    if _regf:
+                        _viols = _viols + _unkf(_text, _regf)
                 except Exception:
                     _viols = []
             # P0-14（2026-10-10）：字数超限不再触发整章回退重写——用户约束"如果生成的
@@ -1098,27 +1148,9 @@ class ChapterWriter:
             # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段
             # 才允许出现在正文面板；禁止自造字段（累计死亡次数类）；次数类字段为 0
             # 时本章不得再安排死亡（基线未声明该边界行为）。
-            try:
-                _mem_r = self._memory()
-                if _mem_r is not None:
-                    from .chapter_state import mechanism_field_registry as _mreg3
-                    _canon3 = (_mem_r.load().get("canon") or {})
-                    _reg3 = _mreg3(_canon3.get("mechanism_baseline") or {})
-                    if _reg3:
-                        panel_baseline_text += (
-                            "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下"
-                            f"字段（{sorted(_reg3)}）；禁止出现基线未声明的面板字段（如"
-                            "「累计死亡次数」「死亡总次数」等自造标签）；字段格式必须为"
-                            "「字段名：数字」（带分母的「0/3」写法禁止）。"
-                        )
-                        if any(k for k in _reg3 if k.endswith("次数") or "剩余" in k):
-                            panel_baseline_text += (
-                                "\n【边界规则】上述次数/剩余类字段为 0 时，本章不得再发生"
-                                "死亡结算事件（次数用尽后死亡=违规）；如本章确有死亡，必须"
-                                "先声明字段为 1 以上。"
-                            )
-            except Exception:
-                pass
+            _wl3 = self._panel_whitelist_block()
+            if _wl3:
+                panel_baseline_text += _wl3
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 mem_for_this, running_tail, dynamic,

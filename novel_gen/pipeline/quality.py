@@ -291,8 +291,8 @@ class QualityChecker:
             except Exception:
                 pass
 
-        # 2.8c 蚀化跨章累计校验（P0-10，2026-10-10，治 v7 第 6 章口径冲突；
-        # P0-14 根因修复，2026-10-10）：
+        # 2.8c 蚀化跨章累计 + P0-15/16 通用链式校验（P0-10，2026-10-10，治 v7 第 6 章
+        # 口径冲突；P0-14 根因修复；P0-15/16 通用版 2026-10-10）：
         #    正文蚀化值最高必须 = 上一章末蚀化 + 本章死亡次数。
         #    v7 ch6 实证：ch1/3/4 死 3 次蚀化应 97→100%，正文仍写 97%——单章因果
         #    校验（2.8b）只查"本章死亡→本章+1"，跨章累计不入账。
@@ -302,11 +302,14 @@ class QualityChecker:
         #    P0-14 改为链式：期望 = 账本上一章末蚀化 + 本章死亡次数（death_count 用
         #    书级个性化信号 extra_signals + 排除自述统计类）；未死亡（本章 0 次）时
         #    蚀化必须保持上一章末值不变（防无死亡虚涨/回退）。
-        if baseline and self.memory is not None:
+        #    v10 实证（2026-10-10）：条件原为 `if baseline and self.memory`——回退整章
+        #    路径 scene_state_acc 为空 → baseline=None → 2.8c 整段跳过 → 「累计死亡
+        #    次数：39/37」幻觉行（注册表外字段）与链式数字违规全部漏检。修复：本区块
+        #    只依赖 memory（注册表/账本从 canon/state 取），不再依赖场景透传 baseline；
+        #    区块内 2.8b 方向校验单独保留 `if baseline`（需场景级基线才可判）。
+        if self.memory is not None:
             try:
                 from .chapter_state import (erosion_cumulative_check as _ecc,
-                                            death_count as _dc2,
-                                            book_death_count as _bdc,
                                             mechanism_field_registry as _mreg2,
                                             unknown_mechanism_fields as _unk2,
                                             ledger_check as _lchk)
@@ -316,10 +319,14 @@ class QualityChecker:
                 _prev_eros = _prev_chs[-1].get("erosion") if _prev_chs else None
                 _start = int(_st.get("erosion_start", 0) or 0)
                 _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
-                _sigs = self.memory.book_signals()
-                # P0-14 修正：通用标准计数 + 个性化标准计数（两套独立，加法合并，
-                # 各自独立去重——同一表达不会跨标准重复计）
-                _cumu = _dc2(content) + _bdc(content, _sigs)
+                # P0-14/2026-10-10 口径统一：本章死亡次数用「本章末蚀化 - 上一章末蚀化」
+                # 蚀化差反推（与 stages 账本入账同口径）——词面 death_count 会因
+                # 复活/死于等表达多词命中而虚高（v10 ch3 实际死 2 次词面计 6），
+                # 导致 increase 字段「应 ≥ prev+6」误报合法 98→100。
+                from .chapter_state import _EROSION_SEQ_RE as _eseq2
+                _eros_now = max((int(_m.group(1)) for _m in _eseq2.finditer(content or "")),
+                                default=0)
+                _cumu = max(0, _eros_now - _base) if _base > 0 else 0
                 if _base > 0:
                     for _it in _ecc(content, _base, _cumu):
                         issues.append({

@@ -45,6 +45,12 @@
 
 | 2026-10-04 | review 修正（用户指出 P2 新卡无条件塞"永不裁剪"强约束区的两个缺陷）：① **物品卡/术语卡改走 setting_cards 分章命中**（REQ-token优化 P1-1）——从强约束区移除，改为普通区按 sub_items/sub_terminology 命中裁剪注入（模式同生物/地点/势力卡），`build_setting_cards` 每章索引新增 items/terminology 字段；本章只用 1 个道具不再每章注入全部卡（未命中该项则不注入，缺索引回退全量）；② **结局卡改末 5 章才注入**——从无条件强约束区改为 `up_to_chapter >= num_chapters - 5` 才注入，与 world_reveals「未揭示设定进强约束区禁剧透」逻辑一致，写第 1 章不再预知终局；num_chapters 未知时保守始终注入 | 修正"建了能力却越界注入"：新卡不应绕过分章命中与剧透控制。**关键决策**：物品/术语卡与生物/地点/势力同属"分章相关实体卡"，归 setting_cards 命中（命中才注入、命中为空不注入、缺索引回退全量）；结局卡属"未揭示高阶设定"，末 N 章才注入（N=5，配合 up_to_chapter + num_chapters 判断）；dialogue_guideline 保留强约束区（全书一致的写作纪律、每章都需要、体积小，非分章实体卡）。更新 test_memory_injects_cards（显式 100 章验证末 5 章窗口）+ 新增 test_setting_cards_items_terminology_trimming（命中裁剪），全量 429 pytest 全绿 |
 
+| 2026-10-07 | 双锚风格锚定（REQ-双锚风格锚定.md，A+B 合做）：① **个人旧稿锚**——`Chapter` 新增 `user_edited`（edit_chapter 保存时置 True，历史章节缺字段默认 False），新增 `style_anchor.py`：`extract_personal_anchor` 只抽人工编辑章片段（每章≤2 段、总长≤600）、`expand-selection`（原裸调用无任何锚）与 `expand_chapter_prompt`（原缺 `_style_reference`）注入风格范文+个人锚；② **拆书库题材锚**——新增 `_inject_teardown_style_anchor`：同题材拆书条目抽 styles/takeaways/excerpts 组装（excerpts 限 2 段×100 字）写 `teardown_style_anchor.txt`，`ChapterWriter` 懒读经 `teardown_anchor` 参数注入 scene/chapter prompt，扩写循环同步注入；新开关 `teardown_style_anchor` 默认 True；③ **分层保持**——novel_gen 不依赖 webapp（题材锚走 store 文件，webapp 写/novel_gen 读，与 teardown_material 同模式） | 根因：朱雀检测 AI 特征 76.86%、人工特征 0；`cfg.de_ai` 为指令式约束（"要有真人质感"）无文本样本可模仿、实测无效；拆书库回流只进调研阶段（正文写手接触不到）；扩写链路裸调用。结论：**示范式锚定（给模型真实人类文本样本模仿）> 指令式约束**；题材锚管广度、个人锚管深度（个人统计指纹对降 AI 率价值最高）。**约束：①题材锚为弱约束（只借鉴语感严禁抄袭），与既有"拆书库回流弱约束"决策一致；②user_edited 仅由 edit_chapter 落、历史章节默认 False——方案 C（前端 diff 个人指纹库）后续单独排期；③重写/质检重写/润色路径未注入，本次只覆盖 scene/chapter/expand 三正文路径**。新增 tests/test_style_anchor.py 23 用例，全量 452 pytest 全绿 + import 冒烟通过 |
+
+| 2026-10-07 | 双锚扩展·重写路径（用户确认"补上吧"）：解除首版决策约束③中"重写路径"部分——① **个人锚接入全部写章路径**：`ChapterWriter` 新增 `_personal_anchor()` 懒提取（只抽 `user_edited` 章，失败静默返回空），`scene_prompt`/`chapter_prompt` 新增 `personal_anchor` 参数注入（对齐 expand 路径格式，空不注入）；单章重写（`rewrite_chapter`）与从第 N 章重生成（`regenerate_from`→`_run_generation`）都走 `ChapterWriter.write`，因此**重新生成章节现在同时吃到个人锚+题材锚**；② **题材锚生成入口统一**：`_inject_teardown_style_anchor` 从 `_research_needed` 分支上移到 `_run_generation` 开头无条件调用——start_from>0 从第 N 章重生成、复用大纲继续生成也注入（旧项目无锚文件时重生成自动补写）；质检重写/润色路径仍未注入（保持首版约束，后续单独评估） | 用户原问"旧项目点重新生成章节会不会触发双锚"：改前单章重写/从第 N 章重生成只走 chapter/scene prompt（无个人锚），题材锚文件旧项目不存在且该路径不创建——双锚都不触发（行为不变但吃不到新能力）。本次改动后：**新项目重写/重生成双锚全生效；旧项目重生成也会自动补题材锚**（个人锚仍需先有人工编辑过的章节才有）。改动：stages.py 个人锚懒提取+3 处传参、templates.py 两 prompt 注入块、core.py 入口上移；新增 4 用例，全量 456 pytest 全绿 |
+
+| 2026-10-09 | 拆场景规划对齐大纲人物动线（REQ-scene-plan-align.md）：**拆场景事件清单从大纲 `character_moves` 确定性派生**（`_derive_events_from_moves`：→/句切拍→死亡-复活因果合并→最短拍兜底至 2-4 事件，纯字符串零 LLM），新开关 `scene_plan_align` 默认 True；`split_scenes_prompt` 注入【事件清单硬骨架】（模型只补 conflict/action/final_state，禁止增删/改写事件），派生事件覆盖模型输出（模型同 id 的结构化字段按 id 合并保留），新增"场景 `scene_event_ref` 必须恰好等于派生事件 id 集合"校验（不通过回退整章）；moves 缺失/派生失败/开关关闭 → 完整回退原 LLM 规划路径 | 根因（《万墟之上》前7章 5/7 章同事件多版本拼接）：大纲 `character_moves` 本已是具体唯一逐拍序列，但从未注入拆场景层——拆场景只收到 goal/core_event，模型每次从叙述文本"重建"事件清单（temperature=0.4 每次不同），并把同一冲突递进误判为不同事件（盘问/试探/失控=一次盘问+一次失控），事后防线只防原文复刻不防换措辞。**关键设计决策**：①事件骨架=确定性派生，LLM 只做"补字段+拆场景"，从源头消灭"每次不一样+同事件拆多版本"；②派生模式下事件互斥改用 desc（骨架原文）相似度兜底而非语义槽位——模型补充的 conflict/action 会把同一人物交互的递进拍标成同动作（扫描/装傻都标"试探"）造成误杀回退；③引用完整性校验兜底模型不守骨架（自造/漏 id→回退整章，整章路径仍注入派生事件序列）。**约束：只改拆场景路径，不改大纲生成/事后质检/webapp；大纲 character_moves 本身重复由大纲层治理，本需求只保证"骨架不被放大"**。新增 tests/test_scene_plan_align.py 13 用例，全量 472 pytest 全绿；真实 outline 前 7 章全部派生为 4 个互斥事件（第2章"盘问/失控/征召"互斥、第3章"撕碎-复活-引导"同事件） |
+
 | 日期 | 坑 | 结论 |
 |---|---|---|
 | 2026-09-20 | docker-compose 漏写 `novel_projects:/app/projects` 命名卷（服务器容器实际已挂载），`docker compose up` 重建容器后项目目录消失 | compose 中挂载声明必须与运行期一致；改 compose 后核对全部卷 |
@@ -139,3 +145,145 @@
   1. _scene_text_rewrites_event（零 LLM）：对每个刚生成的场景正文提取事件槽位（冲突对象 _event_conflict 优先敌人词 赤尉/灰卒/蚀兽，其次人物），正文含救援专属动词（救/引开/砸/挡/扑/迎）+ 冲突对象与任一已完成事件同现 → 判复写（"冲/拽/拖"太通用会误判撤离场景，不放宽）。
   2. 场景循环接入：场景 N 生成后与全部已完成事件比对（不只相邻场景），命中 → 重试本场景（scene_prompt 新增 forbid_event 参数：明确"上版把已发生事件【原文】重演了，禁止以任何形式再次发生，须从该事件结局之后续写"）；重试版二次检测通过才采用。
 - 验证：406 全绿；真实回验：第三版场景3(墟口救人)复写场景2(坡顶救人) 检测=True（生成端即拦），场景1(灰卒死亡) 不误报。
+
+## 2026-10-07 质检误报根因修复（事件重复判定收紧 + 落盘分流）
+- 背景：第1章 22:05 单章重写后 review.json 报「自相矛盾-事件重复」大改（score=75, auto_revised=true），正文仍落盘。逐字核对 001.json：正文为「墟口观察→决定绕走（内心念头）→掉头冲出救人（实际行动，仅1次）→苏妄言口型'你刚才……在下面'」，不存在同一事件两版本——该条大改为质检误报。根因链：①_consistency_llm_check 第⑤类 prompt 未区分「决策/念头」与「事件发生」，LLM 把"决定绕走"当事件发生判两版本；②_locale_problem_spans 对该 detail 定位出 2 窗口→不满足单窗口且<60%→回退 _rewrite_whole 整章重写，dedup_block 命中"事件重复"注入"删除重复版本"指令，正文无重复可删→复检再报同一条→_MAX_REWRITE=3 轮耗尽，浪费整章重写 token；③stages.write() 457-470 调用 ensure_quality 后 472-473 无条件 save_chapter，passed=false 不阻断落盘。
+- 用户拍板：方案1（收紧质检判定标准）+ 方案4（落盘分流）组合实施。
+- 方案1：_consistency_llm_check 第⑤类 prompt 新增排除条款——同一冲突对象下「内心决定/犹豫/退缩念头」与「实际行动」属抉择弧光、可同时为真，不判重复；未执行的念头/心理活动不算"事件发生"；无法引用两处实际行为原句不得输出事件重复；事件重复 detail 必须引用两处实际发生行为原句。
+- 方案4：stages.write() 对 ensure_quality 返回 passed=false 时，若该章已有旧版（load_chapter 非空）→ 保留旧版正文不覆盖（坏章不得顶掉用户已有可用版本）；仅无旧版时才落盘新稿（供前端红标提示）；rewrite 路由返回 kept_previous 字段暴露该 decision 给前端。
+- 验证：459 全绿（新增 prompt 排除条款注入、保留旧版落盘、无旧版落盘 3 用例）；P0+P1 244 全绿。
+
+## 2026-10-09 拆场景规划对齐（scene-plan-align）实机验证：规划稳定但正文仍重演，master 已回退
+- 背景：REQ-scene-plan-align 实现后真实重生成前7章，拆场景规划层达标（7章全部 4事件4场景 骨架通过、无回退整章、"每次生成不一样"消除）；但逐章通读全文发现 6/7 章正文仍是"同一完整情节循环演绎3遍"（第2章盘问-失控-挡死-留牌×3、第3章引赤尉-死-复活-对峙×3、第4章逼问-结拜-找人×3、第5章诊脉-试探×3、第6章暗格+酒肆×3、第7章赤尉战-贯穿-杀-包扎×3），含面板账本矛盾（蚀化98→97回退、0→3无重置依据）、苏妄言蚀痕左右矛盾、小九开口说话（违反机制硬规则"禁说人话"）。此前"拼接已消除"结论（段落相似度检测）有误——该检测只抓文本级重复，抓不住情节级重演。
+- 根因（代码实证，详见 REQ-scene-plan-align §7.2）：
+  1. 骨架事件粒度与场景粒度不匹配——场景正文"越权消费"：模型写"事件1"场景时把事件2~4完整流程一次写完，后续场景无新事件可写→换措辞重演；done_events 只登记规划事件（sc.event），不登记正文实际发生，场景2-4 无感知。
+  2. 场景2+ 注入全章行动表（"必须逐条落实"）→ 每场景落实完整行动序列。
+  3. 防重演检测口径窄：相邻场景全文相似度（0.55）/长句重叠（0.20）只查文本复刻；_scene_text_rewrites_event 只认救援动词+冲突对象、骨架 desc 多数无救援动词直接跳过。
+  4. 质检按"人物+冲突+结果完全相同"判重，换措辞重演漏报。
+- 决策：master 回退至 5190063（origin/master 一致）；feat/scene-plan-align 与 devtest 合并保留，继续迭代。解决措施（场景正文消费边界/行动表按场景切片/done_events 正文级节拍登记/骨架 desc 互斥/质检情节级检测）已列入 REQ-scene-plan-align §7.3，待实现。
+- 教训：验证"同事件重演"必须以全文通读或情节节拍序列检测为准，文本级相似度检测存在盲区；场景正文层是重演的最终出口，规划层修复不能替代场景层约束。
+
+## 2026-10-09 正文层防重演实现（REQ-scene-plan-align §7.3 措施1/2/3/5）
+- 背景：规划层修复（骨架派生）生效但正文仍重演，§7.2 根因 A-E 实证（越权消费/全章行动表/检测口径窄/规划事件登记/质检漏报）。本次实现正文层防线。
+- 决策与实现（feat/scene-text-anti-repeat）：
+  1. 新增 novel_gen/pipeline/beats.py：情节节拍序列（长词优先归一化 + LCS 判定）。_beats_rewrite_detected：场景重演判定 LCS>=4 且占比>=0.7（正常单事件 2-3 拍不误判；机制允许的多次死亡-复活序列短不触发）；_beat_cycle_issues：质检 2.12 整章同节拍序列非重叠>=2 次判大改（子序列匹配，容忍换措辞版插入节拍）。
+  2. stages.py：场景正文节拍序列登记 done_beat_seqs（正文级，补 done_events 只登记规划事件的盲区）+ 防线3 拦截（命中重试至多 2 次，forbid_event=本场景唯一事件；仍重演回退整章 _fallback_whole_chapter 复用）；场景 prompt 注入 event_progress 事件进度硬约束（只推进本场景事件、禁提前消费后续事件）；行动表措辞改"只落实本场景事件相关行动、禁跨场景重复落实"（防全章行动逐场景落实）。
+  3. templates.py scene_prompt：新增 event_progress 参数 + 【事件进度（硬约束）】块 + 场景衔接规则补"后续事件留给各自场景"。
+  4. quality.py：check() 新增 2.12 情节级重演检测（_beat_cycle_issues，大改 -30 分，触发自动重写链路）。
+- 验证：tests/test_scene_anti_repeat.py 14 用例全过；全量 P0+P1 271 绿（新增 14）；真实回验——第1章（干净）未检出、第2/3/5/7章（人工通读确认重演）全部命中（如第2章「面板→对峙→留牌→失控→挡死」循环检出）——检测器在真实文本上验证有效。
+- 待办：机制一致性强化（§7.3 措施6：蚀痕位置全局唯一/小九禁说人话可检测项）后续专项；真实重生成 1-7 章验证正文重演是否消除后再评估签约。
+
+## 2026-10-09 正文层防重演第二轮实机验证：修复端仍失败，转生成端修复（REQ-scene-plan-align §7.3 措施3/5 生成端）
+- 背景：正文层防重演实现后触发真实重生成前7章（第二轮稿 5487/2081/4991/5280/2752/3201/3086 字）。双验证（节拍检测器+逐章通读全文）结论：**检测器与人工一致——第1/3/4章仍重演**（第1章铁钩版/铁锤版两遍演绎、第3章"洞窟北壁炸开了"逐字重复两次+赤尉循环两遍、第4章贺枭两遍+面板蚀化99→97→98→97违反只增不减）；第2/5/6/7章干净。检测端有效、修复端（场景重试）失败。
+- 日志实证根因（regen_console.log）：
+  1. 第4/7章场景防线连续 2 次重演→回退整章，但整章单次生成又写出两遍（_fallback_whole_chapter 无生成后即时校验，注释还写"重演由质检 2.12 兜底"）；
+  2. 第1/3章场景重试"1次即放行"太松——重试稿压缩重演段/插序使整序列 LCS 占比 <0.7 逃逸；
+  3. 场景1内部两遍是盲区——done_beat_seqs 为空时无比对对象；
+  4. 行动表 7 次全部生成失败（split_scenes_prompt 输出 characters_action JSON 解析 "Expecting ',' delimiter"，行动表按场景切片措辞从未实际生效——已记入待办，本轮未修）。
+- 决策：**生成端优先，修复端（质检重写）为第二层**。生成端第二轮修复（工作区，未提交）：
+  1. beats.py 新增 `_beats_local_rewrite_detected`：已完成序列中任一 4-7 拍子序列被新场景复现 ≥0.8 即判局部重演（重试稿压缩/插序逃逸兜底）；
+  2. stages.py 防线3 触发条件三重叠加：`_beat_cycle_issues`（本场景正文自身内部循环，堵场景1盲区）+ 整序列 LCS + 局部子序列重合；
+  3. done_beats_text 事前注入：登记 done_beat_seqs 后维护最近 3 个场景节拍组合文本，注入后续场景 prompt（scene_prompt 新增 done_beats 参数 + 【本章已发生节拍序列（硬约束）】块），事后比对升级为事前告知；
+  4. `_fallback_whole_chapter` 生成后即时校验：`_beat_cycle_issues` + 字数超限（>1.35×目标）→ 重试至多 2 次（注入重复节拍证据 + 压缩字数目标），不再把重演全部押给质检重写。
+- 验证：test_scene_anti_repeat.py +7 用例（局部重合命中/不误报/短序列/空 done、done_beats 注入/不注入、场景1内部两遍→重试、整章回退生成后重试），相关 35 用例全绿，全量 P0+P1 279 绿；真实文本回验行为不回归（第1/3/4章命中、第5/6/7章干净、第2章短节拍为正常节奏误报）。
+- 待办：真实重生成 1-7 章验证生成端第二轮是否消除重演→评估签约；行动表 JSON 解析失败修复；§7.3 措施6（机制一致性可检测项）后续专项；master 回退（5190063）是否 push origin/master 未定。
+
+## 2026-10-09 生成端第三轮：事件消费账本 + 面板数字确定性闭环 + characters_action 补全（外部调研后用户拍板"生成端的优化都做"）
+- 背景：第三次真实重生成（22:39-22:53）双验证仍 5/7 章重演（第2/5/7章从"干净"回归"重演"，生成端第二轮未根治），另有系统性面板账本崩坏（第2章起死亡不扣次数、蚀化98→97/99→97回退、2→0跳变）。用户要求先调研市面产品/开源/学术怎么做，OrganizerAgent 四路并行调研（NovelAI/Sudowrite/Goink/AutoNovel/LongWriter/Re3/SimCTG/DOC + vLLM/Outlines 等 12+ 对象，关键来源独立核验），产出《竞品对比分析_防重演方案_20261009.md》。五条主线：规划层"指针制"防越权、正文层真实前文+采样抑制、检测层词面→语义指纹、状态层确定性账本契约（**全行业无人做机制数字确定性计算=差异化机会**）、校验层独立审稿。用户拍板实施生成端三项（P0-2 语义指纹属检测端，不在本轮）。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，未提交）：
+  1. **P0-1 事件消费账本状态机（治 a 跨场景分布型重演）**：`done_events`（list[str]）升级为 `event_ledger`（{desc, consumed_scene_idx}）；`scene_prompt` 新增 `consumed_events`/`upcoming_events` 参数与两块注入——【本章已消费事件（只许一句话回响，禁再展开完整流程）】【本章后续事件预览（禁提前消费，只许铺垫提及）】。对标 AgentWrite `$STEP$` 指针制（计划全文可见、每次只给当前一个执行单元）与 Goink 伏笔账本状态机。
+  2. **P0-3 面板数字确定性状态闭环（治 c，差异化机会）**：`chapter_state.py` 新增 `panel_baseline_dict`/`panel_direction_violations`/`panel_numbers_sequence`（零 LLM：次数/剩余只许递减、0→N 视为子时重置放行；蚀化/进度只许递增）；`scene_prompt` 新增 `panel_baseline`（机制数字基线注入）+`panel_violations`（带错重试）；场景循环防线4：正文机制数字违反方向规则→带错重试至多 2 次（注入基线+违规描述），仍违反用最后稿（质检 2.x 二次拦截）。工程对标：Observed→Propose→Verify→Commit 闭环 + Re3 属性-值字典矛盾纠偏。
+  3. **P0-4 characters_action 单字段补全（清 7 章行动表全部解析失败待办）**：拆场景大 JSON 长输出截断只丢尾部 characters_action（"Expecting ',' delimiter"）时，新增 `_fill_characters_action` + `characters_action_fill_prompt` 让模型只输出行动表数组（小调用低截断风险，最多重试 1 次，仍失败返回 [] 不阻塞）；**仅整体 JSON 解析失败且救回为空时触发**（整体成功但为空数组=模型真未规划，不补全，防无谓额外 LLM 调用——首版无条件补全致既有用例 side_effect 错乱的教训）。行动表 key_actions 与事件清单逐条对应（每事件至多一个 key_action，防行动表诱导跨场景重复落实）。
+- 验证：专项 47 用例全绿（35 基线 + 12 新增：P0-4 截断补全/空数组不补全、P0-1 双块注入、P0-3 单元 7 例 + 集成重试 1 例）；全量 506 用例 505 绿（1 例 test_final_review_llm_error_safe Windows 文件锁瞬时失败，单独重跑通过，与本轮改动无关）。已踩坑：①characters_action 无条件补全会额外消耗 llm.chat 调用破坏 side_effect；②测试占位文本若含节拍词（铜牌/跟上/离去）且 80 遍重复会形成 160 拍内部循环误触发防线3——测试文本须避开节拍词；③场景 target_words 和超章节 ±10% 会回退整章（2×2500 vs 目标 2500）。
+- 待办：验证通过后触发第四次真实重生成（双验证：节拍检测器+逐章通读全文）→ 评估签约 → 达标后走 devtest→master 合并；P0-2 语义指纹并联（检测端，bge-small-zh 本地或云 embed、阈值 0.60-0.70 需自建标定集）留待后续；§7.3 措施6 蚀痕位置全局唯一/小九禁说人话仍待专项；master 回退（5190063）是否 push origin/master 未定。
+
+## 2026-10-10 生成端第四轮（P0-5）：蚀化抽取补齐 + 重写 best-version 兜底 + 重写拼接禁令 + 行动表补全日志
+- 背景：第四次真实重生成（v4，00:28-00:45）6/7 章干净，仅第 5 章重演 + 蚀化 97/98 跨章回跳未根治（第四轮评估 §5 两盲区）。盲区 A（第 5 章 5945 字=2.4×，多版本拼接）：ensure_quality 自校验整章重写产物不回跑场景级防线——重写 1 把拼接写得更严重（2→4 问题）、重写 2 无效后坏稿直接落盘（首次生成无旧版，方案4 也救不了）。盲区 B（蚀化回跳）：_PANEL_RE（chapter_state.py）抽取正则后缀缺「蚀化」——第三轮新建的校验正则 _PANEL_DIR_NUM_RE 含蚀化、抽取正则没回补，两正则分家；numbers 账本无蚀化→panel_baseline_dict 基线无蚀化→防线4「无基线不校验」→蚀化回跳从未被拦。用户指令：p0-5 开始做；plan_re 先查为什么少了蚀化；提示词可以加；日志可以加。
+- 决策与实现（feat/scene-text-anti-repeat 工作区）：
+  1. **修复1（盲区 B 根因）**：chapter_state.py _PANEL_RE 后缀补「蚀化」→(次数|进度|蚀痕|蚀化|剩余)，docstring 说明分家根因；quality.py _panel_progress_issues 的 pattern 同步补蚀化（质检层同漏）。
+  2. **修复2（盲区 A 兜底）**：quality.py ensure_quality/check 新增 baseline 参数；check 新增 2.8b 面板方向校验（baseline 非空时调 panel_direction_violations，每条大改 -30，重写/改稿产物质检层二次兜底蚀化回退/次数回升）；ensure_quality 新增 best-version 账本——初始稿为基准，重写轮内按「问题数升序、同数则分数降序」择优，循环结束仍未通过且最优版严格优于当前 → 回退最优版（坏稿不得顶掉相对较好版本；首次生成无旧版时尤其关键）。
+  3. **修复3（重写拼接禁令）**：_rewrite_whole has_event_dup 关键词补「循环重演/多版本/换措辞/重演」（2.12 的 type=情节-同事件循环重演、detail 含多版本/换措辞循环此前完全不匹配，dedup_block「每事件只写一遍」不触发）；重写 prompt 无条件新增【硬性要求：重写即整体替换】块（只输出单一完整连贯新版、严禁保留原文段落再追加新写法、严禁同一场景/事件换措辞写多遍拼接、修改在原处替换）。
+  4. **修复4（日志）**：stages.py 模块4 调 ensure_quality 时经 panel_baseline_dict 透传场景循环累计 numbers 为 baseline（场景路径；整章路径无则 None，与防线4 同一基线杜绝口径漂移）；_fill_characters_action 补成功日志（第 N 次补全成功：注入 K 条行动），调用处补「行动表补全成功，注入 N 条」——此前只有失败日志，无法区分「独立行动表调用失败回退」与「拆场景救回+单字段补全成功」。
+- 验证：新增 tests/test_quality_p05.py 8 用例（蚀化抽取/基线含蚀化/方向违规端到端、check baseline 拦截+无 baseline 不误伤、重写「有效但更差」+下一轮无效→回退最优、重写稿更优→采用不误回退、dedup_block 命中循环重演+无条件拼接禁令）；test_quality.py 短章重写用例适配（原重写文本本身触发 3 大改，P0-5 兜底后正确回退——测试改用 _LONG_OK_TEXT 通过稿，意图不变）；test_chapter_flow.py 两个 _fake_ensure 补 baseline 参数。专项 54 绿 + 全量 513 绿（test_reveal_tracking 文件锁瞬时用例单独重跑通过）。
+## 2026-10-10 生成端第五轮（P0-7）：小说级记忆系统（book_memory）
+- 背景：第五轮真实重生成（v5）后第 3/6 章重演、第 7 章跨章扣次错误仍未根治——历轮防线（节拍词典/LCS/面板正则/dedup 关键词）全是"写死的规则"：规则覆盖的场景已能拦截，但新名词、新错误模式（第 3 章两次下墟双战斗、第 6 章酒肆双版本、第 7 章跨章扣次）规则不认识 → 每轮只能人工定位再改代码，线性成本不可扩展。用户提出给每本小说加记忆系统：质检出问题 → 踩坑记录更新 → 自动优化提示词重写 → 针对本书持续更新记忆写出更好作品；并拍板"开始做吧"。四账本分层设计 + HTML renderer 架构图已交付（设定 canon/事件 events/踩坑 pitfalls/经验 taste）。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，docs/TECH-book-memory.md）：
+  1. **新模块 `pipeline/book_memory.py`**：`BookMemory` 四账本持久化 `book_memory.json`（store 新增 `book_memory_path/load/save`，复用原子写）；`record_pitfall` 质检出问题结构化入账（零额外 LLM、只记大改级、pattern=issue.type 归并、同章去重跨章累加、example 保留最近 2 条）→ `escalate` 同模式 ≥2 次升级永久纪律进 canon（排除结构-/合规-/读者- 无操作性指令类，只升一次）→ `decay` 超 3 章未复发 recent_rounds 清零降权；注入组装 `pitfall_block`（Top-N 按次数×最近频率，for_rewrite/场景双措辞）+ `canon_block`（新名词规范/永久纪律/机制基线，拆场景注入）+ `numeric_backfill`（面板方向违规 detail → 确定性修复指令「基线 X：你写的 Y 违反，正确应为 Z」回灌重写）+ `record_event_consumed` 跨章事件消费 + `record_taste` 章节评分（最近 20 章防膨胀）。
+  2. **接入 stages.py**：`ChapterWriter._memory()` 懒加载（开关关闭/异常 → None 降级安全）；拆场景 `split_scenes_prompt(book_canon=...)` 注入设定账本；场景循环开头算一次 `book_pitfalls_text = self._book_pitfalls(top_n=3, min_count=2)`（**只注入已反复 ≥2 次的纪律类，防低频问题束缚正常生成**），5 处 scene_prompt 调用（正常/重试1/重试2/节拍重试/面板重试）全注入；场景事件消费登记后 `record_event_consumed` 跨章持久化；质检块后 `record_taste`+`decay`；`_fallback_whole_chapter` 拼入踩坑块（top_n=5, min_count=1）。
+  3. **接入 quality.py**：`__init__` 可选 `memory=None`（老调用方零改动）；`_record_pitfalls` 在 ensure_quality 每轮 check（初始/抢救后/重写复检）后调用 + escalate；`_memory_block` 组装 pitfall_block(for_rewrite=True) + numeric_backfill（只对机制数字/面板/蚀化 detail 提取），`_rewrite_whole`/`_rewrite_span` 在 ctx 之后、质检问题清单之前注入。
+  4. **接入 templates.py**：`split_scenes_prompt` 新增 `book_canon=""`（骨架块之后追加）；`scene_prompt` 新增 `book_pitfalls=""`（panel_violation_block 之后追加）。
+  5. **config.py**：FEATURE_FLAGS 注册 `book_memory`（默认 True，"False=关闭行为与 P0-5 一致"）+ `book_memory_top_n`（默认 5）；NovelConfig 对应字段。
+- 边界（硬约束）：可计算可验证的（数字方向/节拍循环/拼接检测）永远留在代码硬校验（chapter_state/beats），记忆只做软约束——规则覆盖不到的开放域（新名词规范、历史错误形态、修复指令）；最坏情况仍靠硬校验 + best-version 兜底。写入时机 = 质检/防线每次触发时（零额外 LLM）。
+- 验证：新增 tests/test_book_memory.py 21 用例（踩坑入账去重累加/只记大改、升级只升一次/排除通用类、降权、Top-N 排序、canon 组装、数字回灌解析与透传、QC 质检出问题入账、重写注入历史错误+正确应为 Z、无 memory 不注入、scene/split prompt 注入、writer 懒加载、book_memory=False 全跳过不落盘）；专项 59 绿（含 quality_p05/scene_anti_repeat/panel_direction 回归），全量 534 全绿。
+- 待办：验证通过后触发第六轮真实重生成（双验证：节拍检测器+逐章通读全文）→ 评估签约 → 达标后走 devtest→master 合并；P0-6 其余四项根因修复（回退整章 baseline+即时校验/跨事件结构重复检测/死亡-扣次因果校验/酒肆型同场景双版本检出）待 P0-7 验收后按序实施；P0-2 语义指纹并联留待后续；master 回退（5190063）是否 push origin/master 未定。
+
+## 2026-10-10 生成端第六轮（P0-8）：机制数字链确定性闭环（8 项，工作区未提交）
+- 背景：第六轮真实重生成（v6）评估结论——**0 章事件级真实重演（历史最优）但未达签约**，阻塞项切换为机制数字链 5 处硬伤：蚀化 97→98→98→99→97→98 跨章波动（第 3 章未递增/第 6 章回跳/第 7 章承接错）、次数 2→0 超扣（第 2 章）、死亡后次数 1→1 死而不扣（第 7 章）、蚀痕位置 5 章口径混乱（基线「已伸三十七寸距心约一寸」从未被遵守）；另发现：记忆系统两缺陷（`_fix_of` 关键词错配——循环重演 issue 的 detail 含"面板"被劫持成机制数字指令致两条纪律 rule 错标；机制基线从未入 canon）、行动表 JSON 7 章全失败、成本防护场景[review] 25 次致第 4 章起一致性校验全停。第六轮评估报告给出 8 项生成端建议，用户拍板"继续"，实施全部 8 项（P0-8）。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，未提交）：
+  1. **根因1（行动表 7 章失败）**：`_gen_action_plan` `max_tokens=800` 太小（中文约 400-500 字，多人物行动表常超 → 输出在 ~1000-1200 字符处截断 → JSON 解析失败，v6 日志 `Expecting ',' delimiter: line 25/26 column 6 (char 992-1195)`）。修复：max_tokens 800→2000；解析失败 → `_extract_json_field(raw,"characters")` 数组级救回 → 仍失败重试 1 次（温度 0.5、上限 2000）。
+  2. **根因2（质检基线透传 bug）**：write() 原 `locals().get("scene_state_acc")` 拿不到 `_generate_chapter_scenes` 嵌套函数变量，**_bl 恒为空 → 质检层方向校验从未生效（v6 之前全盲）**。修复：新增实例属性 `self._scene_state_acc`，场景路径返回前赋值，write() 改用它。
+  3. **根因3（蚀化 99→97 跨章回跳）**：`_fallback_whole_chapter` 生成后即时校验只查节拍循环+字数，不查面板方向。修复：`panel_baseline` 参数 + 生成后方向/因果校验 + 违规数字修复回灌（_dedup 增补第 5 条）；两个调用点分别传"上一章章末基线"（拆场景失败处=本章开始基线）与"本章场景累计基线"（场景重试耗尽处）。
+  4. **根因4（死亡-扣次因果缺校验）**：方向校验只查"回退/回升"（b<a/b>a），"死亡后未变化（1→1）/超扣（2→0）"不触发。修复：chapter_state 新增 `death_signals`（显式死亡表达词表 + 否定/比喻语境排除正则）+ `panel_causal_violations`（死亡 → 次数期望=基线-1（子时重置 0→N 后按 N-1）、蚀化期望=基线+1；末值==基线→未递减/未递增，末值<期望→超扣；无死亡或空基线不校验防误伤）；场景防线 4 并联（死亡信号=正文 OR 事件层 event/conflict/final_state 拼串，覆盖"很冷。然后是黑"式隐式死亡），重试稿复检同并联；回退整章同套校验。
+  5. **根因5（蚀痕位置混乱）**：BookMemory 的 canon.mechanism_baseline 从未被程序写入（恒 {}），world.mechanism_baseline 只被 quality._rewrite_span 直接拼字符串。修复：book_memory 新增 `sync_baseline(world)`（world.mechanism_baseline 同步进 canon，幂等、空/None/关闭跳过、失败静默）+ `baseline_block()`（仅机制基线注入块，场景层用）；stages.write() 开头每章 `_mem.sync_baseline(world)`；5 处 scene_prompt 调用点加 `book_canon` 参数注入。
+  6. **根因6（_fix_of 关键词错配）**：分支顺序修正——「重演/循环/两版本/多版本」提前到「机制数字/面板/蚀化」之前（原机制数字分支在前，v6 两条纪律 rule 错标根因）；quality._memory_block 数字 issue 挑选同步收紧为 type 精确匹配（"机制数字" or "蚀化"，去掉 `"面板" in detail`）。
+  7. **根因7（成本防护跨章累计）**：guard 新增 `reset_scene_counts()`（只清 _scene_counts，保留全局 loop/token 上限）；write() 开头每章重置（v6 第 4-7 章 review 25 次被拦致一致性校验全停的修复）。
+  8. **根因8（canon 基线注入位置）**：templates.scene_prompt 新增 `book_canon=""` 参数，渲染 `book_canon_block`（book_pitfalls_block 之后、写作要求之前）。
+- 验证：新增/更新测试 15 用例（test_book_memory +5：_fix_of 优先级×2、sync_baseline×2、baseline_block×1；test_panel_direction +10：death_signals 命中/排除、因果递减合法/未递减/超扣/无死亡跳过/递增合法/未递增/子时重置/无基线跳过；test_agent_guard +1：reset_scene_counts 只清场景计数）；专项 54 绿；**全量 549 全绿**（P0-7 基线 534 + 15 新增）。
+- 待办：验证通过后触发第七轮真实重生成（先手工备份 v6 稿到新目录——regen 脚本 BACKUP 跳过已存在备份目录；双验证：节拍检测器+逐章通读）→ 数字链验收（蚀化 97→98→99→100→100→100→101 严格递增、次数死亡必扣、蚀痕位置全程遵守"三十七寸距心一寸"基线、事件级重演 0 章）→ 评估签约 → 达标后 devtest→master 合并；P0-8 提交（feat 分支不推远程）待用户放行；P0-2 语义指纹并联留待后续；master 回退（5190063）是否 push origin/master 未定。
+
+
+
+## 2026-10-10 生成端第七轮（P0-10）：记忆+多agent 混合双环方案（9 项，工作区未提交）
+- 背景：v7 真实重生成双验证（节拍检测器 + 逐章通读，通读为准）评估**未达签约**，阻塞项切换为 3 个：ch5 瑶光界药铺场景三重拼接（同一「进店→诊脉→试探→给药包→离开」写 3 遍约 2900 字注水）、ch3「你不对劲→命大」对峙对话循环 4 次、蚀化跨章口径不一致（ch6 仍 97%，未反映 ch1/3/4 三次死亡；章内「第 98 次蚀化满」自相矛盾）。用户提出"用记忆系统 + 多 agent 架构自动迭代、拆分更合理、重写更合理规避"，结论：概率层（记忆+多agent 可迭代学习）能规避 2/3，第 3 个（机制数字）必须留确定性兜底——依据四轮实证：v4 重写把拼接写得更严重、v5/v6/v7 自校验重写各 3 轮均未检出 ch5 三重拼接（纯 LLM 自评链路对同构场景检出率结构性不足）。用户拍板"按混合方案能加的都加上"。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，未提交）：
+  1. **④机制状态账本 + 确定性锚（治蚀化跨章口径）**：book_memory 新增顶层 `state` 账本（chapters 死亡次数/蚀化/蚀痕 + erosion_start）；`record_chapter_state`（章末零 LLM 入账，同章覆盖、上限 200、首次从 canon 基线解析 erosion_start）、`cumulative_deaths`（代码求和）、`erosion_anchor`（确定性数字锚：蚀化 = 起始基线 + 累计死亡、蚀痕寸数 = 37 + 累计死亡，注入拆场景/场景/重写 prompt，模型禁止自造口径）；chapter_state 新增 `death_count`（死亡结算计数，相邻 50 字合并，**修复 last_end=-1 初值 bug——此前第一条死亡恒被吞**）+ `erosion_cumulative_check`（正文蚀化峰值必须 == 起始 + 累计死亡，低于=未推进/高于=超发；无基线/无数字/无死亡不校验）；quality.check 新增 2.8c 蚀化累计校验（大改 -30）。实测：修复后 canon 基线全量同步、erosion_anchor(6)=「蚀化当前应为 100%」正确。
+  2. **⑥蚀化累计确定性校验（零 LLM 兜底）**：quality 2.8c 用 memory 累计死亡 + death_count 双源计算期望值，正文不符 → 重写回灌（LLM/记忆不参与计算，机制数字永远代码说了算）。
+  3. **⑤跨场景同构节拍指纹（治 ch5 三重拼接）**：beats 新增 `_beats_scene_isomorphic`（LCS≥3 拍 + 占空比 0.8 + 非通用拍≥2，通用拍集合=离场/对峙/复活/死亡/挡死/盘问/失控）；stages 新增 `scene_beat_ledger`（历史场景序列全集，每章重置）并联到防线判定与重试稿复检。实测 v7 ch5「诊脉→药包→离场」3 拍 + 非通用拍 2 → 命中。
+  4. **①拆场景评审 agent（治拆分同构）**：stages 新增 `scene_split_review_prompt` + `_scene_split_review`（temperature=0.2、max_tokens=800、失败降级空）+ `_merge_duplicate_events`（确定性合并：保留 idx 小者、删 idx 大者、删引用被删 id 的场景）；接入点 `_expand_scene_event_refs` 后、`_validate_scene_plan` 前，仅 `not derived_events and len(events_list)>=2` 调用（派生模式 desc 是骨架原文，合并会破坏 id 对应 → 不合并）。
+  5. **②重写前诊断 agent（治 v4 教训：重写越改越差）**：quality 新增 `rewrite_diagnose_prompt` + `_diagnose_rewrite`（独立审稿判多稿拼接/对话循环，输出 {findings:[{type,start,end,action,reason}]}，失败降级空）+ `_diag_block`（转「删除 [s:e] 的重复版本」确定性指令）；`_rewrite_whole` 在 mem_block 之后、context_block 之前注入。
+  6. **③读者评审专项 + 记忆注入**：reader_review_prompt 重写——新增 `book_pitfalls` 参数（注入本作历史错误）+ 三项专项检查（6.同构场景/7.对话循环/8.机制数字口径，各带例证与 level 要求）；ReaderReviewer.__init__ 新增 `memory=None`，review 传 `pitfall_block(top_n, min_count=1)`；stages 读者审校调用点传 memory。
+  7. **关键根因修复（sync_baseline 对象兼容）**：实测 `isinstance(wb, dict)` 对 `world.mechanism_baseline`（MechanismBaseline pydantic 对象）恒 False → **基线从未同步进 canon（book_memory.json canon.mechanism_baseline 恒空）**——这正是此前"plan_re 为什么少了蚀化"排查的答案（P0-8 修复未真正生效）。修复：`hasattr(wb, "to_dict") → wb.to_dict()`；蚀痕基线兼容英文键 scar_current/scar_start。
+  8. **⑦v7 三问题入记忆种子（迭代闭环起点）**：book_memory.json 直接落账——pitfalls 新增「规划-同构场景拆多遍」「机制数字-蚀化跨章口径冲突」2 条（count=1/last_ch=7/带 fix 与 example）+ 对话循环并入既有「写作-对话轮重复（循环拼接）」count+1；state 账本补全 7 章死亡次数（ch1/3/4/7 各 1、ch2/5/6 各 0，累计 4 次 → 蚀化 101%，符合"永久累计不重置"）。闭环：种子 → 每轮自动入账 → 评审注入 → 新变体由 ⑤⑥ 确定性兜底 → 人工确认补记忆。
+- 边界（硬约束）：机制数字（蚀化/蚀痕/次数）永远是代码确定性计算（⑥/④），LLM/记忆只做软约束与提示注入；⑤同构指纹与 ⑥累计校验零 LLM；新增 LLM 成本 = 每章拆场景评审 1 次 + 重写前诊断 1 次（仅重写时触发）。
+- 验证：新增 19 用例（test_book_memory +6：对象基线同步/状态入账/累计/锚/中文数字解析；test_panel_direction +5：蚀化累计低/合法/超发/跳过/死亡计数；新文件 test_scene_iso.py 8 用例：同构命中/通用拍不误判/短序列/合并函数/评审解析/降级/诊断解析/降级）；两个既有用例适配（test_panel_violation 序列 4→6 含评审、test_scene_plan_align 序列 4→5 含评审）；**全量 568 全绿**（P0-8 基线 549 + P0-10 新增 19）。待办：第八轮真实重生成（先手工备份 v7 稿到 backup_v7_... 新目录——regen 脚本 BACKUP 跳过已存在目录）→ 双验证（节拍检测器 + 逐章通读，通读为准）→ 数字链验收（蚀化跨章严格递增=起始+累计、次数死亡必扣、蚀痕位置遵守基线、事件级重演 0 章）→ 评估签约 → 达标后 devtest→master 合并；P0-10 提交（feat 分支不推远程）待用户放行。
+
+## 2026-10-10 P0-14 生成端账本根因修复（v8 未达标三项：ch1 三重拼接 / 数字链系统性失序 / ch2 面板回升 + ch7 死而不结算）
+- 背景：v8 真实重生成双验证未达签约，三项阻塞定位：①ch1「断墙遇灰卒」三重拼接（约 2900 字注水，⑤ 跨场景指纹管不了章内、旧 ratio 0.8 漏检）；②数字链系统性失序——账本 cumulative_deaths 3→4→7→7→8→11→11 vs 通读实际 1→2→4→6→6→6→7，ch5/ch6 蚀化 106/108 虚高（自洽地错）；③ch2 面板回升 + ch7 死而不结算。用户对草案逐条纠正：**不做扩展重写（防重于修，扩展后重写浪费 token）；死亡判定要素是这本书的机制（面板/复活/蚀化三联），不做成通用硬编码，应书级个性化；账本不准先查根因，不做个性化处理掩盖；字数治理——质量过关就不需要整章回退重写**。
+- 根因（v8 代码实证）：
+  1. **账本被词面计数污染**：旧 `death_count` 词面匹配三类实证污染——ch1 重复段落多计（"死了"多次命中）、ch4/ch7 隐式死亡漏计（"呼吸断了""尸体被翻过来"）、ch5/ch6 自述面板误计（"累计死亡次数：3/11"含"死亡"词被当成结算事件）。
+  2. **锚正反馈放大**：旧 `erosion_anchor` = 起始 97 + 被污染累计 → 锚虚高（106/108）→ 模型忠实跟随 → ⑥校验验证的是"模型是否跟随锚"而非"锚是否正确"——确定性被计数错误污染成确定性错误。
+  3. **章内同构（段落级）不在 ⑤（跨场景）覆盖范围**：v8 ch1 场景 2/3 占比 ~0.6-0.75 低于旧 0.8 判据漏检。
+  4. **字数超限触发整章回退重写**：历轮实证重写越改越差、v8 ch5/ch7 字数超但质量好，纯浪费 token。
+- 决策（四条全部落地）：
+  1. **账本蚀化差反推（治根因，非个性化掩盖）**：stages 章末入账 deaths 改为「本章末蚀化 - 上一章末蚀化」（无上一章记 0，蚀化回落不反推）；`erosion_anchor` 改**链式承接上一章末蚀化**（无账本回落 erosion_start；蚀痕寸数 = 基线寸数 + 链式增量）——杜绝跨章求和口径与正反馈放大；质检 2.8c 改链式校验：期望 = 账本上一章末蚀化 + 本章死亡次数（death_count 已修正），未死亡蚀化必须保持不变（防虚涨/回退），死亡必须 +1（防死而不结算）。
+  2. **通用+个性化两套独立死亡标准（记忆闭环，用户二轮纠正）**：死亡判定拆成两套互不污染的独立标准——**通用标准**（`death_signals/death_count`，跨书词面基线：死了/死亡/被杀/复活…+否定/比喻/自述统计排除）与**个性化标准**（`book_death_signals/book_death_count`，本书金手指机制驱动的隐式死亡表达：如《万墟之上》面板结算式死亡"呼吸断了/尸体被翻过来"，由 book_memory 记忆闭环按本书实证写入 `state.extra_death_signals`，独立正则/独立 50 字去重/同样过排除）。**通用词表不得被单本书的词污染**——其他书没有这套机制，无书级信号时个性化标准自动为空=不启用；质检 2.8c 本章死亡次数 = 通用计数 + 个性化计数（各自独立去重，加法合并）；stages 两处防线 = 通用 OR 个性化。通用排除表追加「累计死亡|死亡次数|已死亡|死亡数量|总死亡」（v8 ch5/ch6 自述面板误计根治）+「差点|险些|差一点|差点儿」（将死未死不计）。v8 实证种子「呼吸断了/尸体被翻过来」已入本书账本；后续章质检/人工确认漏检表达 → `add_book_signal` 记忆闭环 → 自动命中。
+  3. **⑤判据放宽**：`_SCENE_ISO_RATIO` 0.8→0.6（v8 ch1 部分重复 ratio≈0.6-0.75 漏检根治）；`_SCENE_ISO_LEDGER_MIN`=3（=MIN，3 拍药铺同构仍可命中）；非通用拍≥2 防误判保留。
+  4. **字数治理**：回退整章重试循环删除 `_over`（字数超限）硬条件——仅附注展示，不再触发整章重写（用户约束"质量过关就不需要整章回退重写"）。
+- 验证：新增 10 用例（test_panel_direction +4：自述统计排除/书级信号命中/extra 空安全；test_book_memory +3：书级信号记忆闭环/去重/空 store；test_scene_iso +2：部分重复命中（v8 ch1 实证型）/占比下界仍不误判）；**两套独立标准重构后**书级用例改为独立函数断言（通用标准不受书级词影响、书级标准空词表=不启用、个性化独立去重/否定排除），排除表补「差点|险些」；**test_panel_violation 用例适配**——P0-10 时该用例拆场景 target_words=2500×2 超 ±10% 校验**实际一直走回退整章字数重试路径**（场景链路从未被真实测过），P0-14 改 target_words=1250×2 使其真正走场景模式（7 = 拆场景+评审+场景1+场景2违规+重试稿+摘要+扩写）；**全量 576 全绿**（P0-10 基线 568 + P0-14 新增 10 - 1 合并适配 + 书级独立断言重构）。待办：第九轮真实重生成（先手工备份 v8 稿到 backup_v8_... 新目录）→ 双验证（节拍检测器 + 逐章通读，通读为准）→ 数字链验收（账本/锚/正文三者一致：链式承接、死亡必+1、未死亡不变）→ 评估签约 → 达标后 devtest→master 合并（需用户放行）。P0-14 提交（feat 分支不推远程）待用户放行。
+
+## 2026-10-10 P0-15/16/17/18 全会话生成端修复包（v9 评估后，用户：P0-17/18 直接实施、P0-15/16 必须通用化不以本书写死）
+
+- 背景：v9（第八轮重生成，P0-14 生效）三大阻塞根治（ch1 三重拼接/数字链系统性失序/ch2 回升+ch7 死而不结算），剩余 6 个阻塞项。用户明确：**P0-15/16 不做本书个性化写死（蚀痕=37+死亡、次数 0 不得复活等均为本书特有），改为以机制基线为唯一事实源的通用方案**。
+- 决策（P0-15/16 通用版，chapter_state 新增「机制字段注册表 + 链式账本 + 事件驱动双向」模块）：
+  1. **机制字段注册表（closed-world）**：`mechanism_field_registry(baseline)` 从机制基线（panel_format/reset_rule/蚀痕文本）派生「正文面板允许出现的字段」{核心词: 方向}——字段名去通用限定词（今日/距离/累计/剩余…）归一，方向按字段名语义（次数/剩余/余量→decrease；蚀化/进度/蚀痕/寸→increase）；`unknown_mechanism_fields` 检测正文面板行出现注册表外字段（v9 ch3/ch6「累计死亡次数：39/37」幻觉行）即违规——**任何书通用，基线声明什么字段正文只能出现什么字段**。
+  2. **链式账本通用化**：`ledger_extract_numbers` 零 LLM 抽取每章各注册字段末值（寸数字段取最大值防「距心脏不到一寸」误覆盖），`record_chapter_state(numbers=...)` 入账 + `chapter_ledger(up_to_ch)` 链式继承（本章未提及字段继承上一章末值——治 v9 ch5 无面板行 → erosion=null 断链）。
+  3. **事件驱动双向校验**：`ledger_check(content, prev_ledger, registry, deaths, initial)`——无事件时 decrease/面板 increase 必须与上章末一致（治 ch2 次数 3→2 无依据递减）、寸单位字段只查不回退（允许碎片等合法正向增长）；有事件时 decrease 必减（上章末 0 仍死亡 = 边界违规，治 ch4 次数 0 后仍复活）、increase 必 ≥ 上章末 + 死亡数。prev 缺失回落基线初始值。质检 2.8c 叠加：未知字段违规（白名单）+ ledger_check 全字段链式。
+  4. **生成端注入**：场景防线并入未知字段检测（带错重试）；scene_prompt 注入「机制面板字段白名单 + 次数/剩余类字段为 0 时本章不得再安排死亡」边界规则。
+- 决策（P0-17，大纲事件偏离）：
+  1. **拆场景核心事件覆盖校验**：`_validate_scene_plan(core_event=...)` 将 core_event 分段（→，。；；），每段与事件清单并集做 2 字以上最长公共子串匹配，命中段 ≥60% 才通过（整数不等式 hit*10 ≥ len*6 表达，2 段 1 命中=50% 判未覆盖——v9 ch6 大纲「忘忧阁密报」被替换为「不问阁」即此类），未覆盖回退整章。
+  2. **质检兜底 2.8d**：`_core_event_missing(content, core_event)` 正文 vs 大纲核心事件同法校验（60% 阈值），命中不足 → 大改触发整章级重写；ensure_quality/check 透传 core_event。
+  3. **摘要一致性**：模型自带摘要与正文 2-gram 命中率 <0.35 = 摘要含正文完全没有的表述（大纲残留专有名词）→ 基于正文重生成摘要（治 v9 ch6 摘要写「忘忧阁密报」正文是不问阁）；摘要 <8 字跳过（无统计意义防误触发）。
+- 决策（P0-18，超长与注水）：
+  1. **单场景字数上限治理**：场景正文超 target_words×1.5 且非整句复读型注水（唯一 2-gram 占比 ≥15%）→ `_slim_scene` 精简重写 1 次（保留剧情/数字/伏笔、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留（不做整章回退——用户约束"质量过关就不需要整章回退重写"）。整句复读型注水（"正文"×N）由节拍防线/质检 2.7 处理，slim 不浪费 token。
+- 验证：新增 tests/test_mechanism_registry.py 28 用例（注册表派生/方向/停用词归一/未知字段拦截/末值抽取含寸 max/中文数字/链式四象限：无事件递减、无事件寸回退、无事件寸合法增长、次数 0 死亡边界、死亡递增/未递增/prev 回落初始/core_event 覆盖 60% 阈值三态/拆场景门/摘要命中率三态）；既有测试适配：test_chapter_flow 两处 ensure_quality fake 签名补 core_event、slim 对测试重复构造文本跳过（_is_repetitive_text 前置）保持调用数不变；**全量 604 全绿**（576 + 28）。待办：第九轮真实重生成（先手工备份 v9 稿到 backup_v9_... 新目录）→ 双验证（节拍检测器 + 逐章通读）→ 数字链验收（注册字段账本/锚/正文一致）→ 评估签约 → 达标后 devtest→master 合并（需用户放行）。P0-15~18 提交（feat 分支不推远程）待用户放行。
+
+## 2026-10-10 v10 第九轮重生成实证：回退整章路径数字防线全线失效 + 三处修复
+
+- 背景：P0-15~18 提交（d41245f）后触发第九轮真实重生成（v10，日志 regen_ch1_7_v10.log）。生成端新防线大量生效：slim 精简 ×5（ch1 场景1 1909→970、ch3 场景3 866→733、ch6 场景3 1002→912 等）、摘要一致性重生成 ×2（ch3/ch5）、机制数字重试 ×5、回退整章 ×8、拆场景 target_words ±10% 回退 ×1。各章字数 2564/2377/2895/5050/2748/4310/2750。节拍检测器：ch1「次数 2→3」（子时重置误报，正文有重置声明）、ch3/ch6「0→39/37」异常——**ch3「累计死亡次数：39。」ch6「累计死亡次数：37」幻觉行仍在**。
+- 实证根因（关键）：ch3/ch6 均走**回退整章路径**（场景节拍重演耗尽）→ `_generate_chapter_scenes` 内 scene_state_acc 为空 → write() 的 `_bl={}` → **质检 check baseline=None → 2.8c 条件 `if baseline and self.memory` 整段跳过**（含 P0-15 未知字段白名单 + ledger_check 全字段链式校验）→ 幻觉行无人拦截；且回退/普通整章 prompt 无字段白名单预防（场景循环有，整章路径没有）——**"回退路径 = 数字防线黑洞"**。
+- 决策（三处修复，2026-10-10）：
+  1. **质检 2.8c 去 baseline 依赖**：条件改为 `if self.memory is not None`（注册表/账本从 canon/state 自取）；区块内 2.8b 方向校验单独保留 `if baseline`（需场景级基线才可判）。v10 实证注明。
+  2. **死亡次数口径统一为账本口径**：2.8c 的 `_cumu` 从「词面 death_count 两标准合并」改为「本章末蚀化 − 上一章末蚀化」（与 stages 账本入账同口径）——词面计数因复活/死于等表达多词命中虚高（v10 ch3 实际死 2 次词面计 6），导致 increase 字段「应 ≥ prev+6」误报合法 98→100。
+  3. **寸字段有事件增量豁免**：`ledger_check` 有事件时 increase 校验对寸字段豁免（增量依赖机制基线自由文本——碎片/外力/剩余描述均可合法影响寸数，无法通用推导「应 ≥ prev+deaths」）；无事件寸回退检查保留（治 v9 ch4 四十一寸→ch5 三十七寸矛盾）。
+  4. **回退/普通整章路径注入面板白名单**：stages 新增 `_panel_whitelist_block()` 方法（从 memory canon 注册表派生字段白名单 + 次数 0 边界规则），`_fallback_whole_chapter` 与普通整章 `chapter_prompt` 分支均注入；回退整章重试校验 `_viols` 循环条件从 `if _text and panel_baseline` 放宽为 `if _text`（注册表未知字段在无面板基线时也拦截）；场景循环白名单块改为复用该方法。
+- 验证：smoke 脚本实证 v10 ch3/ch6 正文「累计死亡次数：39/37」现被 unknown_mechanism_fields 拦截、ch3 合法 98→100 不再误报；tests/test_mechanism_registry.py 新增 TestV10Regression 5 用例（无 baseline 未知字段仍拦/蚀化差口径/合法蚀化无误报/寸无事件回退仍拦/白名单块内容）；**全量 609 全绿**。待办：提交本批修复（feat 分支不推远程）→ 手工备份 v10 稿到 backup_v10_... → 第十轮真实重生成（v11）→ 双验证重点验收 ch3/ch6 幻觉行消除 + 账本 nums 不含「死亡次数」键 → 评估签约。

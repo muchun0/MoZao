@@ -235,6 +235,20 @@ class ProjectStore:
         except Exception:
             return ""
 
+    # ---------- 拆书库题材文风锚（REQ-双锚风格锚定）：webapp 写、novel_gen 读 ----------
+    def teardown_style_anchor_path(self) -> Path:
+        return self.dir / "teardown_style_anchor.txt"
+
+    def save_teardown_style_anchor(self, text: str) -> None:
+        (self.dir / "teardown_style_anchor.txt").write_text(text or "", encoding="utf-8")
+
+    def load_teardown_style_anchor(self) -> str:
+        p = self.dir / "teardown_style_anchor.txt"
+        try:
+            return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        except Exception:
+            return ""
+
     # ---------- 场景落盘（P2-4）：分章场景清单 + 场景状态，供回看/编辑/复用 ----------
     def scenes_path(self) -> Path:
         return self.dir / "scenes.json"
@@ -445,6 +459,19 @@ class ProjectStore:
     def save_chapter_state(self, state: dict) -> None:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
+
+    # ---------- 小说级记忆（P0-7，book_memory） ----------
+    def book_memory_path(self) -> Path:
+        return self.dir / "book_memory.json"
+
+    def load_book_memory(self) -> Optional[dict]:
+        """返回 {canon, events, pitfalls, taste}；无记忆返回 None。"""
+        d = self._read_json(self.book_memory_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_book_memory(self, data: dict) -> None:
+        """整体覆盖保存（每次账本更新后写入最新快照）。"""
+        self._write_json(self.book_memory_path(), data)
 
     # ---------- 揭示执行跟踪（REQ-揭示执行跟踪） ----------
     def reveal_status_path(self) -> Path:

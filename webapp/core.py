@@ -41,6 +41,7 @@ from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.guard import AgentGuardError
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.pipeline.stages import unique_chapter_titles
+from novel_gen.pipeline.style_anchor import build_teardown_anchor
 from novel_gen.store.schemas import (
     Chapter, ChapterPlan, Outline, World, Character,
     EnemyCard, LocationCard, MechanismBaseline, ClockCard, FactionCard,
@@ -818,6 +819,49 @@ def _inject_teardown_material(store: ProjectStore, cfg) -> None:
         logger.exception("拆书库回流素材注入失败（降级跳过）: project=%s", store.dir.name)
 
 
+def _inject_teardown_style_anchor(store: ProjectStore, cfg) -> None:
+    """REQ-双锚风格锚定：拆书库题材文风锚——调研前把同题材爆款拆书条目的
+    文风特点（styles）/手法清单（takeaways）/原文片段（excerpts）格式化为纯文本
+    写入 store 的 teardown_style_anchor.txt，供写手阶段（scene/chapter/expand
+    prompt）注入（弱约束，只借鉴语感，严禁抄袭内容）。
+
+    - 开关 cfg.teardown_style_anchor=False → 写空（不注入）
+    - 保持 novel_gen 不依赖 webapp 的分层：本函数只查 DB + 组装 + 写文件，
+      消费端在 novel_gen/pipeline/templates.py 读文件内容（经 store 传入）
+    - 失败静默降级；首次生成时拆书库可能无同题材条目（调研后才沉淀），
+      二次生成/续写时生效
+    """
+    try:
+        if not getattr(cfg, "teardown_style_anchor", True):
+            store.save_teardown_style_anchor("")
+            return
+        genre = (getattr(cfg, "genre", "") or "").strip()
+        items = db.list_teardowns(genre=genre, page=1, page_size=5).get("items", [])
+        blocks: list[str] = []
+        for it in items:
+            detail = db.get_teardown(it.get("id"))
+            if not detail:
+                continue
+            content = detail.get("content")
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except Exception:
+                    content = {}
+            if not isinstance(content, dict):
+                content = {}
+            anchor = build_teardown_anchor(
+                content.get("styles"), content.get("takeaways"), content.get("excerpts"))
+            if anchor:
+                blocks.append(anchor)
+        store.save_teardown_style_anchor("\n\n---\n\n".join(blocks))
+        if blocks:
+            logger.info("拆书库题材文风锚注入完成: project=%s genre=%s %d 条",
+                        store.dir.name, genre, len(blocks))
+    except Exception:
+        logger.exception("拆书库题材文风锚注入失败（降级跳过）: project=%s", store.dir.name)
+
+
 def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     """只跑 research → outline → editor_review → world，不写正文。
     完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
@@ -831,6 +875,8 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         pipeline = _open_pipeline(store, trace_id=trace_id)
         # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
         _inject_teardown_material(store, cfg)
+        # REQ-双锚风格锚定：拆书库题材文风锚（写手阶段消费，失败降级）
+        _inject_teardown_style_anchor(store, cfg)
         pipeline.run_research()
         # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
         teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
@@ -900,6 +946,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 store.dir.name, cfg.effective_title(), start_from, trace_id)
     try:
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        # REQ-双锚风格锚定：所有生成入口统一注入题材锚（start_from>0 从第 N 章重生成、
+        # 复用大纲继续生成也生效；重复注入幂等，失败静默降级）
+        _inject_teardown_style_anchor(store, cfg)
 
         if start_from > 0:
             done = start_from - 1

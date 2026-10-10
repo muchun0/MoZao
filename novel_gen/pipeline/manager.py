@@ -19,6 +19,7 @@ from ..store.schemas import Chapter, ChapterPlan, Outline, ProjectState, World
 from .guard import AgentGuard, AgentGuardError
 from .memory import Memory
 from .stages import ChapterWriter, OutlineGenerator, WorldGenerator, _strip_html_tags
+from .style_anchor import extract_personal_anchor
 from .templates import (continue_outline_prompt, expand_chapter_prompt,
                         expand_outline_prompt, world_from_content_prompt,
                         verify_prompt, final_review_prompt)
@@ -844,6 +845,9 @@ class NovelPipeline:
             logger.warning("扩写范围为空: targets=%s", targets)
             return
         target_words = max(self.cfg.chapter_words, 500)
+        # REQ-双锚风格锚定：循环外提取个人旧稿锚（有 user_edited 章才非空）+ 题材锚
+        personal_anchor = extract_personal_anchor(self.store.list_chapters())
+        teardown_anchor = self.store.load_teardown_style_anchor()
         for ch in chapters:
             if len(ch.content) >= target_words:
                 if not silent:
@@ -853,7 +857,11 @@ class NovelPipeline:
                 print(f"  扩写第{ch.no}章《{ch.title}》（{len(ch.content)} 字 → {target_words} 字）...")
             logger.info("扩写章节: no=%d from=%d to=%d", ch.no, len(ch.content), target_words)
             try:
-                system, user = expand_chapter_prompt(self.cfg, ch.no, ch.title, ch.content, target_words)
+                system, user = expand_chapter_prompt(
+                    self.cfg, ch.no, ch.title, ch.content, target_words,
+                    personal_anchor=personal_anchor,
+                    teardown_anchor=teardown_anchor,
+                )
                 system = self._with_stylist(system)
                 text = self.llm.chat(system, user, temperature=0.8)
                 text = _strip_html_tags(text)

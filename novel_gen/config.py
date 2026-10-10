@@ -55,6 +55,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "setting_cards", True, "分章设定卡索引（REQ-token优化 P1-1）：world 后确定性构建 setting_cards.json，按章只注入相关设定子集，构建失败回退全量注入"),
     FeatureFlag("memory", "scene_delta_inject", True, "场景 prompt 分层注入（REQ-token优化 P1-2）：首场景注入全量记忆，后续场景只注入增量块（已推进状态+人物卡子集+场景大纲），降重复输入"),
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
+    FeatureFlag("memory", "book_memory", True, "小说级记忆系统（P0-7）：质检出问题→踩坑账本→重写/场景 prompt 注入本作历史错误+修复指令，同模式≥2次升级永久纪律，针对本书持续进化；False=关闭（管线行为与 P0-5 一致）"),
+    FeatureFlag("memory", "book_memory_top_n", 5, "踩坑账本注入 Top-N 条数（P0-7）：按出现次数×最近频率排序取前 N 条注入重写/场景 prompt"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -65,7 +67,9 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "plot_speed", "medium", "剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)"),
     FeatureFlag("writing", "action_plan_first", False, "正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出，不再独立调用；True=恢复独立调用）"),
     FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
+    FeatureFlag("writing", "scene_plan_align", True, "拆场景规划对齐大纲人物动线（REQ-scene-plan-align）：事件清单从大纲 character_moves 逐拍切分确定性派生，LLM 只做场景切分与细节补充；moves 缺失/派生失败自动回退原 LLM 规划路径"),
     FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
+    FeatureFlag("writing", "teardown_style_anchor", True, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
@@ -249,6 +253,8 @@ class NovelConfig:
     setting_cards: bool = feature_default("setting_cards")                             # 分章设定卡索引（REQ-token优化 P1-1）
     scene_delta_inject: bool = feature_default("scene_delta_inject")                   # 场景 prompt 分层注入（REQ-token优化 P1-2）
     reveal_tracking: bool = feature_default("reveal_tracking")                         # 揭示执行跟踪（REQ-揭示执行跟踪）：每章检测真相锚定词兑现，落 reveal_status.json
+    book_memory: bool = feature_default("book_memory")                                 # 小说级记忆系统（P0-7）：质检出问题→踩坑账本→注入本作历史错误
+    book_memory_top_n: int = feature_default("book_memory_top_n")                      # 踩坑账本注入 Top-N 条数（P0-7）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -266,7 +272,9 @@ class NovelConfig:
     plot_speed: str = feature_default("plot_speed")              # 剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)
     action_plan_first: bool = feature_default("action_plan_first")  # 正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出）
     scene_split: bool = feature_default("scene_split")              # 场景级生成下沉普通模式（单章≥2000字自动拆；P1-2）
+    scene_plan_align: bool = feature_default("scene_plan_align")    # 拆场景规划对齐大纲人物动线（REQ-scene-plan-align）
     polish_hq_only: bool = feature_default("polish_hq_only")        # 整章润色仅高质量模式（REQ-token优化 P0-3）
+    teardown_style_anchor: bool = feature_default("teardown_style_anchor")  # 拆书库题材文风锚：写手阶段注入同题材爆款文风与手法（REQ-双锚风格锚定）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）

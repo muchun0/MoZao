@@ -16,6 +16,7 @@ import random as _random
 
 from ..config import NovelConfig
 from ..store.schemas import Outline
+from .style_anchor import PERSONAL_ANCHOR_HEADER, TEARDOWN_ANCHOR_HEADER, wrap_style_anchor
 
 
 def _hard_constraints(cfg: NovelConfig) -> str:
@@ -964,10 +965,57 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
     return system, user
 
 
-def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event=""):
+def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event="", moves="", book_canon=""):
+    # REQ-scene-plan-align：moves 非空 = 事件清单已由大纲 character_moves 确定性派生
+    # （硬骨架），模型只做「补结构化字段 + 拆场景」，禁止增删/改写/合并事件；
+    # moves 为空 = 原路径，模型自行规划互斥事件清单。
+    if moves and str(moves).strip():
+        step1 = (
+            "== 第一步：按下方【事件清单】逐条补充结构化字段（events） ==\n"
+            "每个事件输出：id（沿用下方编号）、desc（沿用下方原文，禁止修改）、"
+            "conflict（冲突对象，如\"三头赤尉\"）、action（动作类型，如\"救援/围攻/击杀/逃离\"）、"
+            "final_state（本事件结束时的机制状态增量，如\"面板 2/3，蚀痕已越肘弯比上次多一寸\"）。\n"
+            "硬规则：\n"
+            "1. 事件清单 = 人物动线骨架的逐拍切分：禁止新增骨架之外的独立事件、"
+            "禁止合并/省略/改写骨架拍；同一『冲突对象 + 动作类型』本章至多一次\n"
+            "2. 事件之间必须因果推进：前一个事件的结果 = 后一个事件的起点；"
+            "禁止第 2 个事件重新回到第 1 个事件的开头状态重演一遍（哪怕换了地点、换了措辞）\n"
+            "3. 禁止把同一事件拆成两个事件：能发生的独立事件不足时，宁可少拆（最少 2 个场景），"
+            "也禁止把\"被围-犹豫-冲上去救\"这类同一过程拆成多个场景\n"
+            "4. 机制数字规划到事件：final_state 必须写明事件结束时机制数字 X/X 与累积状态位置"
+            "（面板/蚀痕/伤势），且每个事件之间必须有增量变化——禁止两个事件结束时间一数值/同一状态\n"
+            "5. 同类事件本章至多一次：同一类剧情动作（救援、被围、死亡-复活、追击、对峙）只允许完整发生一次；"
+            "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现"
+        )
+        skeleton_block = (
+            "【本章事件清单（已由编辑按人物动线确定，硬骨架，逐条对应一个场景）】\n"
+            f"{moves}\n"
+            "硬规则：JSON 的 events 必须逐字沿用下方 id 与 desc（禁止增删/合并/改写）；"
+            "scenes 数量必须与 events 数量完全一致（每条事件 = 一个场景，逐条对应，"
+            "禁止多拆、少拆、合并场景）；scene_event_ref 必须逐字引用下方 id。"
+        )
+    else:
+        step1 = (
+            "== 第一步：规划本章事件清单（events，N 个事件 = N 个场景） ==\n"
+            "每个事件输出结构化字段：id（事件编号）、desc（一句话：人物 + 冲突对象 + 动作 + 结果）、"
+            "conflict（冲突对象，如\"三头赤尉\"）、action（动作类型，如\"救援/围攻/击杀/逃离\"）、"
+            "final_state（本事件结束时的机制状态增量，如\"面板 2/3，蚀痕已越肘弯比上次多一寸\"）。\n"
+            "硬规则：\n"
+            "1. 事件必须两两互斥：同一『冲突对象 + 动作类型』本章至多一次（如只救一次、只被围一次）；"
+            "【本章核心事件】必须被完整覆盖且只覆盖一次\n"
+            "2. 事件之间必须因果推进：前一个事件的结果 = 后一个事件的起点；"
+            "禁止第 2 个事件重新回到第 1 个事件的开头状态重演一遍（哪怕换了地点、换了措辞）\n"
+            "3. 禁止把同一事件拆成两个事件：能发生的独立事件不足时，宁可少拆（最少 2 个场景），"
+            "也禁止把\"被围-犹豫-冲上去救\"这类同一过程拆成多个场景\n"
+            "4. 机制数字规划到事件：final_state 必须写明事件结束时机制数字 X/X 与累积状态位置"
+            "（面板/蚀痕/伤势），且每个事件之间必须有增量变化——禁止两个事件结束时间一数值/同一状态\n"
+            "5. 同类事件本章至多一次：同一类剧情动作（救援、被围、死亡-复活、追击、对峙）只允许完整发生一次；"
+            "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现"
+        )
+        skeleton_block = ""
     system = (
         "你是一位小说结构编辑。用户会给你一章的梗概，"
-        "你的任务分两步：①先规划本章的【互斥事件清单】（几个事件就拆几个场景，1 事件 = 1 场景）；"
+        "你的任务分两步：①先确定/补充本章的【互斥事件清单】（几个事件就拆几个场景，1 事件 = 1 场景）；"
         "②再按事件清单拆成 2-4 个连续场景（场景数 = 事件数，由本章总字数反推：总字数 ÷ 1200 取整，"
         "最少 2 个；2500 字章 → 约 2-3 个场景，禁止为了凑场景数超写），"
         "每个场景约 700-1400 字，并同时规划本章出场人物的行动表（写手必须逐条落实，人物言行与行动表一致）。"
@@ -980,22 +1028,8 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         f"【上一章结尾（本章起点：第一个场景必须从这之后的场景/时间线/人物状态自然接续）】\n"
         f"{prev_tail if prev_tail else '（首章或无前章）'}\n\n"
         f"【本章目标总字数】{cfg.chapter_words} 字\n\n"
-        "== 第一步：规划本章事件清单（events，N 个事件 = N 个场景） ==\n"
-        "每个事件输出结构化字段：id（事件编号）、desc（一句话：人物 + 冲突对象 + 动作 + 结果）、"
-        "conflict（冲突对象，如\"三头赤尉\"）、action（动作类型，如\"救援/围攻/击杀/逃离\"）、"
-        "final_state（本事件结束时的机制状态增量，如\"面板 2/3，蚀痕已越肘弯比上次多一寸\"）。"
-        "硬规则：\n"
-        "1. 事件必须两两互斥：同一『冲突对象 + 动作类型』本章至多一次（如只救一次、只被围一次）；"
-        "【本章核心事件】必须被完整覆盖且只覆盖一次\n"
-        "2. 事件之间必须因果推进：前一个事件的结果 = 后一个事件的起点；"
-        "禁止第 2 个事件重新回到第 1 个事件的开头状态重演一遍（哪怕换了地点、换了措辞）\n"
-        "3. 禁止把同一事件拆成两个事件：能发生的独立事件不足时，宁可少拆（最少 2 个场景），"
-        "也禁止把\"被围-犹豫-冲上去救\"这类同一过程拆成多个场景\n"
-        "4. 机制数字规划到事件：final_state 必须写明事件结束时机制数字 X/X 与累积状态位置"
-        "（面板/蚀痕/伤势），且每个事件之间必须有增量变化——禁止两个事件结束时间一数值/同一状态\n"
-        "5. 同类事件本章至多一次：同一类剧情动作（救援、被围、死亡-复活、追击、对峙）只允许完整发生一次；"
-        "后续若仍需同一人物面对同一批敌人，只能作为承接上一次结果的余波/升级出现\n\n"
-        "== 第二步：按事件清单拆场景（scenes） ==\n"
+        + step1
+        + "\n\n== 第二步：按事件清单拆场景（scenes） ==\n"
         "场景数 = 事件数。每个场景包含：\n"
         "- location: 地点\n"
         "- scene_event_ref: 必须逐字引用 events 中的事件编号（\"事件1\"…\"事件N\"），"
@@ -1039,10 +1073,113 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         '"characters_action": [{"name": "...", "goal": "...", '
         '"key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
     )
+    # REQ-scene-plan-align：骨架块置顶（最高权重），模型必须先看到事件清单再规划场景
+    if skeleton_block:
+        user = skeleton_block + "\n\n" + user
+    # P0-7 小说级记忆：设定账本（新名词规范/永久纪律/机制基线）注入拆场景层
+    if book_canon:
+        user = user + "\n\n" + book_canon
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event=""):
+def scene_split_review_prompt(cfg, chapter_no, chapter_title, chapter_goal,
+                              events_text: str, scenes_text: str = "") -> tuple[str, str]:
+    """P0-10 拆场景评审（2026-10-10 混合方案①）：骨架产出后独立评审 agent。
+
+    治 v7 第 5 章药铺三重拼接根因：拆场景把同一「进店→诊脉→试探→给药包→离开」
+    过程拆成 3 个 desc 不同（查药粉/诊脉/探脉枕）但语义同构的事件，desc 相似度
+    预筛（>0.55）逃过、正文节拍单遍 3 拍又逃过 4 拍阈值——规划层就埋了重复。
+
+    本 agent 只判「事件两两是否语义同构」（同一过程换措辞/换切入点），输出
+    重复对清单；代码按清单确定性合并（不重复调用模型重拆，省 token、可复现）。
+    正常递进拍（冲突升级、结果不同、因果承接）不算重复——防误杀大纲自身节奏。
+    """
+    system = (
+        "你是小说结构编辑，负责检查本章拆场景规划是否存在「同一事件被拆成多个"
+        "语义同构场景」的规划缺陷。\n"
+        "判定规则：\n"
+        "1. 两个事件如果本质是「同一人物在同一个地方做同一件事，只是换措辞/换切入点/"
+        "换细节重写」→ 判重复（如：进店查药粉 / 进店诊脉试探 / 进店探脉枕验毒，"
+        "同一过程三遍）\n"
+        "2. 两个事件如果因果递进（后一事件从上一事件的结果继续：冲突升级/结果不同/"
+        "换地点换对手/新信息揭示）→ 不判重复\n"
+        "3. 宁可漏报不误杀：拿不准的不列\n"
+        "只输出合法 JSON：{\"duplicate_pairs\":[{\"i\":0,\"j\":2,"
+        "\"reason\":\"同是药铺诊脉试探，仅换措辞\"}],\"note\":\"\"}。"
+        "没有重复输出 {\"duplicate_pairs\":[]}。不要输出代码块标记、解释或省略号。"
+    )
+    user = (
+        f"第{chapter_no}章《{chapter_title}》本章目标：{chapter_goal}\n"
+        "【本章事件清单（每个事件 = 一个场景）】\n"
+        f"{events_text}\n"
+        + (f"【场景分配】\n{scenes_text}\n" if scenes_text else "")
+        + "请检查事件两两是否语义同构（同一过程换措辞拆多遍），输出重复对清单。"
+    )
+    return system, user
+
+
+def rewrite_diagnose_prompt(content: str) -> tuple[str, str]:
+    """P0-10 重写前诊断（2026-10-10 混合方案②）：重写前独立审稿判重复结构。
+
+    治 v4 教训（重写 1 把拼接写得更严重：第四轮第 5 章 2 个问题→4 个问题）——
+    原链路是「重写 → 复检」，重写 agent 在"信息真空"里自由发挥，自校验查不出
+    同构场景/拼接。本 agent 在重写**前**独立诊断正文的重复结构（多稿拼接/
+    对话循环），输出明确「删除哪段、保留哪段」，重写 prompt 按诊断执行——
+    把"自由重写"变成"按清单删除+合并"，从概率上杜绝越改越差。
+    """
+    system = (
+        "你是小说质检编辑，只诊断不改写。阅读正文，定位两类结构缺陷：\n"
+        "1. 多稿拼接/重复版本：同一场景或事件（同一地点/同一批人/同一过程）"
+        "换措辞写了 ≥2 遍——标记其中重复的版本段落（action=删除），保留最完整的一遍\n"
+        "2. 对话循环：同一组问答/对峙对话（同角色、近同措辞）重复 ≥2 次——"
+        "标记重复轮次（action=删除）\n"
+        "输出规则：\n"
+        "- start/end 为字符索引（0-based，正文从 0 开始）；每个 finding 的 start<end\n"
+        "- 每个缺陷独立一条；拼接按「保留段之外的重复段」输出（每条 action=删除）\n"
+        "- 拿不准的不要报（宁可漏报不误删正常递进内容）\n"
+        "只输出合法 JSON：{\"findings\":[{\"type\":\"拼接|对话循环\",\"start\":0,"
+        "\"end\":200,\"action\":\"删除\",\"reason\":\"与第 X 段同一诊脉过程仅换措辞\"}],"
+        "\"note\":\"\"}。无缺陷输出 {\"findings\":[]}。不要代码块标记、解释、省略号。"
+    )
+    user = f"【待重写正文】\n{content}\n\n请诊断上述正文中的多稿拼接与对话循环，输出删除清单。"
+    return system, user
+
+
+def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
+                                  core_event="", events_text="", prev_tail=""):
+    """P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮）。
+
+    拆场景大 JSON 长输出截断通常只丢尾部 characters_action（"Expecting ',' delimiter"
+    实证）；本 prompt 让模型**只输出 characters_action 数组**（小调用、低截断风险），
+    成功后并入拆场景结果——不再整段重试（省 token），行动表措辞层约束真正生效。
+    """
+    system = (
+        "你是一位小说结构编辑。根据本章事件清单与人物，输出本章人物的行动表 JSON 数组。"
+        "严格按 JSON 数组格式输出，不要额外解释、不要代码块标记。"
+    )
+    user = (
+        f"【本章】第{chapter_no}章《{chapter_title}》\n"
+        f"【本章目标】{chapter_goal}\n"
+        f"【本章核心事件】\n{core_event if core_event else '（无）'}\n"
+        f"【本章事件清单（事件=场景，逐条推进，禁止同一事件重复演绎）】\n"
+        f"{events_text if events_text else '（无）'}\n"
+        f"【上一章结尾】\n{prev_tail if prev_tail else '（无）'}\n\n"
+        "输出要求：\n"
+        "1. 为本章出场人物规划行动表，每人一条，含：name（人物名）、"
+        "goal（本章目标，具体可行动）、key_actions（2-4 个动词驱动的关键行动，"
+        "能推进剧情或冲突）、emotion（情绪状态一句话）、"
+        "dialogue_intent（对话意图：想通过对话达成/试探/隐瞒什么）\n"
+        "2. key_actions 必须与事件清单逐条对应：每个事件至多被一个 key_action 覆盖，"
+        "禁止同一个人物对同一事件安排多个 key_action（防行动表诱导跨场景重复落实）\n"
+        "3. 只输出 JSON 数组，不要输出其他文字\n\n"
+        '示例：[{"name": "陆沉", "goal": "摸清苏妄言来意", '
+        '"key_actions": ["装傻应付盘问", "遮掩左臂蚀痕"], '
+        '"emotion": "警惕", "dialogue_intent": "隐瞒昨日在墟口的死亡经历"}]'
+    )
+    return system, user
+
+
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1061,6 +1198,12 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1082,6 +1225,48 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"2. 本场景只写本场景唯一事件；上一事件之后人物已经离开/脱险/换了处境，"
         f"必须从该事件结局之后续写新的情节\n"
     ) if forbid_event else ""
+    done_beats_block = (
+        f"\n【本章已发生节拍序列（硬约束：以下节拍组合已在前面的场景正文中完整发生过，"
+        f"本场景正文禁止再次出现相同顺序的节拍组合——同一情节换措辞/换细节演绎即重演，"
+        f"必须改写为与前面场景完全不同的新进展；若确有'应被压缩'的旧进展，用一句叙述带过"
+        f"而不是重演完整过程）】\n{done_beats}\n"
+    ) if done_beats else ""
+    # P0-1 事件消费账本（2026-10-09 生成端第三轮，对标 AgentWrite $STEP$ 指针制）：
+    # 已消费事件只许一句话回响；后续事件预览只许铺垫提及，禁提前消费完整流程。
+    consumed_block = (
+        f"\n【本章已消费事件（硬约束：以下事件已在本章前面的场景正文中完整发生并结束，"
+        f"本场景禁止再次发生/禁止展开其完整流程——换地点、换措辞、换细节再写一遍"
+        f"同样视为重演；如需呼应，只用一句话带过结果）】\n{consumed_events}\n"
+    ) if consumed_events else ""
+    upcoming_block = (
+        f"\n【本章后续事件预览（禁提前消费：以下事件留给各自的场景推进，本场景正文"
+        f"禁止写出它们的完整流程、动作、冲突或结果；只可做一句铺垫性提及，"
+        f"不得展开演绎）】\n{upcoming_events}\n"
+    ) if upcoming_events else ""
+    # P0-3 面板数字确定性闭环（2026-10-09 生成端第三轮）：权威基线注入 + 违反方向规则重试。
+    panel_baseline_block = (
+        f"\n【机制数字基线（本场景开始时的权威数字，硬约束：正文中的机制数字必须从这些值"
+        f"开始推进——次数类（含可死次数/剩余）只许递减，蚀化/进度类只许递增（只增不减，"
+        f"子时重置除外）；禁止出现与方向规则相反的值、禁止同值跨结算点重复显示）】\n"
+        f"{panel_baseline}\n"
+    ) if panel_baseline else ""
+    panel_violation_block = (
+        f"\n【重试强制规则（上一条正文中机制数字违反方向规则，已作废）】\n"
+        f"{panel_violations}\n"
+    ) if panel_violations else ""
+    # P0-7 小说级记忆：本作历史错误（踩坑账本 Top-N，场景生成纪律）
+    book_pitfalls_block = (
+        f"\n{book_pitfalls}\n"
+    ) if book_pitfalls else ""
+    # P0-8 小说级记忆：机制基线注入（蚀痕位置/机制数字唯一权威来源，正文禁止自造口径）
+    book_canon_block = (
+        f"\n{book_canon}\n"
+    ) if book_canon else ""
+    # P0-10 机制数字确定性锚（代码按账本累计算出：蚀化当前应 = 起始基线 + 累计死亡；
+    # 治 v7 第 6 章蚀化跨章口径——LLM 只写这个数，不自由发挥）
+    state_anchor_block = (
+        f"\n{state_anchor}\n"
+    ) if state_anchor else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1093,12 +1278,25 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
         f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n\n"
+        f"{'【事件进度（硬约束：本章事件按编号顺序各对应一个场景、各只推进一次；'
+        f'本场景只允许推进本场景唯一事件的正文，禁止把后续事件的完整流程提前写完——'
+        f'后续事件（如死亡-复活-对峙-包扎-离场等完整循环）必须留给各自场景推进，'
+        f'即使本场景事件是前置节拍（进入/扫描/试探），也只写该节拍本身及与下一事件的直接衔接）】\n'
+        f'{event_progress}\n\n' if event_progress else ''}"
         f"【前情记忆】\n{memory_context if memory_context else '（首章）'}\n\n"
         f"【上一章节结尾（衔接用）】\n{prev_tail if prev_tail else '（无）'}\n\n"
         f"{'【本章已推进状态（后续场景必须延续，禁止回退或重复叙述已发生事实）】\n' + scene_state_hint + '\n\n' if scene_state_hint else ''}"
         f"{'【本场景时间锚点】' + scene.get('time_marker', '') + '\n\n' if scene.get('time_marker') else ''}"
         f"{force_block}"
         f"{forbid_block}"
+        f"{done_beats_block}"
+        f"{consumed_block}"
+        f"{upcoming_block}"
+        f"{panel_baseline_block}"
+        f"{panel_violation_block}"
+        f"{book_pitfalls_block}"
+        f"{book_canon_block}"
+        f"{state_anchor_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -1115,7 +1313,9 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
            "场景切换要有顺理成章的推进（如移动、时间流逝、事件触发），禁止毫无交代的跳跃换场；"
            "本场景的事件在时间线上位于上一场景事件之后，必须从上一场景的『结局之后』续写，"
            "禁止回到上一场景更早的时点重演其已写情节（哪怕换地点、换措辞、补细节，"
-           "连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）\n")
+           "连'伏看-犹豫-碎石滚落-对视'这类起手式都禁止重复）；"
+           "同时禁止把本章后续事件的完整流程提前写完——本场景只写本场景唯一事件，"
+           "后续事件（死亡-复活-对峙-包扎-离场等完整循环）必须留给各自场景推进\n")
         + "8. 情节连续：场景内和场景间不得出现'上一幕还在A地，下一句已在B地'式断层，"
         "所有换场都要有可感知的衔接动作或时间过渡\n"
         "9. 状态衔接（硬约束）：本场景的机制数字（面板/蚀痕）、人物生死、物品归属必须与"
@@ -1370,8 +1570,15 @@ def ending_prompt(cfg, outline, world):
     return system, user
 
 
-def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
-    """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。"""
+def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content,
+                         book_pitfalls: str = ""):
+    """读者视角审校：从追更体验角度找问题，只定位不改写。低温 0.3。
+
+    P0-10（混合方案③）：注入本作历史错误（pitfalls 记忆）+ 三项专项检查
+    （同构场景/对话循环/数字口径）——v7 ch5 三重拼接与 ch3 对话循环是读者
+    视角最敏感的"注水感"来源，须显式点名检查（历轮读者审校对同构场景
+    检出率不足，需专项指令引导）。
+    """
     system = (
         "你是一位挑剔的网文追更读者，在手机上刷文，3秒决定要不要划走。"
         "你只做读者体验问题定位，不改写正文。按 JSON 输出问题清单。"
@@ -1386,13 +1593,19 @@ def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
         "3. 章末钩子：结尾有没有让读者想看下一章？还是流水账就结束了？\n"
         "4. 阅读障碍：有没有大段设定堆砌？长句绕口？节奏拖沓想快进？\n"
         "5. 主角主动性：主角是主动选择推进剧情，还是全程被动挨打？\n\n"
-        '输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], '
-        '"追更欲": 1-5, "一句话感受": "..."}\n'
+        "6. 同构场景（专项）：同一场景/同一过程（同地点同批人，仅换措辞）"
+        "是否写了 ≥2 遍？——读者视角的注水感头号来源，如「进药铺诊脉试探→给药包→离开」"
+        "写三遍；发现请标记每段的起止行（level 至少中改）\n"
+        "7. 对话循环（专项）：同一组问答/对峙对话（同角色、近同措辞）是否重复 ≥2 次？"
+        "如「你不对劲→命大」反复多轮；发现请标记重复轮次（level 至少中改）\n"
+        "8. 机制数字口径（专项）：蚀化/蚀痕/次数等机制数字在本章内前后是否口径一致"
+        "（无冲突、无自相矛盾）；发现冲突请标记位置（level 大改）\n"
+        + (f"\n【本作历史错误（本书踩坑账本——重点检查这些是否又犯了）】\n{book_pitfalls}\n" if book_pitfalls else "")
+        + '\n输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], "'
+        '"追更欲": 1-5, "一句话感受": "..."}\n"'
         "level 判定：小改=句子级瑕疵；中改=某段不爽但还能看；大改=整章想划走。"
     )
     return system, user
-
-
 def blind_check_prompt(cfg, chapter_no, recent_summaries, world_text):
     """读者视角自检：三问。低温 0.3。"""
     system = (
@@ -1427,6 +1640,8 @@ def chapter_prompt(
     is_final: bool = False,
     chapter_core_event: str = "",
     chapter_events: str = "",
+    personal_anchor: str = "",
+    teardown_anchor: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1485,6 +1700,12 @@ def chapter_prompt(
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1599,8 +1820,14 @@ def expand_chapter_prompt(
     chapter_title: str,
     content: str,
     target_words: int,
+    personal_anchor: str = "",
+    teardown_anchor: str = "",
 ) -> tuple[str, str]:
-    """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。"""
+    """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。
+
+    REQ-双锚风格锚定：注入风格范文（_style_reference）+ 个人旧稿锚（personal_anchor）
+    + 拆书库题材锚（teardown_anchor），全部为弱约束（只模仿语感，严禁抄袭内容）。
+    """
     system = (
         "你是资深小说扩写编辑。用户给出「已有章节正文」，你要在【不改变情节走向、"
         "不删减已有内容、不改变人物性格与对话原意】的前提下，把正文扩写到目标字数。"
@@ -1613,6 +1840,15 @@ def expand_chapter_prompt(
             "扩写文字要有真人作者的质感：细节具体、对话有潜台词，"
             "避免AI腔（连接词堆砌、强行升华、句式整齐）。"
         )
+    ref = _style_reference(cfg)
+    if ref:
+        system += "\n\n" + ref
+    if personal_anchor:
+        system += "\n\n" + wrap_style_anchor(PERSONAL_ANCHOR_HEADER, personal_anchor)
+    if getattr(cfg, "teardown_style_anchor", True):
+        anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
+        if anchor:
+            system += "\n\n" + anchor
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:

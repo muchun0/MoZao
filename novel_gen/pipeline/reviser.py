@@ -136,21 +136,38 @@ class ChapterReviser:
 
 
 class ReaderReviewer:
-    """读者视角审校：只定位不改写，结果追加到 review.json。"""
+    """读者视角审校：只定位不改写，结果追加到 review.json。
+
+    P0-10（混合方案③）：注入本作历史错误（pitfalls 记忆）+ 三项专项检查
+    （同构场景/对话循环/数字口径）——v7 ch5 三重拼接与 ch3 对话循环是读者
+    视角最敏感的"注水感"来源，须显式点名检查（历轮读者审校对同构场景
+    检出率不足，需专项指令引导）。memory 为空/关闭时行为与旧版一致。
+    """
 
     def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
-                 role_prompt: str = ""):
+                 role_prompt: str = "", memory=None):
         self.cfg = cfg
         self.llm = llm
         self.store = store
         self.role_prompt = role_prompt
+        self.memory = memory
 
     def review(self, chapter_no: int, chapter_title: str, chapter_goal: str,
                content: str) -> None:
         """对本章跑读者视角审校，结果合并进 review.json。"""
         try:
+            book_pitfalls = ""
+            if self.memory is not None:
+                try:
+                    book_pitfalls = self.memory.pitfall_block(
+                        top_n=int(getattr(self.cfg, "book_memory_top_n", 5) or 5),
+                        min_count=1,
+                    )
+                except Exception:
+                    book_pitfalls = ""
             sys_r, user_r = reader_review_prompt(
-                self.cfg, chapter_no, chapter_title, chapter_goal, content
+                self.cfg, chapter_no, chapter_title, chapter_goal, content,
+                book_pitfalls=book_pitfalls,
             )
             if self.role_prompt:
                 sys_r = f"{self.role_prompt}\n\n{sys_r}"

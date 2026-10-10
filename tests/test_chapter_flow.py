@@ -170,3 +170,68 @@ def test_chapter_prompt_injects_events_sequence():
     )
     assert "【本章事件序列" not in user2
     assert "3.5 本章每个事件/冲突场面" in user2 and "只允许完整发生一次" in user2
+
+
+# ---------- 方案4：质检未通过落盘分流（2026-10-07） ----------
+
+@pytest.mark.p1
+def test_write_keeps_previous_when_quality_fails(tmp_path, monkeypatch):
+    """方案4（落盘分流）：质检未通过且该章已有旧版 → write() 保留旧版正文，
+    不把坏章覆盖上去；save_chapter 落盘的是旧版。"""
+    from unittest.mock import MagicMock
+    from novel_gen.pipeline.quality import QualityChecker
+
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    cfg.high_quality_mode = False          # 走普通整章路径（少 LLM 调用）
+    cfg.scene_split = False                # 强制整章生成，避免场景级多次 LLM
+    cfg.agent_guard.quality_check = True
+    store = ProjectStore.create(tmp_path / "pq", cfg)
+    old = Chapter(no=1, title="第一章", content="旧版正文。" * 300, summary="旧版摘要")
+    store.save_chapter(old)
+
+    llm = MagicMock()
+    # write() 整章生成 + 可能的字数兜底：返回足够长且含摘要的正文
+    llm.chat.side_effect = lambda *a, **k: "新版坏文。" * 500 + "\n\n【摘要】新版摘要"
+
+    # monkeypatch 模块4：ensure_quality 返回 passed=False（坏章）
+    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary,
+                     silent=False, baseline=None, core_event=""):
+        return (Chapter(no=chapter_no, title=plan_title, content=content, summary=summary),
+                {"passed": False, "score": 75, "issues": []})
+    monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)
+
+    writer = ChapterWriter(cfg, llm, store, Memory(store))
+    ch = writer.write(1, "第一章", "目标", None, silent=True)
+    # 返回与落盘的都是旧版正文，坏章未覆盖
+    assert ch.content == old.content
+    assert store.load_chapter(1).content == old.content
+
+
+@pytest.mark.p1
+def test_write_saves_new_when_quality_fails_no_previous(tmp_path, monkeypatch):
+    """方案4（落盘分流）：质检未通过但该章【无旧版】→ 仍落盘新稿
+    （无可用旧版可保留，落盘供前端红标提示，不静默丢弃生成内容）。"""
+    from unittest.mock import MagicMock
+    from novel_gen.pipeline.quality import QualityChecker
+
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    cfg.high_quality_mode = False
+    cfg.scene_split = False
+    cfg.agent_guard.quality_check = True
+    store = ProjectStore.create(tmp_path / "pq2", cfg)
+
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: "新版坏文。" * 500 + "\n\n【摘要】新版摘要"
+
+    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary,
+                     silent=False, baseline=None, core_event=""):
+        return (Chapter(no=chapter_no, title=plan_title, content=content, summary=summary),
+                {"passed": False, "score": 75, "issues": []})
+    monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)
+
+    writer = ChapterWriter(cfg, llm, store, Memory(store))
+    ch = writer.write(1, "第一章", "目标", None, silent=True)
+    # 无旧版 → 新稿落盘（后续前端按 review.json 的 passed=false 显示红标）
+    assert ch.content.startswith("新版坏文")
+    assert store.load_chapter(1) is not None
+    assert store.load_chapter(1).content.startswith("新版坏文")

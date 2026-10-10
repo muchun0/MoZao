@@ -194,7 +194,7 @@ def test_write_keeps_previous_when_quality_fails(tmp_path, monkeypatch):
     llm.chat.side_effect = lambda *a, **k: "新版坏文。" * 500 + "\n\n【摘要】新版摘要"
 
     # monkeypatch 模块4：ensure_quality 返回 passed=False（坏章）
-    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary, silent=False):
+    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary, silent=False, baseline=None):
         return (Chapter(no=chapter_no, title=plan_title, content=content, summary=summary),
                 {"passed": False, "score": 75, "issues": []})
     monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)
@@ -222,7 +222,7 @@ def test_write_saves_new_when_quality_fails_no_previous(tmp_path, monkeypatch):
     llm = MagicMock()
     llm.chat.side_effect = lambda *a, **k: "新版坏文。" * 500 + "\n\n【摘要】新版摘要"
 
-    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary, silent=False):
+    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary, silent=False, baseline=None):
         return (Chapter(no=chapter_no, title=plan_title, content=content, summary=summary),
                 {"passed": False, "score": 75, "issues": []})
     monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)

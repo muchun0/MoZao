@@ -471,8 +471,18 @@ class ChapterWriter:
                 from .quality import QualityChecker
                 qc = QualityChecker(self.cfg, self.llm, self.store,
                                     trace=self.trace, guard=self.guard)
+                # P0-5（2026-10-10）：把场景循环累计的机制数字基线透传给质检层——
+                # 重写/改稿产物在 check 内叠加面板方向校验（蚀化回退/次数回升二次兜底）。
+                # 场景路径的 scene_state_acc 与本函数同作用域（locals 可拿）；整章路径无则 None。
+                _bl: dict = {}
+                try:
+                    from .chapter_state import panel_baseline_dict as _pbd
+                    _bl = _pbd((locals().get("scene_state_acc") or {}).get("numbers") or [])
+                except Exception:
+                    _bl = {}
                 chapter, _qc = qc.ensure_quality(
-                    chapter_no, plan_title, plan_goal, content, summary, silent=silent
+                    chapter_no, plan_title, plan_goal, content, summary,
+                    silent=silent, baseline=_bl or None,
                 )
                 content, summary = chapter.content, chapter.summary
                 qc_passed = bool(_qc.get("passed", True))
@@ -720,6 +730,8 @@ class ChapterWriter:
                         chapter_no, plan_title, plan_goal,
                         plan_core_event, fallback_events, prev_tail, silent=silent,
                     )
+                    if not silent and ca:
+                        print(f"  [行动表] 补全成功，行动表注入 {len(ca)} 条（措辞层约束生效）")
                 action_plan_block = _format_action_plan(ca or [])
                 if not silent:
                     print(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
@@ -1227,7 +1239,12 @@ class ChapterWriter:
                 except Exception:
                     arr = _extract_json_field(raw, "characters_action")
                 if isinstance(arr, list) and arr:
-                    return [c for c in arr if isinstance(c, dict) and c.get("name")]
+                    ok = [c for c in arr if isinstance(c, dict) and c.get("name")]
+                    # P0-5（2026-10-10）：补成功日志——此前只有失败日志，
+                    # 无法区分"独立行动表调用失败回退"与"拆场景救回+单字段补全成功"。
+                    if not silent:
+                        print(f"  [行动表补全] 第{_try}次补全成功：注入 {len(ok)} 条行动（原解析截断救回）")
+                    return ok
                 if not silent:
                     print(f"  [行动表补全] 第{_try}次解析失败，重试 1 次...")
             if not silent:

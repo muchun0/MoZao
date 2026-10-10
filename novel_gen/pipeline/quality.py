@@ -95,14 +95,20 @@ class QualityChecker:
 
     # ---------- 对外入口 ----------
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
-                       content: str, summary: str, silent: bool = False
+                       content: str, summary: str, silent: bool = False,
+                       baseline: dict | None = None,
                        ) -> tuple[Chapter, dict]:
         """校验 → 不通过则自动重写（最多 _MAX_REWRITE 轮，通过即停）→ 复检
         → 返回 (最终 Chapter, 校验结果)。
 
-        校验结果同时落 review.json（与既有格式兼容）与 trace。
+        baseline：机制数字基线（panel_baseline_dict(numbers)），供质检层叠加
+        面板方向校验（P0-5：重写产物/改稿产物在质检层二次兜底蚀化回退/次数回升）。
+        P0-5 兜底：重写无效/超轮仍未消除问题时，回退到循环内「问题最少、分数最高」
+        的最优版本，不再把重写后的坏稿原样落盘（第四轮第 5 章：重写 2 无效 break
+        后坏稿直接落盘的缺口）。
         """
-        result = self.check(chapter_no, plan_title, plan_goal, content, summary)
+        result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                            baseline=baseline)
         issues = result["issues"]
         rewritten_occurred = False
 
@@ -119,8 +125,13 @@ class QualityChecker:
                 rewritten_occurred = True
                 if not silent:
                     print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
-                result = self.check(chapter_no, plan_title, plan_goal, content, summary)
+                result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                                    baseline=baseline)
                 issues = result["issues"]
+
+        # P0-5 最优版本账本：初始稿作为基准，重写轮内择优（问题数升序、分数降序）
+        best_content, best_summary, best_issues, best_result = content, summary, issues, result
+        best_rewritten = rewritten_occurred
 
         # 不通过 → 自动重写（最多 _MAX_REWRITE 轮；每轮重写后复检，通过即停；
         # 全部失败才标记 review.json 放行，不再"1 次重写不通过即静默交付"）
@@ -144,11 +155,32 @@ class QualityChecker:
                 summary = ns
             rewritten_occurred = True
             # 复检
-            result = self.check(chapter_no, plan_title, plan_goal, content, summary)
+            result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                                baseline=baseline)
             issues = result["issues"]
             if not silent:
                 print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
                       f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
+            # P0-5 择优：问题更少，或问题相同但分数更高 → 更新最优版本
+            if len(issues) < len(best_issues) or (
+                len(issues) == len(best_issues)
+                and result.get("score", 0) > best_result.get("score", 0)
+            ):
+                best_content, best_summary, best_issues, best_result = content, summary, issues, result
+                best_rewritten = rewritten_occurred
+
+        # P0-5 兜底：循环结束仍未通过（超轮/重写无效 break）且已有优于当前的最优版本
+        # → 回退最优版本（坏稿不得顶掉相对较好的版本；首次生成无旧版时尤其关键）
+        if not result["passed"] and best_content is not None and (
+            len(best_issues) < len(issues)
+            or (len(best_issues) == len(issues)
+                and best_result.get("score", 0) > result.get("score", 0))
+        ):
+            content, summary, issues, result = best_content, best_summary, best_issues, best_result
+            rewritten_occurred = best_rewritten or rewritten_occurred
+            if not silent:
+                print(f"  [自校验] 第{chapter_no}章重写未消除问题，回退到最优版本"
+                      f"（{len(issues)} 个问题，{len(content)} 字）")
 
         # 结果落库（review.json 兼容既有格式，P2-4：记录实际是否触发重写）
         self._save_review(chapter_no, issues, result, auto_revised=rewritten_occurred)
@@ -161,8 +193,13 @@ class QualityChecker:
 
     # ---------- 校验 ----------
     def check(self, chapter_no: int, plan_title: str, plan_goal: str,
-              content: str, summary: str = "") -> dict:
-        """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。"""
+              content: str, summary: str = "",
+              baseline: dict | None = None) -> dict:
+        """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。
+
+        baseline：机制数字基线（panel_baseline_dict(numbers)，P0-5 从场景循环透传）；
+        非空时叠加面板方向校验（质检层二次兜底蚀化回退/次数回升，与场景级防线4 同基线）。
+        """
         issues: list[dict] = []
         score = 100
 
@@ -211,6 +248,23 @@ class QualityChecker:
         for it in self._panel_progress_issues(content):
             issues.append(it)
             score -= 30
+
+        # 2.8b 面板数字方向校验（P0-5，2026-10-10）：与场景级防线4 同基线
+        #    （panel_baseline_dict(numbers)），质检层二次兜底——重写/改稿产物
+        #    若出现蚀化 98→97 回退、次数无子时重置的回升，即使场景级防线被绕过
+        #    （如第 5 章场景级静默）也在落盘前拦截。无基线/标签未识别不校验。
+        if baseline:
+            try:
+                from .chapter_state import panel_direction_violations as _pdv
+                for it in _pdv(content, baseline):
+                    issues.append({
+                        "type": "写作-机制数字方向违规",
+                        "detail": it,
+                        "level": "大改",
+                    })
+                    score -= 30
+            except Exception:
+                pass
 
         # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
         #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
@@ -465,8 +519,10 @@ class QualityChecker:
         """
         if not content or len(content) < _PANEL_REPEAT_SPAN * 2:
             return []
+        # 2026-10-10 P0-5：后缀补「蚀化」——与 chapter_state._PANEL_RE 对齐，
+        # 否则「距离蚀化：98%」在质检层同样漏检（第四轮第 5 章蚀化回退未被拦）。
         pattern = re.compile(
-            r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|蚀痕|剩余))\s*[：:]\s*"
+            r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|蚀痕|蚀化|剩余))\s*[：:]\s*"
             r"([0-9]+(?:\s*[／/]\s*[0-9]+)?)"
         )
         hits: dict[tuple[str, str], list[int]] = {}
@@ -786,6 +842,14 @@ class QualityChecker:
                 or "两版本" in (it.get("detail") or "")
                 or "整段" in (it.get("detail") or "")
                 or "原样复刻" in (it.get("detail") or "")
+                # P0-5（2026-10-10）：补 2.12 情节级重演的判定词——此前重演 issue
+                # （type=情节-同事件循环重演，detail 含"多版本/换措辞循环"）不匹配
+                # 上述关键词，dedup_block 不触发，重写无"每事件只写一遍"约束，
+                # 重写 1 反而把拼接写得更严重（第四轮第 5 章 2 个问题→4 个问题）。
+                or "循环重演" in (it.get("type") or "")
+                or "多版本" in (it.get("detail") or "")
+                or "换措辞" in (it.get("detail") or "")
+                or "重演" in (it.get("type") or "")
                 for it in issues
             )
             dedup_block = (
@@ -821,6 +885,11 @@ class QualityChecker:
                 f"7. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要；"
                 f"摘要必须写本章最终结算后的面板状态（如'死亡次数减至 1/3'）\n"
                 + dedup_block
+                + "\n【硬性要求：重写即整体替换】\n"
+                  "只输出一个单一完整连贯的新版正文。严禁保留原文段落再追加新写法"
+                  "（多稿拼接）；严禁把同一场景/事件换措辞、换地点、换细节写多遍后"
+                  "拼在一起。如需修改某处内容，直接在该处替换，禁止在文末或他处"
+                  "复写另一平行版本。输出必须是前后连贯的一整篇，不是多段草稿的合集。\n"
                 + f"【当前正文】\n{content}"
             )
             text = self.llm.chat(

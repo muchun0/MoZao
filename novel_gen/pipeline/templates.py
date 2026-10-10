@@ -965,7 +965,7 @@ def action_plan_prompt(cfg, chapter_no, chapter_title, chapter_goal, memory_cont
     return system, user
 
 
-def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event="", moves=""):
+def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail="", core_event="", moves="", book_canon=""):
     # REQ-scene-plan-align：moves 非空 = 事件清单已由大纲 character_moves 确定性派生
     # （硬骨架），模型只做「补结构化字段 + 拆场景」，禁止增删/改写/合并事件；
     # moves 为空 = 原路径，模型自行规划互斥事件清单。
@@ -1076,6 +1076,9 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
     # REQ-scene-plan-align：骨架块置顶（最高权重），模型必须先看到事件清单再规划场景
     if skeleton_block:
         user = skeleton_block + "\n\n" + user
+    # P0-7 小说级记忆：设定账本（新名词规范/永久纪律/机制基线）注入拆场景层
+    if book_canon:
+        user = user + "\n\n" + book_canon
     return system, user
 
 
@@ -1113,7 +1116,7 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1188,6 +1191,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"\n【重试强制规则（上一条正文中机制数字违反方向规则，已作废）】\n"
         f"{panel_violations}\n"
     ) if panel_violations else ""
+    # P0-7 小说级记忆：本作历史错误（踩坑账本 Top-N，场景生成纪律）
+    book_pitfalls_block = (
+        f"\n{book_pitfalls}\n"
+    ) if book_pitfalls else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1215,6 +1222,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{upcoming_block}"
         f"{panel_baseline_block}"
         f"{panel_violation_block}"
+        f"{book_pitfalls_block}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"

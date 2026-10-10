@@ -298,6 +298,39 @@ class ChapterWriter:
         self._anchor_loaded: str | None = None
         #: REQ-双锚风格锚定：个人旧稿锚懒提取缓存（None=未读）
         self._personal_loaded: str | None = None
+        #: P0-7 小说级记忆：懒加载 BookMemory（None=未初始化；关闭/失败 → None 跳过）
+        self._book_memory = None
+
+    def _memory(self):
+        """P0-7 懒加载小说级记忆；book_memory 开关关闭/初始化失败 → None（行为降级安全）。"""
+        if self._book_memory is None and getattr(self.cfg, "book_memory", True):
+            try:
+                from .book_memory import BookMemory
+                self._book_memory = BookMemory(self.store, self.cfg)
+            except Exception:
+                self._book_memory = None
+        return self._book_memory
+
+    def _book_canon(self, max_chars: int = 800) -> str:
+        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
+        mem = self._memory()
+        if mem is None:
+            return ""
+        try:
+            return mem.canon_block(max_chars=max_chars)
+        except Exception:
+            return ""
+
+    def _book_pitfalls(self, top_n: int = 3, min_count: int = 2) -> str:
+        """P0-7：本作历史错误（场景生成纪律）注入块——只注入已反复出现（≥2 次）
+        的踩坑，避免低频问题过度束缚正常生成。空则空串。"""
+        mem = self._memory()
+        if mem is None:
+            return ""
+        try:
+            return mem.pitfall_block(top_n=top_n, min_count=min_count)
+        except Exception:
+            return ""
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
@@ -470,7 +503,8 @@ class ChapterWriter:
             try:
                 from .quality import QualityChecker
                 qc = QualityChecker(self.cfg, self.llm, self.store,
-                                    trace=self.trace, guard=self.guard)
+                                    trace=self.trace, guard=self.guard,
+                                    memory=self._memory())
                 # P0-5（2026-10-10）：把场景循环累计的机制数字基线透传给质检层——
                 # 重写/改稿产物在 check 内叠加面板方向校验（蚀化回退/次数回升二次兜底）。
                 # 场景路径的 scene_state_acc 与本函数同作用域（locals 可拿）；整章路径无则 None。
@@ -486,6 +520,16 @@ class ChapterWriter:
                 )
                 content, summary = chapter.content, chapter.summary
                 qc_passed = bool(_qc.get("passed", True))
+                # P0-7 小说级记忆：记录本章评分与问题分布（经验账本）+ 踩坑降权
+                # （零 LLM，失败静默不阻塞）
+                try:
+                    _mem = self._memory()
+                    if _mem is not None:
+                        _mem.record_taste(chapter_no, int(_qc.get("score", 0) or 0),
+                                          _qc.get("issues") or [])
+                        _mem.decay(chapter_no)
+                except Exception:
+                    pass
             except Exception as qe:
                 if not silent:
                     print(f"  [自校验] 跳过: {qe}")
@@ -577,10 +621,16 @@ class ChapterWriter:
                 f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
                 for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
             ) or ""
+        # P0-7 小说级记忆：回退整章路径同样注入本作历史错误（重写措辞 + 数字回灌
+        # 由 quality 层做；这里注入场景级纪律，防整章单次生成重演本书高频错误）
+        _mem = memory_context
+        _bmem = self._book_pitfalls(top_n=5, min_count=1)
+        if _bmem:
+            _mem = (_mem + "\n\n" if _mem else "") + _bmem
         system, user = chapter_prompt(
             self.cfg, chapter_no=chapter_no,
             chapter_title=plan_title, chapter_goal=plan_goal,
-            research_block="", memory_context=memory_context,
+            research_block="", memory_context=_mem,
             prev_tail=prev_tail, is_final=is_final,
             chapter_core_event=plan_core_event,
             chapter_events=ev_block,
@@ -667,6 +717,7 @@ class ChapterWriter:
                 self.cfg, chapter_no, plan_title, plan_goal,
                 prev_tail=prev_tail, core_event=plan_core_event,
                 moves=skeleton_arg,
+                book_canon=self._book_canon(),
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
@@ -854,6 +905,9 @@ class ChapterWriter:
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
+        # P0-7 小说级记忆：本作历史错误（已反复出现 ≥2 次的踩坑）注入场景 prompt，
+        # 在生成点抑制已知高频错误（换措辞重演/数字回退等）；空账本 → 空串不注入。
+        book_pitfalls_text = self._book_pitfalls()
         for idx, sc in enumerate(scenes, start=1):
             # REQ-scene-plan-align §7.3 措施1：事件进度硬约束——本章共 N 个事件/场景，
             # 本场景只允许推进本场景唯一事件，禁止提前写后续事件完整流程（防"越权消费"）
@@ -898,6 +952,7 @@ class ChapterWriter:
                 consumed_events=consumed_events_text,
                 upcoming_events=upcoming_events_text,
                 panel_baseline=panel_baseline_text,
+                book_pitfalls=book_pitfalls_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -942,6 +997,7 @@ class ChapterWriter:
                             consumed_events=consumed_events_text,
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -982,6 +1038,7 @@ class ChapterWriter:
                             consumed_events=consumed_events_text,
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
                         )
                         retry3 = self.llm.chat(
                             self._sys(sys_c3), user_c3,
@@ -1031,6 +1088,7 @@ class ChapterWriter:
                             consumed_events=consumed_events_text,
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
                         )
                         retry4 = self.llm.chat(
                             self._sys(sys_c4), user_c4,
@@ -1087,6 +1145,7 @@ class ChapterWriter:
                                 upcoming_events=upcoming_events_text,
                                 panel_baseline=panel_baseline_text,
                                 panel_violations=_viol_text,
+                                book_pitfalls=book_pitfalls_text,
                             )
                             retry5 = self.llm.chat(
                                 self._sys(sys_c5), user_c5,
@@ -1132,6 +1191,13 @@ class ChapterWriter:
                 # 注入；desc 为空时用规划事件文本，避免账本缺环）
                 if ev:
                     event_ledger.append({"desc": ev, "consumed_scene_idx": idx})
+                    # P0-7 小说级记忆：跨章持久化事件消费（零 LLM，失败静默）
+                    try:
+                        _mem = self._memory()
+                        if _mem is not None:
+                            _mem.record_event_consumed(ev, chapter_no)
+                    except Exception:
+                        pass
                 # 场景状态推进抽取（REQ-token优化 P0-1）：
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。

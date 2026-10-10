@@ -86,14 +86,31 @@ class QualityChecker:
     """章级质量校验器（确定性规则 + 读者视角 LLM 校验）。"""
 
     def __init__(self, cfg: NovelConfig, llm: LLMClient, store: ProjectStore,
-                 trace: TraceRecorder | None = None, guard=None):
+                 trace: TraceRecorder | None = None, guard=None, memory=None):
         self.cfg = cfg
         self.llm = llm
         self.store = store
         self.trace = trace
         self.guard = guard
+        # P0-7 小说级记忆：None/关闭时全部记忆行为安全跳过（老调用方不受影响）
+        self.memory = memory
 
     # ---------- 对外入口 ----------
+    def _record_pitfalls(self, chapter_no: int, issues: list[dict]) -> None:
+        """P0-7：把质检出问题写入小说级踩坑账本（零额外 LLM，失败静默）。
+
+        每轮 check（初始稿/抢救后/每轮重写复检）都记录——重写后仍未消除的问题
+        同样入账（说明该类错误重写修不动，是高频踩坑）。同一章同 pattern 只计
+        一次（record_pitfall 内部处理），跨章真实累加。
+        """
+        if self.memory is None or not getattr(self.cfg, "book_memory", True):
+            return
+        try:
+            self.memory.record_pitfall(chapter_no, issues)
+            self.memory.escalate()
+        except Exception:
+            pass
+
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, summary: str, silent: bool = False,
                        baseline: dict | None = None,
@@ -111,6 +128,7 @@ class QualityChecker:
                             baseline=baseline)
         issues = result["issues"]
         rewritten_occurred = False
+        self._record_pitfalls(chapter_no, issues)
 
         # 事后自愈①：章内多稿拼接 → 确定性单稿抢救（不依赖 LLM，避免重写再次堆稿）
         if _has_type(issues, "章内大量自重复"):
@@ -128,6 +146,7 @@ class QualityChecker:
                 result = self.check(chapter_no, plan_title, plan_goal, content, summary,
                                     baseline=baseline)
                 issues = result["issues"]
+                self._record_pitfalls(chapter_no, issues)
 
         # P0-5 最优版本账本：初始稿作为基准，重写轮内择优（问题数升序、分数降序）
         best_content, best_summary, best_issues, best_result = content, summary, issues, result
@@ -158,6 +177,7 @@ class QualityChecker:
             result = self.check(chapter_no, plan_title, plan_goal, content, summary,
                                 baseline=baseline)
             issues = result["issues"]
+            self._record_pitfalls(chapter_no, issues)
             if not silent:
                 print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
                       f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
@@ -821,6 +841,28 @@ class QualityChecker:
         except Exception:
             return ""
 
+    def _memory_block(self, issues: list[dict]) -> str:
+        """P0-7：重写时注入本作历史错误（踩坑 Top-N）+ 数字修复回灌；空则返回空串。
+
+        只对重写路径生效（for_rewrite=True 措辞：删除重复版本）；场景生成用
+        stages 侧注入的 pitfall_block（min_count=2 纪律类）。
+        """
+        if self.memory is None or not getattr(self.cfg, "book_memory", True):
+            return ""
+        try:
+            top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
+            pb = self.memory.pitfall_block(top_n=top_n, for_rewrite=True)
+            num_issues = [
+                str(it.get("detail") or "") for it in (issues or [])
+                if "机制数字" in (str(it.get("type") or ""))
+                or "面板" in (str(it.get("detail") or ""))
+                or "蚀化" in (str(it.get("detail") or ""))
+            ]
+            nb = self.memory.numeric_backfill(num_issues)
+            return "\n\n".join(x for x in (pb, nb) if x)
+        except Exception:
+            return ""
+
     def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, issues: list[dict]) -> str:
         """整章重写（原行为，无定位信息/定点失败时兜底）。
@@ -863,12 +905,14 @@ class QualityChecker:
                 "10. 每个事件的结束状态（面板数字/蚀痕位置/伤势）必须比上一事件结束时有增量变化，"
                 "禁止两事件结束时间一状态\n\n"
             ) if has_event_dup else ""
+            mem_block = self._memory_block(issues)
             ctx = self._context_block(chapter_no)
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的正文，"
                 f"质检发现如下问题，请重写本章正文。\n"
                 f"【本章目标】{plan_goal}\n"
                 + (f"\n{ctx}\n" if ctx else "")
+                + (f"\n{mem_block}\n" if mem_block else "")
                 + f"【质检问题】\n{issue_block}\n\n"
                 f"重写要求：\n"
                 f"1. 保留原有剧情走向、人物设定与关键对话，不推翻前文既定事实\n"
@@ -914,11 +958,13 @@ class QualityChecker:
                 f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
             )
             ctx = self._context_block(chapter_no)
+            mem_block = self._memory_block(issues)
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的一个段落，"
                 f"质检发现如下问题，请只重写这个段落（不要改动上下文，不要输出其他内容）。\n"
                 f"【本章目标】{plan_goal}\n"
                 + (f"\n{ctx}\n" if ctx else "")
+                + (f"\n{mem_block}\n" if mem_block else "")
                 + f"【质检问题】\n{issue_block}\n\n"
                 f"【段落前文（保持衔接，不要重复）】\n{ctx_before}\n\n"
                 f"【需要重写的段落】\n{problem_seg}\n\n"

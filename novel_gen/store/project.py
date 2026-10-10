@@ -460,6 +460,19 @@ class ProjectStore:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
 
+    # ---------- 小说级记忆（P0-7，book_memory） ----------
+    def book_memory_path(self) -> Path:
+        return self.dir / "book_memory.json"
+
+    def load_book_memory(self) -> Optional[dict]:
+        """返回 {canon, events, pitfalls, taste}；无记忆返回 None。"""
+        d = self._read_json(self.book_memory_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_book_memory(self, data: dict) -> None:
+        """整体覆盖保存（每次账本更新后写入最新快照）。"""
+        self._write_json(self.book_memory_path(), data)
+
     # ---------- 揭示执行跟踪（REQ-揭示执行跟踪） ----------
     def reveal_status_path(self) -> Path:
         return self.dir / "reveal_status.json"

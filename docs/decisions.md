@@ -217,3 +217,17 @@
 - 验证：新增 tests/test_book_memory.py 21 用例（踩坑入账去重累加/只记大改、升级只升一次/排除通用类、降权、Top-N 排序、canon 组装、数字回灌解析与透传、QC 质检出问题入账、重写注入历史错误+正确应为 Z、无 memory 不注入、scene/split prompt 注入、writer 懒加载、book_memory=False 全跳过不落盘）；专项 59 绿（含 quality_p05/scene_anti_repeat/panel_direction 回归），全量 534 全绿。
 - 待办：验证通过后触发第六轮真实重生成（双验证：节拍检测器+逐章通读全文）→ 评估签约 → 达标后走 devtest→master 合并；P0-6 其余四项根因修复（回退整章 baseline+即时校验/跨事件结构重复检测/死亡-扣次因果校验/酒肆型同场景双版本检出）待 P0-7 验收后按序实施；P0-2 语义指纹并联留待后续；master 回退（5190063）是否 push origin/master 未定。
 
+## 2026-10-10 生成端第六轮（P0-8）：机制数字链确定性闭环（8 项，工作区未提交）
+- 背景：第六轮真实重生成（v6）评估结论——**0 章事件级真实重演（历史最优）但未达签约**，阻塞项切换为机制数字链 5 处硬伤：蚀化 97→98→98→99→97→98 跨章波动（第 3 章未递增/第 6 章回跳/第 7 章承接错）、次数 2→0 超扣（第 2 章）、死亡后次数 1→1 死而不扣（第 7 章）、蚀痕位置 5 章口径混乱（基线「已伸三十七寸距心约一寸」从未被遵守）；另发现：记忆系统两缺陷（`_fix_of` 关键词错配——循环重演 issue 的 detail 含"面板"被劫持成机制数字指令致两条纪律 rule 错标；机制基线从未入 canon）、行动表 JSON 7 章全失败、成本防护场景[review] 25 次致第 4 章起一致性校验全停。第六轮评估报告给出 8 项生成端建议，用户拍板"继续"，实施全部 8 项（P0-8）。
+- 决策与实现（feat/scene-text-anti-repeat 工作区，未提交）：
+  1. **根因1（行动表 7 章失败）**：`_gen_action_plan` `max_tokens=800` 太小（中文约 400-500 字，多人物行动表常超 → 输出在 ~1000-1200 字符处截断 → JSON 解析失败，v6 日志 `Expecting ',' delimiter: line 25/26 column 6 (char 992-1195)`）。修复：max_tokens 800→2000；解析失败 → `_extract_json_field(raw,"characters")` 数组级救回 → 仍失败重试 1 次（温度 0.5、上限 2000）。
+  2. **根因2（质检基线透传 bug）**：write() 原 `locals().get("scene_state_acc")` 拿不到 `_generate_chapter_scenes` 嵌套函数变量，**_bl 恒为空 → 质检层方向校验从未生效（v6 之前全盲）**。修复：新增实例属性 `self._scene_state_acc`，场景路径返回前赋值，write() 改用它。
+  3. **根因3（蚀化 99→97 跨章回跳）**：`_fallback_whole_chapter` 生成后即时校验只查节拍循环+字数，不查面板方向。修复：`panel_baseline` 参数 + 生成后方向/因果校验 + 违规数字修复回灌（_dedup 增补第 5 条）；两个调用点分别传"上一章章末基线"（拆场景失败处=本章开始基线）与"本章场景累计基线"（场景重试耗尽处）。
+  4. **根因4（死亡-扣次因果缺校验）**：方向校验只查"回退/回升"（b<a/b>a），"死亡后未变化（1→1）/超扣（2→0）"不触发。修复：chapter_state 新增 `death_signals`（显式死亡表达词表 + 否定/比喻语境排除正则）+ `panel_causal_violations`（死亡 → 次数期望=基线-1（子时重置 0→N 后按 N-1）、蚀化期望=基线+1；末值==基线→未递减/未递增，末值<期望→超扣；无死亡或空基线不校验防误伤）；场景防线 4 并联（死亡信号=正文 OR 事件层 event/conflict/final_state 拼串，覆盖"很冷。然后是黑"式隐式死亡），重试稿复检同并联；回退整章同套校验。
+  5. **根因5（蚀痕位置混乱）**：BookMemory 的 canon.mechanism_baseline 从未被程序写入（恒 {}），world.mechanism_baseline 只被 quality._rewrite_span 直接拼字符串。修复：book_memory 新增 `sync_baseline(world)`（world.mechanism_baseline 同步进 canon，幂等、空/None/关闭跳过、失败静默）+ `baseline_block()`（仅机制基线注入块，场景层用）；stages.write() 开头每章 `_mem.sync_baseline(world)`；5 处 scene_prompt 调用点加 `book_canon` 参数注入。
+  6. **根因6（_fix_of 关键词错配）**：分支顺序修正——「重演/循环/两版本/多版本」提前到「机制数字/面板/蚀化」之前（原机制数字分支在前，v6 两条纪律 rule 错标根因）；quality._memory_block 数字 issue 挑选同步收紧为 type 精确匹配（"机制数字" or "蚀化"，去掉 `"面板" in detail`）。
+  7. **根因7（成本防护跨章累计）**：guard 新增 `reset_scene_counts()`（只清 _scene_counts，保留全局 loop/token 上限）；write() 开头每章重置（v6 第 4-7 章 review 25 次被拦致一致性校验全停的修复）。
+  8. **根因8（canon 基线注入位置）**：templates.scene_prompt 新增 `book_canon=""` 参数，渲染 `book_canon_block`（book_pitfalls_block 之后、写作要求之前）。
+- 验证：新增/更新测试 15 用例（test_book_memory +5：_fix_of 优先级×2、sync_baseline×2、baseline_block×1；test_panel_direction +10：death_signals 命中/排除、因果递减合法/未递减/超扣/无死亡跳过/递增合法/未递增/子时重置/无基线跳过；test_agent_guard +1：reset_scene_counts 只清场景计数）；专项 54 绿；**全量 549 全绿**（P0-7 基线 534 + 15 新增）。
+- 待办：验证通过后触发第七轮真实重生成（先手工备份 v6 稿到新目录——regen 脚本 BACKUP 跳过已存在备份目录；双验证：节拍检测器+逐章通读）→ 数字链验收（蚀化 97→98→99→100→100→100→101 严格递增、次数死亡必扣、蚀痕位置全程遵守"三十七寸距心一寸"基线、事件级重演 0 章）→ 评估签约 → 达标后 devtest→master 合并；P0-8 提交（feat 分支不推远程）待用户放行；P0-2 语义指纹并联留待后续；master 回退（5190063）是否 push origin/master 未定。
+

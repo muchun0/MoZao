@@ -25,6 +25,7 @@ from novel_gen.store.schemas import ChapterPlan, Outline
 from novel_gen.pipeline.memory import Memory
 from novel_gen.pipeline.chapter_state import (
     panel_baseline_dict, panel_direction_violations,
+    death_signals, panel_causal_violations,
 )
 from novel_gen.pipeline.stages import ChapterWriter
 
@@ -157,3 +158,70 @@ def test_panel_violation_triggers_retry_and_adopts_clean(store):
     # 采用合法重试稿（可死次数：2），违规稿（可死次数：4）被丢弃
     assert "可死次数：2" in ch.content
     assert "可死次数：4" not in ch.content
+
+
+# ---------- P0-8 死亡信号与因果校验（2026-10-10） ----------
+
+@pytest.mark.p1
+def test_death_signals_hits():
+    for txt in ("他死了第三十八次", "陆沉死亡一次", "他被赤尉斩杀",
+                "死者复生需要时间", "他咽了气", "这是第三次死"):
+        assert death_signals(txt), f"应命中死亡信号: {txt}"
+
+@pytest.mark.p1
+def test_death_signals_excludes():
+    for txt in ("死也要死在墟里", "别让他死", "她不会死", "他拼死一搏",
+                "快死了才出手", "不怕死的愣头青", "该死的天气", "死活都要去",
+                "死人堆里爬出来", "视死如归地冲上去", "他诈死逃生"):
+        assert not death_signals(txt), f"不应命中死亡信号: {txt}"
+
+
+@pytest.mark.p1
+def test_causal_decrease_ok():
+    text = "他死了第三十八次。面板亮起：今日可死次数：1。"
+    assert panel_causal_violations(text, {"次数": 2}, True) == []
+
+
+@pytest.mark.p1
+def test_causal_decrease_undecrement_violation():
+    """死亡后次数未递减（v6 第 7 章 1→1 死而不扣）。"""
+    text = "他死了第三十八次。面板亮起：今日可死次数：2。"
+    v = panel_causal_violations(text, {"次数": 2}, True)
+    assert v and "未结算" in v[0] and "2" in v[0]
+
+
+@pytest.mark.p1
+def test_causal_decrease_overdeduct_violation():
+    """死亡后次数超扣（v6 第 2 章 2→0 跳变）。"""
+    text = "他死了第三十八次。面板亮起：今日可死次数：0。"
+    v = panel_causal_violations(text, {"次数": 2}, True)
+    assert v and "超扣" in v[0]
+
+
+@pytest.mark.p1
+def test_causal_no_death_skip():
+    """未检出死亡 → 不校验因果（没死面板不变合法，防误伤）。"""
+    text = "他赶路半日。面板亮起：今日可死次数：1。"
+    assert panel_causal_violations(text, {"次数": 1}, False) == []
+
+
+@pytest.mark.p1
+def test_causal_increase_ok_and_stagnant():
+    text = "他死了第三十八次。面板亮起：距离蚀化：99%。"
+    assert panel_causal_violations(text, {"蚀化": 98}, True) == []
+    # 死亡后蚀化未递增（v6 第 3 章 98→98）
+    text2 = "他死了第三十八次。面板亮起：距离蚀化：98%。"
+    v = panel_causal_violations(text2, {"蚀化": 98}, True)
+    assert v and "未递增" in v[0] and "99" in v[0]
+
+
+@pytest.mark.p1
+def test_causal_reset_after_zero():
+    """子时重置（0→N）后死亡：期望 = 重置值 - 1。"""
+    text = "子时一过，面板重置。今日可死次数：3。他死了第三十八次。今日可死次数：2。"
+    assert panel_causal_violations(text, {"次数": 0}, True) == []
+
+
+@pytest.mark.p1
+def test_causal_no_baseline_skip():
+    assert panel_causal_violations("死了", {}, True) == []

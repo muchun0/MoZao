@@ -201,6 +201,39 @@ class BookMemory:
         self.save()
         return not existed
 
+    def sync_baseline(self, world) -> None:
+        """P0-8：把 world.mechanism_baseline 同步进设定账本 canon.mechanism_baseline。
+
+        背景：v6 通读实证——世界机制基线（蚀痕"左手腕内侧起每死一寸/已伸三十七寸
+        距心约一寸"）从未进记忆 canon，正文 5 章蚀痕位置口径全乱（越过肘弯/小臂中段/
+        逼近肘弯各说各话）。生成每章前由 stages.write 调用一次（world 已加载），
+        使拆场景/场景 prompt 能注入权威基线；world 无 baseline 或格式异常 → 跳过
+        （降级安全，不阻塞）。
+        """
+        if not self.enabled:
+            return
+        mb: dict[str, str] = {}
+        try:
+            wb = getattr(world, "mechanism_baseline", None) or {}
+            if isinstance(wb, dict):
+                for k, v in wb.items():
+                    ks, vs = str(k or "").strip(), str(v or "").strip()
+                    if ks and vs:
+                        mb[ks] = vs
+        except Exception:
+            return
+        if not mb:
+            return
+        data = self.load()
+        cur = data["canon"].setdefault("mechanism_baseline", {})
+        changed = False
+        for k, v in mb.items():
+            if cur.get(k) != v:
+                cur[k] = v
+                changed = True
+        if changed:
+            self.save()
+
     def canon_block(self, max_chars: int = 800) -> str:
         """设定账本注入块：新名词规范 + 永久纪律 + 机制基线（空则返回空串）。"""
         if not self.enabled:
@@ -227,6 +260,19 @@ class BookMemory:
             parts.append("【本作机制基线（机制数字的唯一来源）】\n" + "\n".join(lines))
         joined = "\n\n".join(parts)
         return joined[:max_chars]
+
+    def baseline_block(self) -> str:
+        """P0-8：机制基线专用注入块（拆场景已注入 canon_block 全文；场景层只注入
+        机制基线，避免 terms/disciplines 重复刷屏）。空基线/关闭 → 返回空串。"""
+        if not self.enabled:
+            return ""
+        data = self.load()
+        mb = data["canon"].get("mechanism_baseline") or {}
+        if not mb:
+            return ""
+        lines = [f"- {k}：{v}" for k, v in mb.items()]
+        return ("【本作机制基线（机制数字与身体状态/蚀痕等唯一权威来源——"
+                "正文必须逐条遵守，禁止自造位置/数值口径）】\n" + "\n".join(lines))
 
     # ---------- 事件账本（跨章消费状态）----------
     def record_event_consumed(self, event_desc: str, chapter_no: int) -> bool:
@@ -325,17 +371,25 @@ class BookMemory:
 
     @staticmethod
     def _fix_of(it: dict) -> str:
-        """修复指令：按 type/detail 关键词归一到可执行规则（注入重写 prompt 用）。"""
+        """修复指令：按 type/detail 关键词归一到可执行规则（注入重写 prompt 用）。
+
+        2026-10-10 P0-8：分支顺序修正——「重演/循环/多版本」优先于「机制数字/面板/
+        蚀化」。原实现机制数字分支在前，而循环重演类 issue 的 detail 常含「面板」
+        （如「同一情节节拍序列『面板→对峙→复活→面板』在章内出现 ≥2 次」），导致
+        循环重演被劫持成机制数字指令（v6 实测：canon 两条纪律的 rule 全部错标）。
+        规则匹配有交集时按「具体问题（循环/拼接/复读）→ 通用（机制数字/矛盾）」
+        顺序判定，避免 detail 关键词污染 type 语义。
+        """
         t = str(it.get("type") or "")
         d = str(it.get("detail") or "")
-        if "机制数字" in t or "面板" in d or "蚀化" in d:
-            return "机制数字必须按方向规则严格结算（蚀化只增不减、次数递减、禁止同值跨结算点复现），正文从基线推进，禁止回退/回升"
         if "重演" in t or "循环" in t or "两版本" in d or "多版本" in d:
             return "同一事件/情节只写一遍，禁止换措辞/换地点/换细节重演完整流程；重复版本删除，不可替代信息合并进保留版本"
         if "拼接" in t or "自重复" in t or "草稿" in t:
             return "禁止多稿拼接：只输出单一完整连贯版本，修改在原处替换，禁止保留原文再加平行版本"
         if "复读" in t or "同句" in t or "原样" in d:
             return "同一句/同一段禁止原样复读；需要强调时用递进改写（加新信息/改变环境或代价）"
+        if "机制数字" in t or "面板" in d or "蚀化" in d:
+            return "机制数字必须按方向规则严格结算（蚀化只增不减、次数递减、禁止同值跨结算点复现），正文从基线推进，禁止回退/回升"
         if "矛盾" in t or "一致" in t or "身份" in t:
             return "同一角色/状态/事实全书口径唯一，禁止出现两版本描述"
         if "重复" in t:

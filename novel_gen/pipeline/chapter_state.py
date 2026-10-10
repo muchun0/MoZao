@@ -368,6 +368,88 @@ def panel_baseline_dict(numbers: list[str]) -> dict[str, int]:
     return last
 
 
+# ---------- P0-8 死亡-结算因果校验（2026-10-10） ----------
+# 背景：v6 通读实证三类数字硬伤——第 2 章死亡后次数 2→0（超扣）、第 3 章死亡后
+# 蚀化 98→98（未递增）、第 7 章死亡后次数 1→1（死而不扣）。既有方向校验只报
+# 「回退/回升」（b<a / b>a），"死亡后未变化/超扣"不触发。本组函数引入高精度
+# 死亡事件信号（正文显式死亡表达 OR 事件层信号），确定性校验：
+#   - 发生死亡 → 次数期望 = 基线-1（或子时重置后的 N-1）；蚀化期望 = 基线+1；
+#   - 未发生死亡 → 不做因果校验（"没死面板不变"合法，防误伤）。
+# 隐式死亡（"很冷。然后是黑"式）依赖事件层信号；双漏时由质检 _panel_progress_issues
+# 兜底（已知局限，见 docs/TECH-book-memory.md）。
+_PANEL_DEATH_RE = re.compile(
+    r"(?:死了|死亡|死过|死去|被杀|被斩|被击杀|击杀|斩杀|处死|击毙|毙命|丧命|殒命|咽气|咽了气|断了气|断气|没了气息|"
+    r"没了呼吸|死而复生|复活|又活了|起死回生|复生|第[一二三四五六七八九十百\d０-９]+次死|"
+    r"死在|身死|阵亡|战死|没命)"
+)
+#: 死亡表达排除语境：否定/比喻/决心/名词化（快死了=将死未死；死也要/别死/不怕死等）
+_PANEL_DEATH_EXCLUDE = re.compile(
+    r"(?:死也要|别死|不会死|不怕死|拼死|找死|要死|该死的|死里逃生|死活|死灰|死寂|"
+    r"死路|死命|死去活来|死心|死结|死人|死脑筋|死撑|死战|死斗|死磕|快死|将死|垂死|"
+    r"死期|死讯|死尸|尸首|死状|死法|死亡人数|死亡率|视死如归|九死一生|生死|赴死|"
+    r"等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆)"
+)
+
+
+def death_signals(text: str) -> bool:
+    """正文是否发生死亡/复活结算事件（高精度：命中死亡表达且非否定/比喻语境）。
+
+    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）；
+    - 排除否定与比喻语境（别/不/没/怕/拒/未 + 死亡词；快死/死也要/拼死/死活…）；
+    - 零 LLM、确定性；供 panel_causal_violations 与 stages 场景防线使用。
+    """
+    t = (text or "")
+    if not t:
+        return False
+    for m in _PANEL_DEATH_RE.finditer(t):
+        span = t[max(0, m.start() - 8):m.end() + 8]
+        if _PANEL_DEATH_EXCLUDE.search(span):
+            continue
+        ctx = t[max(0, m.start() - 12):m.start()]
+        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
+            continue
+        return True
+    return False
+
+
+def panel_causal_violations(text: str, baseline: dict[str, int], death: bool) -> list[str]:
+    """死亡-结算因果校验：发生死亡事件时，次数必须较基线 -1、蚀化必须 +1。
+
+    - decrease（次数/剩余）：期望末值 = 基线 - 1；末值 == 基线 → "死亡后未递减"；
+      末值 < 基线 - 1 → "超扣"；末值 > 基线（非 0 基线）已由方向校验报回升，不重复；
+      正文含子时重置（0→N）时，期望按重置后的序列末值 - 1（0→N 由方向校验放行）。
+    - increase（蚀化/进度）：期望末值 = 基线 + 1；末值 == 基线 → "死亡后未递增"；
+      末值 < 基线 → 已由方向校验报回退，不重复。
+    - death=False（未检出死亡）→ 返回空列表（"没死面板不变"合法，不误伤）。
+    - 无基线 → 不校验。返回违规描述列表（与 panel_direction_violations 同风格）。
+    """
+    if not text or not baseline or not death:
+        return []
+    out: list[str] = []
+    for label, seq in panel_numbers_sequence(text, baseline).items():
+        if len(seq) < 2:
+            continue
+        rule = dict(_PANEL_DIR_RULES)[label]
+        last = seq[-1]
+        base = seq[0]
+        if rule == "decrease":
+            # 子时重置：序列中 0 后跟更大值 → 期望 = 重置后序列末值 - 1
+            reset_after = None
+            for a, b in zip(seq, seq[1:]):
+                if a == 0 and b > a:
+                    reset_after = b
+            expect = (reset_after - 1) if reset_after is not None else (base - 1)
+            if last == base:
+                out.append(f"面板「{label}」基线 {base}（递减规则）：正文发生死亡但数字未结算（仍为 {last}），死亡后必须 -1，正确应为 {max(expect, 0)}")
+            elif last < expect:
+                out.append(f"面板「{label}」基线 {base}（递减规则）：死亡结算超扣 {base}→{last}（每次死亡只 -1），正确应为 {max(expect, 0)}")
+        elif rule == "increase":
+            expect = base + 1
+            if last == base:
+                out.append(f"面板「{label}」基线 {base}（只增不减规则）：正文发生死亡但蚀化未递增（仍为 {last}），死亡后必须 +1，正确应为 {expect}")
+    return out
+
+
 def panel_baseline_text(numbers: list[str]) -> str:
     """把累计 numbers 归一化为基线文本（每标签取最后值）；无识别标签返回空串。"""
     last = panel_baseline_dict(numbers)

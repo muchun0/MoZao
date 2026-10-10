@@ -355,3 +355,83 @@ def test_book_memory_disabled_skips_all(store):
     assert mem.record_event_consumed("邀约下墟", 3) is False
     mem.record_taste(3, 70, [{"type": "x"}])   # 不落盘
     assert not (store.dir / "book_memory.json").exists()
+
+
+# ---------- P0-8（2026-10-10）----------
+
+@pytest.mark.p1
+def test_fix_of_priority_rewrite_before_number():
+    """循环重演 issue 的 detail 含「面板」时，不得被机制数字分支劫持（v6 两条纪律 rule 错标的根因）。"""
+    assert BookMemory._fix_of({
+        "type": "情节-同事件循环重演",
+        "detail": "同一情节节拍序列「面板→对峙→复活→面板」在章内出现 ≥2 次",
+    }) == "同一事件/情节只写一遍，禁止换措辞/换地点/换细节重演完整流程；重复版本删除，不可替代信息合并进保留版本"
+
+
+@pytest.mark.p1
+def test_fix_of_number_rule_unchanged():
+    """机制数字 issue 仍归数字结算指令（分支前移不破坏原语义）。"""
+    fix = BookMemory._fix_of({
+        "type": "写作-机制数字未结算推进",
+        "detail": "面板数字「今日可死次数：2」在死亡/结算事件后仍未变化",
+    })
+    assert "机制数字必须按方向规则严格结算" in fix
+
+
+@pytest.mark.p1
+def test_sync_baseline_writes_canon():
+    store = _store()
+    mem = _memory(store)
+    world = MagicMock()
+    world.mechanism_baseline = {"蚀痕": "左手腕内侧起每死一寸，已伸三十七寸距心约一寸",
+                                "panel_format": "今日可死次数：3；距离蚀化：97%"}
+    mem.sync_baseline(world)
+    canon = mem.load()["canon"]["mechanism_baseline"]
+    assert canon["蚀痕"].startswith("左手腕内侧")
+    assert canon["panel_format"].startswith("今日可死次数：3")
+    # 幂等：再次同步不产生脏数据
+    mem.sync_baseline(world)
+    assert mem.load()["canon"]["mechanism_baseline"]["蚀痕"].startswith("左手腕内侧")
+    # 更新值生效
+    world.mechanism_baseline["蚀痕"] = "已伸三十八寸"
+    mem.sync_baseline(world)
+    assert mem.load()["canon"]["mechanism_baseline"]["蚀痕"] == "已伸三十八寸"
+
+
+@pytest.mark.p1
+def test_sync_baseline_skips_empty_and_disabled():
+    store = _store()
+    mem = _memory(store)
+    world = MagicMock()
+    world.mechanism_baseline = None
+    mem.sync_baseline(world)                       # None → 跳过
+    assert mem.load()["canon"]["mechanism_baseline"] == {}
+    world.mechanism_baseline = {}
+    mem.sync_baseline(world)                       # 空 → 跳过
+    assert mem.load()["canon"]["mechanism_baseline"] == {}
+    cfg = store.load_config()
+    cfg.book_memory = False
+    mem2 = BookMemory(store, cfg)
+    world.mechanism_baseline = {"蚀痕": "x"}
+    mem2.sync_baseline(world)                      # 关闭 → 跳过
+    assert mem2.load()["canon"]["mechanism_baseline"] == {}
+
+
+@pytest.mark.p1
+def test_baseline_block_output():
+    store = _store()
+    mem = _memory(store)
+    assert mem.baseline_block() == ""              # 空基线 → 空串
+    mem.sync_baseline(MagicMock(mechanism_baseline={"蚀痕": "已伸三十七寸距心约一寸"}))
+    blk = mem.baseline_block()
+    assert "机制基线" in blk and "蚀痕" in blk and "三十七寸" in blk
+
+
+def _store():
+    """P0-8 独立临时 store（与顶部 fixture 解耦，避免 tmp_path 作用域冲突）。"""
+    import tempfile
+    from pathlib import Path as _P
+    from novel_gen.config import NovelConfig as _NC
+    from novel_gen.store.project import ProjectStore as _PS
+    cfg = _NC(title="P0-8测试书", chapter_words=2500, total_words=10000)
+    return _PS.create(_P(tempfile.mkdtemp()) / "sc", cfg)

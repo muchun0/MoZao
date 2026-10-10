@@ -852,11 +852,13 @@ class QualityChecker:
         try:
             top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
             pb = self.memory.pitfall_block(top_n=top_n, for_rewrite=True)
+            # P0-8（2026-10-10）：数字 issue 挑选收紧为 type 精确匹配——原条件含
+            # "面板" in detail，会把「情节-同事件循环重演」（detail 含"面板"字样）误挑
+            # 进 numeric_backfill（v6 实测两条纪律 rule 错配的同源 bug）。
             num_issues = [
                 str(it.get("detail") or "") for it in (issues or [])
                 if "机制数字" in (str(it.get("type") or ""))
-                or "面板" in (str(it.get("detail") or ""))
-                or "蚀化" in (str(it.get("detail") or ""))
+                or "蚀化" in (str(it.get("type") or ""))
             ]
             nb = self.memory.numeric_backfill(num_issues)
             return "\n\n".join(x for x in (pb, nb) if x)

@@ -300,6 +300,9 @@ class ChapterWriter:
         self._personal_loaded: str | None = None
         #: P0-7 小说级记忆：懒加载 BookMemory（None=未初始化；关闭/失败 → None 跳过）
         self._book_memory = None
+        #: P0-8：最近一章场景累计机制数字基线（_generate_chapter_scenes 写入，
+        #: write() 质检透传用；未走场景路径时为空 dict）
+        self._scene_state_acc: dict = {}
 
     def _memory(self):
         """P0-7 懒加载小说级记忆；book_memory 开关关闭/初始化失败 → None（行为降级安全）。"""
@@ -362,6 +365,19 @@ class ChapterWriter:
         is_final: bool = False,
     ) -> Chapter:
         world = self.store.load_world()
+        # P0-8：每章开始——①机制基线同步进记忆设定账本（蚀痕位置等权威口径）；
+        # ②场景计数按章重置（v6 第 4-7 章 review 超 25 次被 guard 拦停一致性校验的根因）
+        try:
+            _mem = self._memory()
+            if _mem is not None:
+                _mem.sync_baseline(world)
+        except Exception:
+            pass
+        try:
+            if self.guard is not None:
+                self.guard.reset_scene_counts()
+        except Exception:
+            pass
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
         )
@@ -507,11 +523,13 @@ class ChapterWriter:
                                     memory=self._memory())
                 # P0-5（2026-10-10）：把场景循环累计的机制数字基线透传给质检层——
                 # 重写/改稿产物在 check 内叠加面板方向校验（蚀化回退/次数回升二次兜底）。
-                # 场景路径的 scene_state_acc 与本函数同作用域（locals 可拿）；整章路径无则 None。
+                # P0-8（2026-10-10）修复透传 bug：write() 的 locals() 拿不到
+                # _generate_chapter_scenes 内部的 scene_state_acc（原实现 _bl 恒为空，
+                # 质检层方向校验从未生效）；改为实例属性 self._scene_state_acc。
                 _bl: dict = {}
                 try:
                     from .chapter_state import panel_baseline_dict as _pbd
-                    _bl = _pbd((locals().get("scene_state_acc") or {}).get("numbers") or [])
+                    _bl = _pbd((self._scene_state_acc or {}).get("numbers") or [])
                 except Exception:
                     _bl = {}
                 chapter, _qc = qc.ensure_quality(
@@ -606,12 +624,16 @@ class ChapterWriter:
 
     def _fallback_whole_chapter(self, chapter_no, plan_title, plan_goal,
                                 memory_context, prev_tail, is_final,
-                                plan_core_event, fallback_events, silent=False) -> str:
+                                plan_core_event, fallback_events, silent=False,
+                                panel_baseline: dict | None = None) -> str:
         """拆场景失败 / 场景正文重演重试耗尽的整章回退路径。
 
         2026-10-01：events 已从拆场景输出救回时注入整章 prompt（拆场景失败不再丢事件）；
         2026-10-09：场景连续 2 次重试仍重演完整循环时同样回退整章——整章单次生成
         无场景间越权消费问题，重演由质检 2.12 情节级检测兜底。
+        2026-10-10 P0-8：新增 panel_baseline——回退整章路径生成后同样做面板方向 +
+        死亡-结算因果校验（v6 第 6 章蚀化 99→97 跨章回跳正是整章路径绕过基线校验的
+        实证），违反 → 带错重试（数字修复回灌），堵"回退路径 = 数字失控通道"。
         """
         from .templates import chapter_prompt
         ev_block = ""
@@ -640,40 +662,61 @@ class ChapterWriter:
         system = self._sys(system)
         # 2026-10-09 生成端兜底（REQ-scene-plan-align §7.3 措施3/5 生成端）：
         # 整章回退路径无场景级实时拦截（场景防线只在场景循环内），生成后立即做
-        # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）检测——命中 →
-        # 重试至多 2 次（注入重复节拍证据 + 压缩字数目标），仍命中 → 返回交给质检
-        # 2.12 兜底（质检重写为修复端第二层，见 §7.4）。
+        # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）+ P0-8 机制数字
+        # 方向/因果校验——命中 → 重试至多 2 次（注入重复节拍证据 + 压缩字数目标 +
+        # 数字修复回灌），仍命中 → 返回交给质检 2.12 兜底（见 §7.4）。
         _text = self.llm.chat(system, user, temperature=0.85,
                               frequency_penalty=0.3, presence_penalty=0.15) or ""
         for _try in (1, 2):
             _text = _strip_html_tags(_text)
             _issues = _beat_cycle_issues(_text)
             _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
-            if not _issues and not _over:
+            _viols: list[str] = []
+            if _text and panel_baseline:
+                try:
+                    from .chapter_state import (panel_direction_violations as _pdv,
+                                                panel_causal_violations as _pcv,
+                                                death_signals as _deathsig)
+                    _ev_text = " ".join(
+                        str(e.get(k) or "") for e in (fallback_events or [])
+                        for k in ("desc", "conflict", "final_state")
+                    )
+                    _death = _deathsig(_text) or _deathsig(_ev_text)
+                    _viols = _pdv(_text, panel_baseline)
+                    if _death:
+                        _viols = _viols + _pcv(_text, panel_baseline, True)
+                except Exception:
+                    _viols = []
+            if not _issues and not _over and not _viols:
                 break
             if not silent:
                 _why = ("情节级重演：" + str(_issues[0]["detail"]) if _issues else "") + \
-                       (f"；字数超限（{len(_text)} 字）" if _over else "")
+                       (f"；字数超限（{len(_text)} 字）" if _over else "") + \
+                       (f"；机制数字违规（{_viols[0]}）" if _viols else "")
                 print(f"  [回退整章] 第{chapter_no}章生成后检出{_why}，重试第{_try}次")
+            _dedup_parts = []
             if _issues:
-                _dedup = (
-                    "\n\n【整章回退重试强制规则（上一条输出未通过节拍检测，已作废）】\n"
+                _dedup_parts.append(
                     "1. 上文【本章事件序列】中的每个事件只允许完整发生一次；上一版把同一情节"
                     "（死亡-复活-对峙-包扎-离场等完整循环）演绎了两遍，检测到重复节拍："
                     f"『{_issues[0].get('detail', '')}』——本次必须删除重复版本，保留最完整的一个，"
                     "被删版本中不可替代的信息（关键对话/关键状态）合并进保留版本\n"
                     "2. 事件之间必须因果推进，后一事件从上一事件结局之后开始，禁止回到上一事件开头状态重演\n"
                     "3. 每个事件结束状态（面板/蚀痕/伤势）必须比上一事件结束时有增量变化\n"
+                )
+            if _over:
+                _dedup_parts.append(
                     f"4. 正文控制在约 {self.cfg.chapter_words} 字（±15%），禁止超写注水——"
                     "宁精炼也禁止把同一情节写两遍凑字数\n"
                 )
-            else:
-                _dedup = (
-                    "\n\n【整章回退重试强制规则（上一条输出超长，已作废）】\n"
-                    f"1. 正文控制在约 {self.cfg.chapter_words} 字（±15%）以内，禁止超写；"
-                    "宁精炼删减也禁止注水\n"
-                    "2. 每个事件只写一遍，事件间因果推进，禁止同一事件两遍演绎\n"
+            if _viols:
+                _viol_text = "\n".join(f"- {v}" for v in _viols[:4])
+                _dedup_parts.append(
+                    f"5. 机制数字（面板/蚀化等）必须按基线确定性结算，上一条正文违反：\n"
+                    f"{_viol_text}\n——本次按上述修正值改，禁止再犯同类数字错误\n"
                 )
+            _dedup = ("\n\n【整章回退重试强制规则（上一条输出未通过检测，已作废）】\n"
+                      + "\n".join(_dedup_parts)) if _dedup_parts else ""
             _text = self.llm.chat(system, user + _dedup, temperature=0.85,
                                   frequency_penalty=0.4, presence_penalty=0.2) or ""
         return _text
@@ -863,10 +906,14 @@ class ChapterWriter:
 
         if not scenes:
             # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。
+            # P0-8：整章回退路径补基线校验——self._scene_state_acc 此时仍是上一章章末
+            # 数字（本章场景循环尚未写入），恰为"本章开始权威基线"（v6 第 6 章蚀化
+            # 99→97 回跳即整章路径绕过基线校验的实证）。
             return self._fallback_whole_chapter(
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
-                plan_core_event, fallback_events, silent)
+                plan_core_event, fallback_events, silent,
+                panel_baseline=self._scene_state_acc or None)
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
@@ -908,6 +955,15 @@ class ChapterWriter:
         # P0-7 小说级记忆：本作历史错误（已反复出现 ≥2 次的踩坑）注入场景 prompt，
         # 在生成点抑制已知高频错误（换措辞重演/数字回退等）；空账本 → 空串不注入。
         book_pitfalls_text = self._book_pitfalls()
+        # P0-8 小说级记忆：机制基线注入块（蚀痕位置等权威口径；拆场景已注入 canon 全文，
+        # 场景层只注入机制基线，避免 terms/disciplines 重复刷屏）
+        book_canon_text = ""
+        try:
+            _mem = self._memory()
+            if _mem is not None:
+                book_canon_text = _mem.baseline_block()
+        except Exception:
+            book_canon_text = ""
         for idx, sc in enumerate(scenes, start=1):
             # REQ-scene-plan-align §7.3 措施1：事件进度硬约束——本章共 N 个事件/场景，
             # 本场景只允许推进本场景唯一事件，禁止提前写后续事件完整流程（防"越权消费"）
@@ -953,6 +1009,7 @@ class ChapterWriter:
                 upcoming_events=upcoming_events_text,
                 panel_baseline=panel_baseline_text,
                 book_pitfalls=book_pitfalls_text,
+                book_canon=book_canon_text,
             )
             sys_c = self._sys(sys_c)
             try:
@@ -998,6 +1055,7 @@ class ChapterWriter:
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
                         )
                         retry = self.llm.chat(
                             self._sys(sys_c2), user_c2,
@@ -1039,6 +1097,7 @@ class ChapterWriter:
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
                         )
                         retry3 = self.llm.chat(
                             self._sys(sys_c3), user_c3,
@@ -1089,6 +1148,7 @@ class ChapterWriter:
                             upcoming_events=upcoming_events_text,
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
                         )
                         retry4 = self.llm.chat(
                             self._sys(sys_c4), user_c4,
@@ -1112,18 +1172,34 @@ class ChapterWriter:
                     if not _beat_ok:
                         if not silent:
                             print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
+                        # P0-8：回退整章补基线校验——用本章场景累计数字（已推进场景的
+                        # 结算值）做权威基线，整章正文数字必须从这些值继续单调推进
                         return self._fallback_whole_chapter(
                             chapter_no, plan_title, plan_goal,
                             memory_context, prev_tail, is_final,
-                            plan_core_event, fallback_events, silent)
+                            plan_core_event, fallback_events, silent,
+                            panel_baseline=scene_state_acc or None)
                 # P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮，治面板账本崩坏）：
                 # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
                 # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；
                 # 仍违反用最后一次（不做整章回退——质检 2.x 仍会二次拦截）。
                 if piece and _panel_base:
                     try:
-                        from .chapter_state import panel_direction_violations as _pdv
+                        from .chapter_state import (panel_direction_violations as _pdv,
+                                                    panel_causal_violations as _pcv,
+                                                    death_signals as _deathsig)
+                        # P0-8 死亡-结算因果校验（v6 实证：第 2 章死亡后次数 2→0 超扣、
+                        # 第 3 章死亡后蚀化 98→98 未递增、第 7 章死亡后次数 1→1 死而不扣——
+                        # 方向校验只报"回退/回升"，"未变化/超扣"不触发）。死亡信号 =
+                        # 正文显式死亡表达 OR 本场景事件层信号（event/conflict/final_state，
+                        # 覆盖正文隐式死亡"很冷。然后是黑"式）。
+                        _ev_text = " ".join(
+                            str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
+                        )
+                        _death = _deathsig(piece) or _deathsig(_ev_text)
                         _viols = _pdv(piece, _panel_base)
+                        if _death:
+                            _viols = _viols + _pcv(piece, _panel_base, True)
                     except Exception:
                         _viols = []
                     if _viols:
@@ -1146,6 +1222,7 @@ class ChapterWriter:
                                 panel_baseline=panel_baseline_text,
                                 panel_violations=_viol_text,
                                 book_pitfalls=book_pitfalls_text,
+                                book_canon=book_canon_text,
                             )
                             retry5 = self.llm.chat(
                                 self._sys(sys_c5), user_c5,
@@ -1159,6 +1236,8 @@ class ChapterWriter:
                             if retry5:
                                 try:
                                     _viol5 = _pdv(retry5, _panel_base)
+                                    if not _viol5 and _death:
+                                        _viol5 = _pcv(retry5, _panel_base, True)
                                 except Exception:
                                     _viol5 = []
                             if retry5 and not _viol5:
@@ -1249,19 +1328,46 @@ class ChapterWriter:
         if summary:
             chapter_text = chapter_text + "\n\n【摘要】" + summary
 
+        # P0-8：场景累计机制数字基线暴露给 write()（质检层透传，修复原 locals() 拿不到）
+        self._scene_state_acc = scene_state_acc
         return chapter_text
 
     def _gen_action_plan(self, chapter_no, plan_title, plan_goal, memory_context) -> str:
-        """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。"""
+        """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。
+
+        P0-8（2026-10-10）：v6 实证 7 章行动表全部失败——`Expecting ',' delimiter:
+        line 25/26 column 6 (char ~1000-1200)` = 输出在 ~1000-1200 字符处被截断
+        （max_tokens=800 对中文约 400-500 字，行动表多人物时常超）。修复：max_tokens
+        800→2000；解析失败增加数组级救回（_extract_json_field "characters"）+ 重试 1 次。
+        """
         try:
             import json
             from .templates import action_plan_prompt
             sys_a, user_a = action_plan_prompt(
                 self.cfg, chapter_no, plan_title, plan_goal, memory_context,
             )
-            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=800)
-            data = json.loads(_strip_json_block(raw))
-            chars = data.get("characters") or []
+            raw = self.llm.chat(sys_a, user_a, temperature=0.4, max_tokens=2000)
+            data = None
+            try:
+                data = json.loads(_strip_json_block(raw))
+            except Exception:
+                # P0-8：长输出截断救回——characters 数组通常完整（截断多在尾部说明）
+                _ca = _extract_json_field(raw, "characters")
+                if _ca:
+                    data = {"characters": _ca}
+            if data is None:
+                # P0-8：整体解析失败 → 重试 1 次（提高温度与上限）
+                raw = self.llm.chat(
+                    sys_a, user_a + "\n\n再次提醒：只输出一个合法的 JSON 对象，"
+                    "不要输出任何代码块标记、注释、省略号或尾逗号。",
+                    temperature=0.5, max_tokens=2000,
+                )
+                try:
+                    data = json.loads(_strip_json_block(raw))
+                except Exception:
+                    data = _extract_json_field(raw, "characters") and {
+                        "characters": _extract_json_field(raw, "characters")}
+            chars = (data or {}).get("characters") or []
             lines = []
             for c in chars:
                 if not isinstance(c, dict) or not c.get("name"):

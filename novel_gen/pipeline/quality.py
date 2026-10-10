@@ -114,18 +114,19 @@ class QualityChecker:
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, summary: str, silent: bool = False,
                        baseline: dict | None = None,
-                       ) -> tuple[Chapter, dict]:
+                       core_event: str = "") -> tuple[Chapter, dict]:
         """校验 → 不通过则自动重写（最多 _MAX_REWRITE 轮，通过即停）→ 复检
         → 返回 (最终 Chapter, 校验结果)。
 
         baseline：机制数字基线（panel_baseline_dict(numbers)），供质检层叠加
         面板方向校验（P0-5：重写产物/改稿产物在质检层二次兜底蚀化回退/次数回升）。
+        core_event：P0-17 本章大纲核心事件（叠加正文覆盖校验，见 check）。
         P0-5 兜底：重写无效/超轮仍未消除问题时，回退到循环内「问题最少、分数最高」
         的最优版本，不再把重写后的坏稿原样落盘（第四轮第 5 章：重写 2 无效 break
         后坏稿直接落盘的缺口）。
         """
         result = self.check(chapter_no, plan_title, plan_goal, content, summary,
-                            baseline=baseline)
+                            baseline=baseline, core_event=core_event)
         issues = result["issues"]
         rewritten_occurred = False
         self._record_pitfalls(chapter_no, issues)
@@ -144,7 +145,7 @@ class QualityChecker:
                 if not silent:
                     print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
                 result = self.check(chapter_no, plan_title, plan_goal, content, summary,
-                                    baseline=baseline)
+                                    baseline=baseline, core_event=core_event)
                 issues = result["issues"]
                 self._record_pitfalls(chapter_no, issues)
 
@@ -175,7 +176,7 @@ class QualityChecker:
             rewritten_occurred = True
             # 复检
             result = self.check(chapter_no, plan_title, plan_goal, content, summary,
-                                baseline=baseline)
+                                baseline=baseline, core_event=core_event)
             issues = result["issues"]
             self._record_pitfalls(chapter_no, issues)
             if not silent:
@@ -214,11 +215,15 @@ class QualityChecker:
     # ---------- 校验 ----------
     def check(self, chapter_no: int, plan_title: str, plan_goal: str,
               content: str, summary: str = "",
-              baseline: dict | None = None) -> dict:
+              baseline: dict | None = None,
+              core_event: str = "") -> dict:
         """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。
 
         baseline：机制数字基线（panel_baseline_dict(numbers)，P0-5 从场景循环透传）；
         非空时叠加面板方向校验（质检层二次兜底蚀化回退/次数回升，与场景级防线4 同基线）。
+        core_event：P0-17（2026-10-10）本章大纲核心事件（非空时叠加正文覆盖校验：
+        正文必须覆盖核心事件 ≥60% 分段，否则大改——治 v9 ch6 大纲「忘忧阁密报」
+        未进正文）。
         """
         issues: list[dict] = []
         score = 100
@@ -301,7 +306,10 @@ class QualityChecker:
             try:
                 from .chapter_state import (erosion_cumulative_check as _ecc,
                                             death_count as _dc2,
-                                            book_death_count as _bdc)
+                                            book_death_count as _bdc,
+                                            mechanism_field_registry as _mreg2,
+                                            unknown_mechanism_fields as _unk2,
+                                            ledger_check as _lchk)
                 _st = self.memory.load().get("state") or {}
                 _prev_chs = [c for c in _st.get("chapters", [])
                              if int(c.get("ch", 0)) < int(chapter_no)]
@@ -320,6 +328,50 @@ class QualityChecker:
                             "level": "大改",
                         })
                         score -= 30
+                # P0-15/16 通用版（2026-10-10）：机制字段注册表（closed-world）+ 链式
+                # 账本 + 事件驱动双向。基线声明的字段逐字段校验：
+                #   未知字段出现（累计死亡次数类）→ 大改；
+                #   无事件时 decrease 必须不变 / increase 面板必须不变（寸只查不回退）；
+                #   有事件时 decrease 必减、increase 必 ≥ 上章末 + 死亡数。
+                _canon = (self.memory.load().get("canon") or {})
+                _reg = _mreg2(_canon.get("mechanism_baseline") or {})
+                if _reg:
+                    for _it in _unk2(content, _reg):
+                        issues.append({
+                            "type": "写作-机制字段白名单违规",
+                            "detail": _it,
+                            "level": "大改",
+                        })
+                        score -= 30
+                    _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
+                    from .chapter_state import _registry_initial as _rin
+                    _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+                    for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
+                        issues.append({
+                            "type": "写作-机制数字方向违规",
+                            "detail": _it,
+                            "level": "大改",
+                        })
+                        score -= 30
+            except Exception:
+                pass
+
+        # 2.8d P0-17 大纲核心事件正文覆盖校验（2026-10-10，治 v9 ch6 大纲「忘忧阁
+        #    阁主密报」未进正文、正文写自创「不问阁」）：core_event 分段后每段与正文
+        #    做 2 字以上最长公共子串匹配，命中段 <60% = 本章正文丢失大纲核心事件
+        #    → 大改（触发整章级重写路径）。任何书有大纲 core_event 即校验，通用。
+        if core_event:
+            try:
+                _miss = _core_event_missing(content, core_event)
+                if _miss:
+                    issues.append({
+                        "type": "情节-大纲核心事件未覆盖",
+                        "detail": (f"本章正文未覆盖大纲核心事件段（命中不足 60%）："
+                                   f"{' / '.join(_miss[:3])}——核心事件必须写进正文，"
+                                   "不得替换为自创事件"),
+                        "level": "大改",
+                    })
+                    score -= 30
             except Exception:
                 pass
 
@@ -1190,6 +1242,38 @@ def _split_summary(text: str) -> tuple[str, str]:
         summary = text[idx + len(marker):].strip().replace("\n", " ")
         return body, summary
     return text.strip(), ""
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """两文本最长公共子串长度（≥2 字视为覆盖命中；小文本直算）。"""
+    if not a or not b:
+        return 0
+    if len(a) > len(b):
+        a, b = b, a
+    for w in range(len(a), 1, -1):
+        for i in range(len(a) - w + 1):
+            if a[i:i + w] in b:
+                return w
+    return 0
+
+
+def _core_event_missing(content: str, core_event: str) -> list[str]:
+    """P0-17：core_event 分段后每段与正文最长公共子串匹配，命中段 <60% 返回未覆盖段。
+
+    2 字窗口对专有名词（忘忧阁/阁主密报）与普通动作（下墟/遇袭）均敏感，低误报。
+    阈值用整数不等式 hit*10 < len*6 表达「≥60% 通过」——2 段命中 1（50%）必须
+    判为未覆盖（v9 ch6 大纲「忘忧阁密报」未进正文即 2 段 1 命中）。
+    """
+    if not content or not core_event:
+        return []
+    segs = [s.strip() for s in re.split(r"[→，,。；;]", core_event)
+            if len(s.strip()) >= 4]
+    if not segs:
+        return []
+    hit = sum(1 for s in segs if _lcs_len(s, content) >= 2)
+    if hit * 10 >= len(segs) * 6:
+        return []
+    return [s for s in segs if _lcs_len(s, content) < 2]
 
 
 # ---------- 章内同句复读工具（REQ-章内自洽与机制账本） ----------

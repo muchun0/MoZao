@@ -608,3 +608,236 @@ def erosion_cumulative_check(text: str, baseline_erosion: int,
         )
     # 章内递减（如 100%→97% 回退）已由 panel_direction_violations 单章校验覆盖，不重复
     return out
+
+
+# ---------- P0-15/16 通用版：机制字段注册表 + 链式账本 + 事件驱动双向（2026-10-10） ----------
+# 用户约束（v9 评估纠正）：蚀痕寸数/次数 0 等是《万墟之上》单本书机制，不能做成
+# 本书特判；应"以机制基线为唯一事实源"做通用机制：
+#   ① 字段注册表（closed-world）：基线 panel_format/reset_rule 声明了哪些面板字段，
+#      正文面板就只能出现哪些字段；未声明字段（如「累计死亡次数」）出现 = 违规
+#      （v9 ch3/ch6 面板幻觉行「累计死亡次数：39/37」即此类）——任何书通用；
+#   ② 链式账本：所有注册字段每章末值入账，本章未提及继承上一章末值（治 ch5
+#      正文无面板行 → erosion=null 断链）；
+#   ③ 事件驱动双向：无死亡事件时 decrease 字段必须与上章末一致（治 ch2 次数 3→2
+#      无依据递减）、increase 字段不得回退（治 ch4 四十一寸→ch5 三十七寸矛盾）；
+#      发生死亡时 decrease 字段必须递减（次数 0 后仍死亡 = 边界违规）、increase
+#      字段必须 ≥ 上章末 + 死亡次数（蚀化/蚀痕随死亡递增）。
+# 字段方向由"字段名语义"通用判定（含 次数/剩余/余量 → decrease；蚀化/进度/蚀痕/
+# 寸 → increase），不点名任何书。
+_CN_DIGIT = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+             "六": 6, "七": 7, "八": 8, "九": 9, "十": 10, "百": 100}
+
+
+def _cn_to_int(s: str) -> int:
+    """中文数字转 int（三十七→37；仅支持常见量词场景，失败返回 0）。"""
+    if not s:
+        return 0
+    if s.isdigit():
+        return int(s)
+    total, cur = 0, 0
+    for ch in s:
+        if ch in ("十", "百"):
+            cur = (cur * (10 if ch == "十" else 100)) or (10 if ch == "十" else 100)
+            total += cur
+            cur = 0
+        else:
+            cur = _CN_DIGIT.get(ch, 0)
+    return total + cur
+
+
+#: 字段名停用限定词（通用归一：「今日可死次数」→「可死次数」；「累计死亡次数」→「死亡次数」）
+_FIELD_STOP_RE = re.compile(r"(?:今日|距离|剩余|当前|累计|总共|总|已|可用)")
+
+
+def _field_core(label: str) -> str:
+    """字段核心词：去掉面板常见限定词（今日/距离/累计…），保留机制主体词。"""
+    return _FIELD_STOP_RE.sub("", label or "").strip()
+
+
+#: 字段方向关键词（通用语义：机制数字只许按声明方向变化，无事件不得变化）
+_FIELD_DIR_KW = (
+    ("次数", "decrease"), ("剩余", "decrease"), ("余量", "decrease"),
+    ("蚀化", "increase"), ("进度", "increase"), ("蚀痕", "increase"),
+    ("寸", "increase"), ("深度", "increase"), ("累积", "increase"),
+)
+
+
+def mechanism_field_registry(baseline: dict | None) -> dict[str, str]:
+    """机制字段注册表（通用，closed-world）：从机制基线派生「正文面板允许出现的字段」。
+
+    - 解析 baseline 各键值中「字段名：数字」模式（panel_format/reset_rule 声明）→
+      字段核心词 + 方向（按字段名语义）；「寸」字段由蚀痕基线文本「已延伸三十七寸」
+      注册（increase）。
+    - 任何书都有 mechanism_baseline（键值对），正文面板只许出现注册表内字段；
+      返回 {核心词: 方向}。无基线 → 空注册表（未知字段检测不启用）。
+    """
+    reg: dict[str, str] = {}
+    if not baseline:
+        return reg
+    src = " ".join(str(v) for v in baseline.values() if str(v))
+    for m in re.finditer(r"([\u4e00-\u9fff]{1,12}?)\s*[：:]\s*[0-9]", src):
+        core = _field_core(m.group(1))
+        if not core:
+            continue
+        for kw, rule in _FIELD_DIR_KW:
+            if kw in core:
+                reg[core] = rule
+                break
+    # 蚀痕寸数字段：蚀痕基线文本含「已延伸 N 寸」→ 注册「寸」（increase）
+    for k in ("scar_current", "蚀痕", "蚀痕基线"):
+        v = str(baseline.get(k) or "")
+        if v and re.search(r"[0-9一二三四五六七八九十百两]+\s*寸", v):
+            reg["寸"] = "increase"
+            break
+    return reg
+
+
+def unknown_mechanism_fields(text: str, registry: dict[str, str]) -> list[str]:
+    """正文面板行出现注册表外的机制字段 → 违规（通用 closed-world）。
+
+    基线没声明的机制数字字段不许出现（v9 ch3/ch6「累计死亡次数：39/37」即此类）。
+    只扫描「机制词结尾 + 冒号 + 数字」的面板行（复用 _PANEL_RE 匹配），普通叙述数字
+    （三只灰卒/七步）不受影响。
+    """
+    if not registry or not text:
+        return []
+    out: list[str] = []
+    for m in _PANEL_RE.finditer(text):
+        label = m.group(1).strip()
+        core = _field_core(label)
+        if not core or core in registry:
+            continue
+        if any(kw in core for kw in ("次数", "剩余", "蚀化", "进度", "蚀痕", "寸", "死亡", "存活", "生命")):
+            out.append(
+                f"正文出现未声明机制字段「{label}」（机制字段白名单：{sorted(registry)}；"
+                "基线未声明的面板字段禁止出现——删除该行，或改用基线声明的字段写法）"
+            )
+    return out
+
+
+def ledger_extract_numbers(text: str, registry: dict[str, str]) -> dict[str, int]:
+    """抽取正文中每个注册字段的末值（链式账本入账用）。
+
+    - 面板字段：取正文所有匹配行的最后一个值（末值）；「寸」字段：正文「N寸」数字
+      （蚀痕寸数，基线派生的单位字段，increase）；
+    - 未出现的字段不入账（由入账层继承上一章末值，治 ch5 erosion=null 断链）。
+    """
+    out: dict[str, int] = {}
+    if not text or not registry:
+        return out
+    for m in _PANEL_RE.finditer(text):
+        core = _field_core(m.group(1).strip())
+        if core not in registry:
+            continue
+        try:
+            val = int(str(m.group(2)).split("/")[0].split("／")[0].strip())
+        except Exception:
+            continue
+        out[core] = val   # 顺序覆盖 → 末值
+    if "寸" in registry:
+        # 寸是累计长度语义：取正文所有「N寸」的最大值（「距心脏不到一寸」是剩余
+        # 描述、小于已延伸长度，若取末值会误覆盖累计值）
+        inch_vals: list[int] = []
+        for m in re.finditer(r"([0-9]+|[一二三四五六七八九十百两]+)\s*寸", text):
+            s = m.group(1)
+            try:
+                inch_vals.append(_cn_to_int(s))
+            except Exception:
+                continue
+        if inch_vals:
+            out["寸"] = max(inch_vals)
+    return out
+
+
+def _registry_initial(baseline: dict | None, registry: dict[str, str]) -> dict[str, int]:
+    """注册字段的初始基线值（prev 缺失时用）：panel_format/reset_rule 中的数字
+    + 蚀痕基线「已延伸 N 寸」。"""
+    init: dict[str, int] = {}
+    if not baseline or not registry:
+        return init
+    for k in ("panel_format", "reset_rule", "面板格式"):
+        v = str(baseline.get(k) or "")
+        for m in re.finditer(r"([\u4e00-\u9fff]{1,12}?)\s*[：:]\s*([0-9]+)", v):
+            core = _field_core(m.group(1))
+            if core in registry:
+                try:
+                    init[core] = int(m.group(2))
+                except Exception:
+                    pass
+    if "寸" in registry:
+        for k in ("scar_current", "蚀痕", "蚀痕基线"):
+            v = str(baseline.get(k) or "")
+            m = re.search(r"([0-9]+|[一二三四五六七八九十百两]+)\s*寸", v)
+            if m:
+                try:
+                    init["寸"] = _cn_to_int(m.group(1))
+                except Exception:
+                    pass
+                break
+    return init
+
+
+def ledger_check(content: str, prev_ledger: dict, registry: dict[str, str],
+                 deaths: int, initial: dict | None = None) -> list[str]:
+    """链式账本校验（质检 2.8c 通用版）：注册字段跨章一致性 + 事件驱动双向。
+
+    - 无事件（deaths=0）：decrease/中性字段必须与上一章末一致（无事件不得变化——
+      治 ch2 次数 3→2 无依据递减）；increase 字段不得回退（治 ch4 四十一寸→ch5
+      三十七寸；允许合法正向增长如蚀晶碎片 +1 寸，不误伤）；
+    - 有事件（deaths>0）：decrease 字段必须递减（上一章末已 0 仍死亡 = 边界违规，
+      基线未声明该行为）；increase 字段必须 ≥ 上一章末 + deaths（蚀化/蚀痕随死亡
+      递增）；
+    - 只校验正文出现的字段；prev 缺失用基线初始值（initial）；再缺失跳过。
+    """
+    if not registry or not content:
+        return []
+    cur = ledger_extract_numbers(content, registry)
+    if not cur:
+        return []
+    out: list[str] = []
+    for core, rule in registry.items():
+        if core not in cur:
+            continue
+        val = cur[core]
+        prev = prev_ledger.get(core)
+        if prev is None:
+            prev = (initial or {}).get(core)
+        if prev is None:
+            continue
+        if deaths <= 0:
+            if rule == "increase":
+                if "寸" in core:
+                    # 单位字段（寸/里/丈…）允许合法正向增长（外力/碎片等），只查不回退
+                    if val < prev:
+                        out.append(
+                            f"机制字段「{core}」本章无死亡结算但值 {val} 较上一章末 {prev} "
+                            "回退（未发生事件时累计类机制数字不得回退）"
+                        )
+                elif val != prev:
+                    out.append(
+                        f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
+                        "（未发生事件时机制数字必须保持上一章末值不变）"
+                    )
+            elif val != prev:
+                out.append(
+                    f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
+                    "（未发生事件时机制数字必须保持上一章末值不变）"
+                )
+        else:
+            if rule == "decrease":
+                if val > prev:
+                    out.append(
+                        f"机制字段「{core}」本章发生死亡但值 {val} 未从上一章末 {prev} 递减"
+                        "（死亡必须 -1）"
+                    )
+                elif prev == 0 and val == 0:
+                    out.append(
+                        f"机制字段「{core}」上一章末已为 0，本章仍发生死亡（次数用尽后"
+                        "不得再安排死亡，基线未声明该边界行为）"
+                    )
+            elif rule == "increase" and val < prev + max(0, deaths):
+                out.append(
+                    f"机制字段「{core}」本章发生 {deaths} 次死亡，值 {val} 应 ≥ 上一章末"
+                    f" {prev} + {deaths}（每死 +1，随死亡累计递增）"
+                )
+    return out

@@ -349,9 +349,15 @@ class BookMemory:
     # 场景/重写 prompt 遵守；蚀化累计校验（chapter_state.erosion_cumulative_check）
     # 用同一账本做兜底。写入时机 = 每章生成完成（stages.write 末尾）。
     def record_chapter_state(self, chapter_no: int, deaths: int = 0,
-                             erosion: int | None = None, scratch: str = "") -> None:
-        """登记本章末机制状态（死亡次数、正文蚀化值、蚀痕位置）。同章覆盖；
-        首次入账时若 canon 机制基线含蚀化起始值则解析为 erosion_start。"""
+                             erosion: int | None = None, scratch: str = "",
+                             numbers: dict | None = None) -> None:
+        """登记本章末机制状态（死亡次数、正文蚀化值、蚀痕位置、注册字段末值）。
+
+        同章覆盖；首次入账时若 canon 机制基线含蚀化起始值则解析为 erosion_start。
+        P0-15/16 通用版（2026-10-10）：numbers = {核心字段: 末值}（ledger_extract_numbers
+        产出），逐章链式入账——本章未提及的字段由 chapter_ledger 继承上一章末值，
+        治 v9 ch5 正文无面板行 → erosion=null 断链。
+        """
         if not self.enabled:
             return
         data = self.load()
@@ -362,6 +368,7 @@ class BookMemory:
             "deaths": max(0, int(deaths or 0)),
             "erosion": int(erosion) if erosion is not None else None,
             "scratch": str(scratch or "").strip(),
+            "nums": dict(numbers or {}),   # P0-15/16 通用版：注册字段末值
         })
         chapters.sort(key=lambda c: int(c.get("ch", 0)))
         st["chapters"] = chapters[-200:]  # 全书长度上限防膨胀
@@ -369,6 +376,26 @@ class BookMemory:
         if not st.get("erosion_start"):
             st["erosion_start"] = self._erosion_start_from_baseline()
         self.save()
+
+    def chapter_ledger(self, up_to_ch: int) -> dict:
+        """链式继承读取截至某章的机制字段末值（P0-15/16 通用版）。
+
+        每章只记录正文出现的字段；本章未提及的字段由最近一章带值者继承
+        （v9 ch5 正文无面板行 → ch6 校验基线仍取 ch4 末值，不断链）。
+        无任何记录 → 空 dict。
+        """
+        if not self.enabled:
+            return {}
+        data = self.load()
+        st = data.get("state") or {}
+        out: dict = {}
+        for c in sorted(
+            (c for c in st.get("chapters", []) if int(c.get("ch", 0)) <= int(up_to_ch)),
+            key=lambda c: int(c.get("ch", 0)),
+        ):
+            for k, v in (c.get("nums") or {}).items():
+                out[k] = v
+        return out
 
     def cumulative_deaths(self, up_to_ch: int) -> int:
         """截至某章的累计死亡次数（代码求和，零 LLM；账本无记录返回 0）。

@@ -494,6 +494,17 @@ class ChapterWriter:
         if not summary:
             # 模型漏输出【摘要】时兜底：单独调用一次生成摘要，保证记忆库完整
             summary = self._gen_summary(chapter_no, plan_title, content)
+        else:
+            # P0-17 摘要一致性校验（2026-10-10，治 v9 ch6 摘要写大纲词「忘忧阁密报」
+            # 而正文是不问阁）：模型自带的摘要若含 ≥2 个正文完全没有的 3 字连续词
+            # （多为自创专有名词/大纲残留），判为摘要与正文脱节 → 基于正文重生成。
+            if content and _summary_invented_words(summary, content) < 0.35:
+                _regen_summary = self._gen_summary(chapter_no, plan_title, content)
+                if _regen_summary:
+                    if not silent:
+                        print(f"  [摘要] 模型自带摘要与正文脱节（含正文未出现的 3 字词），"
+                              f"基于正文重生成摘要")
+                    summary = _regen_summary
 
         # 高质量模式：自动改稿（小改自动改，中改以上只记录）
         if getattr(self.cfg, 'high_quality_mode', False) and content:
@@ -537,6 +548,7 @@ class ChapterWriter:
                 chapter, _qc = qc.ensure_quality(
                     chapter_no, plan_title, plan_goal, content, summary,
                     silent=silent, baseline=_bl or None,
+                    core_event=plan_core_event or None,
                 )
                 content, summary = chapter.content, chapter.summary
                 qc_passed = bool(_qc.get("passed", True))
@@ -602,7 +614,20 @@ class ChapterWriter:
                 _deaths = 0
                 if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
                     _deaths = _eros - int(_prev_eros or 0)
-                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros)
+                # P0-15/16 通用版：注册字段末值链式入账（ledger_extract_numbers 零 LLM
+                # 抽取；本章未提及字段由 chapter_ledger 继承上一章末值，治 ch5 断链）
+                _nums = {}
+                try:
+                    from .chapter_state import (mechanism_field_registry as _mreg2,
+                                                ledger_extract_numbers as _lex)
+                    _canon2 = (_mem_st.load().get("canon") or {})
+                    _reg2 = _mreg2(_canon2.get("mechanism_baseline") or {})
+                    if _reg2:
+                        _nums = _lex(content or "", _reg2)
+                except Exception:
+                    _nums = {}
+                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros,
+                                             numbers=_nums)
         except Exception:
             pass
         # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；普通模式无 scenes 则跳过）
@@ -921,9 +946,12 @@ class ChapterWriter:
                         fallback_events = events_list
             # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
             # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
-            # 防"救苏妄言"拆成石殿版/墟口外版两场景）：
+            # 防"救苏妄言"拆成石殿版/墟口外版两场景）+ P0-17 大纲核心事件覆盖校验：
             # 不合格 = 同一事件拆成两场景（同事件两版本拼接源头），回退整章生成
-            ok_plan, why_bad = _validate_scene_plan(scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
+            ok_plan, why_bad = _validate_scene_plan(
+                scenes, int(getattr(self.cfg, "chapter_words", 0) or 0),
+                core_event=str(plan_core_event or ""),
+            )
             # REQ-scene-plan-align：派生模式下事件互斥改用 desc（骨架原文）相似度兜底——
             # 模型补充的 conflict/action 可能把同一人物交互的递进拍标成同动作（如"扫描/
             # 装傻"都标"试探"），槽位检查会误杀回退；desc 是骨架逐拍原文，互斥由"两拍
@@ -1067,6 +1095,30 @@ class ChapterWriter:
                     )
             except Exception:
                 _panel_base, panel_baseline_text = {}, ""
+            # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段
+            # 才允许出现在正文面板；禁止自造字段（累计死亡次数类）；次数类字段为 0
+            # 时本章不得再安排死亡（基线未声明该边界行为）。
+            try:
+                _mem_r = self._memory()
+                if _mem_r is not None:
+                    from .chapter_state import mechanism_field_registry as _mreg3
+                    _canon3 = (_mem_r.load().get("canon") or {})
+                    _reg3 = _mreg3(_canon3.get("mechanism_baseline") or {})
+                    if _reg3:
+                        panel_baseline_text += (
+                            "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下"
+                            f"字段（{sorted(_reg3)}）；禁止出现基线未声明的面板字段（如"
+                            "「累计死亡次数」「死亡总次数」等自造标签）；字段格式必须为"
+                            "「字段名：数字」（带分母的「0/3」写法禁止）。"
+                        )
+                        if any(k for k in _reg3 if k.endswith("次数") or "剩余" in k):
+                            panel_baseline_text += (
+                                "\n【边界规则】上述次数/剩余类字段为 0 时，本章不得再发生"
+                                "死亡结算事件（次数用尽后死亡=违规）；如本章确有死亡，必须"
+                                "先声明字段为 1 以上。"
+                            )
+            except Exception:
+                pass
             sys_c, user_c = scene_prompt(
                 self.cfg, chapter_no, plan_title, idx, sc,
                 mem_for_this, running_tail, dynamic,
@@ -1268,12 +1320,24 @@ class ChapterWriter:
                 # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
                 # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；
                 # 仍违反用最后一次（不做整章回退——质检 2.x 仍会二次拦截）。
+                # P0-15/16 通用版（2026-10-10）：叠加「机制字段注册表」未知字段检测——
+                # 基线没声明的面板字段（如「累计死亡次数」）出现即违规，任何书通用。
                 if piece and _panel_base:
                     try:
                         from .chapter_state import (panel_direction_violations as _pdv,
                                                     panel_causal_violations as _pcv,
                                                     death_signals as _deathsig,
-                                                    book_death_signals as _bdeathsig)
+                                                    book_death_signals as _bdeathsig,
+                                                    mechanism_field_registry as _mreg,
+                                                    unknown_mechanism_fields as _unk)
+                        _reg = {}
+                        try:
+                            _mem0 = self._memory()
+                            if _mem0 is not None:
+                                _canon = (_mem0.load().get("canon") or {})
+                                _reg = _mreg(_canon.get("mechanism_baseline") or {})
+                        except Exception:
+                            _reg = {}
                         # P0-8 死亡-结算因果校验（v6 实证：第 2 章死亡后次数 2→0 超扣、
                         # 第 3 章死亡后蚀化 98→98 未递增、第 7 章死亡后次数 1→1 死而不扣——
                         # 方向校验只报"回退/回升"，"未变化/超扣"不触发）。死亡信号 =
@@ -1289,6 +1353,9 @@ class ChapterWriter:
                         _viols = _pdv(piece, _panel_base)
                         if _death:
                             _viols = _viols + _pcv(piece, _panel_base, True)
+                        # P0-15/16 通用版：注册表外机制字段违规（closed-world 白名单）
+                        if _reg:
+                            _viols = _viols + _unk(piece, _reg)
                     except Exception:
                         _viols = []
                     if _viols:
@@ -1337,6 +1404,18 @@ class ChapterWriter:
                         if not _panel_ok and not silent:
                             print(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
                                   f"采用最后稿（质检层二次拦截）")
+                # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
+                # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
+                # 数字、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留
+                # （不做整章回退——质量过关优先，字数不触发整章回退）。
+                # 整句复读型注水（"正文"×N 同句重复）由节拍防线/质检 2.7 处理，
+                # slim 只服务"剧情推进完整但字数超限"的真实超长场景。
+                if (piece and not _is_repetitive_text(piece)
+                        and len(piece) > max(600, int(sc.get("target_words") or 1200) * 1.5)):
+                    _slim = self._slim_scene(piece, sc, chapter_no, plan_title, idx, silent)
+                    if _slim and len(_slim) < len(piece):
+                        piece = _slim
+                        running_tail = piece[-120:] if piece else running_tail
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
@@ -1614,6 +1693,41 @@ class ChapterWriter:
         if not prev or not prev.content:
             return ""
         return prev.content.strip()[-300:]
+
+    def _slim_scene(self, piece: str, sc: dict, chapter_no: int, plan_title: str,
+                    idx: int, silent: bool = False) -> str:
+        """P0-18 单场景精简重写（2026-10-10）：场景超 target_words×1.5 时调用。
+
+        保留剧情主干/人物行为/机制数字/伏笔，删除重复措辞、注水对话、无效描写与
+        自我复读，压缩到 target×1.2 左右；不改变情节走向、不新增情节。失败返回空串
+        （调用方保留原稿）。
+        """
+        if not piece:
+            return ""
+        target = max(600, int(sc.get("target_words") or 1200) * 12 // 10)
+        try:
+            sys_p = ("你是小说精修编辑。对给定场景做「去水压缩」：只删除重复措辞、"
+                     "注水对话轮、无效环境/心理描写、同一信息的多遍复述；保留全部剧情"
+                     "主干、人物行为逻辑、机制面板数字、伏笔与钩子；不得改变情节走向、"
+                     "不得新增情节、不得改机制数字。输出压缩后的正文。")
+            user_p = (
+                f"第{chapter_no}章《{plan_title}》第{idx}个场景，当前 {len(piece)} 字"
+                f"（目标 ≤ {target} 字）：\n{piece}\n\n"
+                "请压缩到目标字数内（如原文明显超长），保持事件推进与人物一致，"
+                "直接输出压缩后正文。"
+            )
+            out = self.llm.chat(
+                sys_p, user_p, temperature=0.5, max_tokens=max(3000, target * 2)
+            )
+            out = _strip_html_tags(out)
+            if out and 0.5 * len(piece) <= len(out) <= len(piece) and len(out) <= target * 1.3:
+                if not silent:
+                    print(f"  [场景] 第{idx}个场景超长（{len(piece)} 字），"
+                          f"精简重写为 {len(out)} 字")
+                return out
+            return ""
+        except Exception:
+            return ""
 
 
 def _format_action_plan(chars: list) -> str:
@@ -1893,13 +2007,17 @@ def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
                     sc[k] = e[k]
 
 
-def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, str]:
+def _validate_scene_plan(scenes: list, chapter_words: int = 0,
+                         core_event: str = "") -> tuple[bool, str]:
     """拆场景结构校验（零 LLM 成本，2026-09-30 从文本相似度升级为结构化校验）：
     1. 场景数 ≤ 4（拆出 5-6 个场景 = 把同一事件拆多遍凑场景数，《万墟之上》6316 字版根因；
        单场景不视为失败——拆不出时按整章单场景写，交由后续字数/质量审计兜底）
     2. 多场景时 target_words 之和 ∈ [chapter_words ±10%]（拆场景字数规划失效迹象）
     3. 事件互斥：新格式按 scene_event_ref 引用唯一性（同一事件编号被 ≥2 场景引用=重叠）；
        旧格式（无 ref）降级按 event 文本归一化相似度（>0.55 判重叠）
+    4. P0-17（2026-10-10）：大纲核心事件覆盖校验——core_event 分段后每段与事件清单
+       并集做 2 字以上最长公共子串匹配，命中段占比 <60% = 拆场景丢失大纲核心事件
+       （v9 ch6 实证：大纲「忘忧阁阁主密报」被替换为自创「不问阁」→ 覆盖不足应回退）
     返回 (是否通过, 失败原因)；不通过由调用方回退整章生成。
     """
     if not scenes:
@@ -1910,6 +2028,19 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, st
         total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
         if total > 0 and abs(total - chapter_words) > chapter_words * _SCENE_WORDS_TOLERANCE:
             return False, f"场景 target_words 之和 {total} 偏离目标 {chapter_words} 超 ±10%"
+    # P0-17：大纲核心事件覆盖校验（通用，任何书有 core_event 即校验）
+    if core_event:
+        segs = [s.strip() for s in re.split(r"[→，,。；;]", core_event)
+                if len(s.strip()) >= 4]
+        if segs:
+            ev_all = " ".join(
+                str(sc.get("event") or "") for sc in scenes if isinstance(sc, dict)
+            )
+            hit = sum(1 for s in segs if _lcs_len(s, ev_all) >= 2)
+            if hit * 10 < len(segs) * 6:   # 命中段 ≥60% 才通过（2 段 1 命中=50% 判未覆盖）
+                miss = [s for s in segs if _lcs_len(s, ev_all) < 2]
+                return False, (f"拆场景未覆盖大纲核心事件（命中 {hit}/{len(segs)} 段，"
+                               f"未覆盖段：{' / '.join(miss[:3])}）")
     # 事件互斥：优先引用唯一性，缺失 ref 降级文本相似度
     refs: list[str] = []
     texts: list[tuple[str, set[str]]] = []
@@ -1943,6 +2074,19 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0) -> tuple[bool, st
     return True, ""
 
 
+def _lcs_len(a: str, b: str) -> int:
+    """两文本最长公共子串长度（≥2 字视为「段被事件清单覆盖」；O(n*m) 小文本直算）。"""
+    if not a or not b:
+        return 0
+    if len(a) > len(b):   # 短串作窗口，长串作母串
+        a, b = b, a
+    for w in range(len(a), 1, -1):
+        for i in range(len(a) - w + 1):
+            if a[i:i + w] in b:
+                return w
+    return 0
+
+
 def _scene_events_overlap(scenes: list) -> bool:
     """兼容别名：仅事件互斥维度（旧测试/调用沿用）。"""
     ok, _ = _validate_scene_plan(scenes, chapter_words=0)
@@ -1958,6 +2102,36 @@ def _split_summary(text: str) -> tuple[str, str]:
         summary = text[idx + len(marker):].strip().replace("\n", " ")
         return content, summary
     return text.strip(), ""
+
+
+def _is_repetitive_text(text: str) -> bool:
+    """整句复读型注水检测：唯一 2-gram 占比 <15% = 同一句反复堆叠（测试构造
+    "正文"×N / 模型无意义复读），此时 slim 无意义，交由节拍防线/质检处理。
+    """
+    if not text or len(text) < 200:
+        return False
+    grams = {text[i:i + 2] for i in range(max(0, len(text) - 1))}
+    return len(grams) < len(text) * 0.15
+
+
+def _summary_invented_words(summary: str, content: str) -> float:
+    """P0-17 摘要一致性：摘要 2-gram 与正文 2-gram 的命中率。
+
+    模型自带的摘要若大量使用正文完全没有的表述（多为自创专有名词/大纲残留，如
+    v9 ch6 摘要「忘忧阁阁主密报」而正文是不问阁），命中率会显著低于正常摘要。
+    返回命中率（0.0~1.0）；调用方以 <0.35 判「摘要与正文脱节 → 基于正文重生成」。
+    """
+    if not summary or not content:
+        return 1.0
+    if len(summary) < 8:
+        return 1.0
+    grams = {summary[i:i + 2] for i in range(max(0, len(summary) - 1))}
+    if len(grams) < 4 or len(summary) < 8:   # 太短无统计意义（测试/占位摘要防误触发重生成）
+        return 1.0
+    body = {content[i:i + 2] for i in range(max(0, len(content) - 1))}
+    if not body:
+        return 1.0
+    return sum(1 for g in grams if g in body) / len(grams)
 
 
 def _strip_html_tags(text: str) -> str:

@@ -389,41 +389,91 @@ _PANEL_DEATH_RE = re.compile(
 _PANEL_DEATH_EXCLUDE = re.compile(
     r"(?:死也要|别死|不会死|不怕死|拼死|找死|要死|该死的|死里逃生|死活|死灰|死寂|"
     r"死路|死命|死去活来|死心|死结|死人|死脑筋|死撑|死战|死斗|死磕|快死|将死|垂死|"
-    r"死期|死讯|死尸|尸首|死状|死法|死亡人数|死亡率|视死如归|九死一生|生死|赴死|"
-    r"等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆|"
-    r"累计死亡|死亡次数|已死亡|死亡数量|总死亡)"  # P0-14：自述统计类不计为死亡结算
+    r"差点|险些|差一点|差点儿|死期|死讯|死尸|尸首|死状|死法|死亡人数|死亡率|视死如归|"
+    r"九死一生|生死|赴死|等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆|"
+    r"累计死亡|死亡次数|已死亡|死亡数量|总死亡)"  # P0-14：自述统计类不计为死亡结算；差点/险些=未死
 )
 
 
-def _extra_signals_pattern(extra_signals) -> str:
-    """书级个性化死亡信号（P0-14，2026-10-10）：把 memory 注入的本作特有死亡表达
-    （如《万墟之上》隐式死亡"呼吸断了/尸体被翻过来/被打死"）并入死亡信号匹配词。
+def death_signals(text: str) -> bool:
+    """【通用死亡标准（跨书词面层）】正文是否发生死亡/复活结算事件。
 
-    用户约束：死亡判定要素是单本书的机制（面板/复活/蚀化三联），不做成所有书通用的
-    硬编码——通用词表保留（跨书基线），书级信号由 book_memory 记忆闭环按本书实证
-    动态补充（v8 实证 ch4"呼吸断了"漏计、ch7"尸体被翻过来"漏计）。
-    """
-    if not extra_signals:
-        return ""
-    words = [str(w).strip() for w in extra_signals if str(w).strip()]
-    if not words:
-        return ""
-    return "|" + "|".join(re.escape(w) for w in words)
-
-
-def death_signals(text: str, extra_signals=None) -> bool:
-    """正文是否发生死亡/复活结算事件（高精度：命中死亡表达且非否定/比喻语境）。
-
-    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）+ 书级个性化信号；
+    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）；
     - 排除否定与比喻语境（别/不/没/怕/拒/未 + 死亡词；快死/死也要/拼死/死活…）
       与自述统计类（累计死亡/死亡次数——v8 第 5/6 章面板自述误计实证）；
     - 零 LLM、确定性；供 panel_causal_violations 与 stages 场景防线使用。
+    - 用户约束（2026-10-10 P0-14 修正）：这是**跨书通用标准**；本书特有的死亡表达
+      （金手指机制驱动，如《万墟之上》面板结算/蚀化递增/复活三联）由
+      book_death_signals/book_death_count 独立标准判定，不并入本词表——
+      其他书没有这套机制，通用词面不得被单本书的词污染。
     """
     t = (text or "")
     if not t:
         return False
-    _pat = _PANEL_DEATH_RE.pattern[:-1] + _extra_signals_pattern(extra_signals) + ")"
-    _re = re.compile(_pat)
+    for m in _PANEL_DEATH_RE.finditer(t):
+        span = t[max(0, m.start() - 8):m.end() + 8]
+        if _PANEL_DEATH_EXCLUDE.search(span):
+            continue
+        ctx = t[max(0, m.start() - 12):m.start()]
+        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
+            continue
+        return True
+    return False
+
+
+def death_count(text: str) -> int:
+    """【通用死亡标准】正文死亡结算次数（确定性统计，跨书词面层）。
+
+    与 death_signals 同规则，但统计每次命中（"死了…复活…又死了"=2 次）；
+    相邻 50 字内的多次命中视为同一次结算（"他被贯穿…彻底死了"连写不重复计）。
+    P0-14：自述统计类（累计死亡/死亡次数）已排除——v8 第 5/6 章面板自述
+    「累计死亡次数：N」不再误计为死亡结算。本书机制表达由 book_death_count 独立计。
+    """
+    t = (text or "")
+    if not t:
+        return 0
+    count = 0
+    last_end = -1_000_000   # 远负初值：否则第一条命中（start-(-1)<50）恒被相邻去重吞掉
+    for m in _PANEL_DEATH_RE.finditer(t):
+        span = t[max(0, m.start() - 8):m.end() + 8]
+        if _PANEL_DEATH_EXCLUDE.search(span):
+            continue
+        ctx = t[max(0, m.start() - 12):m.start()]
+        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
+            continue
+        if m.start() - last_end < 50:
+            last_end = max(last_end, m.end())
+            continue
+        count += 1
+        last_end = m.end()
+    return count
+
+
+# ---------- P0-14 个性化死亡标准（本书机制层，2026-10-10） ----------
+# 用户约束修正：死亡判定要「通用 + 个性化」两种独立标准。
+#  - 通用标准 = 上面 death_signals/death_count（跨书词面，任何书适用）；
+#  - 个性化标准 = 下面 book_death_signals/book_death_count（本书金手指机制驱动的
+#    死亡表达，如《万墟之上》面板结算式死亡"呼吸断了/尸体被翻过来"等隐式表达，
+#    由 book_memory 记忆闭环按本书实证写入 state.extra_death_signals）——
+#    独立正则、独立计数，不并入通用词表（其他小说没有这套机制，通用词面
+#    不得被单本书的词污染；同样地，无书级信号的普通书该标准自动为空=不启用）。
+def _book_words_re(book_signals):
+    words = [str(w).strip() for w in (book_signals or []) if str(w).strip()]
+    if not words:
+        return None
+    return re.compile("|".join(re.escape(w) for w in words))
+
+
+def book_death_signals(text: str, book_signals=None) -> bool:
+    """【个性化死亡标准（本书机制层）】书级词表命中即本书死亡结算事件。
+
+    与通用标准完全独立（不并入 _PANEL_DEATH_RE）；同样过否定/比喻与自述统计
+    排除（书级词出现在"没呼吸断了/累计死亡次数"等语境同样不计）。
+    """
+    t = (text or "")
+    _re = _book_words_re(book_signals)
+    if not _re or not t:
+        return False
     for m in _re.finditer(t):
         span = t[max(0, m.start() - 8):m.end() + 8]
         if _PANEL_DEATH_EXCLUDE.search(span):
@@ -435,21 +485,14 @@ def death_signals(text: str, extra_signals=None) -> bool:
     return False
 
 
-def death_count(text: str, extra_signals=None) -> int:
-    """P0-10：正文死亡结算次数（确定性统计，供机制状态账本入账）。
-
-    与 death_signals 同规则，但统计每次命中（"死了…复活…又死了"=2 次）；
-    相邻 50 字内的多次命中视为同一次结算（"他被贯穿…彻底死了"连写不重复计）。
-    P0-14：书级个性化信号（extra_signals）并入；自述统计类（累计死亡/死亡次数）
-    已排除——v8 第 5/6 章面板自述「累计死亡次数：N」不再误计为死亡结算。
-    """
+def book_death_count(text: str, book_signals=None) -> int:
+    """【个性化死亡标准】书级死亡表达次数（独立 50 字去重，不与通用计数合并）。"""
     t = (text or "")
-    if not t:
+    _re = _book_words_re(book_signals)
+    if not _re or not t:
         return 0
-    _pat = _PANEL_DEATH_RE.pattern[:-1] + _extra_signals_pattern(extra_signals) + ")"
-    _re = re.compile(_pat)
     count = 0
-    last_end = -1_000_000   # 远负初值：否则第一条命中（start-(-1)<50）恒被相邻去重吞掉
+    last_end = -1_000_000
     for m in _re.finditer(t):
         span = t[max(0, m.start() - 8):m.end() + 8]
         if _PANEL_DEATH_EXCLUDE.search(span):

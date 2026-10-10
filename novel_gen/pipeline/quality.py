@@ -300,7 +300,8 @@ class QualityChecker:
         if baseline and self.memory is not None:
             try:
                 from .chapter_state import (erosion_cumulative_check as _ecc,
-                                            death_count as _dc2)
+                                            death_count as _dc2,
+                                            book_death_count as _bdc)
                 _st = self.memory.load().get("state") or {}
                 _prev_chs = [c for c in _st.get("chapters", [])
                              if int(c.get("ch", 0)) < int(chapter_no)]
@@ -308,7 +309,9 @@ class QualityChecker:
                 _start = int(_st.get("erosion_start", 0) or 0)
                 _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
                 _sigs = self.memory.book_signals()
-                _cumu = _dc2(content, extra_signals=_sigs)  # 本章死亡次数（书级信号+排除自述统计）
+                # P0-14 修正：通用标准计数 + 个性化标准计数（两套独立，加法合并，
+                # 各自独立去重——同一表达不会跨标准重复计）
+                _cumu = _dc2(content) + _bdc(content, _sigs)
                 if _base > 0:
                     for _it in _ecc(content, _base, _cumu):
                         issues.append({

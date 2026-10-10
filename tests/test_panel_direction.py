@@ -234,7 +234,10 @@ def test_causal_no_baseline_skip():
 
 # ---------- P0-10 蚀化跨章累计校验 + 死亡计数（2026-10-10 混合方案⑥） ----------
 
-from novel_gen.pipeline.chapter_state import erosion_cumulative_check, death_count, death_signals  # noqa: E402
+from novel_gen.pipeline.chapter_state import (  # noqa: E402
+    erosion_cumulative_check, death_count, death_signals,
+    book_death_signals, book_death_count,
+)
 
 
 @pytest.mark.p1
@@ -288,18 +291,40 @@ def test_death_count_excludes_self_report_panel():
 
 @pytest.mark.p1
 def test_death_count_extra_signals_book_specific():
-    """书级个性化信号（book_memory 记忆闭环注入）：默认词表漏检 → extra 命中。"""
+    """个性化死亡标准（独立函数，不并入通用词表）：默认词表漏检 → 书级词独立命中。"""
     t = "他呼吸断了，没再起来。"
-    assert death_count(t) == 0                       # 通用词表不含「呼吸断了」
-    assert death_count(t, extra_signals=["呼吸断了"]) == 1
-    assert death_signals(t, extra_signals=["呼吸断了"]) is True
+    assert death_count(t) == 0                        # 通用标准不命中（跨书词面）
     assert death_signals(t) is False
-    # 自述统计排除对书级信号同样生效（extra 里出现「累计死亡」类仍被排除）
-    assert death_count("累计死亡次数：3", extra_signals=["累计死亡"]) == 0
+    assert book_death_signals(t, ["呼吸断了"]) is True   # 个性化标准（本书机制）命中
+    assert book_death_count(t, ["呼吸断了"]) == 1
+    # 无书级信号 → 个性化标准不启用（其他书无本书机制 → 自动为空）
+    assert book_death_signals(t) is False
+    assert book_death_count(t) == 0
+    assert book_death_signals(t, []) is False
+    # 自述统计排除对个性化标准同样生效
+    assert book_death_count("累计死亡次数：3", ["累计死亡"]) == 0
+    # 两标准完全独立：通用标准不带书级词参数（互不污染）
+    assert death_count("他死了") == 1
+    assert death_count("他呼吸断了") == 0  # 书级词不入通用计数
+
+
+@pytest.mark.p1
+def test_book_death_count_independent_dedup():
+    """个性化标准独立 50 字去重 + 否定语境排除。"""
+    t = ("他呼吸断了，没再起来。他挣扎着往洞口爬了半刻，靠在石壁上喘匀了气，"
+         "又往前挪了十来丈，绕过那堆碎石，才停下来。尸体被翻过来，他咽了气。")
+    assert book_death_count(t, ["呼吸断了", "尸体被翻过来"]) == 1  # 相邻 50 字合并
+    # 间距拉开 → 独立计
+    long = ("他呼吸断了，没再起来。他挣扎着往洞口爬了半刻，靠在石壁上喘匀了气，"
+            "又往前挪了十来丈，绕过那堆碎石，才停下来喘匀了气。他望着墟口的雾，"
+            "想起昨晚那面破鼓，还有铺子里那把断刀。半晌，他撑着墙站起来，朝外走。"
+            "尸体被翻过来，他咽了气。")
+    assert book_death_count(long, ["呼吸断了", "尸体被翻过来"]) == 2
+    assert book_death_signals("他差点呼吸断了", ["呼吸断了"]) is False  # 否定语境排除
 
 
 @pytest.mark.p1
 def test_death_count_extra_signals_empty_safe():
-    assert death_count("他死了", extra_signals=None) == 1
-    assert death_count("他死了", extra_signals=[]) == 1
-    assert death_count("他死了", extra_signals=[""]) == 1
+    assert death_count("他死了") == 1
+    assert book_death_count("他死了", None) == 0
+    assert book_death_count("他死了", [""]) == 0

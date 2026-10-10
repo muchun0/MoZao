@@ -709,13 +709,16 @@ class ChapterWriter:
                 try:
                     from .chapter_state import (panel_direction_violations as _pdv,
                                                 panel_causal_violations as _pcv,
-                                                death_signals as _deathsig)
+                                                death_signals as _deathsig,
+                                                book_death_signals as _bdeathsig)
                     _ev_text = " ".join(
                         str(e.get(k) or "") for e in (fallback_events or [])
                         for k in ("desc", "conflict", "final_state")
                     )
                     _sigs = self._memory().book_signals() if self._memory() is not None else []
-                    _death = _deathsig(_text, extra_signals=_sigs) or _deathsig(_ev_text, extra_signals=_sigs)
+                    # P0-14 修正：通用标准（词面）OR 个性化标准（本书机制词）——两套独立
+                    _death = _deathsig(_text) or _bdeathsig(_text, _sigs) or \
+                        _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
                     _viols = _pdv(_text, panel_baseline)
                     if _death:
                         _viols = _viols + _pcv(_text, panel_baseline, True)
@@ -1269,7 +1272,8 @@ class ChapterWriter:
                     try:
                         from .chapter_state import (panel_direction_violations as _pdv,
                                                     panel_causal_violations as _pcv,
-                                                    death_signals as _deathsig)
+                                                    death_signals as _deathsig,
+                                                    book_death_signals as _bdeathsig)
                         # P0-8 死亡-结算因果校验（v6 实证：第 2 章死亡后次数 2→0 超扣、
                         # 第 3 章死亡后蚀化 98→98 未递增、第 7 章死亡后次数 1→1 死而不扣——
                         # 方向校验只报"回退/回升"，"未变化/超扣"不触发）。死亡信号 =
@@ -1279,7 +1283,9 @@ class ChapterWriter:
                             str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
                         )
                         _sigs = self._memory().book_signals() if self._memory() is not None else []
-                        _death = _deathsig(piece, extra_signals=_sigs) or _deathsig(_ev_text, extra_signals=_sigs)
+                        # P0-14 修正：通用标准 OR 个性化标准（两套独立，不并入通用词表）
+                        _death = _deathsig(piece) or _bdeathsig(piece, _sigs) or \
+                            _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
                         _viols = _pdv(piece, _panel_base)
                         if _death:
                             _viols = _viols + _pcv(piece, _panel_base, True)

@@ -383,25 +383,48 @@ _PANEL_DEATH_RE = re.compile(
     r"死在|身死|阵亡|战死|没命)"
 )
 #: 死亡表达排除语境：否定/比喻/决心/名词化（快死了=将死未死；死也要/别死/不怕死等）
+#: 2026-10-10 P0-14 追加「累计死亡|死亡次数|已死亡」：v8 第 5/6 章实证——模型在
+#: 面板自述行「累计死亡次数：3 / 11」里写"死亡"词，词面计数误判为死亡结算事件
+#: （ch5/ch6 正文实际 0 次死亡却各计 1~3 次，账本被污染）。
 _PANEL_DEATH_EXCLUDE = re.compile(
     r"(?:死也要|别死|不会死|不怕死|拼死|找死|要死|该死的|死里逃生|死活|死灰|死寂|"
     r"死路|死命|死去活来|死心|死结|死人|死脑筋|死撑|死战|死斗|死磕|快死|将死|垂死|"
     r"死期|死讯|死尸|尸首|死状|死法|死亡人数|死亡率|视死如归|九死一生|生死|赴死|"
-    r"等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆)"
+    r"等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆|"
+    r"累计死亡|死亡次数|已死亡|死亡数量|总死亡)"  # P0-14：自述统计类不计为死亡结算
 )
 
 
-def death_signals(text: str) -> bool:
+def _extra_signals_pattern(extra_signals) -> str:
+    """书级个性化死亡信号（P0-14，2026-10-10）：把 memory 注入的本作特有死亡表达
+    （如《万墟之上》隐式死亡"呼吸断了/尸体被翻过来/被打死"）并入死亡信号匹配词。
+
+    用户约束：死亡判定要素是单本书的机制（面板/复活/蚀化三联），不做成所有书通用的
+    硬编码——通用词表保留（跨书基线），书级信号由 book_memory 记忆闭环按本书实证
+    动态补充（v8 实证 ch4"呼吸断了"漏计、ch7"尸体被翻过来"漏计）。
+    """
+    if not extra_signals:
+        return ""
+    words = [str(w).strip() for w in extra_signals if str(w).strip()]
+    if not words:
+        return ""
+    return "|" + "|".join(re.escape(w) for w in words)
+
+
+def death_signals(text: str, extra_signals=None) -> bool:
     """正文是否发生死亡/复活结算事件（高精度：命中死亡表达且非否定/比喻语境）。
 
-    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）；
-    - 排除否定与比喻语境（别/不/没/怕/拒/未 + 死亡词；快死/死也要/拼死/死活…）；
+    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）+ 书级个性化信号；
+    - 排除否定与比喻语境（别/不/没/怕/拒/未 + 死亡词；快死/死也要/拼死/死活…）
+      与自述统计类（累计死亡/死亡次数——v8 第 5/6 章面板自述误计实证）；
     - 零 LLM、确定性；供 panel_causal_violations 与 stages 场景防线使用。
     """
     t = (text or "")
     if not t:
         return False
-    for m in _PANEL_DEATH_RE.finditer(t):
+    _pat = _PANEL_DEATH_RE.pattern[:-1] + _extra_signals_pattern(extra_signals) + ")"
+    _re = re.compile(_pat)
+    for m in _re.finditer(t):
         span = t[max(0, m.start() - 8):m.end() + 8]
         if _PANEL_DEATH_EXCLUDE.search(span):
             continue
@@ -412,18 +435,22 @@ def death_signals(text: str) -> bool:
     return False
 
 
-def death_count(text: str) -> int:
+def death_count(text: str, extra_signals=None) -> int:
     """P0-10：正文死亡结算次数（确定性统计，供机制状态账本入账）。
 
     与 death_signals 同规则，但统计每次命中（"死了…复活…又死了"=2 次）；
     相邻 50 字内的多次命中视为同一次结算（"他被贯穿…彻底死了"连写不重复计）。
+    P0-14：书级个性化信号（extra_signals）并入；自述统计类（累计死亡/死亡次数）
+    已排除——v8 第 5/6 章面板自述「累计死亡次数：N」不再误计为死亡结算。
     """
     t = (text or "")
     if not t:
         return 0
+    _pat = _PANEL_DEATH_RE.pattern[:-1] + _extra_signals_pattern(extra_signals) + ")"
+    _re = re.compile(_pat)
     count = 0
     last_end = -1_000_000   # 远负初值：否则第一条命中（start-(-1)<50）恒被相邻去重吞掉
-    for m in _PANEL_DEATH_RE.finditer(t):
+    for m in _re.finditer(t):
         span = t[max(0, m.start() - 8):m.end() + 8]
         if _PANEL_DEATH_EXCLUDE.search(span):
             continue

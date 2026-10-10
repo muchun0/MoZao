@@ -64,6 +64,28 @@ def test_scene_isomorphic_short_and_empty():
     assert _beats_scene_isomorphic(["诊脉", "药包"], [["诊脉", "药包"]]) is False  # <3 拍
 
 
+# ---------- P0-14 ⑤ 判据放宽（2026-10-10）：占比 0.8→0.6 ----------
+
+@pytest.mark.p1
+def test_scene_isomorphic_partial_repeat_hit():
+    """v8 ch1 实证：三重拼接中场景 2/3 只重复场景 1 的核心 3~4 拍（面板→留牌→小九→
+    离场），ratio≈0.6~0.75——旧 0.8 阈值漏检，放宽 0.6 后命中（非通用拍≥2 防误判）。"""
+    seq = _extract_beat_sequence("面板闪了闪，他捏住留牌，小九探过身来，他转身离场，又约定了明日再见。")
+    ledger = [_extract_beat_sequence("他触到碎片，面板跳了一下。强撑着对峙，又死了一次，"
+                                     "面板亮了，留牌在掌心发烫，小九跟上来，他转身离开。")]
+    # 公共子序列 = {面板, 留牌, 小九, 离场} = 4 拍；ratio = 4/min(6, 9) ≈ 0.67 ≥ 0.6
+    assert _beats_scene_isomorphic(seq, ledger) is True
+
+
+@pytest.mark.p1
+def test_scene_isomorphic_partial_ratio_below_still_false():
+    """放宽后仍守住下界：公共拍占比 < 0.6 不判同构（防误杀半相似场景）。"""
+    seq = _extract_beat_sequence("面板亮了，他离开。")
+    ledger = [_extract_beat_sequence("他进店查药粉，又替他诊脉，递上药包，随后离开。")]
+    # common = {面板, 离场} = 2 拍 < 3 拍下限 → False
+    assert _beats_scene_isomorphic(seq, ledger) is False
+
+
 # ---------- ① 拆场景评审：合并函数（确定性） ----------
 
 @pytest.mark.p1

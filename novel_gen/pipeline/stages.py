@@ -577,15 +577,31 @@ class ChapterWriter:
         # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
         # 治 v7 第 6 章蚀化跨章口径——代码累计入账后，下章拆场景/场景/重写 prompt
         # 注入「蚀化应 = 起始基线 + 累计死亡」确定性锚，LLM 不再自由发挥跨章数字。
+        # P0-14（2026-10-10）根因修复：账本 deaths 改「本章末蚀化 - 上一章末蚀化」
+        # 蚀化差反推——v8 实证旧版用 death_count 词面计数入账被污染（ch1 重复段落
+        # 多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板误计）→ 累计虚高 → 锚正反馈
+        # 放大。蚀化差只跟随正文面板链（面板正确性由质检 2.8c「本章死亡必+1、
+        # 未死亡必不变」保证），账本与面板永远一致。
         try:
             _mem_st = self._memory()
             if _mem_st is not None:
-                from .chapter_state import death_count as _dc, _EROSION_SEQ_RE as _eseq
-                _deaths = _dc(content)
+                from .chapter_state import _EROSION_SEQ_RE as _eseq
                 _eros = None
                 _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
                 if _mv:
                     _eros = max(_mv)
+                _prev_eros = None
+                try:
+                    _st0 = _mem_st.load().get("state") or {}
+                    _prev_ch = [c for c in _st0.get("chapters", [])
+                                if int(c.get("ch", 0)) < int(chapter_no)]
+                    if _prev_ch:
+                        _prev_eros = _prev_ch[-1].get("erosion")
+                except Exception:
+                    _prev_eros = None
+                _deaths = 0
+                if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
+                    _deaths = _eros - int(_prev_eros or 0)
                 _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros)
         except Exception:
             pass
@@ -698,13 +714,17 @@ class ChapterWriter:
                         str(e.get(k) or "") for e in (fallback_events or [])
                         for k in ("desc", "conflict", "final_state")
                     )
-                    _death = _deathsig(_text) or _deathsig(_ev_text)
+                    _sigs = self._memory().book_signals() if self._memory() is not None else []
+                    _death = _deathsig(_text, extra_signals=_sigs) or _deathsig(_ev_text, extra_signals=_sigs)
                     _viols = _pdv(_text, panel_baseline)
                     if _death:
                         _viols = _viols + _pcv(_text, panel_baseline, True)
                 except Exception:
                     _viols = []
-            if not _issues and not _over and not _viols:
+            # P0-14（2026-10-10）：字数超限不再触发整章回退重写——用户约束"如果生成的
+            # 质量过关，就不需要整章回退重写"（v8 实证 ch5 3680/ch7 3682 字数超但质量
+            # 好，回退纯浪费 token；历轮重写越改越差教训）。字数仅作附注展示。
+            if not _issues and not _viols:
                 break
             if not silent:
                 _why = ("情节级重演：" + str(_issues[0]["detail"]) if _issues else "") + \
@@ -1258,7 +1278,8 @@ class ChapterWriter:
                         _ev_text = " ".join(
                             str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
                         )
-                        _death = _deathsig(piece) or _deathsig(_ev_text)
+                        _sigs = self._memory().book_signals() if self._memory() is not None else []
+                        _death = _deathsig(piece, extra_signals=_sigs) or _deathsig(_ev_text, extra_signals=_sigs)
                         _viols = _pdv(piece, _panel_base)
                         if _death:
                             _viols = _viols + _pcv(piece, _panel_base, True)

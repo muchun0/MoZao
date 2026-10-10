@@ -371,7 +371,11 @@ class BookMemory:
         self.save()
 
     def cumulative_deaths(self, up_to_ch: int) -> int:
-        """截至某章的累计死亡次数（代码求和，零 LLM；账本无记录返回 0）。"""
+        """截至某章的累计死亡次数（代码求和，零 LLM；账本无记录返回 0）。
+
+        P0-14 起：账本 deaths 由调用方按「本章末蚀化 - 上一章末蚀化」反推入账
+        （蚀化差驱动，不再依赖词面死亡计数），故本函数返回的累计与正文面板链一致。
+        """
         data = self.load()
         st = data.get("state") or {}
         return sum(
@@ -380,25 +384,69 @@ class BookMemory:
             if int(c.get("ch", 0)) <= int(up_to_ch)
         )
 
-    def erosion_anchor(self, up_to_ch: int) -> str:
-        """确定性数字锚：蚀化当前应 = 起始基线 + 截至本章累计死亡次数；
-        蚀痕已伸 = 起始寸数 + 累计死亡（每死一寸）。空账本/关闭 → 空串。
+    # ---------- P0-14 书级个性化死亡信号（2026-10-10） ----------
+    # 用户约束：死亡判定要素（面板结算/复活/蚀化递增三联）是《万墟之上》这类
+    # 具体书的机制，不应做成所有书通用的硬编码词表——通用词表（chapter_state
+    # _PANEL_DEATH_RE）保留，本书特有表达由本记忆账本动态补充：质检/人工确认
+    # 某章实际发生死亡但 death_signals 漏检时，把该书死亡表达词 add_book_signal
+    # 写入 state.extra_death_signals，后续章生成/质检注入（v8 实证漏检：ch4
+    # 「呼吸断了」、ch7「尸体被翻过来」）。
+    def book_signals(self) -> list[str]:
+        """本作书级死亡信号词表（从 state.extra_death_signals 读取）。"""
+        if not self.enabled:
+            return []
+        data = self.load()
+        st = data.get("state") or {}
+        sigs = st.get("extra_death_signals") or []
+        return [str(s).strip() for s in sigs if str(s).strip()]
 
-        治 v7 第 6 章蚀化跨章口径——把「每死一次蚀化+1%」的累计值算好注入，
-        模型只负责在正文里写这个数，不自由发挥。
+    def add_book_signal(self, word: str) -> None:
+        """记忆闭环：记录本作一条书级死亡信号词（去重，上限 50 防膨胀）。"""
+        if not self.enabled or not str(word).strip():
+            return
+        data = self.load()
+        st = data.setdefault("state", {"chapters": [], "erosion_start": 0})
+        sigs = [str(s).strip() for s in (st.get("extra_death_signals") or []) if str(s).strip()]
+        w = str(word).strip()
+        if w not in sigs:
+            sigs.append(w)
+        st["extra_death_signals"] = sigs[-50:]
+        self.save()
+
+    def erosion_anchor(self, up_to_ch: int) -> str:
+        """确定性数字锚（P0-14 链式版，2026-10-10）：蚀化当前应 = 上一章末蚀化值
+        （承接链，不再 97+累计死亡）。
+
+        v8 实证根因：旧版用「起始 97 + 账本累计死亡」算期望，而账本累计被
+        death_count 词面计数污染（ch1 重复段落多计、ch5/ch6 自述面板误计）→ 锚
+        虚高（106/108）→ 模型跟随写虚高值 → ⑥ 校验验证"跟随"而非"正确"（正反馈
+        放大）。链式版只承接上一章末面板值，杜绝跨章求和口径；上一章面板正确性由
+        质检 2.8c（本章死亡必须 +1、未死亡必须不变）保证。空账本/关闭 → 空串。
+
+        up_to_ch 传上一章号（chapter_no-1）：返回上一章末蚀化作为本章"当前应达值"；
+        无账本记录 → 回落起始基线（erosion_start）。
         """
         if not self.enabled:
             return ""
         data = self.load()
         st = data.get("state") or {}
+        chapters = sorted(
+            (c for c in st.get("chapters", []) if int(c.get("ch", 0)) <= int(up_to_ch)),
+            key=lambda c: int(c.get("ch", 0)))
+        prev = None
+        for c in reversed(chapters):  # 最近一章带蚀化值者（无蚀化记录的中途章跳过）
+            if c.get("erosion") is not None:
+                prev = c.get("erosion")
+                break
         start = int(st.get("erosion_start", 0) or 0)
-        deaths = self.cumulative_deaths(up_to_ch)
-        if not start and not deaths:
+        if prev is None and not start:
             return ""
-        lines = []
-        if start:
-            lines.append(f"- 距离蚀化：起始 {start}%，每死亡一次 +1%；截至第{up_to_ch}章已累计死亡 {deaths} 次，"
-                         f"蚀化当前应为 {start + deaths}%（正文结算值必须等于此数，禁止自造其它口径）")
+        base_val = int(prev) if prev is not None else start
+        lines = [
+            f"- 距离蚀化：承接上一章末值 {base_val}%（链式口径：蚀化永久累计不重置，"
+            f"本章发生死亡则必须 +1、未发生死亡则保持此值不变；正文结算值必须等于此数，"
+            "禁止自造蚀化口径，禁止回退到更早的起始值）"
+        ]
         # 蚀痕起始寸数：canon.mechanism_baseline 蚀痕字段含「已伸X寸」（中文数字；
         # 英文键 scar_current/scar_start 兼容——P0-10 实测 world 基线键为英文）
         base = data["canon"].get("mechanism_baseline") or {}
@@ -406,12 +454,10 @@ class BookMemory:
                            or base.get("scar_current") or "")
         if scratch_line:
             start_inch = _parse_cn_number(scratch_line)  # 0=未解析出寸数（跳过寸数断言，只保留基线原文）
-            inch_tail = f"；每死亡一次再伸一寸（累计已伸 {start_inch + deaths} 寸）" if start_inch else ""
+            inch_tail = f"；每死亡一次再伸一寸（累计已伸 {start_inch + max(0, base_val - start)} 寸）" if start_inch else ""
             lines.append(f"- 蚀痕基线（唯一口径）：{scratch_line}{inch_tail}；"
                          "正文位置描述必须与此连续（起点+累计长度），禁止同一状态每处重新计量")
-        if not lines:
-            return ""
-        return ("【机制数字确定性锚（代码按账本累计算出，正文必须逐字遵守——"
+        return ("【机制数字确定性锚（代码按上一章末值链式承接，正文必须逐字遵守——"
                 "禁止自造蚀化/蚀痕口径）】\n" + "\n".join(lines))
 
     def _erosion_start_from_baseline(self) -> int:

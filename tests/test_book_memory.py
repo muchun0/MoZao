@@ -486,20 +486,51 @@ def test_record_chapter_state_and_cumulative():
 
 @pytest.mark.p1
 def test_erosion_anchor_deterministic():
-    """确定性数字锚：蚀化 = 起始97% + 累计死亡；蚀痕寸数 = 37 + 累计死亡。"""
+    """确定性数字锚（P0-14 链式）：蚀化 = 上一章末值承接；蚀痕寸数 = 基线+链式增量。"""
     store = _store()
     mem = _memory(store)
     mem.sync_baseline(MagicMock(mechanism_baseline=_obj_baseline()))
-    mem.record_chapter_state(1, deaths=1)
-    mem.record_chapter_state(3, deaths=1)
-    mem.record_chapter_state(4, deaths=1)
+    mem.record_chapter_state(1, deaths=1, erosion=98)
+    mem.record_chapter_state(3, deaths=1, erosion=100)
+    mem.record_chapter_state(4, deaths=1, erosion=101)
     anchor = mem.erosion_anchor(6)
-    assert "97%" in anchor and "100%" in anchor and "3 次" in anchor
-    assert "已伸" in anchor and "40 寸" in anchor   # 37 + 3
+    assert "101%" in anchor and "上一章末值" in anchor   # 链式：取 ≤6 最近一章末蚀化
+    assert "97%" not in anchor
+    assert "已伸" in anchor and "41 寸" in anchor   # 37 + (101-97) 链式增量
+    # 无蚀化记录的中途章不打断链（ch5 无蚀化 → 仍取 ch4 的 101）
+    mem.record_chapter_state(5, deaths=0)
+    anchor2 = mem.erosion_anchor(6)
+    assert "101%" in anchor2
     # 全新 store（无 state 账本、无基线）→ 空串不注入
     store2 = _store()
     mem2 = _memory(store2)
     assert mem2.erosion_anchor(6) == ""
+
+
+@pytest.mark.p1
+def test_book_signals_add_and_dedup():
+    """书级个性化死亡信号记忆闭环（P0-14）：add 写入 → book_signals 读取；去重、上限。"""
+    store = _store()
+    mem = _memory(store)
+    assert mem.book_signals() == []
+    mem.add_book_signal("呼吸断了")
+    mem.add_book_signal("尸体被翻过来")
+    mem.add_book_signal("呼吸断了")          # 去重
+    sigs = mem.book_signals()
+    assert sigs == ["呼吸断了", "尸体被翻过来"]
+    # 空白/未启用安全
+    mem.add_book_signal("")
+    assert mem.book_signals() == ["呼吸断了", "尸体被翻过来"]
+
+
+@pytest.mark.p1
+def test_book_signals_empty_store():
+    """全新 store（无记忆文件）→ 空信号；写入后读取（记忆闭环）。"""
+    store2 = _store()
+    mem2 = _memory(store2)
+    assert mem2.book_signals() == []
+    mem2.add_book_signal("呼吸断了")
+    assert mem2.book_signals() == ["呼吸断了"]
 
 
 @pytest.mark.p1

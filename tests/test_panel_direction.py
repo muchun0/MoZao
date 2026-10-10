@@ -138,27 +138,25 @@ def test_panel_violation_triggers_retry_and_adopts_clean(store):
         ' {"id": "事件2", "desc": "陆沉挡死一次，面板结算", "conflict": "术法碎片", '
         '"action": "抵挡", "final_state": "面板2/3"}],'
         ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "警惕",'
-        ' "anchors": [], "time_marker": "清晨", "target_words": 2500},'
+        ' "anchors": [], "time_marker": "清晨", "target_words": 1250},'
         ' {"location": "铁匠铺门口", "scene_event_ref": "事件2", "emotion": "惊险",'
-        ' "anchors": [], "time_marker": "片刻后", "target_words": 2500}],'
+        ' "anchors": [], "time_marker": "片刻后", "target_words": 1250}],'
         ' "characters_action": []}'
     )
     llm.chat.side_effect = [
         two_scene_json,
         '{"duplicate_pairs": []}',   # P0-10：拆场景评审（无同构事件）
-        "炉火映着铁匠铺的墙，苏妄言推门进来，绕着陆沉走了半圈。陆沉低头打铁，装作没看见，心里盘算着怎么糊弄过去。面板浮现在他眼前，上面写着可死次数：3。" * 60,
-        "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：4。" * 60,
-        "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：2。" * 60,
-        # P0-10：扩写稿——每句带不同序号避免复读触发整章重写（干净长文）
-        ("炉火映着铁匠铺的墙，苏妄言推门进来，绕着陆沉走了半圈。陆沉低头打铁，装作没看见。\n"
-         + "\n".join(f"他往门口那边望了一眼，第{i}阵风卷着沙粒打在窗棂上，火星子跳了跳。\n"
-                    for i in range(150))
-         + "面板浮现在他眼前，上面写着可死次数：2。"),
+        "炉火映着铁匠铺的墙，苏妄言推门进来，绕着陆沉走了半圈。陆沉低头打铁，装作没看见，心里盘算着怎么糊弄过去。面板浮现在他眼前，上面写着可死次数：3。",
+        "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：4。",
+        "风沙灌进墟口，一道术法碎片炸开，白光闪过，陆沉被贯穿，直直倒下。他挣扎着爬起来，胸口剧痛，低头一看，面板上写着可死次数：2。",
         "场景链路摘要",
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    # P0-10 混合方案：6 = 拆场景 + 评审 + 场景1 + 场景2(违规) + 重试稿 + 摘要（正文达标不扩写）
-    assert llm.chat.call_count == 6
+    # P0-14：7 = 拆场景 + 评审 + 场景1 + 场景2(数字回升违规) + 重试稿 + 摘要 + 字数不足扩写
+    #（P0-10 时拆场景 target_words=2500×2 超校验回退整章、靠字数超限重试掩盖了场景链路；
+    #  P0-14 改 target_words=1250×2 使用例真正走场景模式；场景文本用干净单遍稿避免
+    #  触发 60 遍重复的节拍循环检测干扰数字违规断言，正文 136 字不足 2500 目标 → 扩写）
+    assert llm.chat.call_count == 7
     # 重试调用（第4次）注入违规说明
     retry_user = llm.chat.call_args_list[4][0][1]
     assert "违反方向规则" in retry_user or "重试强制规则" in retry_user
@@ -236,7 +234,7 @@ def test_causal_no_baseline_skip():
 
 # ---------- P0-10 蚀化跨章累计校验 + 死亡计数（2026-10-10 混合方案⑥） ----------
 
-from novel_gen.pipeline.chapter_state import erosion_cumulative_check, death_count  # noqa: E402
+from novel_gen.pipeline.chapter_state import erosion_cumulative_check, death_count, death_signals  # noqa: E402
 
 
 @pytest.mark.p1
@@ -276,3 +274,32 @@ def test_death_count_multiple_and_excluded():
     assert death_count(text) >= 2
     assert death_count("他拼死抵抗，不怕死，视死如归。") == 0
     assert death_count("") == 0
+
+
+# ---------- P0-14 书级个性化死亡信号 + 自述统计排除（2026-10-10） ----------
+
+@pytest.mark.p1
+def test_death_count_excludes_self_report_panel():
+    """v8 ch5/ch6 实证：面板自述行「累计死亡次数：N」不计为死亡结算事件。"""
+    assert death_count("面板显示累计死亡次数：3。") == 0
+    assert death_count("他已经死了。面板显示死亡次数：2。") == 1   # 显式死亡计、自述不计
+    assert death_count("总死亡数量：11，蚀化 108%。") == 0
+
+
+@pytest.mark.p1
+def test_death_count_extra_signals_book_specific():
+    """书级个性化信号（book_memory 记忆闭环注入）：默认词表漏检 → extra 命中。"""
+    t = "他呼吸断了，没再起来。"
+    assert death_count(t) == 0                       # 通用词表不含「呼吸断了」
+    assert death_count(t, extra_signals=["呼吸断了"]) == 1
+    assert death_signals(t, extra_signals=["呼吸断了"]) is True
+    assert death_signals(t) is False
+    # 自述统计排除对书级信号同样生效（extra 里出现「累计死亡」类仍被排除）
+    assert death_count("累计死亡次数：3", extra_signals=["累计死亡"]) == 0
+
+
+@pytest.mark.p1
+def test_death_count_extra_signals_empty_safe():
+    assert death_count("他死了", extra_signals=None) == 1
+    assert death_count("他死了", extra_signals=[]) == 1
+    assert death_count("他死了", extra_signals=[""]) == 1

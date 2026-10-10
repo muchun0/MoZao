@@ -132,24 +132,32 @@ def _beats_local_rewrite_detected(seq: list[str], done_seqs: list[list[str]]) ->
 
 #: 通用节拍：几乎所有场景都会出现的骨架拍（仅凭它们不得判同构）
 _SCENE_GENERIC_BEATS = {"离场", "对峙", "复活", "死亡", "挡死", "盘问", "失控"}
-#: 跨场景同构判据：公共子序列 LCS ≥ 3 且占比 ≥0.8 且非通用拍 ≥2
+#: 跨场景同构判据：公共子序列 LCS ≥ 3 且占比 ≥0.6 且非通用拍 ≥2
+#: 2026-10-10 P0-14：占比 0.8→0.6——v8 第 1 章实证「断墙遇灰卒」三重拼接中，
+#: 场景 2/3 只重复场景 1 的核心 3~4 拍（面板→留牌→小九→离场），ratio≈0.6~0.75，
+#: 旧 0.8 阈值漏检（v7 第 5 章是完整 3 拍全同 ratio=1.0 才命中）。放宽后靠
+#: 「非通用拍 ≥2」防误判（对峙→离场式通用拍组合仍不命中）。
 _SCENE_ISO_MIN = 3
-_SCENE_ISO_RATIO = 0.8
+_SCENE_ISO_RATIO = 0.6
 _SCENE_ISO_SPECIFIC_MIN = 2
+#: 参与比对的历史场景节拍序列最短长度（=MIN：3 拍药铺同构仍可命中；防过短序列误判）
+_SCENE_ISO_LEDGER_MIN = 3
 
 
 def _beats_scene_isomorphic(seq: list[str], scene_ledger: list[list[str]]) -> bool:
     """新场景节拍序列 vs 历史场景序列全集（跨场景）：任一公共子序列达到
-    「3 拍 + 占比 0.8 + ≥2 个非通用拍」即判同构场景（同一场景换措辞重复写）。
+    「3 拍 + 占比 0.6 + ≥2 个非通用拍」即判同构场景（同一场景换措辞重复写）。
 
     治 v7 第 5 章药铺三重拼接：三遍诊脉场景节拍均为「诊脉→药包→离场」，
     LCS=3、占比=1.0、非通用拍=诊脉+药包=2 → 命中；两个普通场景各含「对峙→离场」
     → 非通用拍=0 → 不误判。场景防线与整章回退路径复用。
+    P0-14 放宽：v8 第 1 章三重拼接的场景 2/3（只重复核心 3~4 拍、占比 0.6~0.75）
+    旧阈值漏检，放宽占比至 0.6 后可拦截。
     """
     if not seq or len(seq) < _SCENE_ISO_MIN:
         return False
     for d in scene_ledger:
-        if not d or len(d) < _SCENE_ISO_MIN:
+        if not d or len(d) < _SCENE_ISO_LEDGER_MIN:
             continue
         if _lcs_len(seq, d) < _SCENE_ISO_MIN:
             continue

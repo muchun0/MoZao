@@ -286,21 +286,31 @@ class QualityChecker:
             except Exception:
                 pass
 
-        # 2.8c 蚀化跨章累计校验（P0-10，2026-10-10，治 v7 第 6 章口径冲突）：
-        #    正文蚀化值最高必须 = 起始蚀化 + 累计死亡（每死 +1，代码从记忆 state
-        #    账本取累计，零 LLM）。v7 ch6 实证：ch1/3/4 死 3 次蚀化应 97→100%，
-        #    正文仍写 97% 且章内"第 98 次蚀化满"自相矛盾——单章因果校验（2.8b）
-        #    只查"本章死亡→本章+1"，跨章累计不入账；这里按账本累计兜底。
+        # 2.8c 蚀化跨章累计校验（P0-10，2026-10-10，治 v7 第 6 章口径冲突；
+        # P0-14 根因修复，2026-10-10）：
+        #    正文蚀化值最高必须 = 上一章末蚀化 + 本章死亡次数。
+        #    v7 ch6 实证：ch1/3/4 死 3 次蚀化应 97→100%，正文仍写 97%——单章因果
+        #    校验（2.8b）只查"本章死亡→本章+1"，跨章累计不入账。
+        #    v8 实证根因：旧版期望 = 起始 97 + 账本累计死亡，而账本被 death_count
+        #    词面计数污染（ch1 重复段落多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板
+        #    误计）→ 锚虚高 → 模型跟随 → "自洽地错"（ch4 蚀化 106、ch6 累计 11）。
+        #    P0-14 改为链式：期望 = 账本上一章末蚀化 + 本章死亡次数（death_count 用
+        #    书级个性化信号 extra_signals + 排除自述统计类）；未死亡（本章 0 次）时
+        #    蚀化必须保持上一章末值不变（防无死亡虚涨/回退）。
         if baseline and self.memory is not None:
             try:
                 from .chapter_state import (erosion_cumulative_check as _ecc,
                                             death_count as _dc2)
                 _st = self.memory.load().get("state") or {}
-                _eros_start = int(_st.get("erosion_start", 0) or 0)
-                _cumu = self.memory.cumulative_deaths(int(chapter_no) - 1)
-                _cumu += _dc2(content)  # 本章自身死亡也计入（正文已含死亡事件）
-                if _eros_start > 0:
-                    for _it in _ecc(content, _eros_start, _cumu):
+                _prev_chs = [c for c in _st.get("chapters", [])
+                             if int(c.get("ch", 0)) < int(chapter_no)]
+                _prev_eros = _prev_chs[-1].get("erosion") if _prev_chs else None
+                _start = int(_st.get("erosion_start", 0) or 0)
+                _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
+                _sigs = self.memory.book_signals()
+                _cumu = _dc2(content, extra_signals=_sigs)  # 本章死亡次数（书级信号+排除自述统计）
+                if _base > 0:
+                    for _it in _ecc(content, _base, _cumu):
                         issues.append({
                             "type": "写作-机制数字方向违规",
                             "detail": _it,

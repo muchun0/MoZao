@@ -316,7 +316,11 @@ class QualityChecker:
                 _st = self.memory.load().get("state") or {}
                 _prev_chs = [c for c in _st.get("chapters", [])
                              if int(c.get("ch", 0)) < int(chapter_no)]
-                _prev_eros = _prev_chs[-1].get("erosion") if _prev_chs else None
+                # v11 实证：ch5 无面板 → erosion=None 断链 → _base 回落起始 97 → ch6
+                # 蚀化差误算 101-97=4 误报。链式取最近非空 erosion（与账本继承同口径）。
+                _prev_eros = next(
+                    (c.get("erosion") for c in reversed(_prev_chs)
+                     if c.get("erosion") is not None), None)
                 _start = int(_st.get("erosion_start", 0) or 0)
                 _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
                 # P0-14/2026-10-10 口径统一：本章死亡次数用「本章末蚀化 - 上一章末蚀化」

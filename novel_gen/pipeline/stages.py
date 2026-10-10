@@ -572,8 +572,11 @@ class ChapterWriter:
 
         # 方案4（落盘分流）：质检未通过且该章已有旧版 → 保留旧版正文，不覆盖
         # （坏章不得顶掉用户已有的可用版本；仅首次生成/无旧版时才落盘新稿）。
-        # 质检结果已由 ensure_quality 落 review.json（passed=false + issues），
-        # 前端据 quality 字段显示红标并提示"已保留旧版"。
+        # v11 实证（2026-10-10）：旧版必须健康才保留——v10 ch6 旧稿含「累计死亡
+        # 次数：37」幻觉行（注册表外字段违规），v11 新稿质检未过时无脑回退旧版 =
+        # 病稿复用。旧版健康检查（零 LLM：未知字段/重复节拍/链式账本），不健康
+        # → 落盘新稿（ensure_quality 重写后的最优候选），宁要新稿 2 个问题不要
+        # 旧版幻觉行。
         kept_previous = False
         if not qc_passed:
             prev = None
@@ -582,11 +585,20 @@ class ChapterWriter:
             except Exception:
                 prev = None
             if prev is not None and getattr(prev, "content", ""):
-                content, summary = prev.content, prev.summary
-                kept_previous = True
-                if not silent:
-                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
-                          f"保留上一版正文（{len(content)} 字），不覆盖旧章")
+                _prev_ok = self._chapter_healthy(prev.content, chapter_no)
+                if _prev_ok:
+                    content, summary = prev.content, prev.summary
+                    kept_previous = True
+                    if not silent:
+                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                              f"保留上一版正文（{len(content)} 字），不覆盖旧章")
+                else:
+                    kept_previous = False
+                    if not silent:
+                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                              f"上一版正文（{len(prev.content)} 字）健康检查未通过"
+                              "（含注册表外字段/重复节拍/链式账本违规），"
+                              f"改落盘本轮重写最优候选（{len(content)} 字）")
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
@@ -615,6 +627,12 @@ class ChapterWriter:
                         _prev_eros = _prev_ch[-1].get("erosion")
                 except Exception:
                     _prev_eros = None
+                # v11 实证（2026-10-10）：ch5 无面板 → erosion=None 断链 → 质检 2.8c
+                # _base 回落起始 97 → ch6 蚀化差误算 101-97=4（把 ch3/ch4 死亡计入 ch6）
+                # → ledger_check 报「4 次死亡」误伤。无面板=无事件=蚀化不变：缺失时
+                # 继承上一章末（与 numbers 链式 chapter_ledger 同口径，账本永不破链）。
+                if _eros is None and _prev_eros is not None:
+                    _eros = int(_prev_eros)
                 _deaths = 0
                 if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
                     _deaths = _eros - int(_prev_eros or 0)
@@ -683,6 +701,55 @@ class ChapterWriter:
                                 frequency_penalty=0.2, presence_penalty=0.1)
             out.append(res if res else blk)
         return "\n\n".join(out)
+
+    def _chapter_healthy(self, content: str, chapter_no: int) -> bool:
+        """v11 实证新增：旧版健康检查（保留旧版前判定，零 LLM）。
+
+        旧版带病（注册表外字段幻觉行/重复节拍/链式账本违规）时不得作为
+        「可用版本」回退——否则病稿跨轮复用。任何书通用。
+        """
+        if not content:
+            return False
+        try:
+            from .chapter_state import (mechanism_field_registry as _mreg_h,
+                                        unknown_mechanism_fields as _unk_h,
+                                        ledger_check as _lchk_h,
+                                        _registry_initial as _rin_h,
+                                        _EROSION_SEQ_RE as _eseq_h)
+            _mem_h = self._memory()
+            if _mem_h is None:
+                return True  # 无记忆体系（未启用记忆）不判病，维持旧路径行为
+            _canon_h = (_mem_h.load().get("canon") or {})
+            _reg_h = _mreg_h(_canon_h.get("mechanism_baseline") or {})
+            # 1) 注册表外字段（累计死亡次数类幻觉行）
+            if _reg_h and _unk_h(content, _reg_h):
+                return False
+            # 2) 重复节拍（同事件循环重演）
+            if _beat_cycle_issues(content):
+                return False
+            # 3) 链式账本（蚀化差口径，与质检 2.8c 一致）
+            if _reg_h:
+                _st_h = (_mem_h.load().get("state") or {})
+                _prev_h = _mem_h.chapter_ledger(chapter_no - 1)
+                _eros_h = max((int(_m.group(1)) for _m in _eseq_h.finditer(content or "")),
+                              default=0)
+                _base_h = 0
+                try:
+                    _pc = [c for c in _st_h.get("chapters", [])
+                           if int(c.get("ch", 0)) < int(chapter_no)]
+                    _pe = next((c.get("erosion") for c in reversed(_pc)
+                                if c.get("erosion") is not None), None)
+                    _base_h = int(_pe) if _pe is not None else \
+                        int(_st_h.get("erosion_start", 0) or 0)
+                except Exception:
+                    pass
+                _cumu_h = max(0, _eros_h - _base_h) if _base_h > 0 else 0
+                _init_h = _rin_h(_canon_h.get("mechanism_baseline") or {}, _reg_h)
+                if _lchk_h(content, _prev_h, _reg_h, _cumu_h, _init_h):
+                    return False
+        except Exception:
+            return True
+        return True
 
     def _panel_whitelist_block(self) -> str:
         """P0-15/16 通用版：机制面板字段白名单注入块（closed-world）。

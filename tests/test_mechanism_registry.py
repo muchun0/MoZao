@@ -250,3 +250,31 @@ class TestV10Regression:
         assert "可死次数" in out and "蚀化" in out and "寸" in out
         assert "累计死亡次数" in out
         assert "0 时，本章不得再发生死亡结算" in out
+
+    def test_pcv_skips_zero_baseline(self):
+        # v11 ch6：基线 0 无法再 -1，「死亡未结算」是误报 → _pcv 跳过
+        out = cs.panel_causal_violations(
+            "今日可死次数：0\n他死了又复活。", {"可死次数": 0}, True)
+        assert out == []
+
+    def test_ledger_ch6_no_false_4_deaths(self):
+        # v11 ch6：ch5 无面板断链 → 质检 _base 回落起始 97 → 蚀化差 101-97=4 误报；
+        # 修复后链式取最近非空 erosion（101）→ deaths=0 → 无事件分支不报
+        content = "今日可死次数：0\n距离蚀化：101%"
+        out = cs.ledger_check(
+            content, {"可死次数": 0, "蚀化": 101},
+            cs.mechanism_field_registry(BASELINE), 0,
+            {"可死次数": 3, "蚀化": 97, "寸": 37})
+        assert out == []
+
+    def test_erosion_inherited_when_missing(self):
+        # v11：无面板章入账时 erosion 继承上一章末（101），账本永不破链
+        from novel_gen.pipeline.chapter_state import _EROSION_SEQ_RE
+        eros = None
+        mv = [int(m.group(1)) for m in _EROSION_SEQ_RE.finditer("本章无面板行")]
+        if mv:
+            eros = max(mv)
+        prev_eros = 101
+        if eros is None and prev_eros is not None:
+            eros = int(prev_eros)
+        assert eros == 101

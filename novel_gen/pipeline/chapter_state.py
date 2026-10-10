@@ -529,6 +529,11 @@ def panel_causal_violations(text: str, baseline: dict[str, int], death: bool) ->
         last = seq[-1]
         base = seq[0]
         if rule == "decrease":
+            # v11 实证（2026-10-10）：基线 0 时无法再 -1，「死亡后未结算（仍为 0）」
+            # 是误报（0 就是 0，无递减空间）；次数用尽边界由 ledger_check 的
+            # 「上一章末已为 0 仍死亡」校验负责，这里不重复。
+            if base == 0:
+                continue
             # 子时重置：序列中 0 后跟更大值 → 期望 = 重置后序列末值 - 1
             reset_after = None
             for a, b in zip(seq, seq[1:]):

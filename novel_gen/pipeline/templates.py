@@ -1190,7 +1190,7 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor="", user_memory_block=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1278,6 +1278,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     state_anchor_block = (
         f"\n{state_anchor}\n"
     ) if state_anchor else ""
+    # 用户级记忆库：跨书偏好/纪律/文风锚（软约束，来自用户历史作品自动沉淀）
+    user_memory_block_out = (
+        f"\n{user_memory_block}\n"
+    ) if user_memory_block else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1308,6 +1312,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{book_pitfalls_block}"
         f"{book_canon_block}"
         f"{state_anchor_block}"
+        f"{user_memory_block_out}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -1653,6 +1658,7 @@ def chapter_prompt(
     chapter_events: str = "",
     personal_anchor: str = "",
     teardown_anchor: str = "",
+    user_memory_block: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1717,6 +1723,8 @@ def chapter_prompt(
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:
             system += "\n\n" + anchor
+    if user_memory_block:
+        system += "\n\n" + user_memory_block
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1833,6 +1841,7 @@ def expand_chapter_prompt(
     target_words: int,
     personal_anchor: str = "",
     teardown_anchor: str = "",
+    user_memory_block: str = "",
 ) -> tuple[str, str]:
     """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。
 
@@ -1860,6 +1869,8 @@ def expand_chapter_prompt(
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:
             system += "\n\n" + anchor
+    if user_memory_block:
+        system += "\n\n" + user_memory_block
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:

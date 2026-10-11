@@ -861,6 +861,7 @@ class NovelPipeline:
                     self.cfg, ch.no, ch.title, ch.content, target_words,
                     personal_anchor=personal_anchor,
                     teardown_anchor=teardown_anchor,
+                    user_memory_block=self.chapter_writer._user_memory_block(),
                 )
                 system = self._with_stylist(system)
                 text = self.llm.chat(system, user, temperature=0.8)

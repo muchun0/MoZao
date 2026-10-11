@@ -304,6 +304,8 @@ class ChapterWriter:
         #: P0-8：最近一章场景累计机制数字基线（_generate_chapter_scenes 写入，
         #: write() 质检透传用；未走场景路径时为空 dict）
         self._scene_state_acc: dict = {}
+        #: 用户级记忆库：用户级记忆注入块懒缓存（None=未读；关闭/失败 → "" 跳过）
+        self._user_mem_loaded: str | None = None
 
     def _memory(self):
         """P0-7 懒加载小说级记忆；book_memory 开关关闭/初始化失败 → None（行为降级安全）。"""
@@ -352,6 +354,48 @@ class ChapterWriter:
             except Exception:
                 self._personal_loaded = ""
         return self._personal_loaded
+
+    def _user_memory_block(self) -> str:
+        """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
+
+        懒读 store.user_memory_snapshot.json（webapp 在生成入口写入）；归属校验：
+        快照 uid 必须为正整数（webapp 写入方保证 uid=项目 owner，防跨项目数据串用）。
+        无快照/开关关闭/格式非法 → 空串（调用方不注入，行为降级安全）。
+        """
+        if self._user_mem_loaded is None:
+            self._user_mem_loaded = self._build_user_memory_block()
+        return self._user_mem_loaded
+
+    def _build_user_memory_block(self) -> str:
+        """组装用户级记忆注入块（确定性组装，零 LLM；异常降级空串）。"""
+        if not getattr(self.cfg, "user_memory", True):
+            return ""
+        try:
+            snap = self.store.load_user_memory()
+        except Exception:
+            return ""
+        if not snap:
+            return ""
+        uid = snap.get("uid")
+        if not isinstance(uid, int) or int(uid) <= 0:
+            return ""
+        parts: list[str] = []
+        dis = snap.get("disciplines") or []
+        if dis:
+            lines = [
+                f"- {d.get('rule', '')}（跨 {int(d.get('books', 1) or 1)} 本书反复出现，严禁再犯）"
+                for d in dis if d.get("rule")
+            ]
+            if lines:
+                parts.append("【用户跨书纪律（来自用户历史作品踩坑账本，自动继承——"
+                             "同一本书也会犯的跨书高频错误，本作严禁重犯）】\n" + "\n".join(lines))
+        anchors = snap.get("style_anchors") or []
+        if anchors:
+            samples = [f"- {a.get('text', '')}" for a in anchors if a.get("text")]
+            if samples:
+                parts.append("【用户个人文风锚（用户历史作品人工修订片段，"
+                             "借鉴语感与行文习惯，严禁抄袭内容）】\n" + "\n".join(samples))
+        return "\n\n".join(parts)
 
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
@@ -478,6 +522,7 @@ class ChapterWriter:
                 chapter_core_event=plan_core_event,
                 teardown_anchor=self._teardown_anchor(),
                 personal_anchor=self._personal_anchor(),
+                user_memory_block=self._user_memory_block(),
             )
             # P0-15/16 通用版（2026-10-10）：普通整章路径同样注入机制面板字段白名单
             _wl = self._panel_whitelist_block()
@@ -817,6 +862,7 @@ class ChapterWriter:
             chapter_events=ev_block,
             teardown_anchor=self._teardown_anchor(),
             personal_anchor=self._personal_anchor(),
+            user_memory_block=self._user_memory_block(),
         )
         system = self._sys(system)
         # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
@@ -1232,6 +1278,7 @@ class ChapterWriter:
                 panel_baseline=panel_baseline_text,
                 book_pitfalls=book_pitfalls_text,
                 book_canon=book_canon_text,
+                user_memory_block=self._user_memory_block(),
                 state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
@@ -1279,6 +1326,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
                         retry = self.llm.chat(
@@ -1322,6 +1370,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
                         retry3 = self.llm.chat(
@@ -1380,6 +1429,7 @@ class ChapterWriter:
                             panel_baseline=panel_baseline_text,
                             book_pitfalls=book_pitfalls_text,
                             book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
                         retry4 = self.llm.chat(
@@ -1478,6 +1528,7 @@ class ChapterWriter:
                                 panel_violations=_viol_text,
                                 book_pitfalls=book_pitfalls_text,
                                 book_canon=book_canon_text,
+                                user_memory_block=self._user_memory_block(),
                                 state_anchor=state_anchor_text,
                             )
                             retry5 = self.llm.chat(

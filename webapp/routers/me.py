@@ -2,6 +2,7 @@
 """me路由（第三批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 
 @app.get("/api/me")
 def me(user: dict = Depends(_require_user)):
@@ -112,3 +113,30 @@ def me_refund_request(req: RefundApplyReq, user: dict = Depends(_require_user)):
 @app.get("/api/me/refund-requests")
 def me_refund_requests(user: dict = Depends(_require_user)):
     return {"requests": db.list_refund_requests(user["id"])}
+
+
+@app.get("/api/me/user-memory")
+def my_user_memory(user: dict = Depends(_require_user)):
+    """我的用户级记忆库摘要（只读）。
+
+    用户级记忆 = 跨书创作偏好继承的沉淀结果（题材/节奏/避雷偏好、跨书纪律、
+    个人文风锚条数），由生成过程自动写入；失败返回 None（降级安全）。
+    """
+    try:
+        return {"memory": UserMemoryService(user["id"]).summary()}
+    except Exception:
+        logger.exception("用户级记忆摘要失败: uid=%d", user["id"])
+        return {"memory": None}
+
+
+@app.post("/api/me/user-memory/clear")
+def clear_user_memory(user: dict = Depends(_require_user)):
+    """清空我的用户级记忆库（隐私兜底）。
+
+    删除该用户全部跨书沉淀（偏好/纪律/文风锚），不可恢复；之后新书不再继承。
+    """
+    try:
+        UserMemoryService(user["id"]).clear()
+    except Exception:
+        logger.exception("用户级记忆清空失败: uid=%d", user["id"])
+    return {"ok": True, "message": "用户级记忆已清空"}

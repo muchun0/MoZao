@@ -473,6 +473,20 @@ class ProjectStore:
         """整体覆盖保存（每次账本更新后写入最新快照）。"""
         self._write_json(self.book_memory_path(), data)
 
+    # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
+    def user_memory_path(self) -> Path:
+        return self.dir / "user_memory_snapshot.json"
+
+    def load_user_memory(self) -> Optional[dict]:
+        """返回项目携带的用户级记忆快照 {preferences, disciplines, style_anchors, stats}；
+        无快照/损坏返回 None（零注入，降级安全）。"""
+        d = self._read_json(self.user_memory_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_user_memory(self, data: dict) -> None:
+        """整体覆盖保存（每次生成入口注入后写入最新快照，幂等）。"""
+        self._write_json(self.user_memory_path(), data)
+
     # ---------- 揭示执行跟踪（REQ-揭示执行跟踪） ----------
     def reveal_status_path(self) -> Path:
         return self.dir / "reveal_status.json"

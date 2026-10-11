@@ -4,6 +4,7 @@ from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
+from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from novel_gen.pipeline.templates import _style_reference
 
 
@@ -296,6 +297,14 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
 
     # REQ-双锚风格锚定：用户编辑保存 = 人工修订标记（个人风格锚来源）
     ch.user_edited = True
+    # 用户级记忆库：人工编辑信号 → 个人文风锚跨书登记（零 LLM，失败静默降级）
+    try:
+        anchors = extract_personal_anchor([ch])
+        if anchors:
+            UserMemoryService(user["id"]).record_edits(project_id, no, anchors)
+    except Exception:
+        logger.exception("用户级记忆编辑信号失败（降级跳过）: project=%s no=%d",
+                         project_id, no)
     store.save_chapter(ch)
     if ch.summary:
         store.append_summary(no, ch.summary)

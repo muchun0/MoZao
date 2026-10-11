@@ -14,6 +14,7 @@
 - **扣费时点**：创建时不扣费，真正生成文字后按 AI 实际生成字数结算；未生成的项目可随时删除不产生费用。
 - **BYOK**：用户可在「模型配置」里填自己的 API Key，用自己的 key 生成完全不扣费。
 - **线上地址**：`https://mozao.click`（已备案，冀ICP备2026038211号，Let's Encrypt HTTPS 自动续期）
+- **开源**：代码以 MIT 许可证开源（`https://github.com/muchun0/MoZao`），任何人可 fork 自部署——自带 API Key 免费使用（密钥只存环境变量）；官方托管服务继续按字数收费。README「自部署指南（Self-hosting）」为自部署入口
 
 ### 关键功能清单
 
@@ -51,66 +52,75 @@
 D:\PythonProjects\DouBao\
 ├── run_web.py                  # Web 服务入口
 ├── Dockerfile / docker-compose.yml / .dockerignore
-├── WIKI.md / API.md / AGENTS.md / README.md
+├── WIKI.md / API.md / AGENTS.md / README.md / LICENSE（MIT）
 ├── requirements.txt
-├── novel_gen/                  # 生成引擎
-│   ├── config.py               # NovelConfig
+├── novel_gen/                  # 生成引擎（纯 Python，无 Web 依赖）
+│   ├── config.py               # NovelConfig + FEATURE_FLAGS 开关注册表
+│   ├── safety.py               # 输入防护（Prompt 注入检测/输出合规）
+│   ├── llm/                    # Provider 抽象（base/factory/providers/usage，自动埋点+成本防护）
+│   ├── research/               # 调研阶段（内置知识库 + 联网 + 拆书库回流）
 │   ├── pipeline/
-│   │   ├── manager.py          # 流水线编排
-│   │   ├── templates.py        # 提示词模板
-│   │   ├── stages.py           # 大纲/世界观/章节写作
-│   │   ├── reviser.py          # 自动修订 + Reader 审校
-│   │   ├── memory.py           # 章节记忆
-│   │   ├── character_state.py  # 人物动态状态（P0-2，逐章出场/状态追踪）
-│   │   ├── review_summary.py   # 全书质量汇总（P0-3）
-│   │   ├── ai_taste.py         # AI 痕迹评分（P1-4）
-│   │   ├── stages/             # 章节写作阶段（含行动表先行 P1-1）
-│   │   ├── templates/          # 提示词模板（场景级下沉 P1-2/Lorebook 裁剪 P1-3/范文锚定 P2-1）
-│   │   ├── quality/            # 质量指标聚合（P2-4，trace 底座）
-│   │   └── trace.py            # 生成轨迹（P2-4 数据底座）
-│   │   └── agents/             # 6 个角色（含 StylistAgent 风格师）
+│   │   ├── manager.py          # 流水线编排（校验合并/终审/双锚注入）
+│   │   ├── orchestrator.py     # 架构总控（StageGate 阶段门禁/冲突仲裁）
+│   │   ├── validator.py        # 独立逻辑校验（5 类专项 + 机制卡三要素）
+│   │   ├── stages.py           # 场景级章节写作（拆场景→逐场景→润色，防重演闭环）
+│   │   ├── beats.py            # 情节节拍序列检测（LCS 重演判定，零 LLM）
+│   │   ├── memory.py           # 章节记忆（设定库+摘要回填+分章设定卡注入）
+│   │   ├── setting_cards.py    # 分章设定卡索引（Token 优化 P1-1）
+│   │   ├── chapter_state.py    # 章内/章间状态账本（机制数字确定性闭环）
+│   │   ├── character_state.py  # 人物动态状态（逐章出场/状态追踪）
+│   │   ├── book_memory.py      # 小说级记忆（设定/事件/踩坑/经验四账本）
+│   │   ├── quality.py          # 结果自校验（确定性规则 + 定点重写 + 记忆注入）
+│   │   ├── review_summary.py   # 全书质量汇总
+│   │   ├── ai_taste.py         # AI 痕迹评分
+│   │   ├── style_anchor.py     # 双锚风格锚定（个人旧稿锚 + 题材锚）
+│   │   ├── trace.py            # 生成轨迹（质量报表数据底座）
+│   │   └── agents/             # 12 个角色（6 主角色 + 3 生产层 + 3 专项）
 │   │       ├── base.py         # BaseAgent（按 role 挂 skill）
-│   │       ├── researcher.py   # 调研员
-│   │       ├── architect.py    # 架构师
-│   │       ├── writer.py       # 写手
-  │   │       ├── stylist.py     # 风格师（写作风格角色，可挂载技能）
-│   │       ├── reviewer.py    # 审校
-│   │       ├── reader.py       # 读者（追更体验）
-│   │       └── prompts/      # 各角色独立提示词
-│   ├── store/project.py        # ProjectStore
-│   ├── store/schemas.py        # Chapter/Outline/Volume
-│   ├── utils/chapter_splitter.py
-│   ├── utils/paths.py          # DATA_DIR 数据目录解析（代码与数据隔离）
-│   ├── utils/migrate.py        # 数据迁移工具（复制→校验→删源）
-│   └── export/cover.py        # 封面生成
+│   │       ├── researcher.py / architect.py / writer.py / reviewer.py
+│   │       ├── reader.py / stylist.py / theme_character.py / world_rules.py
+│   │       ├── pacing.py / opening.py / ending.py / dialogue.py
+│   │       └── prompts/        # 各角色独立提示词
+│   ├── store/                  # ProjectStore（产物 JSON 权威源）/ schemas
+│   ├── export/                 # TXT/EPUB/DOCX/MD 导出 + AI 封面
+│   └── utils/                  # chapter_splitter / paths(DATA_DIR) / migrate
 └── webapp/
-    ├── server.py               # FastAPI 组装壳（导入路由注册 + 静态托管 + 启动入口）
-    ├── core.py                 # 核心层：共享状态/鉴权/项目工具/结算/生成线程/任务持久化
-    ├── routers/                # 按域拆分路由（97 个）：system/auth/me/skills/admin/style_roles
+    ├── server.py               # FastAPI 组装壳（路由注册 + 静态托管 + 启动入口）
+    ├── core.py                 # 核心层：鉴权/项目工具/结算（先落基线再扣费）/生成线程/任务持久化
+    ├── routers/                # 9 域路由（96 个）：system/auth/me/skills/style_roles/admin
     │                           #   + projects 域 5 子模块：base/outline/chapters/world/generation
-    ├── db.py                   # MySQL 数据层 + 自动迁移
+    ├── db/                     # MySQL 数据层包：base/users/projects/skills/style_roles/teardowns/traces
     ├── secret_encrypt.py       # 敏感配置加密（BYOK Key，Fernet）
     ├── pricing.py              # 按字数计费
     ├── referral.py             # 代理/分销
     ├── verify_code.py          # 邮箱验证码
     ├── mailer.py               # SMTP 邮件
+    ├── outline_parser.py       # 上传大纲解析（.txt/.md/.docx）
     ├── logger.py               # 日志
     ├── admin_cli.py            # 命令行管理
-    └── frontend/               # Vue3 前端（src/ + dist/）
+    └── frontend/               # Vue3 前端（src/ + dist/，dist 不入库）
 ```
 
 ### 多智能体角色
 
-| 角色 | 文件 | 职责 | role 值 |
+| 角色 | 文件 | 职责 | 阶段 |
 |---|---|---|---|
-| Researcher | researcher.py | 联网调研、反套路改造、元素叠加 | researcher |
-| Architect | architect.py | 三级大纲、人物世界观、时间线 | architect |
-| Writer | writer.py | 逐章正文生成 | writer |
-| Reviewer | reviewer.py | 一致性/逻辑/合规审校 | reviewer |
-| Reader | reader.py | 追更读者视角审校（代入感/爽点/钩子） | reader |
+| Researcher 调研 | researcher.py | 内置知识库 + 联网调研 → 提炼热门小说共性报告 | research |
+| Architect 架构 | architect.py | 三级大纲、人物世界观、时间线；收敛为骨架生产者，编排生产层与专项 Agent | outline/world |
+| theme_character 主题人物 | theme_character.py | 主题命题 / 三层冲突 / 主角弧光 / 配角动机 | world |
+| world_rules 世界观规则 | world_rules.py | 世界观 / 金手指五要素 / 设定禁忌 | world |
+| pacing 节奏伏笔 | pacing.py | 关键节点 / 分卷节奏 / 伏笔回收闭环 | outline |
+| Writer 写手 | writer.py | 逐章正文（场景级生成，叠加 Stylist 风格人设） | chapter |
+| Reviewer 审校 | reviewer.py | 一致性/逻辑/合规审校（5 类专项 + 机制卡三要素） | review |
+| Reader 读者 | reader.py | 追更读者视角审校（代入感/爽点/钩子） | review |
+| Stylist 风格师 | stylist.py | 写作风格角色（人设 + 挂载技能），注入写手正文与扩写路径 | chapter/expand |
+| opening 开篇 | opening.py | 黄金三章强开篇设计（回填前三章 core_event/goal） | outline |
+| ending 结局 | ending.py | 终局设计卡（终局状态/主题落点/人物归宿），末几章按卡收束防烂尾 | outline/world |
+| dialogue 对白 | dialogue.py | 聚合全书人物 speech_style 生成对话风格指南（确定性，零 LLM） | world |
 
-**Skill 挂载**：`writing_skills.role` 空=全局；填对应 role 只注入该角色；用户 `user_skills` 同理。
-**风格角色**：`style_roles`（user_id=0 平台内置 / >0 用户自建，role_prompt 人设）+ `style_role_skills`（role_id ↔ skill_type(admin/user)/skill_id 挂载关系）；建书选风格角色后组装人设+挂载技能快照进 config（style_role_prompt），由 StylistAgent 注入写手正文与扩写路径。
+**Skill 挂载**：`skills.role` 空=全局；填对应 role 只注入该角色（source 区分 platform/user/market，统一表 `skills`）。
+**风格角色**：`style_roles`（user_id=0 平台内置 / >0 用户自建，role_prompt 人设，reference_text 范文锚）+ `style_role_skills`（role_id ↔ skill_type(admin/user)/skill_id 挂载关系）；建书选风格角色后组装人设+挂载技能快照进 config（style_role_prompt），由 StylistAgent 注入写手正文与扩写路径。
+**门禁与校验**：StageGate 阶段门禁（产出→准出校验→不合格自动重生成 ≤N 轮→超限仲裁放行）+ LogicValidator 独立逻辑校验。
 
 ---
 
@@ -187,12 +197,11 @@ D:\PythonProjects\DouBao\
 | recharges | id, user_id, amount, note, created_at |
 | commission_log | id, agent_id, buyer_id, amount, kind, project_id, created_at |
 | refund_requests | id, user_id, amount, reason, status, created_at, handled_at |
-| writing_skills | id, name, description, prompt_append, is_active, role, sort_order, created_at |
-| user_skills | id, user_id, name, description, prompt_append, role, is_active, **market_id**, created_at |
-| skill_market | id, author_id, name, description, prompt_append, role, downloads, created_at |
-| style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, is_active, sort_order, created_at |
+| skills | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限；含 role/applicable_stages/version/downloads/market_id；旧 writing_skills/user_skills/skill_market 保留不 DROP（迁移回退） |
+| style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, **reference_text**（范文锚 P2-1）, is_active, sort_order, created_at |
 | style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
-| traces | id, user_id, project_id, event, payload(JSON), created_at（生成轨迹，质量报表聚合底座 P2-4） |
+| book_teardown | id, genre, title, summary, content(JSON), source_project, source_type(research/seed/manual), user_id, view_count, status（爆款拆书库） |
+| agent_trace | id, trace_id, user_id, project_id, event, payload(JSON), created_at（全链路快照，质量报表聚合底座 P2-4） |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头
 - `init_db()` 启动时自动建表 + 增量迁移
@@ -201,18 +210,22 @@ D:\PythonProjects\DouBao\
 
 ## 6. 配置（.env，不入库）
 
-| 键 | 说明 |
-|---|---|
-| DEEPSEEK_API_KEY | 文本生成模型 Key |
-| BOCHA_API_KEY | 联网调研 Key |
-| SILICONFLOW_API_KEY | 封面 AI 生图 Key |
-| AI_COVER_ENABLED | 封面 AI 开关（1/0） |
-| LLM_KEY_ENCRYPT_SECRET | BYOK Key 加密密钥（可选；未配置时自动生成根目录 `.llm_encrypt.key`，已 gitignore，服务器 zip 解压不覆盖） |
-| ADMIN_EMAIL | 站长收件邮箱（退款通知） |
-| SMTP_HOST/PORT/USER/PASS | SMTP 发信 |
-| ALLOWED_ORIGINS | CORS 白名单 |
-| DATABASE_URL | MySQL 连接串 |
-| DATA_DIR | 数据目录根（projects/output/logs 的父级，默认代码根）。本地 `D:\NovelData`；服务器不设时容器内回退 `/app`，与既有卷挂载一致，零影响 |
+| 键 | 必填 | 说明 |
+|---|---|---|
+| MYSQL_ROOT_PASSWORD | ✅ | MySQL root 密码（compose 初始化 mysql-mozao 用，务必强密码） |
+| DEEPSEEK_API_KEY | 至少一种 | 文本生成模型 Key（默认 Provider=deepseek） |
+| ARK_API_KEY | 可选 | 火山方舟（豆包）Key（provider=doubao 时用） |
+| OPENAI_API_KEY | 可选 | OpenAI 兼容 Key（provider=openai 时用） |
+| BOCHA_API_KEY | 可选 | 博查联网调研 Key |
+| SERPER_API_KEY | 可选 | Serper（Google）联网调研 Key |
+| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | 可选 | 应用连 MySQL 参数（默认 127.0.0.1:3306 / root / 空 / mozao；单机 compose 无需改） |
+| ADMIN_EMAIL | 可选 | 站长收件邮箱（退款通知） |
+| SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS | 可选 | SMTP 发信（验证码/通知；不配则验证码不可用） |
+| LLM_KEY_ENCRYPT_SECRET | 可选 | BYOK Key 加密密钥（可选；未配置时自动生成根目录 `.llm_encrypt.key`，已 gitignore，服务器 zip 解压不覆盖） |
+| ALLOWED_ORIGINS | 可选 | CORS 白名单 |
+| DATA_DIR | 可选 | 数据目录根（projects/output/logs 的父级，默认代码根）。本地 `D:\NovelData`；服务器不设时容器内回退 `/app`，与既有卷挂载一致，零影响 |
+
+> 完整自部署指引（含 .env 最小示例、docker compose 启动、BYOK 用法）见 README「自部署指南（Self-hosting）」。开源仓库：https://github.com/muchun0/MoZao（MIT License）。
 
 ---
 
@@ -290,10 +303,11 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等：增量/整批均先落 settle 标记再扣费（宁可漏扣不重扣）
 - BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
-- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库/生成质量升级共 186 个用例，本地全绿）
+- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库/生成质量升级/防重演闭环/揭示跟踪/Token 优化共 612 个用例，本地全绿；发版前至少 `pytest -m "p0 or p1"` 全绿）
 
 ---
 
+- 部署记录（2026-10-10）：第十五次发版（合并 devtest → master，818faec）。内容：**场景文本防重演闭环（P0-1~18 生成端修复包 + v10/v11 实证修复 + v12 真实重生成验收）**。背景：拆场景事件互斥+词面节拍防线（第十二次）拦不住换措辞重演、机制数字幻觉（"累计死亡次数"行）与字符 JSON 截断。本次：① **P0-15/16 机制字段注册表（closed-world）**——`chapter_state.py` 从机制基线派生字段名+方向（次数/剩余→decrease、蚀化/进度/寸→increase），`unknown_mechanism_fields` 白名单兜底，账本数字入 `book_memory.record_chapter_state` 链式继承，`ledger_check` 事件驱动双向校验（防换字段名绕过）；② **P0-17 大纲核心事件覆盖**——`_validate_scene_plan` 分段 LCS≥2 字、命中≥60%，未覆盖回退整章；质检 2.8d `_core_event_missing`；③ **P0-18 超长注水**——`_slim_scene` 单场景超 target×1.5 且非整句复读→精简 1 次，仍超保留不整章回退（字数不触发回退）；④ **v10 根因修复**（`33435ed`）——回退整章路径 scene_state_acc 空致质检 2.8c 整段跳过、幻觉行漏检：改 `if self.memory is not None` 自取注册表/账本、死亡口径统一「蚀化差」、寸字段事件增量豁免、回退/普通整章注入 `_panel_whitelist_block`；⑤ **v11 实证修复**（`9388626`）——账本入账无面板章 erosion 继承上一章末（永不破链）、质检链式取最近非空、`_pcv` 基线 0 跳过、`_chapter_healthy()` 保留旧版前健康检查（带病旧稿弃用落盘新稿）；⑥ **死亡判定通用+个性化两套独立标准**（P0-14，commit 7076550）——通用词面（跨书）+本书机制词（book_signals 独立正则/去重）互不污染。验收：《万墟之上》前 7 章第十一轮真实重生成（v12，日志 regen_ch1_7_v12.log）——ch3/ch6「累计死亡次数」幻觉行彻底消失、七章次数链 2→2→3(重置)→1→1→1→0/蚀化 97→100 只增/寸基线内波动、无重复段落、跨章面板链全绿、逐章通读全部 ★★★★★（黄金三章/人设/爽点/断章达标）；签约评估《万墟之上_前7章第十一轮重生成签约评估.md》结论达标。回归：全量 612 pytest 全绿（新增 beats/book_memory/mechanism_registry/panel_direction/scene_anti_repeat 等 7 个测试文件）。文档：docs/decisions.md（P0-15~18 决策 + v10/v11 实证段）、architecture.md、filemap.md、REQ-scene-plan-align.md 已同步。部署：本地 git archive master → scp 上传 /tmp → 服务器备份 /opt/backup → unzip 解压 → docker compose up -d --build（前端容器内多阶段构建）；验证：mysql-mozao healthy / novel-gen Up (healthy)、/api/health 200、主 JS 1.1MB（index-B7XQeMk-.js）无白屏、/api/projects 未登录 401 鉴权正常。
 - 部署记录（2026-10-01）：第十二次发版（合并 devtest → master，3eab3b7）。内容：**章节质量防线·场景事件级去重（十轮迭代收官）**。背景：第 1 章重生成五轮实测——6649 字版"3 遍救人+死亡复刻"（拆场景 JSON 长输出结尾断裂→事前防线整条回退失效）、4874 字版"坡顶/墟口救人两版"（事件清单互斥拦不住场景正文换措辞重演）、3395 字版"岩台/墟口外救人两版+蚀痕/方位矛盾"（敌人措辞'三只灰卒'vs'三只赤尉伴生灰卒'致清单互斥与正文检测双漏检）。本次修复：① **拆场景 JSON 健壮化**——`_strip_json_block` 剥 ```json 包裹→从首 `{` 回溯最近可完整解析 `}` 前缀→修尾逗号；新增 `_extract_json_field` 字段级救回（events 在前，截断常可救）；失败重试 1 次（温度 0.5）仍败才回退整章，回退时经 `chapter_prompt(chapter_events=…)` 注入事件序列+final_state+"每事件只写一遍"纪律；② **场景正文事件级复写检测**（`_scene_text_rewrites_event`）——语义互斥只校验拆场景 events 清单，拦不住场景生成时模型把已发生事件换措辞重演；对每个场景正文提取事件槽位（冲突对象+救援专属动词 救/引开/砸/挡/扑/迎），与全部已完成事件比对，命中重试本场景并注入 `forbid_event`（禁止以任何形式再次发生，从事件结局后续写）；③ **事件槽位改被救/受害人物优先**——同一人物+同一动作即判重复（敌人词仅无人物时兜底、去量词），修敌人措辞不同双漏检；④ 拆场景成功日志（场景数/事件数）。回归：406 pytest 全绿 + 第四版真实正文回验命中。实机验收：第 1 章重生成 2148 字，拆场景 2 场景 2 事件成功，自校验 5 问题→自动重写 1 次→复检通过，质检 score=100/0 问题（A 结构/B 设定/C 语言/D 适配四档对照早期验收基线全过，残留仅字数 2148 略低于 2500，按"以质量为准、不因字数重写"口径保留）。部署：git archive master → workbench upload（MD5 一致）→ python3 -m zipfile -e 解压 → docker compose up -d --build；验证：mysql-mozao healthy / novel-gen healthy、/api/health 200、主 JS 1.1MB（index-B7XQeMk-.js）无白屏。
 - 部署记录（2026-09-30）：第十一次发版（合并 devtest → master，93edd41）。内容：**生成 Token 消耗优化 P0+P1 全量（REQ-token优化.md）**。背景：09-27~09-29 密集上线的质量机制全依赖 LLM 调用，普通模式单章 LLM 调用从 ≈2 次膨胀到 ≈13~16 次（约 5 倍）；agent_trace 实测（847 条）输入侧占 73%（chapter 单次输入均值 3890、最大 9.3k）。按「前置解决优先」：① **分章设定卡索引**（新 `pipeline/setting_cards.py`，纯 Python 确定性前置脚本）——world 落盘后构建 `setting_cards.json`（出场人物用 `memory.predict_appearing_chars` 预测，生物/地点/势力/伏笔按「名称直判+关键词包含」匹配），memory 按章只注入相关设定子集（空列表=命中无项不注入、索引缺失/关闭回退全量；机制卡/主题/弧光/金手指/禁忌/时钟等强约束区永不裁剪）；② **场景状态抽取分流** `scene_state_mode=auto`（普通模式确定性面板正则零 LLM，高质量模式保留 LLM）；③ **章末/人物状态 LLM 抽取降频** `state_extract_frequency=3`（每 3 章 1 次 LLM，其余确定性）；④ **行动表并入拆场景** `action_plan_first` 默认 False（split_scenes 输出 `characters_action`，纯 Python 格式化注入，不再独立调用）；⑤ **整章润色仅高质量** `polish_hq_only`；⑥ **章内矛盾 LLM 自检仅高质量** `consistency_llm_check` 默认 False；⑦ **校验合并** `verify_combined`（一致性/读者/编辑 3 连调用 → 1 次，`verify_every` 3→5）；⑧ **编辑修正 diff 式** `editor_diff_revise`（只输出需改字段 max_tokens 4096→1200，Python 合并回大纲，失败回退整章重出）；⑨ **定点重写** `targeted_rewrite`（issue pos/原句锚点定位窗口 ±200 字，窗口覆盖 <60% 正文才局部重写并拼回，省 60~75% 重写输出）；⑩ 正文直读 2000→1200 字。开关全部走 FEATURE_FLAGS 注册表；**存量项目 config.json 已持久化旧值，不写迁移（用户拍板）；新增开关默认值对存量项目仅少调用方向生效（安全）**。回归：全量 357 pytest 全绿（新增 26 用例）+ HTTP 端到端冒烟 ALL PASS + mock 整合冒烟通过。文档：docs/decisions.md（2026-09-30 Token 消耗优化决策）、architecture.md、filemap.md 已同步；README 更新记录同步。
 - 部署记录（2026-09-29）：第十次发版（合并 devtest → master，31d79b4）。内容（自第九次以来一批质量与设定加固）：① **章节衔接与主线**——写手注入本章 `core_event`（正文不得偏离大纲核心事件）；场景级生成强制承接上一章结尾（split_scenes 加 prev_tail、memory 注入本章 transition）；② **世界观跟随主角视角逐步展开**——`World.world_reveals` 三段式（潜伏/铺垫/揭示），未揭示真相进强约束区禁剧透，铺垫期只放 hint；③ **多Agent协作分层**——StageGate 阶段门禁（设定缺失自动重生成）、LogicValidator 五类专项校验、Theme/WorldRules/Pacing 专项 Agent；④ **金手指机制卡固化**——`mechanism_rules` 八要素进强约束区永不裁剪，`goldfinger_rules` 五要素；⑤ **防多稿拼接**——事前输出纪律注入 + 事后确定性自检（短行重复/n-gram）+ 单稿抢救；⑥ **章内自洽账本**（`chapter_state.py`）——面板数字/人物生死/物品归属/时间锚点/身体状态跨场景承接，LLM 抽取+面板正则兜底；⑦ **修复重生成世界观清空**——删 world.json 代替写空壳；⑧ **事前设计卡**（本次新增）——`World` 增 enemies/locations/mechanism_baseline/clock/factions/style_taboos 六张结构化卡，世界观阶段生成、按相关性注入，从源头防怪物形态/空间/数字/时间矛盾，前端「人物/世界观」tab 可视化增删改；⑨ **批量生成进度条**——ToolsPanel 轮询 status 展示进度与终止原因。回归：331 pytest 全绿、前端 build 主 JS 1.1MB。部署：git archive master → workbench upload → python3 -m zipfile -e 解压 → docker compose up -d --build；验证：容器 mysql-mozao healthy / novel-gen started、/api/health 200、主 JS 1.1MB 无白屏。
@@ -312,4 +326,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-09-30*
+*最后更新：2026-10-11*

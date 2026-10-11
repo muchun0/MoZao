@@ -69,3 +69,13 @@ def get_output_dir() -> Path:
 def get_logs_dir() -> Path:
     """运行日志目录。"""
     return get_data_dir() / "logs"
+
+
+def get_users_dir() -> Path:
+    """用户级数据根目录（跨书记忆库等用户级数据）。"""
+    return get_data_dir() / "users"
+
+
+def user_memory_path(uid: int | str) -> Path:
+    """用户级记忆库文件：users/<uid>/user_memory.json（按 uid 分区隔离）。"""
+    return get_users_dir() / str(uid) / "user_memory.json"

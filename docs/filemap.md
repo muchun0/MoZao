@@ -86,7 +86,8 @@
 | 路径 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
-| `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成） |
+| `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照，接入全部生成入口）+ `_distill_user_memory`（书级→用户级蒸馏，生成 finally 触发） |
+| `user_memory.py` | **用户级记忆库服务**（跨书创作偏好继承）：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像/跨书纪律/个人文风锚/stats），`record_project_signals`/`record_edits`/`distill`/`build_snapshot`/`summary`/`clear`，全部写路径零额外 LLM |
 | `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口） |
 | `secret_encrypt.py` | BYOK Key Fernet 加密（`enc:v1:` 前缀） |
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
@@ -98,12 +99,12 @@
 | `admin_cli.py` | 站长命令行管理 |
 | `routers/system.py` | 系统域：health/定价/解析/邮件状态 |
 | `routers/auth.py` | 账号：注册/登录/验证码/重置/绑代理 |
-| `routers/me.py` | 我的：资料/余额/返佣/我的技能 |
+| `routers/me.py` | 我的：资料/余额/返佣/我的技能；**用户级记忆** `GET/POST /api/me/user-memory*`（只读摘要/清空隐私兜底） |
 | `routers/skills.py` | 平台技能/技能市场 |
 | `routers/style_roles.py` | 风格角色 + 技能挂载（reference_text 透传） |
-| `routers/projects_base.py` | 项目 CRUD/退费/归档/克隆/删除/下载（建书快照 style_role_reference） |
+| `routers/projects_base.py` | 项目 CRUD/退费/归档/克隆/删除/下载（建书快照 style_role_reference；**用户级记忆**：建书 `record_project_signals`+继承快照） |
 | `routers/projects_outline.py` | 三级大纲/快照/重生成 |
-| `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记 |
+| `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记 |
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
 | `routers/projects_generation.py` | 生成控制（启动/停止/重跑） |
 | `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表） |

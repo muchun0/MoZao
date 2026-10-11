@@ -5,6 +5,7 @@ import re  # noqa: F401  用户大纲导入：标题/章节解析
 
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 
 
 def _import_user_outline(store, text: str) -> bool:
@@ -173,6 +174,14 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         )
 
     store = ProjectStore.create(PROJECTS_DIR, cfg)
+    # 用户级记忆库：新书显式输入（题材/避雷/节奏）计入用户偏好 + 写入继承快照
+    # （零 LLM，失败静默降级，不阻塞项目创建）
+    try:
+        UserMemoryService(user["id"]).record_project_signals(store.dir.name, cfg)
+        _inject_user_memory(store, cfg, user["id"])
+    except Exception:
+        logger.exception("用户级记忆记录失败（降级跳过）: project=%s uid=%d",
+                         store.dir.name, user["id"])
     # 写入用户手写章节（source=user，AI 流程不覆盖）
     if user_chapters:
         store.save_user_content(user_content)

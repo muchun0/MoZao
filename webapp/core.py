@@ -54,6 +54,7 @@ from . import db
 from . import mailer
 from . import verify_code
 from . import teardown_lib
+from .user_memory import UserMemoryService
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
 from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tiers
@@ -862,6 +863,49 @@ def _inject_teardown_style_anchor(store: ProjectStore, cfg) -> None:
         logger.exception("拆书库题材文风锚注入失败（降级跳过）: project=%s", store.dir.name)
 
 
+def _inject_user_memory(store: ProjectStore, cfg, uid: int) -> None:
+    """用户级记忆库继承：跨书偏好/纪律/文风锚 → 项目快照文件（webapp 写 / novel_gen 读）。
+
+    - 开关 cfg.user_memory=False → 不写快照（novel_gen 侧 load 返回 None = 零注入）；
+    - 幂等：内容未变不落盘（每次生成入口统一调用，含 start_from>0 从第 N 章重生成）；
+    - 保持 novel_gen 不依赖 webapp 的分层：本函数只组装 + 写 store 文件，
+      消费端在 novel_gen/pipeline/stages.py 懒读（归属校验 uid 后注入 prompt）；
+    - 失败静默降级，不阻塞生成。
+    """
+    try:
+        if not getattr(cfg, "user_memory", True):
+            return
+        svc = UserMemoryService(uid)
+        snap = svc.build_snapshot(cfg)
+        if not snap:
+            return
+        if store.load_user_memory() == snap:
+            return
+        store.save_user_memory(snap)
+        logger.info("用户级记忆注入完成: project=%s uid=%s 纪律=%d 锚=%d",
+                    store.dir.name, uid, len(snap.get("disciplines", [])),
+                    len(snap.get("style_anchors", [])))
+    except Exception:
+        logger.exception("用户级记忆注入失败（降级跳过）: project=%s", store.dir.name)
+
+
+def _distill_user_memory(store: ProjectStore, cfg, uid: int) -> None:
+    """书级 → 用户级蒸馏（生成完成/批量后触发）。
+
+    distill 全量重算式幂等（同书同贡献再调用跳过），多入口重复触发安全；
+    失败静默降级，不阻塞生成主流程。
+    """
+    try:
+        if not getattr(cfg, "user_memory", True):
+            return
+        n = UserMemoryService(uid).distill(store.dir.name)
+        if n:
+            logger.info("用户级记忆蒸馏完成: project=%s uid=%s 变更=%d",
+                        store.dir.name, uid, n)
+    except Exception:
+        logger.exception("用户级记忆蒸馏失败（降级跳过）: project=%s", store.dir.name)
+
+
 def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
     """只跑 research → outline → editor_review → world，不写正文。
     完成后 phase 标记为 outline_done，等用户编辑大纲后再 /start。"""
@@ -877,6 +921,8 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         _inject_teardown_material(store, cfg)
         # REQ-双锚风格锚定：拆书库题材文风锚（写手阶段消费，失败降级）
         _inject_teardown_style_anchor(store, cfg)
+        # 用户级记忆库：跨书偏好/纪律/文风锚注入项目快照（失败降级）
+        _inject_user_memory(store, cfg, db.project_owner(store.dir.name))
         pipeline.run_research()
         # 爆款拆书库：调研成果自动沉淀（失败不影响生成，内部已捕获异常）
         teardown_lib.sink_research(pipeline.store.load_research(), store.dir.name)
@@ -949,6 +995,8 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         # REQ-双锚风格锚定：所有生成入口统一注入题材锚（start_from>0 从第 N 章重生成、
         # 复用大纲继续生成也生效；重复注入幂等，失败静默降级）
         _inject_teardown_style_anchor(store, cfg)
+        # 用户级记忆库：跨书偏好/纪律/文风锚注入项目快照（所有生成入口，失败降级）
+        _inject_user_memory(store, cfg, db.project_owner(store.dir.name))
 
         if start_from > 0:
             done = start_from - 1
@@ -1054,6 +1102,8 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
     finally:
         _GEN_SEMAPHORE.release()
         _settle_price(store)
+        # 用户级记忆库：书级 → 用户级蒸馏（幂等 + 失败降级；完成/停止/失败均尝试）
+        _distill_user_memory(store, cfg, db.project_owner(store.dir.name))
         with _LOCK:
             _RUNS.pop(store.dir.name, None)
         _clear_task(store)
@@ -1070,9 +1120,12 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
     trace_id = uuid.uuid4().hex
     _mark_task(store, "batch", start=start, end=end)
     try:
+        cfg = store.load_config()
         pipeline = _open_pipeline(store, trace_id=trace_id)
         outline = store.load_outline()
         research = store.load_research()
+        # 用户级记忆库：跨书偏好/纪律/文风锚注入项目快照（批量入口，失败降级）
+        _inject_user_memory(store, cfg, db.project_owner(project_id))
         for no in range(start, end + 1):
             if handle.stop_event.is_set() or no > len(outline.chapters):
                 break
@@ -1111,6 +1164,8 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
             pass
     finally:
         _GEN_SEMAPHORE.release()
+        # 用户级记忆库：书级 → 用户级蒸馏（幂等 + 失败降级）
+        _distill_user_memory(store, cfg, db.project_owner(project_id))
         with _LOCK:
             _RUNS.pop(project_id, None)
         _clear_task(store)

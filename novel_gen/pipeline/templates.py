@@ -91,7 +91,8 @@ def _de_ai_rules() -> str:
         "3. 对白有潜台词：人物不把话说透，允许打断、重复、半截话和言外之意\n"
         "4. 叙事有详略：关键场景慢镜头展开，过渡一笔带过，不要每句都服务主线\n"
         "5. 人物有犹豫和矛盾：不要全程正确、因果太顺，允许误判、后知后觉和小卡顿\n"
-        "6. 用具体动作和细节代替抽象情绪：写'他攥紧了拳头'而非'他内心充满愤怒'\n"
+        "6. 情绪以具体动作和细节承载为主，但关键情绪节点允许一句直接点破"
+        "（'他内心充满愤怒'，点破处紧跟动作细节作支撑）；禁止情绪词堆砌与无画面抒情\n"
         "7. 保留留白：不解释所有动机，不替角色分析内心，让读者自己体会\n"
         "8. 句长有变化：冲突和压迫处用短句，观察和情绪收束处用稍长句"
     )
@@ -144,10 +145,16 @@ def _writing_constraints() -> str:
         "已发生的事件（死亡、被抢、押金归属）不得在后续段落'复活'或重述两遍；"
         "同一意象的比喻不得一章出现两个版本。\n"
         "6. 内心活动底线：每章必须至少 2-3 处主角的内心反应（身体感受、未说出口的判断、闪念、"
-        "对重要他人的牵挂），用具体感受与动作承载；禁止抽象情绪词（'他很愤怒'），"
+        "对重要他人的牵挂），以具体感受与动作承载为主，但关键情绪节点允许直接点破情绪词"
+        "（'他怕了'，点破处必须紧跟一个动作或生理反应作支撑）；禁止情绪词连发堆砌与无画面抒情，"
         "也禁止全章零内心、只会'嗯/行'。\n"
         "7. 悬念句口径：章内首次出现的悬念句/声音/意象（如某句低语），再次出现必须保持"
-        "同一来源、同一方位、同一触发条件；禁止在首次出现前提前引用，禁止同一悬念句前后口径打架。"
+        "同一来源、同一方位、同一触发条件；禁止在首次出现前提前引用，禁止同一悬念句前后口径打架。\n"
+        "8. 场景白描克制：环境/景物/动作过程只做服务性描写，必须带情绪功能（烘托心境、"
+        "反映人物状态、推进冲突）或信息功能；景随人动——只写人物此刻注意到的，挑 2-3 个"
+        "具体细节，环境是人物心境的镜子（同样月光，开心时是青灰铺满院子，难过时是发旧的）；"
+        "禁止大段客观白描（光线、陈设、天气、动作过程的机械铺陈），纯景物铺陈单章占比压到最低，"
+        "把篇幅留给情绪、内心与对话。"
     )
 
 
@@ -233,8 +240,9 @@ def _anti_similarity_system(stage: str = "chapter") -> str:
         "人物行为由性格矛盾驱动，不由剧情爽点驱动；禁止全员智商在线、全员工具人、反派纯坏、主角完美\n"
         "3. 剧情必须有代价与沉没成本：禁止无代价胜利、巧合救场、天降机缘、主角光环；"
         "所有收益必须对应明确代价（人情/身体/心理/未来隐患）\n"
-        "4. 只展示、不直白叙述：禁止'他很愤怒/他很无奈/他震惊'式直白心理描写；"
-        "情绪全部通过动作、微表情、生理反应、语气、细节环境侧面体现\n"
+        "4. 展示为主、直白为辅：情绪以动作、微表情、生理反应、语气、细节环境承载为主，"
+        "但关键情绪节点允许一句直接点破（'他很愤怒'）；禁止全章只有情绪宣告而无画面、"
+        "或情绪词连发堆砌\n"
     )
     blacklist = f"【全网套路永久黑名单（严格禁止，违规即重写）】\n{_SIM_BLACKLIST}"
     if stage == "outline":
@@ -312,7 +320,8 @@ def _character_depth_rules(stage: str = "chapter") -> str:
         "禁止为推进剧情强行改变性格；若必须改变，要先给足铺垫与理由\n"
         "2. 选择加成本：主角的每一次重要胜利都要付出真实代价——牺牲某样东西、承担风险、或两难取舍"
         "（救A就救不了B、选这条路就得罪某人）；禁止轻飘飘的白捡胜利，让读者觉得他在'拼命'而非'走流程'\n"
-        "3. 生活体感：用具体身体反应和日常细节承载情绪，禁止'他悲痛欲绝/他很委屈/他震惊'式直白情绪宣告。"
+        "3. 生活体感：以具体身体反应和日常细节承载情绪为主，但关键情绪节点允许一句直接点破"
+        "（'他很难过'，点破处必须紧跟具体反应作支撑）；禁止大段无画面的情绪宣告与情绪词堆砌。"
         "例：罚跪后起身膝盖一麻、扶着门框才站稳；姜汤喝太急被呛得偏头咳了一声、眼圈泛红；"
         "受伤后爬楼梯喘气、连续熬夜后眼睛发红——用一两个具体反应让读者自己感受到情绪\n"
         "4. 出场标签：本章若有新角色登场，必须同时带出三要素——他是谁、跟谁有关系、此刻为什么重要；"
@@ -369,7 +378,9 @@ def _fanqie_rules(stage: str = "chapter") -> str:
         "4. 章末断章：每章结尾留明确悬念，让读者带着焦虑感合上书；有效类型：冲突一触即发/真相即将揭晓/危险悄然降临/反转前夕；"
         "禁止流水账结尾（主角吃饭睡觉就断章）\n"
         "5. 语言与排版（移动端阅读标准）：每段控制在3-5行，多用短句少用长难句；对话单独成段，清晰区分说话人；"
-        "精准描写——所有描写必须服务剧情或人物，删除无关环境描写/冗余对话/无效修饰；拒绝过度华丽文笔拖慢节奏；"
+        "精准描写——所有描写必须服务剧情或人物，删除无关环境描写/冗余对话/无效修饰；"
+        "禁止大段客观景物/陈设/天气白描，环境描写必须带情绪功能（景随人动、以景写心："
+        "同样的月光，人物不同心境写法不同）；拒绝过度华丽文笔拖慢节奏；"
         "少用生僻字与专业术语\n"
         "6. 雷区红线：禁止节奏注水（强行水字数）、人设崩塌（行为违背前期设定）、强行降智（为剧情让角色智商掉线）、"
         "巧合过多（凡事靠巧合推动）、反派全程送经验\n"
@@ -383,8 +394,8 @@ def _fanqie_rules(stage: str = "chapter") -> str:
         "禁止'天气很好''夕阳西下''十年前'式开场；参考范式：'刀尖抵住她喉结时，系统弹窗亮了''离婚协议签完第三分钟，前夫助理打来电话'\n"
         "E. 前3章小高潮：第3章结尾前必须出现第一个小高潮（第一次爽点释放/第一次反转/第一次翻盘），"
         "不能前3章还在铺垫世界观\n"
-        "F. 删除抽象情绪词：禁止'他很愤怒/他很震惊/他悲痛欲绝/他无奈'这类直接宣告，"
-        "全部用动作+微表情+生理反应替代（攥拳/后退/声音发紧/指甲掐进掌心）\n"
+        "F. 情绪词少而准：'他很愤怒/他很震惊'这类直接宣告允许在情绪顶点出现，但每处必须紧跟"
+        "动作+微表情+生理反应作支撑（攥拳/后退/声音发紧/指甲掐进掌心）；禁止情绪词连发与无画面抒情\n"
         "G. 段落节奏：每段 1-3 句话，不超过 5 行；长句拆短；逗号多的句子砍成短句"
     )
 
@@ -1179,7 +1190,7 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor="", user_memory_block=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1267,6 +1278,10 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     state_anchor_block = (
         f"\n{state_anchor}\n"
     ) if state_anchor else ""
+    # 用户级记忆库：跨书偏好/纪律/文风锚（软约束，来自用户历史作品自动沉淀）
+    user_memory_block_out = (
+        f"\n{user_memory_block}\n"
+    ) if user_memory_block else ""
     user = (
         f"【第{chapter_no}章《{chapter_title}》· 场景 {scene_idx}】\n"
         f"【地点】{scene.get('location', '')}\n"
@@ -1297,6 +1312,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"{book_pitfalls_block}"
         f"{book_canon_block}"
         f"{state_anchor_block}"
+        f"{user_memory_block_out}"
         "写作要求：\n"
         "1. 只写这个场景的正文，不要在正文里输出'场景切换''过渡'等元文字\n"
         "2. 对话占比≥60%，描写段≤3行\n"
@@ -1642,6 +1658,7 @@ def chapter_prompt(
     chapter_events: str = "",
     personal_anchor: str = "",
     teardown_anchor: str = "",
+    user_memory_block: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1692,7 +1709,7 @@ def chapter_prompt(
         f"4. 语言符合调研建议的文风混合方向；避免重复用词与套路化表达；避雷元素绝对不得出现\n"
         f"4.5 签约硬指标：对话占比≥60%（描写段≤3行）；每300字一个小钩子；每800字主角≥2次主动决策；"
         f"第1章第一句直接进冲突（仅第1章适用）；前3章内必须出第一个小高潮；"
-        f"禁止'他很愤怒/他很震惊'式抽象情绪词，全部用动作+微表情替代\n"
+        f"情绪词少而准：关键情绪节点允许直接点破（'他很愤怒'），点破处必须紧跟动作/微表情/生理反应，禁止连发堆砌\n"
         f"{('5. 防同质化：本章冲突与反转不得与已写章节重复；收益必须对应代价；情绪只通过动作/细节侧面体现，禁止直白心理描写' + chr(10)) if cfg.anti_similarity else ''}"
         f"{'6' if cfg.anti_similarity else '5'}. 输出格式（必须严格遵循，不要省略）：先输出正文，正文结束后【必须】另起一行"
         f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
@@ -1706,6 +1723,8 @@ def chapter_prompt(
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:
             system += "\n\n" + anchor
+    if user_memory_block:
+        system += "\n\n" + user_memory_block
     system += _skill_append(cfg)
     system += "\n\n" + _output_discipline()
     system += "\n\n" + _writing_constraints()
@@ -1822,6 +1841,7 @@ def expand_chapter_prompt(
     target_words: int,
     personal_anchor: str = "",
     teardown_anchor: str = "",
+    user_memory_block: str = "",
 ) -> tuple[str, str]:
     """扩写已有章节：保留原有剧情/对话/人设，扩充细节到目标字数。
 
@@ -1849,6 +1869,8 @@ def expand_chapter_prompt(
         anchor = wrap_style_anchor(TEARDOWN_ANCHOR_HEADER, teardown_anchor)
         if anchor:
             system += "\n\n" + anchor
+    if user_memory_block:
+        system += "\n\n" + user_memory_block
     if cfg.anti_similarity:
         system += "\n\n" + _anti_similarity_system("chapter")
     if cfg.fanqie_style:

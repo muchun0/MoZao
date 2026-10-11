@@ -287,3 +287,13 @@
   3. **寸字段有事件增量豁免**：`ledger_check` 有事件时 increase 校验对寸字段豁免（增量依赖机制基线自由文本——碎片/外力/剩余描述均可合法影响寸数，无法通用推导「应 ≥ prev+deaths」）；无事件寸回退检查保留（治 v9 ch4 四十一寸→ch5 三十七寸矛盾）。
   4. **回退/普通整章路径注入面板白名单**：stages 新增 `_panel_whitelist_block()` 方法（从 memory canon 注册表派生字段白名单 + 次数 0 边界规则），`_fallback_whole_chapter` 与普通整章 `chapter_prompt` 分支均注入；回退整章重试校验 `_viols` 循环条件从 `if _text and panel_baseline` 放宽为 `if _text`（注册表未知字段在无面板基线时也拦截）；场景循环白名单块改为复用该方法。
 - 验证：smoke 脚本实证 v10 ch3/ch6 正文「累计死亡次数：39/37」现被 unknown_mechanism_fields 拦截、ch3 合法 98→100 不再误报；tests/test_mechanism_registry.py 新增 TestV10Regression 5 用例（无 baseline 未知字段仍拦/蚀化差口径/合法蚀化无误报/寸无事件回退仍拦/白名单块内容）；**全量 609 全绿**。待办：提交本批修复（feat 分支不推远程）→ 手工备份 v10 稿到 backup_v10_... → 第十轮真实重生成（v11）→ 双验证重点验收 ch3/ch6 幻觉行消除 + 账本 nums 不含「死亡次数」键 → 评估签约。
+
+## 2026-10-11 情绪描写与场景白描平衡调整（feat/emotion-writing-balance，未合并）
+
+- 背景：用户反馈生成正文「情绪描写管控过严、情绪描写很少，场景白描太多」。调研（外部：余华/福克纳《沃许》讲法、PolyProse、Story Grid、SelfPubHub、番茄作家课堂、亵渎/荷花淀范例；内部：番茄写作指南原文、AI小说防同质化规则源文档）结论：① show don't tell 是工具非铁律，"只展示不直白"绝对化是新手误读，telling 有清晰（复杂情绪）/强调（情绪顶点）/节奏控制三大正当功能；② 优秀场景描写=景随人动+情绪染色+只挑 2-3 个核心细节+环境承担叙事功能（心理镜像/推动情节/留白暗示），白描不是景物罗列；③ 本管线 6 处「禁止抽象情绪词」绝对禁令源头为 AI小说防同质化规则源文档「只展示不直白叙述」，蒸馏进模板时被放大；番茄指南原文其实只有「精准描写、删无关环境描写」（无情绪词禁令）。
+- 决策（13 处提示词修改，feat/emotion-writing-balance 分支，未合并、未推远程）：
+  1. writer.md ×4：「怎么写」改「情绪演为主、说为辅」；「情绪与内心」允许关键节点直接点破（点破处必须紧跟动作/生理反应）；「输出纪律3」改「情绪词少而准」；「反例对照」增「一句点破+生理/记忆支撑」好例与「纯景物白描」差例。
+  2. stylist.md ×1：「克制是高级」补「关键情绪节点允许一句点破，让情绪被读者明确接住」。
+  3. templates.py ×8：`_de_ai_rules` #6 / `_writing_constraints` #6 / `_anti_similarity_system` core #4 / `_character_depth_rules` #3 / `_fanqie_rules` F / `chapter_prompt` 4.5 全部由「禁止抽象情绪词/只展示不直白/删除抽象情绪词」改为「演为主、说为辅，点破处必须紧跟动作/生理反应，禁连发堆砌与无画面抒情」；`_writing_constraints` 新增 #8「场景白描克制」（景随人动、挑 2-3 个细节、环境=人物心境镜子、禁大段客观白描，纯景物铺陈单章占比压到最低）；`_fanqie_rules` 语言排版 5 补「禁止大段客观景物/陈设/天气白描，环境必须带情绪功能」。
+- 边界：不动 ai_taste.py 确定性扣分器（只扣分不阻断，其「AI痕迹-情绪词直白」issue 类型有测试断言）；不改 skills_library 源文档与 DB 技能（平台技能经 sync 蒸馏注入，如需消除同源禁令可后续单独评估）；写作约束开关 de_ai/anti_similarity/character_depth/fanqie_style 默认 True，改动覆盖全部新项目。
+- 验证：定向回归 67 绿（test_writing_constraints/test_chapter_flow/test_output_discipline/test_book_memory/test_ai_taste）；全量 612 绿；渲染核对 _writing_constraints/_de_ai/_anti_similarity/_fanqie/_character_depth 均无旧禁令残留。

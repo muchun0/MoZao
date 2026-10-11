@@ -14,6 +14,7 @@
 - **扣费时点**：创建时不扣费，真正生成文字后按 AI 实际生成字数结算；未生成的项目可随时删除不产生费用。
 - **BYOK**：用户可在「模型配置」里填自己的 API Key，用自己的 key 生成完全不扣费。
 - **线上地址**：`https://mozao.click`（已备案，冀ICP备2026038211号，Let's Encrypt HTTPS 自动续期）
+- **开源**：代码以 MIT 许可证开源（`https://github.com/muchun0/MoZao`），任何人可 fork 自部署——自带 API Key 免费使用（密钥只存环境变量）；官方托管服务继续按字数收费。README「自部署指南（Self-hosting）」为自部署入口
 
 ### 关键功能清单
 
@@ -51,66 +52,75 @@
 D:\PythonProjects\DouBao\
 ├── run_web.py                  # Web 服务入口
 ├── Dockerfile / docker-compose.yml / .dockerignore
-├── WIKI.md / API.md / AGENTS.md / README.md
+├── WIKI.md / API.md / AGENTS.md / README.md / LICENSE（MIT）
 ├── requirements.txt
-├── novel_gen/                  # 生成引擎
-│   ├── config.py               # NovelConfig
+├── novel_gen/                  # 生成引擎（纯 Python，无 Web 依赖）
+│   ├── config.py               # NovelConfig + FEATURE_FLAGS 开关注册表
+│   ├── safety.py               # 输入防护（Prompt 注入检测/输出合规）
+│   ├── llm/                    # Provider 抽象（base/factory/providers/usage，自动埋点+成本防护）
+│   ├── research/               # 调研阶段（内置知识库 + 联网 + 拆书库回流）
 │   ├── pipeline/
-│   │   ├── manager.py          # 流水线编排
-│   │   ├── templates.py        # 提示词模板
-│   │   ├── stages.py           # 大纲/世界观/章节写作
-│   │   ├── reviser.py          # 自动修订 + Reader 审校
-│   │   ├── memory.py           # 章节记忆
-│   │   ├── character_state.py  # 人物动态状态（P0-2，逐章出场/状态追踪）
-│   │   ├── review_summary.py   # 全书质量汇总（P0-3）
-│   │   ├── ai_taste.py         # AI 痕迹评分（P1-4）
-│   │   ├── stages/             # 章节写作阶段（含行动表先行 P1-1）
-│   │   ├── templates/          # 提示词模板（场景级下沉 P1-2/Lorebook 裁剪 P1-3/范文锚定 P2-1）
-│   │   ├── quality/            # 质量指标聚合（P2-4，trace 底座）
-│   │   └── trace.py            # 生成轨迹（P2-4 数据底座）
-│   │   └── agents/             # 6 个角色（含 StylistAgent 风格师）
+│   │   ├── manager.py          # 流水线编排（校验合并/终审/双锚注入）
+│   │   ├── orchestrator.py     # 架构总控（StageGate 阶段门禁/冲突仲裁）
+│   │   ├── validator.py        # 独立逻辑校验（5 类专项 + 机制卡三要素）
+│   │   ├── stages.py           # 场景级章节写作（拆场景→逐场景→润色，防重演闭环）
+│   │   ├── beats.py            # 情节节拍序列检测（LCS 重演判定，零 LLM）
+│   │   ├── memory.py           # 章节记忆（设定库+摘要回填+分章设定卡注入）
+│   │   ├── setting_cards.py    # 分章设定卡索引（Token 优化 P1-1）
+│   │   ├── chapter_state.py    # 章内/章间状态账本（机制数字确定性闭环）
+│   │   ├── character_state.py  # 人物动态状态（逐章出场/状态追踪）
+│   │   ├── book_memory.py      # 小说级记忆（设定/事件/踩坑/经验四账本）
+│   │   ├── quality.py          # 结果自校验（确定性规则 + 定点重写 + 记忆注入）
+│   │   ├── review_summary.py   # 全书质量汇总
+│   │   ├── ai_taste.py         # AI 痕迹评分
+│   │   ├── style_anchor.py     # 双锚风格锚定（个人旧稿锚 + 题材锚）
+│   │   ├── trace.py            # 生成轨迹（质量报表数据底座）
+│   │   └── agents/             # 12 个角色（6 主角色 + 3 生产层 + 3 专项）
 │   │       ├── base.py         # BaseAgent（按 role 挂 skill）
-│   │       ├── researcher.py   # 调研员
-│   │       ├── architect.py    # 架构师
-│   │       ├── writer.py       # 写手
-  │   │       ├── stylist.py     # 风格师（写作风格角色，可挂载技能）
-│   │       ├── reviewer.py    # 审校
-│   │       ├── reader.py       # 读者（追更体验）
-│   │       └── prompts/      # 各角色独立提示词
-│   ├── store/project.py        # ProjectStore
-│   ├── store/schemas.py        # Chapter/Outline/Volume
-│   ├── utils/chapter_splitter.py
-│   ├── utils/paths.py          # DATA_DIR 数据目录解析（代码与数据隔离）
-│   ├── utils/migrate.py        # 数据迁移工具（复制→校验→删源）
-│   └── export/cover.py        # 封面生成
+│   │       ├── researcher.py / architect.py / writer.py / reviewer.py
+│   │       ├── reader.py / stylist.py / theme_character.py / world_rules.py
+│   │       ├── pacing.py / opening.py / ending.py / dialogue.py
+│   │       └── prompts/        # 各角色独立提示词
+│   ├── store/                  # ProjectStore（产物 JSON 权威源）/ schemas
+│   ├── export/                 # TXT/EPUB/DOCX/MD 导出 + AI 封面
+│   └── utils/                  # chapter_splitter / paths(DATA_DIR) / migrate
 └── webapp/
-    ├── server.py               # FastAPI 组装壳（导入路由注册 + 静态托管 + 启动入口）
-    ├── core.py                 # 核心层：共享状态/鉴权/项目工具/结算/生成线程/任务持久化
-    ├── routers/                # 按域拆分路由（97 个）：system/auth/me/skills/admin/style_roles
+    ├── server.py               # FastAPI 组装壳（路由注册 + 静态托管 + 启动入口）
+    ├── core.py                 # 核心层：鉴权/项目工具/结算（先落基线再扣费）/生成线程/任务持久化
+    ├── routers/                # 9 域路由（96 个）：system/auth/me/skills/style_roles/admin
     │                           #   + projects 域 5 子模块：base/outline/chapters/world/generation
-    ├── db.py                   # MySQL 数据层 + 自动迁移
+    ├── db/                     # MySQL 数据层包：base/users/projects/skills/style_roles/teardowns/traces
     ├── secret_encrypt.py       # 敏感配置加密（BYOK Key，Fernet）
     ├── pricing.py              # 按字数计费
     ├── referral.py             # 代理/分销
     ├── verify_code.py          # 邮箱验证码
     ├── mailer.py               # SMTP 邮件
+    ├── outline_parser.py       # 上传大纲解析（.txt/.md/.docx）
     ├── logger.py               # 日志
     ├── admin_cli.py            # 命令行管理
-    └── frontend/               # Vue3 前端（src/ + dist/）
+    └── frontend/               # Vue3 前端（src/ + dist/，dist 不入库）
 ```
 
 ### 多智能体角色
 
-| 角色 | 文件 | 职责 | role 值 |
+| 角色 | 文件 | 职责 | 阶段 |
 |---|---|---|---|
-| Researcher | researcher.py | 联网调研、反套路改造、元素叠加 | researcher |
-| Architect | architect.py | 三级大纲、人物世界观、时间线 | architect |
-| Writer | writer.py | 逐章正文生成 | writer |
-| Reviewer | reviewer.py | 一致性/逻辑/合规审校 | reviewer |
-| Reader | reader.py | 追更读者视角审校（代入感/爽点/钩子） | reader |
+| Researcher 调研 | researcher.py | 内置知识库 + 联网调研 → 提炼热门小说共性报告 | research |
+| Architect 架构 | architect.py | 三级大纲、人物世界观、时间线；收敛为骨架生产者，编排生产层与专项 Agent | outline/world |
+| theme_character 主题人物 | theme_character.py | 主题命题 / 三层冲突 / 主角弧光 / 配角动机 | world |
+| world_rules 世界观规则 | world_rules.py | 世界观 / 金手指五要素 / 设定禁忌 | world |
+| pacing 节奏伏笔 | pacing.py | 关键节点 / 分卷节奏 / 伏笔回收闭环 | outline |
+| Writer 写手 | writer.py | 逐章正文（场景级生成，叠加 Stylist 风格人设） | chapter |
+| Reviewer 审校 | reviewer.py | 一致性/逻辑/合规审校（5 类专项 + 机制卡三要素） | review |
+| Reader 读者 | reader.py | 追更读者视角审校（代入感/爽点/钩子） | review |
+| Stylist 风格师 | stylist.py | 写作风格角色（人设 + 挂载技能），注入写手正文与扩写路径 | chapter/expand |
+| opening 开篇 | opening.py | 黄金三章强开篇设计（回填前三章 core_event/goal） | outline |
+| ending 结局 | ending.py | 终局设计卡（终局状态/主题落点/人物归宿），末几章按卡收束防烂尾 | outline/world |
+| dialogue 对白 | dialogue.py | 聚合全书人物 speech_style 生成对话风格指南（确定性，零 LLM） | world |
 
-**Skill 挂载**：`writing_skills.role` 空=全局；填对应 role 只注入该角色；用户 `user_skills` 同理。
-**风格角色**：`style_roles`（user_id=0 平台内置 / >0 用户自建，role_prompt 人设）+ `style_role_skills`（role_id ↔ skill_type(admin/user)/skill_id 挂载关系）；建书选风格角色后组装人设+挂载技能快照进 config（style_role_prompt），由 StylistAgent 注入写手正文与扩写路径。
+**Skill 挂载**：`skills.role` 空=全局；填对应 role 只注入该角色（source 区分 platform/user/market，统一表 `skills`）。
+**风格角色**：`style_roles`（user_id=0 平台内置 / >0 用户自建，role_prompt 人设，reference_text 范文锚）+ `style_role_skills`（role_id ↔ skill_type(admin/user)/skill_id 挂载关系）；建书选风格角色后组装人设+挂载技能快照进 config（style_role_prompt），由 StylistAgent 注入写手正文与扩写路径。
+**门禁与校验**：StageGate 阶段门禁（产出→准出校验→不合格自动重生成 ≤N 轮→超限仲裁放行）+ LogicValidator 独立逻辑校验。
 
 ---
 
@@ -187,12 +197,11 @@ D:\PythonProjects\DouBao\
 | recharges | id, user_id, amount, note, created_at |
 | commission_log | id, agent_id, buyer_id, amount, kind, project_id, created_at |
 | refund_requests | id, user_id, amount, reason, status, created_at, handled_at |
-| writing_skills | id, name, description, prompt_append, is_active, role, sort_order, created_at |
-| user_skills | id, user_id, name, description, prompt_append, role, is_active, **market_id**, created_at |
-| skill_market | id, author_id, name, description, prompt_append, role, downloads, created_at |
-| style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, is_active, sort_order, created_at |
+| skills | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限；含 role/applicable_stages/version/downloads/market_id；旧 writing_skills/user_skills/skill_market 保留不 DROP（迁移回退） |
+| style_roles | id, user_id(0=平台/用户自建), name, description, role_prompt, **reference_text**（范文锚 P2-1）, is_active, sort_order, created_at |
 | style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
-| traces | id, user_id, project_id, event, payload(JSON), created_at（生成轨迹，质量报表聚合底座 P2-4） |
+| book_teardown | id, genre, title, summary, content(JSON), source_project, source_type(research/seed/manual), user_id, view_count, status（爆款拆书库） |
+| agent_trace | id, trace_id, user_id, project_id, event, payload(JSON), created_at（全链路快照，质量报表聚合底座 P2-4） |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头
 - `init_db()` 启动时自动建表 + 增量迁移
@@ -201,18 +210,22 @@ D:\PythonProjects\DouBao\
 
 ## 6. 配置（.env，不入库）
 
-| 键 | 说明 |
-|---|---|
-| DEEPSEEK_API_KEY | 文本生成模型 Key |
-| BOCHA_API_KEY | 联网调研 Key |
-| SILICONFLOW_API_KEY | 封面 AI 生图 Key |
-| AI_COVER_ENABLED | 封面 AI 开关（1/0） |
-| LLM_KEY_ENCRYPT_SECRET | BYOK Key 加密密钥（可选；未配置时自动生成根目录 `.llm_encrypt.key`，已 gitignore，服务器 zip 解压不覆盖） |
-| ADMIN_EMAIL | 站长收件邮箱（退款通知） |
-| SMTP_HOST/PORT/USER/PASS | SMTP 发信 |
-| ALLOWED_ORIGINS | CORS 白名单 |
-| DATABASE_URL | MySQL 连接串 |
-| DATA_DIR | 数据目录根（projects/output/logs 的父级，默认代码根）。本地 `D:\NovelData`；服务器不设时容器内回退 `/app`，与既有卷挂载一致，零影响 |
+| 键 | 必填 | 说明 |
+|---|---|---|
+| MYSQL_ROOT_PASSWORD | ✅ | MySQL root 密码（compose 初始化 mysql-mozao 用，务必强密码） |
+| DEEPSEEK_API_KEY | 至少一种 | 文本生成模型 Key（默认 Provider=deepseek） |
+| ARK_API_KEY | 可选 | 火山方舟（豆包）Key（provider=doubao 时用） |
+| OPENAI_API_KEY | 可选 | OpenAI 兼容 Key（provider=openai 时用） |
+| BOCHA_API_KEY | 可选 | 博查联网调研 Key |
+| SERPER_API_KEY | 可选 | Serper（Google）联网调研 Key |
+| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | 可选 | 应用连 MySQL 参数（默认 127.0.0.1:3306 / root / 空 / mozao；单机 compose 无需改） |
+| ADMIN_EMAIL | 可选 | 站长收件邮箱（退款通知） |
+| SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS | 可选 | SMTP 发信（验证码/通知；不配则验证码不可用） |
+| LLM_KEY_ENCRYPT_SECRET | 可选 | BYOK Key 加密密钥（可选；未配置时自动生成根目录 `.llm_encrypt.key`，已 gitignore，服务器 zip 解压不覆盖） |
+| ALLOWED_ORIGINS | 可选 | CORS 白名单 |
+| DATA_DIR | 可选 | 数据目录根（projects/output/logs 的父级，默认代码根）。本地 `D:\NovelData`；服务器不设时容器内回退 `/app`，与既有卷挂载一致，零影响 |
+
+> 完整自部署指引（含 .env 最小示例、docker compose 启动、BYOK 用法）见 README「自部署指南（Self-hosting）」。开源仓库：https://github.com/muchun0/MoZao（MIT License）。
 
 ---
 
@@ -290,7 +303,7 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 - 余额扣改用 SELECT ... FOR UPDATE 行锁
 - 结算幂等：增量/整批均先落 settle 标记再扣费（宁可漏扣不重扣）
 - BYOK Key 加密落库（Fernet，`enc:v1:` 前缀；存量明文启动时自动迁移）
-- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库/生成质量升级共 186 个用例，本地全绿）
+- 测试随仓库维护：tests/ 已入库（加密/meta 缓存/结算/Agent/风格角色/拆书库/生成质量升级/防重演闭环/揭示跟踪/Token 优化共 612 个用例，本地全绿；发版前至少 `pytest -m "p0 or p1"` 全绿）
 
 ---
 
@@ -313,4 +326,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-09-30*
+*最后更新：2026-10-11*

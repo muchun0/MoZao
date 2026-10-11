@@ -176,6 +176,8 @@ BOCHA_API_KEY=sk-你的Key      # 可选，联网调研用
 DATA_DIR=D:\NovelData         # 可选：数据目录根（projects/output/logs 的父级），默认代码根
 ```
 
+> 完整环境变量清单（含 ARK/OPENAI/SERPER/SMTP/MYSQL_ROOT_PASSWORD/DB_*）与一键自部署步骤，见上文「自部署指南（Self-hosting）」。
+
 - **邮件通知**（退款申请通知站长 + 注册/重置验证码发用户邮箱）：
 ```
 ADMIN_EMAIL=站长收件邮箱
@@ -458,10 +460,82 @@ python -m pytest tests/ -v
 - 邮件通知需配置 SMTP（QQ/163 邮箱的 SMTP 授权码），未配置时退款申请仍可提交，站长在后台手动查看处理。
 - 本工具用于个人创作辅助，请勿用于批量生产侵权或违反平台规则的内容。
 
+## 自部署指南（Self-hosting）
+
+开源仓库可一键自部署（Docker Compose，含 MySQL），**自带 API Key 免费使用全部功能**；不配 Key 的用户走平台计费（见上文定价）。
+
+### 前置要求
+
+- Docker 20.10+ 与 Docker Compose v2（`docker compose` 子命令）
+- 建议 Linux 服务器 ≥2 核 2G 内存；Windows/macOS 桌面 Docker 同样可跑
+
+### 1. 获取代码
+
+```bash
+git clone https://github.com/muchun0/MoZao.git
+cd MoZao
+```
+
+### 2. 配置环境变量（.env）
+
+在项目根目录创建 `.env` 文件（已被 .gitignore 排除，**不会提交/写入镜像**）。完整清单：
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `MYSQL_ROOT_PASSWORD` | ✅ | MySQL root 密码（compose 初始化 `mysql-mozao` 容器用，务必改为强密码） |
+| `DEEPSEEK_API_KEY` | 至少一种 | DeepSeek 文本生成 Key（默认 Provider，`llm.provider=deepseek`） |
+| `ARK_API_KEY` | 可选 | 火山方舟（豆包）Key，`llm.provider=doubao` 时用 |
+| `OPENAI_API_KEY` | 可选 | OpenAI 兼容 Key，`llm.provider=openai` 时用 |
+| `BOCHA_API_KEY` | 可选 | 博查联网调研 Key；未配置则调研退化为内置知识库 + 模型先验 |
+| `SERPER_API_KEY` | 可选 | Serper（Google）联网调研 Key，与博查二选一 |
+| `ADMIN_EMAIL` | 可选 | 站长收件邮箱（退款申请通知；不配则申请仅后台可见） |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | 可选 | SMTP 发信（注册/重置验证码、退款通知）；不配则邮箱验证码不可用 |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | 可选 | 应用连 MySQL 的连接参数（默认 `127.0.0.1:3306 / root / 空 / mozao`，单机 compose 一般无需修改） |
+| `DATA_DIR` | 可选 | 数据目录根（projects/output/logs 的父级）；不设时容器内回退 `/app`，与命名卷挂载一致 |
+| `LLM_KEY_ENCRYPT_SECRET` | 可选 | BYOK Key 加密密钥；不配置则自动生成根目录 `.llm_encrypt.key`（已 gitignore） |
+
+最小可用 `.env`：
+
+```bash
+MYSQL_ROOT_PASSWORD=改成你的强密码
+DEEPSEEK_API_KEY=sk-你的Key
+ADMIN_EMAIL=admin@example.com
+```
+
+### 3. 启动
+
+```bash
+docker compose up -d --build
+```
+
+首次构建会自动编译前端（容器内多阶段构建：node:20-alpine `npm ci && npm run build` → python:3.13-slim），等待数十秒后：
+
+```bash
+docker compose ps          # 两个容器均 healthy 即就绪
+```
+
+浏览器打开 `http://<服务器IP>:8000`，**首个注册用户自动成为站长**。
+
+> 默认 `ports` 只绑定 `127.0.0.1`（`127.0.0.1:8000:8000`，安全默认）。需要公网访问时，改 `docker-compose.yml` 为 `8000:8000`，或加 Caddy 反代 + HTTPS（参考 `deploy/Caddyfile`）。
+
+### 4. BYOK：用户自带 API Key
+
+- 注册登录后，**工作台 → 模型配置（BYOK）**：用户可填自己的 Provider / API Key / 模型 / Base URL（不填则用平台 Key）
+- Key 经 **Fernet 加密后落库**（密文前缀 `enc:v1:`，加密密钥在 `.llm_encrypt.key` 或 `LLM_KEY_ENCRYPT_SECRET`），DB 泄露不暴露明文
+- 用自带 Key 生成**完全不扣费**；未填用户走平台 Key 按字数计费（普通 2 元/万字，高质量 3 元/万字）
+- ⚠️ 迁移/备份服务器时，**务必一起备份 `.llm_encrypt.key`**（或固定 `LLM_KEY_ENCRYPT_SECRET`），否则用户已保存的 BYOK Key 无法解密
+
+### 5. 日常运维
+
+- 日志：`docker compose logs -f`（也可在站长后台「系统日志」板块查看）
+- 数据：`projects`（中间产物）/ `output`（成品）/ `logs` / `data`（MySQL 数据）均为命名卷，容器重建不丢数据
+- 升级：`git pull && docker compose up -d --build`（改了 requirements 或前端源码必须 `--build`）
+- 备份：备份 4 个命名卷 + `.env` + `.llm_encrypt.key` 即可完整迁移
+
 ## 开源与贡献
 
 - **许可证**：MIT（见 `LICENSE`）。代码可自由使用、修改、分发；官方托管服务与品牌「墨造」保留运营权。
-- **自部署**：fork 仓库 → 根目录创建 `.env`（API Key / SMTP）→ `docker compose up -d --build` → 打开 `http://<服务器>:8000`。自带 API Key 即可免费使用全部功能。
+- **自部署**：见上文「自部署指南」——clone → 建 `.env` → `docker compose up -d --build`，自带 API Key 免费使用。
 - **分支流程**：从 `devtest` 切功能分支（`feat/*` / `fix/*` / `docs/*`）→ 提交 → 合并回 `devtest`（先推 devtest 验证）→ 确认无误后合并 `master`。
 - **测试要求**：功能改动必须写 pytest 用例（`tests/`），覆盖正常/边界/异常路径；提交前本地 `python -m pytest tests/ -m "p0 or p1" -v` 全绿。
 - **敏感信息**：API Key / 数据库密码只进环境变量或 `.env`（已被 .gitignore 排除），**禁止写入代码**。提交前可用 `git grep` 复查。

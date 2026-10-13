@@ -50,24 +50,16 @@ _CH2_MOVES = (
     "苏妄言留下一枚铜牌，说'三天后到执刑司报到，算你临时征召'→陆沉捏着铜牌，心里骂娘。"
 )
 
-# 4 事件 4 场景（场景逐字引用事件1..4），characters_action 非空（验证行动表措辞）
+# 2 事件 2 场景（2500 字/章 → 场景粒度优化 N=2；场景逐字引用事件1..2），characters_action 非空
 _SPLIT_JSON = (
     '{"events": [{"id": "事件1", "desc": "占位", "conflict": "苏妄言", "action": "试探",'
     ' "final_state": ""},'
-    ' {"id": "事件2", "desc": "占位", "conflict": "苏妄言", "action": "试探",'
-    ' "final_state": ""},'
-    ' {"id": "事件3", "desc": "占位", "conflict": "苏妄言", "action": "抵挡",'
-    ' "final_state": ""},'
-    ' {"id": "事件4", "desc": "占位", "conflict": "苏妄言", "action": "征召",'
+    ' {"id": "事件2", "desc": "占位", "conflict": "苏妄言", "action": "抵挡",'
     ' "final_state": ""}],'
     ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "平静",'
-    ' "anchors": ["火炉"], "time_marker": "清晨", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件2", "emotion": "警惕",'
-    ' "anchors": ["火炉"], "time_marker": "紧随其后", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件3", "emotion": "惊险",'
-    ' "anchors": ["术法碎片"], "time_marker": "片刻后", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件4", "emotion": "压抑",'
-    ' "anchors": ["铜牌"], "time_marker": "稍后", "target_words": 620}],'
+    ' "anchors": ["火炉"], "time_marker": "清晨", "target_words": 1250},'
+    ' {"location": "铁匠铺", "scene_event_ref": "事件2", "emotion": "惊险",'
+    ' "anchors": ["术法碎片"], "time_marker": "片刻后", "target_words": 1250}],'
     ' "characters_action": [{"name": "陆沉", "goal": "蒙混过关",'
     ' "key_actions": ["装傻", "挡死", "装晕"], "emotion": "警惕", "dialogue_intent": "隐瞒执能"}]}'
 )
@@ -220,20 +212,20 @@ def test_scene_beat_rewrite_triggers_retry(store):
     _save_outline(store, _CH2_MOVES)
     llm = MagicMock()
     retry_ok = _NORMAL_SCENE + "她没再追问，转身走了。"   # 重试版：短序列，不再重演
+    expand_ok = retry_ok + "扩写补充：火炉里的炭火噼啪响了两声。" * 200  # 扩写保留原正文并更长
     llm.chat.side_effect = [
         _SPLIT_JSON,      # 0 拆场景
         _CYCLE_A,         # 1 场景1（越权写完完整循环 → 登记长节拍序列）
         _CYCLE_B,         # 2 场景2初版：与场景1节拍序列重合 → 命中重演
         retry_ok,         # 3 场景2重试：合规（短序列）
-        "场景3正文：陆沉装晕，苏妄言以为他被震晕。" * 80,
-        "场景4正文：苏妄言留下铜牌，陆沉捏着铜牌。" * 80,
         "场景链路摘要",
+        expand_ok,        # 4 正文 < 目标90% → 扩写（保留原正文并扩充）
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
     assert retry_ok in ch.content          # 重试版被采用
     assert "执能再次失控" not in ch.content  # 重演初版被丢弃
-    # 拆场景 + 场景1 + 场景2初版 + 场景2重试 + 场景3 + 场景4 + 摘要 = 7
-    assert llm.chat.call_count == 7
+    # 拆场景 + 场景1 + 场景2初版 + 场景2重试 + 摘要 + 扩写 = 6
+    assert llm.chat.call_count == 6
 
 
 @pytest.mark.p1
@@ -266,9 +258,8 @@ def test_scene2_plus_action_plan_no_full_implementation(store):
         _SPLIT_JSON,
         _NORMAL_SCENE,
         _NORMAL_SCENE,
-        _NORMAL_SCENE,
-        _NORMAL_SCENE,
         "场景链路摘要",
+        "扩写正文。" * 300,   # 2 场景合计 < 2500 → 自动触发扩写
     ]
     _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
     scene2_user = llm.chat.call_args_list[2][0][1]
@@ -353,19 +344,19 @@ def test_scene1_internal_cycle_triggers_retry(store):
     llm = MagicMock()
     scene1_bad = _CYCLE_A + "\n\n" + _CYCLE_B          # 场景1初版：内部两遍
     scene1_ok = _NORMAL_SCENE + "她没再追问，转身走了。"  # 场景1重试：短序列合规
+    expand_ok = scene1_ok + "扩写补充：铁匠铺的门轴吱呀响了一声。" * 200  # 扩写保留原正文并更长
     llm.chat.side_effect = [
         _SPLIT_JSON,      # 0 拆场景
         scene1_bad,       # 1 场景1初版：内部循环 → 命中重试
         scene1_ok,        # 2 场景1重试：合规
         "场景2正文：陆沉装晕，苏妄言以为他被震晕。" * 80,
-        "场景3正文：陆沉替她挡下术法碎片死了一次。" * 80,
-        "场景4正文：苏妄言留下铜牌，陆沉捏着铜牌。" * 80,
         "场景链路摘要",
+        expand_ok,        # 4 正文 < 目标90% → 扩写（保留原正文并扩充）
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
     assert scene1_ok in ch.content            # 重试版被采用
     assert "执能再次失控" not in ch.content     # 内部两遍初版被丢弃
-    assert llm.chat.call_count == 7
+    assert llm.chat.call_count == 6
 
 
 # ---------- 集成：整章回退生成后节拍检测 → 重试 → 合规版采用 ----------

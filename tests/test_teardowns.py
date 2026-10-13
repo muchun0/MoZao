@@ -81,30 +81,32 @@ def test_sink_creates_new(clean_teardowns):
 
 @pytest.mark.p1
 def test_sink_same_project_idempotent(clean_teardowns):
-    r1 = teardown_lib.sink_research(_FakeReport(summary="v1"), "td_test_proj_b")
-    r2 = teardown_lib.sink_research(_FakeReport(summary="v2 更新"), "td_test_proj_b")
+    # 题材用"科幻/军事"：2026-10-13 拆书入库 12 本 manual 数据常驻本地库（都市/玄幻/悬疑/
+    # 言情/仙侠/历史），计数断言需避开被占用的题材，保持精确计数语义
+    r1 = teardown_lib.sink_research(_FakeReport(genre="科幻", summary="v1"), "td_test_proj_b")
+    r2 = teardown_lib.sink_research(_FakeReport(genre="科幻", summary="v2 更新"), "td_test_proj_b")
     assert r1 == r2                       # 同项目 → 更新而非新增
-    lst = db.list_teardowns(genre="都市")
+    lst = db.list_teardowns(genre="科幻")
     assert lst["total"] == 1
     assert "v2 更新" in db.get_teardown(r1)["summary"]
 
 
 @pytest.mark.p1
 def test_sink_same_genre_merges(clean_teardowns):
-    a = teardown_lib.sink_research(_FakeReport(), "td_test_proj_c1")
-    b = teardown_lib.sink_research(_FakeReport(), "td_test_proj_c2")
+    a = teardown_lib.sink_research(_FakeReport(genre="科幻"), "td_test_proj_c1")
+    b = teardown_lib.sink_research(_FakeReport(genre="科幻"), "td_test_proj_c2")
     assert a == b                         # 同题材不同项目 → 合并到同一条
-    assert db.list_teardowns(genre="都市")["total"] == 1
+    assert db.list_teardowns(genre="科幻")["total"] == 1
     assert db.get_teardown(b)["source_project"] == "td_test_proj_c2"  # 归属最新项目
 
 
 @pytest.mark.p1
 def test_list_filter_by_genre(clean_teardowns):
-    teardown_lib.sink_research(_FakeReport(genre="都市"), "td_test_proj_d1")
-    teardown_lib.sink_research(_FakeReport(genre="玄幻"), "td_test_proj_d2")
-    lst = db.list_teardowns(genre="玄幻")
+    teardown_lib.sink_research(_FakeReport(genre="科幻"), "td_test_proj_d1")
+    teardown_lib.sink_research(_FakeReport(genre="军事"), "td_test_proj_d2")
+    lst = db.list_teardowns(genre="军事")
     assert lst["total"] == 1
-    assert lst["items"][0]["genre"] == "玄幻"
+    assert lst["items"][0]["genre"] == "军事"
     assert "content" not in lst["items"][0]           # 列表不含全文
 
 
@@ -178,13 +180,13 @@ def test_sink_ignores_none_and_empty_genre(clean_teardowns):
 
 @pytest.mark.p2
 def test_genres_aggregate(clean_teardowns):
-    teardown_lib.sink_research(_FakeReport(genre="都市"), "td_test_proj_ga1")
-    teardown_lib.sink_research(_FakeReport(genre="都市"), "td_test_proj_ga2")
-    teardown_lib.sink_research(_FakeReport(genre="历史"), "td_test_proj_gb")
+    teardown_lib.sink_research(_FakeReport(genre="科幻"), "td_test_proj_ga1")
+    teardown_lib.sink_research(_FakeReport(genre="科幻"), "td_test_proj_ga2")
+    teardown_lib.sink_research(_FakeReport(genre="军事"), "td_test_proj_gb")
     genres = db.list_teardown_genres()
     m = {g["genre"]: g["count"] for g in genres}
-    assert m.get("都市") == 1                          # 同题材合并
-    assert m.get("历史") == 1
+    assert m.get("科幻") == 1                          # 同题材合并
+    assert m.get("军事") == 1
 
 
 # ---------------- 方案 A：expand 模式可选附带调研 ----------------

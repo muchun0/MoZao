@@ -978,7 +978,10 @@ class ChapterWriter:
         derived_events: list = []
         skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
-            derived_events = _derive_events_from_moves(plan_moves)
+            derived_events = _derive_events_from_moves(
+                plan_moves,
+                int(getattr(self.cfg, "chapter_words", 0) or 0),
+            )
             if derived_events:
                 # 骨架文本：编号 + desc 逐条列出，明示事件数与"场景数=事件数"约束
                 skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
@@ -1959,6 +1962,14 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str]) -> str:
 _SCENE_COUNT_MIN, _SCENE_COUNT_MAX = 2, 4
 #: target_words 之和允许偏离 chapter_words 的幅度（±10%）
 _SCENE_WORDS_TOLERANCE = 0.10
+#: 场景粒度优化（2026-10-13）：单场景目标字数基准。行业标准单场景 800-2500 字
+#: （编辑共识：Alice Sudlow 1000-3000 / Adazing 800-2500，一章 1-3 个相关场景），
+#: 取 1200 字/场景为基准反推场景数——《万墟之上》ch1 4×625 字注水循环即根因
+_SCENE_TARGET_WORDS = 1200
+#: 单场景 target_words 下限 = max(800, 章字数×25%)：低于该值 = 拆得太碎（疑似注水），
+#: 回退整章。2500 字章 4×625 即被拦，3×833 可通过
+_SCENE_MIN_WORDS = 800
+_SCENE_MIN_WORDS_RATIO = 0.25
 #: 相邻场景输出相似度阈值：场景 N 与场景 N-1 全文相似度超过该值 = 场景重演上一场景
 #: （生成端把上一场景整段复刻，6316 字版"灰卒咬喉死"原样重复即此类），重试本场景
 _SCENE_ADJACENT_REPEAT_RATIO = 0.55
@@ -2006,12 +2017,26 @@ def _scene_event_ordinals(text: str) -> set[str]:
 _CAUSAL_BEAT_RE = re.compile(r"复活|苏醒|醒来|回神|缓过神|回过神来|睁眼|醒转")
 
 
-def _derive_events_from_moves(moves: str) -> list[dict]:
+def _scene_count_for_words(chapter_words: int) -> int:
+    """按章节字数反推目标场景数（场景粒度优化 2026-10-13）。
+
+    行业标准：单场景 800-2500 字，一章 1-3 个相关场景；以 1200 字/场景为基准，
+    chapter_words/1200 四舍五入后 clamp 到 [1,4]（2500→2、3000→3、4200→4）。
+    chapter_words<=0（旧调用方未传）→ 返回 4，保持旧行为（兼容存量）。
+    """
+    if chapter_words and chapter_words >= 1200:
+        return max(1, min(4, int(chapter_words / _SCENE_TARGET_WORDS + 0.5)))
+    return 4
+
+
+def _derive_events_from_moves(moves: str, chapter_words: int = 0) -> list[dict]:
     """REQ-scene-plan-align：把大纲 character_moves（逐拍动作序列）确定性切分为事件清单。
 
     - 每拍 = 一个事件（id 按序编号、desc 逐字保留骨架原文，conflict/action 复用语义槽位提取）；
-    - 拍数 >4 时合并到 ≤4：因果粘连拍（死亡-复活等）优先并入前拍，再合并最短拍；
-    - 输入为空 / 切分后 <2 拍 / 合并后仍 <2 拍 → 返回 []（调用方回退原 LLM 规划路径）。
+    - 拍数 > 目标场景数 N 时合并到 N：因果粘连拍（死亡-复活等）优先并入前拍，再合并最短拍；
+      N 由章节字数反推（_scene_count_for_words，每场景约 1200 字，行业粒度 800-2500 字）；
+      chapter_words<=0 时 N=4（兼容旧行为，仅按拍数切分）。
+    - 输入为空 / 切分后 <2 拍 → 返回 []（调用方回退原 LLM 规划路径）。
 
     确定性保证：纯字符串切分 + 固定合并规则，无 LLM 采样，同一输入恒得同一输出。
     """
@@ -2025,23 +2050,22 @@ def _derive_events_from_moves(moves: str) -> list[dict]:
     beats = [b for b in beats if b]
     if len(beats) < 2:
         return []
+    n_target = _scene_count_for_words(chapter_words)
     # 因果粘连一次性合并：含复活/苏醒标记的拍并入前拍（死亡-复活必须同事件）。
     # 合并产物仍含"复活"字样，但不再触发粘连检查（跳过产物），防连锁吞并整章。
     i = len(beats) - 1
-    while i >= 1 and len(beats) > 4:
+    while i >= 1 and len(beats) > n_target:
         if _CAUSAL_BEAT_RE.search(beats[i]):
             beats[i - 1] = f"{beats[i - 1]}→{beats[i]}"
             del beats[i]
             i -= 2  # 跳过合并产物（新文本含标记，不得再次触发）
         else:
             i -= 1
-    # 仍 >4 → 合并最短拍到其前拍（保因果顺序）
-    while len(beats) > 4:
+    # 仍 > n_target → 合并最短拍到其前拍（保因果顺序）
+    while len(beats) > n_target:
         j = min(range(1, len(beats)), key=lambda k: len(beats[k]))
         beats[j - 1] = f"{beats[j - 1]}→{beats[j]}"
         del beats[j]
-    if len(beats) < 2:
-        return []
     events = []
     for i, b in enumerate(beats, start=1):
         c, a = _event_semantic_slots(b)
@@ -2178,6 +2202,16 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0,
         total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
         if total > 0 and abs(total - chapter_words) > chapter_words * _SCENE_WORDS_TOLERANCE:
             return False, f"场景 target_words 之和 {total} 偏离目标 {chapter_words} 超 ±10%"
+    # 2.5 单场景 target_words 下限（场景粒度优化 2026-10-13）：单场景低于
+    # max(800, 章字数×25%) = 拆得太碎（《万墟之上》ch1 4×625 字注水循环根因）。
+    # 每个场景至少承载 800+ 字推进一个事件；命中 → 回退整章（整章单场景兜底）。
+    if chapter_words > 0:
+        min_w = max(_SCENE_MIN_WORDS, int(chapter_words * _SCENE_MIN_WORDS_RATIO))
+        for sc in scenes:
+            tw = int(sc.get("target_words") or 0)
+            if 0 < tw < min_w:
+                return False, (f"场景 target_words {tw} 低于下限 {min_w}"
+                               "（拆得太碎，疑似注水，应合并场景）")
     # P0-17：大纲核心事件覆盖校验（通用，任何书有 core_event 即校验）
     if core_event:
         segs = [s.strip() for s in re.split(r"[→，,。；;]", core_event)

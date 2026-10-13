@@ -45,24 +45,16 @@ _CH2_MOVES = (
     "苏妄言留下一枚铜牌，说'三天后到执刑司报到，算你临时征召'→陆沉捏着铜牌，心里骂娘。"
 )
 
-# 4 个事件 + 4 个场景（场景逐字引用事件1..4），模型补充 final_state
+# 2 个事件 + 2 个场景（2500 字/章 → 场景粒度优化 N=2，场景逐字引用事件1..2，每场景 1250 字）
 _DERIVED_SPLIT_JSON = (
     '{"events": [{"id": "事件1", "desc": "占位", "conflict": "苏妄言", "action": "试探",'
     ' "final_state": "面板2/2"},'
-    ' {"id": "事件2", "desc": "占位", "conflict": "苏妄言", "action": "试探",'
-    ' "final_state": "面板2/2"},'
-    ' {"id": "事件3", "desc": "占位", "conflict": "苏妄言", "action": "抵挡",'
-    ' "final_state": "蚀痕至腕"},'
-    ' {"id": "事件4", "desc": "占位", "conflict": "苏妄言", "action": "征召",'
+    ' {"id": "事件2", "desc": "占位", "conflict": "苏妄言", "action": "抵挡",'
     ' "final_state": "执刑司征召令已下"}],'
     ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "平静",'
-    ' "anchors": ["火炉"], "time_marker": "清晨", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件2", "emotion": "警惕",'
-    ' "anchors": ["火炉"], "time_marker": "紧随其后", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件3", "emotion": "惊险",'
-    ' "anchors": ["术法碎片"], "time_marker": "片刻后", "target_words": 620},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件4", "emotion": "压抑",'
-    ' "anchors": ["铜牌"], "time_marker": "稍后", "target_words": 620}],'
+    ' "anchors": ["火炉"], "time_marker": "清晨", "target_words": 1250},'
+    ' {"location": "铁匠铺", "scene_event_ref": "事件2", "emotion": "惊险",'
+    ' "anchors": ["术法碎片"], "time_marker": "片刻后", "target_words": 1250}],'
     ' "characters_action": []}'
 )
 
@@ -193,16 +185,16 @@ def _save_outline(store, moves: str):
 @pytest.mark.p1
 def test_derived_flow_skeleton_in_prompt_and_events_locked(store):
     """派生链路：拆场景 prompt 注入骨架；场景引用派生 id 通过校验；
-    场景 prompt 收到骨架 desc（模型无权改写）+ 模型补充的 final_state（按 id 合并保留）。"""
+    场景 prompt 收到骨架 desc（模型无权改写）+ 模型补充的 final_state（按 id 合并保留）；
+    2500 字/章目标场景数 N=2（场景粒度优化 2026-10-13）。"""
     _save_outline(store, _CH2_MOVES)
     llm = MagicMock()
     llm.chat.side_effect = [
         _DERIVED_SPLIT_JSON,
         "场景正文A。" * 160,
         "场景正文B。" * 160,
-        "场景正文C。" * 160,
-        "场景正文D。" * 160,
         "场景链路摘要",
+        "扩写正文。" * 300,          # 2 场景合计 1922 字 < 2500 → 自动触发扩写
     ]
     ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
     # 1) 拆场景调用注入骨架
@@ -213,7 +205,7 @@ def test_derived_flow_skeleton_in_prompt_and_events_locked(store):
     assert "苏妄言进入铁匠铺" in scene_user          # 事件1 desc = 骨架拍原文
     assert "面板2/2" in scene_user                    # 模型补充 final_state 被合并保留
     assert ch.content and "场景正文A" in ch.content
-    assert llm.chat.call_count == 6                   # 拆场景 + 4场景 + 摘要
+    assert llm.chat.call_count == 5                   # 拆场景 + 2场景 + 摘要 + 扩写
 
 
 @pytest.mark.p1

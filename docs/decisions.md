@@ -339,3 +339,19 @@
   5. **降级**：总开关 False 不读不写不注入；任一账本异常 logger.exception 留痕、注入空串、不阻塞；回收/配额失败静默降级。
 - 踩坑（命名冲突）：ChapterWriter 实例属性 `self._reader_ledger=None` 与同名懒加载方法 `_reader_ledger()` 互相遮蔽（属性 None 覆盖方法 → 调方法报 'NoneType not callable'）；仿 book_memory（属性 `_book_memory`/方法 `_memory` 不同名）修正为属性 `_reader_ledger` / 方法 `_reader_ledger_obj`。
 - 验证：新增 tests/test_reader_ledger.py 17 用例（p0 端到端接线×2 / p1 三态+状态机+回收检测+配额×11 / p2 边界降级×4）全绿；相关回归 68 绿（test_setting_cards/test_book_memory/test_reveal_tracking/test_feature_flags/test_schemas/test_memory_direct_read/test_p0_wiring）；全量离线 554 过，13 失败均为缺实时 MySQL（pymysql root@localhost 拒绝）/webapp 依赖，与本次改动无关。停在 feat/reader-ledger 分支，不合并 devtest/master（三期并行，由组织者串行协调）。
+
+## 2026-10-14 三期产品化：Beat 覆盖度门禁 / 场景体检 / 三分支续写 / 思维链可视化
+
+- 背景：墨造已有 beats.py 节拍检测、quality.py 质检、StageGate 门禁，但都是生成内部防线，用户不可感知。本期把"检测能力"产品化（对标 Sudowrite Scene Inspector）。分支 feat/beat-gate（基于 devtest fe0342d）。
+- 决策（F1 Beat 覆盖度门禁）：
+  - 权威来源 = 大纲 `Outline.chapters[no-1].character_moves`（→/。；;切拍），空则回退 core_event；**不做 embedding 语义指纹**（P0-2 留待后续），用**字符 bigram 命中**（拍内有信息量 bigram ≥50% 出现在正文即视为覆盖），对代词替换/换写鲁棒。
+  - 分级：coverage≥0.6 pass / [0.4,0.6) warn / <0.4 fail / 无计划拍 skip。纯确定性零 LLM，可复现。
+  - **门禁只"检测+记录+提示"，不新起独立 LLM 重生成循环**——重写统一走既有 quality.ensure_quality（已≤3轮+best-version兜底），防 token 成本失控；结果落 `beat_gate.json`（按章幂等覆盖，唯一权威源）。mock provider/开关关/无拍静默跳过。
+  - 接线点：`stages.ChapterWriter.write()` 在 `save_chapter` 之后调用 `beat_gate.assess_chapter`。
+- 决策（F2 场景体检）：`scene_inspector.inspect_chapter` 读时实时计算、零新 LLM，复用 `beats._beat_cycle_issues` + scenes.json + 字数/承接/钩子确定性维度，输出 `[{dim,level,detail,suggestion}]`；LLM 补充建议本期不做（默认关，降频留后续）。单维度 try 隔离降级。
+- 决策（F3 三分支续写）：一次 LLM 调用出 3 方向（escalate/foreshadow/twist）；`apply-branch` **默认预览模式**——只把选中草稿记 `continue_drafts.json`，绝不自动改写 chapters/*.json（防污染正文、防破坏既有链路），由用户复制粘贴进编辑器。
+- 决策（F4 思维链可视化）：只读聚合接口，实时从 outline 计划 + scenes.json 产出 + beat_gate/review.json 校验拼装，零新 LLM；缺产物维度降级为空不报错。
+- FEATURE_FLAGS 新注册（review 模块）：beat_gate(True)/beat_gate_min_coverage(0.6)/beat_gate_warn_coverage(0.4)/scene_inspector(True)/chain_of_thought(True)；writing 模块：branch_continue(True)。float 阈值经 `_coerce_feature` 原样透传。
+- 新文件：`novel_gen/pipeline/beat_gate.py`、`novel_gen/pipeline/scene_inspector.py`；store 加 beat_gate/continue_drafts 读写；路由并入 webapp/routers/projects_chapters.py（4 个新接口，按域不回写 core/server）；前端 ToolsPanel 加 3 张卡片（场景体检/三分支续写/生成过程）+ api/tools.js 封装。
+- 测试：新增 tests/test_beat_gate.py(8)+test_scene_inspector.py(4)+test_beat_gate_wiring.py(2)，p1/p2 marker；全量 647 passed（633 基线 + 14 新增）零回归。前端 npm install + build 通过，dist 引用一致、正确 gitignore。
+- 边界：停在 feat/beat-gate 分支，不合并（三期并行，组织者串行协调）。

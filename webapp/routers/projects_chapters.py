@@ -6,6 +6,7 @@ from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from novel_gen.pipeline.templates import _style_reference
+import time
 
 
 @app.post("/api/projects/{project_id}/chapters/{no}/rewrite")
@@ -380,3 +381,136 @@ def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_use
     _RUNS[project_id] = handle
     t.start()
     return {"msg": f"批量生成已启动：第{start}-{end}章"}
+
+
+# =====================================================================
+# 三期产品化能力（2026-10-14）：场景体检 / 三分支续写 / 思维链可视化 / Beat 门禁读取
+# =====================================================================
+
+@app.get("/api/projects/{project_id}/chapters/{no}/scene-inspect")
+def scene_inspect_chapter(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """F2 场景体检：对已生成章节做字数/事件推进/重复度/承接/钩子确定性体检。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    if not getattr(cfg, "scene_inspector", True):
+        raise HTTPException(status_code=400, detail="场景体检已关闭")
+    from novel_gen.pipeline.scene_inspector import inspect_chapter
+    report = inspect_chapter(store, no, target_words=int(getattr(cfg, "chapter_words", 0) or 0))
+    # 附带 beat 覆盖门禁结果（F1 落盘产物）
+    bg = store.load_beat_gate().get(str(no))
+    report["beat_gate"] = bg
+    return report
+
+
+@app.get("/api/projects/{project_id}/chapters/{no}/chain-of-thought")
+def chapter_chain_of_thought(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """F4 思维链可视化（只读聚合）：计划（大纲拍）→产出（拆场景）→校验（beat门禁/质检）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    if not getattr(cfg, "chain_of_thought", True):
+        raise HTTPException(status_code=400, detail="思维链可视化已关闭")
+    # 计划段：大纲该章字段
+    plan = {}
+    outline = store.load_outline()
+    if outline and 1 <= no <= len(outline.chapters):
+        p = outline.chapters[no - 1]
+        plan = {"goal": p.goal, "core_event": p.core_event,
+                "character_moves": p.character_moves, "cliffhanger": p.cliffhanger,
+                "tag": getattr(p, "tag", "")}
+    # 产出段：拆场景
+    production = store.load_scenes().get(str(no)) or {}
+    # 校验段：beat 门禁 + review.json 该章最新一条
+    review = {}
+    bg = store.load_beat_gate().get(str(no))
+    if bg:
+        review["beat_gate"] = bg
+    try:
+        rp = store.dir / "review.json"
+        if rp.exists():
+            import json as _json
+            for r in reversed(_json.loads(rp.read_text(encoding="utf-8"))):
+                if int(r.get("chapter", 0)) == no:
+                    qc = r.get("quality_check") or {}
+                    review["quality"] = {"score": qc.get("score"), "passed": qc.get("passed"),
+                                         "issue_count": len(r.get("issues") or [])}
+                    break
+    except Exception:
+        logger.warning("[ChainOfThought] 读取 review.json 失败（降级）: project=%s ch=%d",
+                       project_id, no)
+    return {"chapter": no, "plan": plan, "production": production, "review": review}
+
+
+_BRANCH_DIRS = [
+    ("escalate", "冲突升级", "让现有冲突更激烈、矛盾直接激化、主角被逼到墙角"),
+    ("foreshadow", "埋伏笔", "引出新线索/新人物/新谜团，为后文埋钩子，暂不爆发"),
+    ("twist", "剧情转折", "出现意外反转，打破读者预期（身份揭露/立场突变/局势倒转）"),
+]
+
+
+@app.post("/api/projects/{project_id}/continue-branches")
+def continue_branches(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """F3 三分支续写：基于基准文本一次生成 3 个方向明显不同的续写候选。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = store.load_config()
+    if not getattr(cfg, "branch_continue", True):
+        raise HTTPException(status_code=400, detail="三分支续写已关闭")
+    chapter_no = int(req.get("chapter_no", 0) or 0)
+    base = (req.get("text") or "").strip()
+    if not base and chapter_no >= 1:
+        ch = store.load_chapter(chapter_no)
+        base = (ch.content or "")[-600:] if ch else ""
+    if not base:
+        raise HTTPException(status_code=400, detail="缺少续写基准文本")
+    dir_desc = "；".join(f"{i+1}) {label}：{desc}" for i, (_k, label, desc) in enumerate(_BRANCH_DIRS))
+    sys = (
+        "你是一位网络小说续写策划。基于给定的上文结尾，给出 3 个方向明显不同的续写分支。"
+        "严格 JSON 数组返回，恰好 3 项，每项包含 direction、label、preview 三个字段，"
+        "其中 direction 取值 escalate/foreshadow/twist，preview 为 150-300 字续写正文段落。"
+        "三方向分别为：" + dir_desc + "。"
+        "preview 必须是可直接接上上文的正文，不要解释、不要列大纲。"
+    )
+    try:
+        pipeline = _open_pipeline(store)
+        llm = pipeline.llm
+        raw = llm.chat(sys, f"【上文结尾】\n{base}", temperature=0.8, max_tokens=1200)
+        import json as _json, re as _re
+        raw = (raw or "").strip()
+        m = _re.search(r"\[.*\]", raw, _re.S)
+        branches = []
+        if m:
+            try:
+                branches = _json.loads(m.group(0))
+            except Exception:
+                branches = []
+        branches = [b for b in (branches or []) if isinstance(b, dict) and b.get("preview")][:3]
+    except Exception as e:
+        logger.exception("[ContinueBranches] 三分支生成失败: project=%s", project_id)
+        raise HTTPException(status_code=500, detail=f"生成失败：{e}")
+    logger.info("[ContinueBranches] uid=%d project=%s ch=%d branches=%d",
+                user["id"], project_id, chapter_no, len(branches))
+    return {"branches": branches, "base_tail": base[-200:]}
+
+
+@app.post("/api/projects/{project_id}/apply-branch")
+def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)):
+    """F3 应用选中分支：默认预览模式——把选中的续写草稿记录到 continue_drafts.json，
+    不自动改写章节正文（由用户在编辑器里自行粘贴，防污染既有正文链路）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    chapter_no = int(req.get("chapter_no", 0) or 0)
+    preview = (req.get("preview") or "").strip()
+    if not preview:
+        raise HTTPException(status_code=400, detail="缺少分支续写内容")
+    draft = {"direction": req.get("direction", ""), "label": req.get("label", ""),
+             "preview": preview, "applied_at": time.time()}
+    try:
+        store.save_continue_draft(chapter_no, draft)
+    except Exception:
+        logger.exception("[ApplyBranch] 续写草稿落盘失败（仍返回预览）: project=%s ch=%d",
+                         project_id, chapter_no)
+    return {"saved": True, "chapter_no": chapter_no, "preview": preview,
+            "msg": "续写草稿已记录（预览模式，未自动写入章节正文，请复制到编辑器使用）"}
+

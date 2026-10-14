@@ -706,6 +706,20 @@ class ChapterWriter:
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
+        # 三期 F1：Beat 覆盖度门禁（纯确定性、零 LLM）——正文落盘后自检对章计划拍的
+        # 覆盖率，分级记录到 beat_gate.json（pass/warn/fail/skip）。检测+记录+提示，不独立
+        # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。
+        try:
+            if getattr(self.cfg, "beat_gate", False):
+                from .beat_gate import assess_chapter
+                _bg = assess_chapter(
+                    content, plan_moves, plan_core_event,
+                    min_coverage=float(getattr(self.cfg, "beat_gate_min_coverage", 0.6)),
+                    warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
+                )
+                self.store.save_beat_gate(chapter_no, _bg)
+        except Exception:
+            logger.exception("[BeatGate] 覆盖评估失败（降级不阻塞）: ch=%d", chapter_no)
         # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
         # 治 v7 第 6 章蚀化跨章口径——代码累计入账后，下章拆场景/场景/重写 prompt
         # 注入「蚀化应 = 起始基线 + 累计死亡」确定性锚，LLM 不再自由发挥跨章数字。

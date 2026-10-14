@@ -122,6 +122,9 @@ class NovelPipeline:
         self._enter_scene("outline")
         existing = self.store.load_outline()
         if existing is not None:
+            # REQ-chapter-design P1：大纲复用短路下 pacing.plan_outline 从不被调用，
+            # 导致 key_nodes/volume_pacing/emotion_curve 真实数据全空；这里幂等补齐（只补缺失）。
+            existing = self._backfill_pacing(existing, silent=silent)
             if not silent:
                 print(f"[大纲] 已存在，复用：{existing.title}（{len(existing.chapters)} 章）")
             return existing
@@ -188,6 +191,9 @@ class NovelPipeline:
             main_line=main_line, volumes=volumes, chapters=chapters,
         )
         outline = self.outline_gen._normalize(outline)
+        # REQ-chapter-design P1：扩写路径全程不跑 pacing.plan_outline，三字段全空；
+        # 落盘前幂等补齐（只补缺失，不覆盖 LLM 已产出的章节设计）。
+        outline = self._backfill_pacing(outline, silent=silent)
         self.store.save_outline(outline)
         if not silent:
             print(f"[扩写大纲完成] {outline.title}｜共 {len(outline.chapters)} 章")
@@ -306,6 +312,8 @@ class NovelPipeline:
         world = self.orchestrator.run_stage("bottom_anchors", _produce, invalidate=_invalidate)
         # REQ-token优化 P1-1：world 落盘后确定性构建分章设定卡索引（零 LLM，失败降级全量注入）
         self._build_setting_cards(world, silent=silent)
+        # REQ-chapter-design 一期：world+outline 齐备后确定性构建逐章设计卡（幂等，失败降级不注入）
+        self._build_chapter_design(world, silent=silent)
         return world
 
     def _build_setting_cards(self, world: World | None, silent: bool = False) -> None:
@@ -326,6 +334,46 @@ class NovelPipeline:
                 print(f"[设定卡索引] 已构建：{len(data.get('chapters', []))} 章")
         except Exception:
             logger.exception("分章设定卡构建失败（降级为全量注入）")
+
+    def _backfill_pacing(self, outline, silent: bool = False):
+        """REQ-chapter-design P1：幂等补齐 outline.key_nodes/volume_pacing/emotion_curve。
+
+        根因（能力评估 2026-10-14 实证）：pacing.plan_outline 只挂在 ArchitectAgent.run_outline，
+        而 run_outline 复用短路与 _run_expand_outline 都不调它 → 两真实项目三字段全空。
+        plan_outline 本身"只补缺失不覆盖"、零 LLM，重复调用安全。失败降级不阻塞。
+        """
+        try:
+            if outline is None or not getattr(outline, "chapters", None):
+                return outline
+            if (getattr(outline, "key_nodes", None) and getattr(outline, "volume_pacing", None)
+                    and getattr(outline, "emotion_curve", None)):
+                return outline
+            outline, _ = self.architect.pacing.plan_outline(outline)
+            self.store.save_outline(outline)
+            if not silent:
+                print("[节奏补齐] 已补齐 key_nodes/volume_pacing/emotion_curve")
+        except Exception:
+            logger.exception("节奏字段补齐失败（降级跳过）")
+        return outline
+
+    def _build_chapter_design(self, world: World | None, silent: bool = False) -> None:
+        """REQ-chapter-design 一期：world 落盘后确定性构建逐章设计卡（零 LLM，Python 前置）。
+        已存在即复用（幂等）；失败/关闭/无 world → 降级跳过，绝不阻塞主流程。"""
+        try:
+            if not getattr(self.cfg, "chapter_design", True):
+                return
+            if self.store.load_chapter_design() is not None:
+                return
+            if world is None:
+                return
+            outline = self.store.load_outline()
+            from .chapter_design import build_chapter_designs
+            data = build_chapter_designs(self.store, world, outline)
+            self.store.save_chapter_design(data)
+            if data and not silent:
+                print(f"[章级设计卡] 已构建：{len(data.get('chapters', []))} 章")
+        except Exception:
+            logger.exception("章级设计卡构建失败（降级为不注入）")
 
     def run_editor_review(self, silent: bool = False) -> None:
         """大纲生成后执行编辑视角质检；不通过则自动修正一次。幂等：已审阅则跳过。"""

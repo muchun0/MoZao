@@ -318,6 +318,17 @@ class ProjectStore:
     def load_setting_cards(self) -> Optional[dict]:
         return self._read_json(self.setting_cards_path(), None)
 
+    # ---------- 章级设计卡（REQ-chapter-design 一期）----------
+    def chapter_design_path(self) -> Path:
+        return self.dir / "chapter_design.json"
+
+    def save_chapter_design(self, data: dict) -> None:
+        if data:
+            self._write_json(self.chapter_design_path(), data)
+
+    def load_chapter_design(self) -> Optional[dict]:
+        return self._read_json(self.chapter_design_path(), None)
+
     # ---------- 章节 ----------
     def chapter_path(self, no: int) -> Path:
         return self.chapters_dir / f"{no:03d}.json"

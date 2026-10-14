@@ -833,7 +833,7 @@ def _inject_teardown_style_anchor(store: ProjectStore, cfg) -> None:
       二次生成/续写时生效
     """
     try:
-        if not getattr(cfg, "teardown_style_anchor", True):
+        if not getattr(cfg, "teardown_style_anchor", False):
             store.save_teardown_style_anchor("")
             return
         genre = (getattr(cfg, "genre", "") or "").strip()

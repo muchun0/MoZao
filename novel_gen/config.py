@@ -71,7 +71,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
     FeatureFlag("writing", "scene_plan_align", True, "拆场景规划对齐大纲人物动线（REQ-scene-plan-align）：事件清单从大纲 character_moves 逐拍切分确定性派生，LLM 只做场景切分与细节补充；moves 缺失/派生失败自动回退原 LLM 规划路径"),
     FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
-    FeatureFlag("writing", "teardown_style_anchor", True, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）"),
+    FeatureFlag("writing", "teardown_style_anchor", False, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）；2026-10-14 朱雀归因实测为独立负面变量（无锚18.25% vs 有锚55.01% AI特征），决策默认关闭"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),

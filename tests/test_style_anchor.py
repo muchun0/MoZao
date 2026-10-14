@@ -168,6 +168,7 @@ def _scene():
 @pytest.mark.p1
 def test_scene_prompt_injects_teardown_anchor():
     cfg = NovelConfig(title="测试", total_words=10000)
+    cfg.teardown_style_anchor = True
     sys_p, _ = scene_prompt(
         cfg, 1, "第一章", 1, _scene(), "记忆", "", "",
         teardown_anchor="题材锚文本XYZ",
@@ -202,6 +203,13 @@ def test_scene_prompt_skips_empty_anchor():
 
 
 @pytest.mark.p1
+def test_teardown_style_anchor_default_off():
+    """2026-10-14 决策：题材锚默认关闭（朱雀归因实测为负面变量，无锚18.25% vs 有锚55.01% AI特征）"""
+    cfg = NovelConfig(title="测试", total_words=10000)
+    assert cfg.teardown_style_anchor is False
+
+
+@pytest.mark.p1
 def test_scene_prompt_skips_when_flag_off():
     cfg = NovelConfig(title="测试", total_words=10000)
     cfg.teardown_style_anchor = False
@@ -216,6 +224,7 @@ def test_scene_prompt_skips_when_flag_off():
 @pytest.mark.p1
 def test_chapter_prompt_injects_teardown_anchor():
     cfg = NovelConfig(title="测试", total_words=10000)
+    cfg.teardown_style_anchor = True
     sys_p, _ = chapter_prompt(
         cfg, 1, "第一章", "目标", "调研", "记忆", "上一章尾",
         teardown_anchor="题材锚文本ABC",
@@ -262,6 +271,7 @@ def test_chapter_prompt_skips_empty_anchor():
 @pytest.mark.p1
 def test_expand_chapter_prompt_injects_all_anchors():
     cfg = NovelConfig(title="测试", total_words=10000)
+    cfg.teardown_style_anchor = True
     cfg.style_role_reference = "风格角色范文文本"
     sys_p, _ = expand_chapter_prompt(
         cfg, 1, "第一章", "正文", 3000,
@@ -313,6 +323,7 @@ def test_inject_writes_anchor_file(store, monkeypatch):
     monkeypatch.setattr(core.db, "get_teardown", fake.get_teardown)
 
     cfg = store.load_config()
+    cfg.teardown_style_anchor = True
     core._inject_teardown_style_anchor(store, cfg)
     out = store.load_teardown_style_anchor()
     assert "短句快节奏" in out

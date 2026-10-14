@@ -451,7 +451,7 @@ python -m pytest tests/ -v
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗、结算（P0）、加密（P0）、防重演闭环、揭示跟踪等。
 
-> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **612 pytest 全绿**。
+> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **680 pytest 全绿**。
 
 ## 说明与边界
 
@@ -544,6 +544,11 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-14**：第十九次发版（master 411a466）——**创作设计层 + 读者体验层 + 产品化门禁工具三连发**（devtest 三功能合并）。
+  - **一期·章级设计卡接线（chapter_design）**：新增 `pipeline/chapter_design.py`（纯 Python 前置、零 LLM），从章级 conflict/emotion + `World.conflict_matrix` 派生逐章 A1–A7 设计卡（关系模板/对白功能/戏份级别等），落 `chapter_design.json`，注入 `stages.write` 的 memory_context（一处拼接覆盖场景/整章/回退三条写章路径）；并修复 `Outline.key_nodes/volume_pacing/emotion_curve` 因大纲复用短路从不填充的数据源缺口（`_backfill_pacing` 幂等补三字段）。开关 `chapter_design`（默认 True）。
+  - **二期·读者认知账本（reader_ledger）**：新增 `pipeline/reader_ledger.py`（零 LLM 确定性）三块独立账本——`reader_knowledge.json`（读者已知/在等/被误导三态）、`foreshadow_commitment.json`（伏笔 planted→临期/超时/回收状态机）、`payoff_quota.json`（爽文「3 章一小爽」节奏配额）；写章时注入读者视角约束，回收检测确定性（正文命中伏笔名/内容才标记回收，防假回收）。开关 `reader_ledger`（默认 True）。
+  - **三期·Beat 覆盖度门禁 + 场景体检 + 三分支续写 + 思维链可视化（产品化）**：①`beat_gate.py` 正文对大纲 `character_moves` 逐拍的字符 bigram 覆盖率自检（分级 pass/warn/fail/skip，落 `beat_gate.json`，检测+提示不独立重生成）；②`scene_inspector.py` 场景体检（字数/事件推进/情节重演/章首承接/章末钩子 5 维度 + 确定性修复建议，对标 Sudowrite Scene Inspector）；③`continue-branches` 一次 LLM 出 3 方向（冲突升级/埋伏笔/转折）续写候选，`apply-branch` 默认预览模式只记草稿不改正文；④`chain-of-thought` 只读聚合「计划-产出-校验」生成过程链。前端 ToolsPanel 新增场景体检/三分支续写/生成过程三张卡片。
+  - 回归：全量 **680 pytest 全绿**（一期 16 + 二期 17 + 三期 14 用例）。
 - **2026-10-14**：第十八次发版（master e6fa991）——**题材锚默认关闭（决策落地）**：修复状态差——`novel_gen/config.py` FEATURE_FLAGS `teardown_style_anchor` 默认值 True→False（2026-10-14 朱雀归因实测题材锚为独立负面变量：同新粒度下无锚 18.25% vs 有锚 55.01% AI 特征，决策默认关闭但代码未同步）+ `webapp/core.py` getattr 兜底同改；新增守护测试 `test_teardown_style_anchor_default_off`，4 个依赖旧默认值的注入测试改显式开启保留行为覆盖。效果：新书/新项目未显式配置时题材锚默认不注入；显式打开仍可用。回归：全量 633 pytest 全绿。
 - **2026-10-14**：第十七次发版（master 6e0c3ef）——**场景粒度优化（REQ-scene-plan-align）**：场景数由章节字数反推（`_scene_count_for_words`：1200 字/场景为基准，N=clamp(int(words/1200+0.5),1,4)）+ 单场景 target_words 下限（max(800, 章字数×25%)，低于下限=拆得太碎回退整章）。根因：2500 字/章被按大纲拍数拆成 4 场景×625 字，模型靠"死亡-复活-面板循环注水"凑字数（行业标准单场景 800-2500 字，一章 1-3 场景）。效果：ch1 改 2 场景×~1250 字后循环注水消失（面板 1 次/死亡-复活各 1 次），编辑审稿 score=7.5 通过。朱雀 AI 检测归因闭环：AI 特征 76.86%（旧基线）→ 18.25%（2场景粒度无锚），题材锚判定为独立负面变量（同为新粒度下无锚 18.25% vs 有锚 55.01%，且锚诱发重复循环、三次生成触发防重演拦截），**决策默认关闭题材锚（teardown_style_anchor=False）**。回归：全量 632 pytest 全绿（新增 tests/test_scene_granularity.py 5 例）。
 - **2026-10-10**：第十五次发版（master 818faec）——**场景文本防重演闭环（P0-1~18 生成端修复包 + v10/v11 实证修复 + v12 真实重生成验收）**。核心：① P0-15/16 机制字段注册表（closed-world，从机制基线派生字段名+方向，`unknown_mechanism_fields` 白名单兜底）+ 链式账本（`book_memory.record_chapter_state` 跨章继承）+ 事件驱动双向校验 `ledger_check`；② P0-17 大纲核心事件覆盖（`_validate_scene_plan` 分段 LCS≥2 字/命中≥60%，未覆盖回退整章）+ 质检 2.8d `_core_event_missing`；③ P0-18 超长注水（`_slim_scene` 精简 1 次，仍超保留不整章回退）；④ v10 根因修复（`33435ed`）——回退整章路径质检基线为空致 2.8c 整段跳过、幻觉行漏检：去 baseline 依赖、死亡口径统一蚀化差、回退/普通整章注入 `_panel_whitelist_block`；⑤ v11 实证修复（`9388626`）——账本 erosion 断链继承（永不破链）、质检链式取最近非空、`_pcv` 基线 0 跳过、`_chapter_healthy()` 保留旧版前健康检查（带病旧稿弃用落盘新稿）；⑥ 死亡判定通用+个性化两套独立标准（P0-14）。验收：《万墟之上》前 7 章 v12 真实重生成——「累计死亡次数」幻觉行彻底消失、跨章面板链 2→2→3(重置)→1→1→1→0 / 蚀化 97→100 只增 / 寸基线内波动、无重复段落、七章通读 ★★★★★。回归：612 pytest 全绿。

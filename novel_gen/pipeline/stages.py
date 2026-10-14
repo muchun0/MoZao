@@ -397,6 +397,27 @@ class ChapterWriter:
                              "借鉴语感与行文习惯，严禁抄袭内容）】\n" + "\n".join(samples))
         return "\n\n".join(parts)
 
+    def _chapter_design_block(self, chapter_no: int) -> str:
+        """REQ-chapter-design 一期：本章设计卡注入块（正向创作指引·软约束）。
+
+        懒读 store/chapter_design.json，命中本章则 render_block；开关关闭/无设计卡/
+        未命中/异常 → 空串（不注入，行为降级安全）。注入位置仿 cliffhanger 块，
+        拼进 memory_context，自动覆盖场景路径/整章路径/回退整章三条写章链路。
+        """
+        if not getattr(self.cfg, "chapter_design", True):
+            return ""
+        try:
+            data = self.store.load_chapter_design()
+            if not data:
+                return ""
+            for c in data.get("chapters", []):
+                if int(c.get("no", -1) if c.get("no") is not None else -1) == chapter_no:
+                    from .chapter_design import render_block
+                    return render_block(c.get("design") or {})
+        except Exception:
+            logger.exception("章级设计卡渲染失败（降级不注入）")
+        return ""
+
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
@@ -459,6 +480,15 @@ class ChapterWriter:
                     memory_context = memory_context + "\n\n" + unit_hint if memory_context else unit_hint
         except Exception:
             pass
+
+        # REQ-chapter-design 一期：本章设计卡块（冲突核心/情绪落点/出场角色关系/对白功能），
+        # 仿章末钩子块拼进 memory_context（软约束指引）；开关关/无卡/异常 → 空串不注入。
+        try:
+            _design_block = self._chapter_design_block(chapter_no)
+            if _design_block:
+                memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
+        except Exception:
+            logger.exception("章级设计卡注入失败（降级跳过）")
 
         # 注入用户锁定的内容作为硬约束
         try:

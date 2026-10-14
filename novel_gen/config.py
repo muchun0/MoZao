@@ -57,8 +57,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
     FeatureFlag("memory", "book_memory", True, "小说级记忆系统（P0-7）：质检出问题→踩坑账本→重写/场景 prompt 注入本作历史错误+修复指令，同模式≥2次升级永久纪律，针对本书持续进化；False=关闭（管线行为与 P0-5 一致）"),
     FeatureFlag("memory", "book_memory_top_n", 5, "踩坑账本注入 Top-N 条数（P0-7）：按出现次数×最近频率排序取前 N 条注入重写/场景 prompt"),
-    FeatureFlag("memory", "user_memory", True, "用户级记忆库（跨书创作偏好继承）：从用户全部作品蒸馏偏好/跨书纪律/文风锚，新书创建与生成时自动继承注入；False=关闭（不蒸馏不注入不记录）"),
+    FeatureFlag("memory", "user_memory", True, "用户级记忆库（跨书创作偏好继承）：从用户全部作品蒸馏偏好/跨书纪律/文风锚，新书创建与生成时自动继承注入；False=关闭（不蒸馏不记录）"),
     FeatureFlag("memory", "user_memory_inject_top", 5, "用户级跨书纪律注入 Top-N 条数：按次数×跨书数排序取前 N 条注入正文 prompt"),
+    FeatureFlag("memory", "reader_ledger", True, "读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）：写章时注入读者已知/在等/误认、临期/超时伏笔收束提醒、爽点节奏缺口提示；False=全部关闭（不读不写不注入）"),
+    FeatureFlag("memory", "foreshadow_lead", 3, "伏笔临期窗口：距 reveal_ch 提前 N 章开始注入'本章应开始收束该伏笔'（REQ-reader-ledger）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -70,8 +72,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "action_plan_first", False, "正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出，不再独立调用；True=恢复独立调用）"),
     FeatureFlag("writing", "scene_split", True, "场景级生成：单章目标≥2000 字自动拆场景逐段写（普通模式也可用；P1-2）"),
     FeatureFlag("writing", "scene_plan_align", True, "拆场景规划对齐大纲人物动线（REQ-scene-plan-align）：事件清单从大纲 character_moves 逐拍切分确定性派生，LLM 只做场景切分与细节补充；moves 缺失/派生失败自动回退原 LLM 规划路径"),
+    FeatureFlag("writing", "chapter_design", True, "章级设计卡（REQ-chapter-design 一期）：从大纲章级 conflict/emotion + 世界观 conflict_matrix 确定性派生逐章设计卡（冲突核心与升级阶梯/情绪落点/出场角色关系/对白功能），写章前幂等生成并注入正文 prompt 作正向创作指引；False=不生成不注入"),
     FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
     FeatureFlag("writing", "teardown_style_anchor", False, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）；2026-10-14 朱雀归因实测为独立负面变量（无锚18.25% vs 有锚55.01% AI特征），决策默认关闭"),
+    FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
@@ -85,6 +89,13 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
+    # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
+    FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
+    FeatureFlag("review", "beat_gate_min_coverage", 0.6, "Beat 覆盖度通过阈值（三期 F1）：覆盖率≥此值=pass"),
+    FeatureFlag("review", "beat_gate_warn_coverage", 0.4, "Beat 覆盖度警告阈值（三期 F1）：覆盖率<此值=fail，[warn,min)=warn"),
+    FeatureFlag("review", "scene_inspector", True, "场景体检开关（三期 F2）：对已生成章节做字数/事件推进/重演/承接/钩子确定性体检并给修复建议"),
+    FeatureFlag("review", "chain_of_thought", True, "思维链可视化开关（三期 F4）：聚合计划-产出-校验三段产物为只读视图"),
+    FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -259,6 +270,8 @@ class NovelConfig:
     book_memory_top_n: int = feature_default("book_memory_top_n")                      # 踩坑账本注入 Top-N 条数（P0-7）
     user_memory: bool = feature_default("user_memory")                                 # 用户级记忆库（跨书创作偏好继承）：新书创建与生成时继承注入
     user_memory_inject_top: int = feature_default("user_memory_inject_top")            # 用户级跨书纪律注入 Top-N 条数
+    reader_ledger: bool = feature_default("reader_ledger")                             # 读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）
+    foreshadow_lead: int = feature_default("foreshadow_lead")                          # 伏笔临期窗口：距 reveal_ch 提前 N 章开始收束提醒
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -277,8 +290,10 @@ class NovelConfig:
     action_plan_first: bool = feature_default("action_plan_first")  # 正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出）
     scene_split: bool = feature_default("scene_split")              # 场景级生成下沉普通模式（单章≥2000字自动拆；P1-2）
     scene_plan_align: bool = feature_default("scene_plan_align")    # 拆场景规划对齐大纲人物动线（REQ-scene-plan-align）
+    chapter_design: bool = feature_default("chapter_design")        # 章级设计卡（REQ-chapter-design 一期）：确定性派生逐章设计卡注入正文 prompt
     polish_hq_only: bool = feature_default("polish_hq_only")        # 整章润色仅高质量模式（REQ-token优化 P0-3）
     teardown_style_anchor: bool = feature_default("teardown_style_anchor")  # 拆书库题材文风锚：写手阶段注入同题材爆款文风与手法（REQ-双锚风格锚定）
+    payoff_quota: bool = feature_default("payoff_quota")                    # 爽点配额：按题材校验章级节奏，未达成注入写章提示（REQ-reader-ledger）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
@@ -290,6 +305,13 @@ class NovelConfig:
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
+    # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
+    beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
+    beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值
+    beat_gate_warn_coverage: float = feature_default("beat_gate_warn_coverage") # F1 警告阈值
+    scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
+    chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
+    branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

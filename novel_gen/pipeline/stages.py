@@ -6,7 +6,10 @@
 """
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
@@ -301,6 +304,8 @@ class ChapterWriter:
         self._personal_loaded: str | None = None
         #: P0-7 小说级记忆：懒加载 BookMemory（None=未初始化；关闭/失败 → None 跳过）
         self._book_memory = None
+        #: REQ-reader-ledger：读者体验层叙事账本（读者认知/伏笔承诺/爽点配额）懒加载
+        self._reader_ledger = None
         #: P0-8：最近一章场景累计机制数字基线（_generate_chapter_scenes 写入，
         #: write() 质检透传用；未走场景路径时为空 dict）
         self._scene_state_acc: dict = {}
@@ -316,6 +321,19 @@ class ChapterWriter:
             except Exception:
                 self._book_memory = None
         return self._book_memory
+
+    def _reader_ledger_obj(self):
+        """REQ-reader-ledger：懒加载读者体验层叙事账本；总开关关闭/失败 → None。
+
+        方法名避开实例属性 self._reader_ledger（属性=缓存对象/关闭标记，不与方法同名）。"""
+        if self._reader_ledger is None and getattr(self.cfg, "reader_ledger", True):
+            try:
+                from .reader_ledger import ReaderLedger
+                self._reader_ledger = ReaderLedger(self.store, self.cfg)
+            except Exception:
+                logger.exception("读者认知账本初始化失败（降级跳过）")
+                self._reader_ledger = False   # 初始化失败置 False，避免每章重复尝试
+        return self._reader_ledger or None
 
     def _book_canon(self, max_chars: int = 800) -> str:
         """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
@@ -397,6 +415,27 @@ class ChapterWriter:
                              "借鉴语感与行文习惯，严禁抄袭内容）】\n" + "\n".join(samples))
         return "\n\n".join(parts)
 
+    def _chapter_design_block(self, chapter_no: int) -> str:
+        """REQ-chapter-design 一期：本章设计卡注入块（正向创作指引·软约束）。
+
+        懒读 store/chapter_design.json，命中本章则 render_block；开关关闭/无设计卡/
+        未命中/异常 → 空串（不注入，行为降级安全）。注入位置仿 cliffhanger 块，
+        拼进 memory_context，自动覆盖场景路径/整章路径/回退整章三条写章链路。
+        """
+        if not getattr(self.cfg, "chapter_design", True):
+            return ""
+        try:
+            data = self.store.load_chapter_design()
+            if not data:
+                return ""
+            for c in data.get("chapters", []):
+                if int(c.get("no", -1) if c.get("no") is not None else -1) == chapter_no:
+                    from .chapter_design import render_block
+                    return render_block(c.get("design") or {})
+        except Exception:
+            logger.exception("章级设计卡渲染失败（降级不注入）")
+        return ""
+
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
@@ -459,6 +498,26 @@ class ChapterWriter:
                     memory_context = memory_context + "\n\n" + unit_hint if memory_context else unit_hint
         except Exception:
             pass
+
+        # REQ-chapter-design 一期：本章设计卡块（冲突核心/情绪落点/出场角色关系/对白功能），
+        # 仿章末钩子块拼进 memory_context（软约束指引）；开关关/无卡/异常 → 空串不注入。
+        try:
+            _design_block = self._chapter_design_block(chapter_no)
+            if _design_block:
+                memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
+        except Exception:
+            logger.exception("章级设计卡注入失败（降级跳过）")
+
+        # REQ-reader-ledger：读者认知账本/伏笔承诺/爽点配额注入（追加到 memory_context，
+        # 场景级与整章两条写章路径都吃到；异常降级空串不阻塞）
+        try:
+            _rl = self._reader_ledger_obj()
+            if _rl is not None:
+                _rl_block = _rl.inject_block(chapter_no)
+                if _rl_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
+        except Exception:
+            logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
 
         # 注入用户锁定的内容作为硬约束
         try:
@@ -647,6 +706,20 @@ class ChapterWriter:
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         self.store.save_chapter(chapter)
+        # 三期 F1：Beat 覆盖度门禁（纯确定性、零 LLM）——正文落盘后自检对章计划拍的
+        # 覆盖率，分级记录到 beat_gate.json（pass/warn/fail/skip）。检测+记录+提示，不独立
+        # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。
+        try:
+            if getattr(self.cfg, "beat_gate", False):
+                from .beat_gate import assess_chapter
+                _bg = assess_chapter(
+                    content, plan_moves, plan_core_event,
+                    min_coverage=float(getattr(self.cfg, "beat_gate_min_coverage", 0.6)),
+                    warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
+                )
+                self.store.save_beat_gate(chapter_no, _bg)
+        except Exception:
+            logger.exception("[BeatGate] 覆盖评估失败（降级不阻塞）: ch=%d", chapter_no)
         # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
         # 治 v7 第 6 章蚀化跨章口径——代码累计入账后，下章拆场景/场景/重写 prompt
         # 注入「蚀化应 = 起始基线 + 累计死亡」确定性锚，LLM 不再自由发挥跨章数字。

@@ -1190,7 +1190,7 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
-def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor="", user_memory_block=""):
+def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor="", user_memory_block="", chapter_design=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
         "严格遵守世界设定与人物性格，不推翻前文既定事实。"
@@ -1293,6 +1293,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"【必须保留的细节】{anchors_str}\n"
         f"【本场景目标字数】{scene.get('target_words', 1200)} 字\n\n"
         f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{core_event if core_event else '（无）'}\n\n"
+        f"{'【本章设计卡（正向创作指引·软约束：按此设计写本章，不偏离戏剧核心）】\n'
+        + chapter_design + '\n\n' if chapter_design else ''}"
         f"{'【事件进度（硬约束：本章事件按编号顺序各对应一个场景、各只推进一次；'
         f'本场景只允许推进本场景唯一事件的正文，禁止把后续事件的完整流程提前写完——'
         f'后续事件（如死亡-复活-对峙-包扎-离场等完整循环）必须留给各自场景推进，'
@@ -1656,6 +1658,7 @@ def chapter_prompt(
     is_final: bool = False,
     chapter_core_event: str = "",
     chapter_events: str = "",
+    chapter_design: str = "",
     personal_anchor: str = "",
     teardown_anchor: str = "",
     user_memory_block: str = "",
@@ -1690,6 +1693,8 @@ def chapter_prompt(
         '从事件1到事件N依次发生，后一事件从上一事件的结果之后续写，'
         '禁止任何事件重复出现（包括换地点、换措辞重写同一事件），'
         '禁止回到上一事件开头状态重演）】\n' + chapter_events + '\n') if chapter_events else ''}"
+        f"{('【本章设计卡（正向创作指引·软约束：按此设计写本章，不偏离戏剧核心）】\n'
+        + chapter_design + '\n') if chapter_design else ''}"
         f"{('【全书结局章】本章是本书最后一章，必须给出完整结局。\n' + ending_block + '\n') if is_final else ''}"
         f"【单章字数·硬指标】本章正文（不含【摘要】行）必须达到 {cfg.chapter_words} 字以上。"
         f"若正文不足，必须通过增加场景细节、人物对话交锋、心理挣扎与行动过程来充实，"

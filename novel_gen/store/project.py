@@ -318,6 +318,17 @@ class ProjectStore:
     def load_setting_cards(self) -> Optional[dict]:
         return self._read_json(self.setting_cards_path(), None)
 
+    # ---------- 章级设计卡（REQ-chapter-design 一期）----------
+    def chapter_design_path(self) -> Path:
+        return self.dir / "chapter_design.json"
+
+    def save_chapter_design(self, data: dict) -> None:
+        if data:
+            self._write_json(self.chapter_design_path(), data)
+
+    def load_chapter_design(self) -> Optional[dict]:
+        return self._read_json(self.chapter_design_path(), None)
+
     # ---------- 章节 ----------
     def chapter_path(self, no: int) -> Path:
         return self.chapters_dir / f"{no:03d}.json"
@@ -499,6 +510,77 @@ class ProjectStore:
     def save_reveal_status(self, status: dict) -> None:
         """整体覆盖保存（每章检测后写入最新命中情况）。"""
         self._write_json(self.reveal_status_path(), status)
+
+    # ---------- 读者认知账本（REQ-reader-ledger） ----------
+    def reader_knowledge_path(self) -> Path:
+        return self.dir / "reader_knowledge.json"
+
+    def load_reader_knowledge(self) -> Optional[dict]:
+        """返回三态快照 {waiting, known, misbelief}；无账本/损坏返回 None。"""
+        d = self._read_json(self.reader_knowledge_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_reader_knowledge(self, data: dict) -> None:
+        """整体覆盖保存（确定性派生快照；空 dict 不落盘防占位空壳）。"""
+        if data:
+            self._write_json(self.reader_knowledge_path(), data)
+
+    # ---------- 伏笔承诺状态机（REQ-reader-ledger） ----------
+    def foreshadow_commitment_path(self) -> Path:
+        return self.dir / "foreshadow_commitment.json"
+
+    def load_foreshadow_commitment(self) -> Optional[dict]:
+        """返回 {items:[...]}；无账本/损坏返回 None。"""
+        d = self._read_json(self.foreshadow_commitment_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_foreshadow_commitment(self, data: dict) -> None:
+        """整体覆盖保存（每次状态推进后写入最新快照；空不写）。"""
+        if data:
+            self._write_json(self.foreshadow_commitment_path(), data)
+
+    # ---------- 爽点配额记录（REQ-reader-ledger） ----------
+    def payoff_quota_path(self) -> Path:
+        return self.dir / "payoff_quota.json"
+
+    def load_payoff_quota(self) -> Optional[dict]:
+        """返回 {profile, log:[...]}；无记录/损坏返回 None。"""
+        d = self._read_json(self.payoff_quota_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_payoff_quota(self, data: dict) -> None:
+        """整体覆盖保存（章末 tally 后写入；空不写）。"""
+        if data:
+            self._write_json(self.payoff_quota_path(), data)
+
+    # ---------- Beat 覆盖度门禁（三期 F1） ----------
+    def beat_gate_path(self) -> Path:
+        return self.dir / "beat_gate.json"
+
+    def load_beat_gate(self) -> dict:
+        """返回 {chapter_no: {coverage, verdict, planned, missing, checked_at}}；无则 {}。"""
+        d = self._read_json(self.beat_gate_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_beat_gate(self, chapter_no: int, result: dict) -> None:
+        """按章幂等覆盖写入（覆盖评估结果为该章唯一权威记录）。"""
+        data = self.load_beat_gate()
+        data[str(chapter_no)] = dict(result or {})
+        self._write_json(self.beat_gate_path(), data)
+
+    # ---------- 三分支续写草稿（三期 F3，预览模式不写正文章节） ----------
+    def continue_drafts_path(self) -> Path:
+        return self.dir / "continue_drafts.json"
+
+    def load_continue_drafts(self) -> dict:
+        d = self._read_json(self.continue_drafts_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_continue_draft(self, chapter_no: int, draft: dict) -> None:
+        """记录用户选用的分支续写草稿（按章幂等；默认不写 chapters/*.json）。"""
+        data = self.load_continue_drafts()
+        data[str(chapter_no)] = dict(draft or {})
+        self._write_json(self.continue_drafts_path(), data)
 
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:

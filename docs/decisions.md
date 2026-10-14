@@ -320,3 +320,38 @@
 - 决策：AGENTS.md 末尾新增 §11，含 11.1 文件规模红线（150–500 行宜 / >1000 行禁新增须重构 / 单函数 >50 行须拆 / 拆分先行为零变化，沿用 server/db 拆分成功标准）/ 11.2 分层解耦（webapp 强制 router→db→service 三层、db 唯一写 SQL、依赖单向、跨模块状态收敛单一权威源、新能力必须接线验证、YAGNI）/ 11.3 代码数据分离（配置进 env/config/FEATURE_FLAGS、业务数据抽独立模块标唯一来源、提示词放 .md、密钥只进 env、12-Factor 开源标准）/ 11.4 命名风格（PEP8 + 行宽 120 + 绝对导入 + __all__）/ 11.5 评审自查清单；并在 §2 Agent 行为约束新增第 7 条强制引用。文档流程变更，无 pytest 影响。
 - 待办（已识别债，非本次范围）：stages.py / templates.py / quality.py / core.py 超红线文件的重构，需单独立会话按 11.1 行为零变化标准推进。
 - 补充（同日第二轮，用户"还有其他开发规范问题也一起加"）：§11 扩展新增 6 小节——11.6 异常与降级纪律（降级必须留痕、禁止无日志裸吞——实测全库 292 处 except、历史"`_do` 吞异常排查无日志"、业务禁 print）/ 11.7 幂等与原子写（os.replace+重试防 WinError5、重生成先删产物禁写空壳、结算先落基线、JSON 解析统一健壮封装）/ 11.8 测试纪律（§9.3/9.4 落地：mock provider、占位文本避节拍词、side_effect 敏感）/ 11.9 依赖与安全（锁 httpx<0.28、SQL 参数化 + LIKE %%、密钥不进日志）/ 11.10 并发一致性（禁 locals() 取嵌套函数变量、信号量、金额用整数分/Decimal）/ 11.11 前端规范（组合式 API、api/ 封装、Pinia、dist 不入库）。文档流程变更，无 pytest 影响。
+
+## 2026-10-14 章级设计卡核心字段接线（feat/chapter-design 一期）
+
+- 背景：防御/记忆层完备但"正向创作设计层"缺口。能力评估（精读万墟之上 80 章 + 傩面新书 10 章 world/outline 落盘）修正了任务前提：**theme_proposition/protagonist_arc/character_motives/goldfinger_rules/setting_taboos 已在 `memory.build_context` 强约束/按需区注入**，重复造块只浪费 token；**真·未接线的高价值主源是章级 conflict/emotion（每条 60-150 字优质文本）+ `World.conflict_matrix`（三层冲突标尺）**；`Outline.key_nodes/volume_pacing/emotion_curve` 在两个真实项目里**全是空数组**（根因：pacing.plan_outline 只挂 ArchitectAgent.run_outline，manager.run_outline 复用短路 + _run_expand_outline 都不调它）。
+- 决策：①新增 `pipeline/chapter_design.py`（纯 Python 前置、零 LLM），从章级 conflict/emotion + conflict_matrix 派生逐章 A1–A7 设计卡，落 `chapter_design.json`（store 唯一读写、空 data 不落盘、幂等复用）；②注入走 stages.write 的 memory_context 组装区（仿章末钩子块），一处拼接覆盖场景/整章/回退整章三条写章路径，templates.scene_prompt/chapter_prompt 预留 `chapter_design` 一级参数；③新开关 `chapter_design`（默认 True）先注册 FEATURE_FLAGS + NovelConfig；④**修数据源**：`manager._backfill_pacing` 在大纲复用短路 + 扩写落盘前幂等补三字段（借 architect.pacing.plan_outline 这个纯确定性函数，不触发 opening.apply 等副作用）。
+- 边界：不重复注入已接线字段；关系模板是 20 种开放指引（非白名单枚举，绝不误杀模板外关系）；后校验（event_ledger 应发生 vs 已消费对账/戏份级别/对白功能弱覆盖）只 logger.warning 留痕，不阻断不重写。
+- 测试：新增 `tests/test_chapter_design.py`（16 用例，p0×2/p1×12/p2×1），mock provider 端到端冒烟 ALL PASS（设计卡块真实到达写手 prompt）。全量 pytest：553 passed（本环境 MySQL 不可用，7 个 DB 用例收集期报错 + 13 个 DB 用例 1045 失败，均已 stash 验证为 clean checkout 预先存在的环境问题，与本次改动无关）。停在 feat/chapter-design，未合并。
+
+## 2026-10-14 二期：读者认知账本 + 伏笔承诺状态机 + 爽点配额（feat/reader-ledger，未合并）
+
+- 背景：生成链路已有防重演/面板数字闭环/记忆四账本/质量防线，但缺「读者体验层」约束——写手不知道读者此刻已知什么/在等什么/被误导成什么；伏笔只有世界阶段设计时校验（validator 只埋不收 fatal），进入逐章后 `buried_ch/reveal_ch` 是死数据，无临期提醒/超时告警/回收确认；爽文「3 章一小爽」无写章时节奏缺口提醒。
+- 决策（novel_gen/pipeline/reader_ledger.py 单模块三内聚类，零 LLM 确定性）：
+  1. **三块账本收敛为单代码模块 + 三个独立落盘 JSON**（YAGNI：共享注入/落盘/降级逻辑故不拆三 py；落盘独立保持单一职责）：`reader_knowledge.json`（known 已揭/reveal_ch<=当前章、waiting 伏笔挂起 buried<=n<reveal、misbelief 反转章前 r-2..r-1 误认窗口）/ `foreshadow_commitment.json`（planted→due_soon 临期=reveal-lead<=n<reveal / overdue 超时=n>reveal 未回收 / revealed 回收）/ `payoff_quota.json`（题材 power=爽文 3/10/15、lite=非爽文 5/15/25，基于 outline emotion/tag/key_nodes 校验章级节奏，未达注入软提示）。
+  2. **回收检测确定性**：reveal_ch<=当前章 且本章正文命中伏笔 name 或 content 子串 → revealed；检测不到保留原状态（注入层按 overdue 软提醒，**不强行标记 revealed 防假回收**）。`_fs_blob` 拼接空格不可用作整串子串，改为 name/content 分别命中。
+  3. **注入体积分章命中 + 上限裁剪**（仿 setting_cards）：known/waiting≤6、misbelief≤2、临期/超时≤6、爽点缺口≤3 行；空 actionable 整块不出现（防 token 膨胀）。注入点 stages.write 拼 outline 块后追加 memory_context，场景级与整章两路径同吃。
+  4. **接线**：manager 写章循环 `_update_reveal_status` 旁加 `_update_reader_ledger(no)` 章末推进；FEATURE_FLAGS 注册 `reader_ledger`(总开关)/`foreshadow_lead`(=3)/`payoff_quota`，NovelConfig 同名字段。题材配额表 GENRE_PROFILE 独立常量模块（§11.3 业务数据与代码分离），未命中题材回落 power。
+  5. **降级**：总开关 False 不读不写不注入；任一账本异常 logger.exception 留痕、注入空串、不阻塞；回收/配额失败静默降级。
+- 踩坑（命名冲突）：ChapterWriter 实例属性 `self._reader_ledger=None` 与同名懒加载方法 `_reader_ledger()` 互相遮蔽（属性 None 覆盖方法 → 调方法报 'NoneType not callable'）；仿 book_memory（属性 `_book_memory`/方法 `_memory` 不同名）修正为属性 `_reader_ledger` / 方法 `_reader_ledger_obj`。
+- 验证：新增 tests/test_reader_ledger.py 17 用例（p0 端到端接线×2 / p1 三态+状态机+回收检测+配额×11 / p2 边界降级×4）全绿；相关回归 68 绿（test_setting_cards/test_book_memory/test_reveal_tracking/test_feature_flags/test_schemas/test_memory_direct_read/test_p0_wiring）；全量离线 554 过，13 失败均为缺实时 MySQL（pymysql root@localhost 拒绝）/webapp 依赖，与本次改动无关。停在 feat/reader-ledger 分支，不合并 devtest/master（三期并行，由组织者串行协调）。
+
+## 2026-10-14 三期产品化：Beat 覆盖度门禁 / 场景体检 / 三分支续写 / 思维链可视化
+
+- 背景：墨造已有 beats.py 节拍检测、quality.py 质检、StageGate 门禁，但都是生成内部防线，用户不可感知。本期把"检测能力"产品化（对标 Sudowrite Scene Inspector）。分支 feat/beat-gate（基于 devtest fe0342d）。
+- 决策（F1 Beat 覆盖度门禁）：
+  - 权威来源 = 大纲 `Outline.chapters[no-1].character_moves`（→/。；;切拍），空则回退 core_event；**不做 embedding 语义指纹**（P0-2 留待后续），用**字符 bigram 命中**（拍内有信息量 bigram ≥50% 出现在正文即视为覆盖），对代词替换/换写鲁棒。
+  - 分级：coverage≥0.6 pass / [0.4,0.6) warn / <0.4 fail / 无计划拍 skip。纯确定性零 LLM，可复现。
+  - **门禁只"检测+记录+提示"，不新起独立 LLM 重生成循环**——重写统一走既有 quality.ensure_quality（已≤3轮+best-version兜底），防 token 成本失控；结果落 `beat_gate.json`（按章幂等覆盖，唯一权威源）。mock provider/开关关/无拍静默跳过。
+  - 接线点：`stages.ChapterWriter.write()` 在 `save_chapter` 之后调用 `beat_gate.assess_chapter`。
+- 决策（F2 场景体检）：`scene_inspector.inspect_chapter` 读时实时计算、零新 LLM，复用 `beats._beat_cycle_issues` + scenes.json + 字数/承接/钩子确定性维度，输出 `[{dim,level,detail,suggestion}]`；LLM 补充建议本期不做（默认关，降频留后续）。单维度 try 隔离降级。
+- 决策（F3 三分支续写）：一次 LLM 调用出 3 方向（escalate/foreshadow/twist）；`apply-branch` **默认预览模式**——只把选中草稿记 `continue_drafts.json`，绝不自动改写 chapters/*.json（防污染正文、防破坏既有链路），由用户复制粘贴进编辑器。
+- 决策（F4 思维链可视化）：只读聚合接口，实时从 outline 计划 + scenes.json 产出 + beat_gate/review.json 校验拼装，零新 LLM；缺产物维度降级为空不报错。
+- FEATURE_FLAGS 新注册（review 模块）：beat_gate(True)/beat_gate_min_coverage(0.6)/beat_gate_warn_coverage(0.4)/scene_inspector(True)/chain_of_thought(True)；writing 模块：branch_continue(True)。float 阈值经 `_coerce_feature` 原样透传。
+- 新文件：`novel_gen/pipeline/beat_gate.py`、`novel_gen/pipeline/scene_inspector.py`；store 加 beat_gate/continue_drafts 读写；路由并入 webapp/routers/projects_chapters.py（4 个新接口，按域不回写 core/server）；前端 ToolsPanel 加 3 张卡片（场景体检/三分支续写/生成过程）+ api/tools.js 封装。
+- 测试：新增 tests/test_beat_gate.py(8)+test_scene_inspector.py(4)+test_beat_gate_wiring.py(2)，p1/p2 marker；全量 647 passed（633 基线 + 14 新增）零回归。前端 npm install + build 通过，dist 引用一致、正确 gitignore。
+- 边界：停在 feat/beat-gate 分支，不合并（三期并行，组织者串行协调）。

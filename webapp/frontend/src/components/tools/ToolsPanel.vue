@@ -13,6 +13,63 @@
       <span v-if="coverRemaining !== null" class="muted" style="margin-left:8px">剩余 {{ coverRemaining }} 次</span>
     </el-card>
 
+    <!-- 三期 F2：场景体检（Scene Inspector） -->
+    <el-card class="tool-card">
+      <template #header><b>场景体检</b></template>
+      <p class="muted">对已生成章节做字数/事件/重复/承接/钩子体检并给修复建议</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <el-input-number v-model="inspectNo" :min="1" size="small" controls-position="right" style="width:90px" />
+        <el-button size="small" type="primary" @click="runInspect" :loading="inspectLoading">体检本章</el-button>
+      </div>
+      <div v-if="inspectReport" class="result-area">
+        <div v-for="(d, i) in inspectReport.dimensions" :key="i"
+             :style="{padding:'6px 8px',marginBottom:'4px',borderRadius:'4px',borderLeft:'3px solid ' + (d.level==='bad'?'#f56c6c':d.level==='warn'?'#e6a23c':'#67c23a')}">
+          <b>{{ d.dim }}</b>：{{ d.detail }}
+          <div v-if="d.suggestion" class="muted" style="margin-top:2px">→ {{ d.suggestion }}</div>
+        </div>
+        <div v-if="inspectReport.beat_gate" class="muted">
+          Beat 覆盖：{{ inspectReport.beat_gate.coverage ?? '—' }}（{{ inspectReport.beat_gate.verdict }}）
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 三期 F3：三分支续写选择 -->
+    <el-card class="tool-card">
+      <template #header><b>三分支续写</b></template>
+      <p class="muted">基于末章结尾生成 3 个方向（冲突升级/埋伏笔/转折）的续写候选，选一条复制使用</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <el-input-number v-model="branchNo" :min="1" size="small" controls-position="right" style="width:90px" />
+        <el-button size="small" type="primary" @click="runBranches" :loading="branchLoading">生成3个分支</el-button>
+      </div>
+      <div v-if="branchList.length" class="result-area">
+        <div v-for="(b, i) in branchList" :key="i"
+             style="padding:8px;margin-bottom:6px;border:1px solid #e4e7ed;border-radius:6px">
+          <b style="color:#409eff">{{ b.label || b.direction }}</b>
+          <div class="muted" style="margin:4px 0;max-height:120px;overflow:auto">{{ b.preview }}</div>
+          <el-button size="small" @click="pickBranch(b)">记录并复制</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 三期 F4：思维链可视化（生成过程） -->
+    <el-card class="tool-card">
+      <template #header><b>生成过程</b></template>
+      <p class="muted">查看本章「计划→产出→校验」链条（只读）</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <el-input-number v-model="cotNo" :min="1" size="small" controls-position="right" style="width:90px" />
+        <el-button size="small" type="primary" @click="runCot" :loading="cotLoading">查看</el-button>
+      </div>
+      <div v-if="cotView" class="result-area">
+        <div><b>计划</b>：{{ cotView.plan.core_event || '（无）' }}</div>
+        <div class="muted" style="margin:2px 0">拍序列：{{ cotView.plan.character_moves || '—' }}</div>
+        <div style="margin-top:4px"><b>产出</b>：{{ (cotView.production.scenes||[]).length }} 个场景</div>
+        <div class="muted" style="margin-top:4px"><b>校验</b>：
+          beat覆盖 {{ cotView.review.beat_gate ? cotView.review.beat_gate.verdict : '—' }}
+          <span v-if="cotView.review.quality">，质检 {{ cotView.review.quality.score }} 分</span>
+        </div>
+      </div>
+    </el-card>
+
     <!-- 质量校验 -->
     <el-card class="tool-card">
       <template #header><b>质量校验</b></template>
@@ -221,6 +278,64 @@ async function genCover() {
     coverLoading.value = false
   }
 }
+
+// ===== 三期产品化（2026-10-14）：场景体检 / 三分支续写 / 思维链 =====
+const inspectNo = ref(1)
+const inspectLoading = ref(false)
+const inspectReport = ref(null)
+async function runInspect() {
+  inspectLoading.value = true
+  try {
+    inspectReport.value = await toolsApi.getSceneInspect(props.pid, inspectNo.value)
+  } catch (e) {
+    ElMessage.error('体检失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    inspectLoading.value = false
+  }
+}
+
+const branchNo = ref(1)
+const branchLoading = ref(false)
+const branchList = ref([])
+async function runBranches() {
+  branchLoading.value = true
+  try {
+    const data = await toolsApi.continueBranches(props.pid, { chapter_no: branchNo.value })
+    branchList.value = data.branches || []
+    if (!branchList.value.length) ElMessage.warning('未生成分支，请稍后重试')
+  } catch (e) {
+    ElMessage.error('分支生成失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    branchLoading.value = false
+  }
+}
+async function pickBranch(b) {
+  try {
+    await toolsApi.applyBranch(props.pid, {
+      chapter_no: branchNo.value, direction: b.direction, label: b.label, preview: b.preview,
+    })
+    // 复制到剪贴板（预览模式：由用户粘贴进编辑器）
+    try { await navigator.clipboard.writeText(b.preview) } catch (_) {}
+    ElMessage.success('已记录草稿并复制到剪贴板')
+  } catch (e) {
+    ElMessage.error('记录失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+const cotNo = ref(1)
+const cotLoading = ref(false)
+const cotView = ref(null)
+async function runCot() {
+  cotLoading.value = true
+  try {
+    cotView.value = await toolsApi.getChainOfThought(props.pid, cotNo.value)
+  } catch (e) {
+    ElMessage.error('读取失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    cotLoading.value = false
+  }
+}
+
 const rhythmData = ref([])
 const maxRhythm = ref(1)
 const altGoal = ref('')

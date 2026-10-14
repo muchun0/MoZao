@@ -89,6 +89,13 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
+    # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
+    FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
+    FeatureFlag("review", "beat_gate_min_coverage", 0.6, "Beat 覆盖度通过阈值（三期 F1）：覆盖率≥此值=pass"),
+    FeatureFlag("review", "beat_gate_warn_coverage", 0.4, "Beat 覆盖度警告阈值（三期 F1）：覆盖率<此值=fail，[warn,min)=warn"),
+    FeatureFlag("review", "scene_inspector", True, "场景体检开关（三期 F2）：对已生成章节做字数/事件推进/重演/承接/钩子确定性体检并给修复建议"),
+    FeatureFlag("review", "chain_of_thought", True, "思维链可视化开关（三期 F4）：聚合计划-产出-校验三段产物为只读视图"),
+    FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
@@ -298,6 +305,13 @@ class NovelConfig:
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
+    # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
+    beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
+    beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值
+    beat_gate_warn_coverage: float = feature_default("beat_gate_warn_coverage") # F1 警告阈值
+    scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
+    chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
+    branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置

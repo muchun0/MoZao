@@ -553,6 +553,35 @@ class ProjectStore:
         if data:
             self._write_json(self.payoff_quota_path(), data)
 
+    # ---------- Beat 覆盖度门禁（三期 F1） ----------
+    def beat_gate_path(self) -> Path:
+        return self.dir / "beat_gate.json"
+
+    def load_beat_gate(self) -> dict:
+        """返回 {chapter_no: {coverage, verdict, planned, missing, checked_at}}；无则 {}。"""
+        d = self._read_json(self.beat_gate_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_beat_gate(self, chapter_no: int, result: dict) -> None:
+        """按章幂等覆盖写入（覆盖评估结果为该章唯一权威记录）。"""
+        data = self.load_beat_gate()
+        data[str(chapter_no)] = dict(result or {})
+        self._write_json(self.beat_gate_path(), data)
+
+    # ---------- 三分支续写草稿（三期 F3，预览模式不写正文章节） ----------
+    def continue_drafts_path(self) -> Path:
+        return self.dir / "continue_drafts.json"
+
+    def load_continue_drafts(self) -> dict:
+        d = self._read_json(self.continue_drafts_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_continue_draft(self, chapter_no: int, draft: dict) -> None:
+        """记录用户选用的分支续写草稿（按章幂等；默认不写 chapters/*.json）。"""
+        data = self.load_continue_drafts()
+        data[str(chapter_no)] = dict(draft or {})
+        self._write_json(self.continue_drafts_path(), data)
+
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:
         return self.dir / "final_review.json"

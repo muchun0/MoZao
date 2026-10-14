@@ -31,3 +31,9 @@ export const updateStyleRole = (id, data) => request.put(`/style-roles/${id}`, d
 export const deleteStyleRole = (id) => request.delete(`/style-roles/${id}`)
 export const mountStyleRoleSkill = (id, data) => request.post(`/style-roles/${id}/skills`, data)
 export const unmountStyleRoleSkill = (id, skillType, skillId) => request.delete(`/style-roles/${id}/skills/${skillType}/${skillId}`)
+
+// 三期产品化（2026-10-14）：场景体检 / 三分支续写 / 思维链可视化
+export const getSceneInspect = (pid, no) => request.get(`/projects/${pid}/chapters/${no}/scene-inspect`)
+export const getChainOfThought = (pid, no) => request.get(`/projects/${pid}/chapters/${no}/chain-of-thought`)
+export const continueBranches = (pid, data) => request.post(`/projects/${pid}/continue-branches`, data)
+export const applyBranch = (pid, data) => request.post(`/projects/${pid}/apply-branch`, data)

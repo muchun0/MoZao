@@ -20,7 +20,7 @@
 | `.llm_encrypt.key` | BYOK 加密密钥（**不入库**） |
 | `启动小说生成器.bat` | Windows 一键启动 |
 | `deploy/` | 部署辅助：`Caddyfile`+`caddy.service`（反代）、`migrate_sqlite_to_mysql.py`（历史数据迁移）、`insert_skills_133.sql`、`migrate_skills_merge.py`（技能表统一迁移）、`sync_skills_library.py`（skills_library 蒸馏同步到统一 skills 表） |
-| `tests/` | pytest 测试（534+ 用例，mock provider 离线跑通；含 `test_volume_link.py` 分卷-章节关联、`test_world_reveal.py` 世界观逐步展开、`test_skill_assembler.py` 技能统一注入管线、`test_scene_plan_align.py` 拆场景规划对齐大纲人物动线、`test_scene_anti_repeat.py` 正文层防重演（节拍序列提取/重演判定/局部子序列重合/场景内部循环/质检 2.12/重试与整章回退链路/done_beats 事前注入）、`test_book_memory.py` 小说级记忆系统（P0-7：踩坑入账/升级/降权/注入组装/质检与重写集成/开关兼容）） |
+| `tests/` | pytest 测试（647+ 用例，mock provider 离线跑通；含三期 `test_beat_gate.py`/`test_beat_gate_wiring.py`/`test_scene_inspector.py`） |
 | `skills_library/` | 写作技能库：`genre-research`/`hot-novels`/`style-references`/`writing-techniques` + 技能蒸馏文档（`INDEX.md` 有目录）；`style-references` 种子化进 style_roles，`writing-techniques` 由 `deploy/sync_skills_library.py` 蒸馏为平台技能 |
 | `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
@@ -71,8 +71,10 @@
 | `pipeline/beats.py` | **情节节拍序列（REQ-scene-plan-align §7.3 措施3/5，2026-10-09）**：`_extract_beat_sequence` 正文→归一化节拍序列（长词优先/去连续重复）、`_lcs_len` 最长公共子序列、`_beats_rewrite_detected` 场景重演判定（LCS≥4 且占比≥0.7）、`_beats_local_rewrite_detected` 局部子序列重合判定（重试稿压缩/插序逃逸兜底，2026-10-09 第二轮）、`_beat_cycle_issues` 质检 2.12 整章情节级重演检测；stages 与 quality 共用，零 LLM 确定性 |
 | `pipeline/ai_taste.py` | AI 痕迹量化检测（P1-4）：连接词堆砌/情绪词直白/句式排比/段落雷同（纯函数，供质检扣分） |
 | `pipeline/skills.py` | 技能统一注入管线（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照，按角色默认阶段过滤（applicable_stages 空=全量）、清洗、产出 manifest（供 trace 归因）；**P0-2/P1** STAGE_BY_ROLE 补 theme_character/world_rules/pacing/ending/opening、移除 validator 死配置；**P2** 补 dialogue |
+| `pipeline/beat_gate.py` | **三期 F1** Beat 覆盖度门禁（纯确定性零 LLM）：`_split_plan_beats`/`_char_bigrams`/`compute_beat_coverage`/`assess_chapter`——正文对大纲 character_moves 逐拍的 bigram 命中覆盖率，分级 pass/warn/fail/skip，落 beat_gate.json |
+| `pipeline/scene_inspector.py` | **三期 F2** 场景体检（对标 Scene Inspector）：`inspect_chapter` 读时实时算 字数/事件推进/重复度(复用 beats._beat_cycle_issues)/章首承接/章末钩子 5 维度，输出 {dim,level,detail,suggestion}；单维度 try 隔离降级 |
 | `pipeline/templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`；P0-1 `verify_combined_prompt` reader_persona；**P2** 大纲 prompt chapters 新增 cliffhanger（open/expand/continue）；**REQ-双锚风格锚定** scene/chapter 注入题材锚（teardown_anchor 参数）、expand_chapter_prompt 补风格范文+个人锚+题材锚（弱约束，空不注入）；**REQ-scene-plan-align** `split_scenes_prompt` 新增 moves 骨架注入（非空=事件清单已由 character_moves 派生，模型只补字段+拆场景，禁增删改写事件；空=原规划路径）；**§7.3 措施1** `scene_prompt` 新增 `event_progress` 事件进度硬约束（只推进本场景事件、禁提前消费后续事件完整流程）+ 场景衔接规则补"后续事件留给各自场景"；**生成端第三轮 P0-1/P0-3**（2026-10-09）`scene_prompt` 新增 `consumed_events`（已消费事件只许回响）/`upcoming_events`（后续事件禁提前消费）/`panel_baseline`（机制数字基线）/`panel_violations`（带错重试说明）四参数；**P0-4** `characters_action_fill_prompt` 单字段补全（只输出行动表数组） |
-| `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2）；`setting_cards.json` 读写（REQ-token优化 P1-1：`setting_cards_path`/`save_setting_cards`/`load_setting_cards`）；`chapter_design.json` 读写（REQ-chapter-design 一期：`chapter_design_path`/`save_chapter_design`/`load_chapter_design`，空 data 不落盘）；**P0-3** `teardown_material.txt` 读写（拆书库回流素材）；**P2 场景落盘**（`scenes.json` 分章场景清单+状态）；**REQ-双锚** `teardown_style_anchor.txt` 读写（题材文风锚，webapp 写/novel_gen 读）；**REQ-reader-ledger** 三块账本读写（`reader_knowledge.json`/`foreshadow_commitment.json`/`payoff_quota.json`，各 path/load/save 复用 `_write_json` 原子写） |
+| `store/project.py` | **`ProjectStore`**：项目落盘、状态机、断点续传、统计；save/load_config 持久化 `style_role_reference`；`final_review.json` 读写（P2-2）；`setting_cards.json` 读写（REQ-token优化 P1-1：`setting_cards_path`/`save_setting_cards`/`load_setting_cards`）；`chapter_design.json` 读写（REQ-chapter-design 一期：`chapter_design_path`/`save_chapter_design`/`load_chapter_design`，空 data 不落盘）；**P0-3** `teardown_material.txt` 读写（拆书库回流素材）；**P2 场景落盘**（`scenes.json` 分章场景清单+状态）；**REQ-双锚** `teardown_style_anchor.txt` 读写（题材文风锚，webapp 写/novel_gen 读）；**REQ-reader-ledger** 三块账本读写（`reader_knowledge.json`/`foreshadow_commitment.json`/`payoff_quota.json`，各 path/load/save 复用 `_write_json` 原子写）；**三期** `beat_gate.json` 读写（F1 覆盖门禁按章记录）+ `continue_drafts.json` 读写（F3 三分支续写草稿预览） |
 | `store/schemas.py` | 项目数据结构（NovelConfig 等） |
 | `store/schemas.py` | 项目数据结构；多Agent协作扩展：`World` 新增 theme_proposition/conflict_matrix/protagonist_arc/character_motives/goldfinger_rules(五要素)/setting_taboos，`foreshadowing` 升级为结构化 `ForeshadowItem`(buried_ch/reveal_ch/level)，`Outline` 新增 key_nodes/volume_pacing；**P1**：`World` 再增 items（ItemCard）/power_system（PowerLevelSystem）/ending_card（EndingCard）；**P2**：`World` 增 terminology（TerminologyItem）/dialogue_guideline，`Outline` 增 emotion_curve（EmotionBeat），`ChapterPlan` 增 cliffhanger；全部 from_dict 兼容旧数据 |
 | `export/book_formats.py` | TXT/EPUB/DOCX 导出 |
@@ -106,7 +108,7 @@
 | `routers/style_roles.py` | 风格角色 + 技能挂载（reference_text 透传） |
 | `routers/projects_base.py` | 项目 CRUD/退费/归档/克隆/删除/下载（建书快照 style_role_reference；**用户级记忆**：建书 `record_project_signals`+继承快照） |
 | `routers/projects_outline.py` | 三级大纲/快照/重生成 |
-| `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记 |
+| `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记；**三期产品化** `/chapters/{no}/scene-inspect`（F2 场景体检）、`/chapters/{no}/chain-of-thought`（F4 计划-产出-校验聚合）、`/continue-branches`（F3 三分支候选）、`/apply-branch`（F3 草稿预览落盘，不改正文） |
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
 | `routers/projects_generation.py` | 生成控制（启动/停止/重跑） |
 | `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表） |
@@ -128,7 +130,7 @@
 | `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |
-| `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台） |
+| `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |
 | `components/outline/OutlineEditor.vue` | 三级大纲编辑器（拖拽） |
 | `components/world/CharacterGraph.vue` | 人物关系图 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |

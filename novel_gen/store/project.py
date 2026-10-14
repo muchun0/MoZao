@@ -511,6 +511,48 @@ class ProjectStore:
         """整体覆盖保存（每章检测后写入最新命中情况）。"""
         self._write_json(self.reveal_status_path(), status)
 
+    # ---------- 读者认知账本（REQ-reader-ledger） ----------
+    def reader_knowledge_path(self) -> Path:
+        return self.dir / "reader_knowledge.json"
+
+    def load_reader_knowledge(self) -> Optional[dict]:
+        """返回三态快照 {waiting, known, misbelief}；无账本/损坏返回 None。"""
+        d = self._read_json(self.reader_knowledge_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_reader_knowledge(self, data: dict) -> None:
+        """整体覆盖保存（确定性派生快照；空 dict 不落盘防占位空壳）。"""
+        if data:
+            self._write_json(self.reader_knowledge_path(), data)
+
+    # ---------- 伏笔承诺状态机（REQ-reader-ledger） ----------
+    def foreshadow_commitment_path(self) -> Path:
+        return self.dir / "foreshadow_commitment.json"
+
+    def load_foreshadow_commitment(self) -> Optional[dict]:
+        """返回 {items:[...]}；无账本/损坏返回 None。"""
+        d = self._read_json(self.foreshadow_commitment_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_foreshadow_commitment(self, data: dict) -> None:
+        """整体覆盖保存（每次状态推进后写入最新快照；空不写）。"""
+        if data:
+            self._write_json(self.foreshadow_commitment_path(), data)
+
+    # ---------- 爽点配额记录（REQ-reader-ledger） ----------
+    def payoff_quota_path(self) -> Path:
+        return self.dir / "payoff_quota.json"
+
+    def load_payoff_quota(self) -> Optional[dict]:
+        """返回 {profile, log:[...]}；无记录/损坏返回 None。"""
+        d = self._read_json(self.payoff_quota_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_payoff_quota(self, data: dict) -> None:
+        """整体覆盖保存（章末 tally 后写入；空不写）。"""
+        if data:
+            self._write_json(self.payoff_quota_path(), data)
+
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:
         return self.dir / "final_review.json"

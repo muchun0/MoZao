@@ -507,6 +507,16 @@ class NovelPipeline:
         except Exception:
             logger.exception("揭示执行跟踪失败（降级跳过）: no=%d", no)
 
+    def _update_reader_ledger(self, no: int, silent: bool = False) -> None:
+        """REQ-reader-ledger：每章落盘后推进伏笔承诺状态机（回收检测）+ 爽点配额 tally。
+
+        失败降级留痕，不阻塞生成主流程（与 _update_reveal_status 同模式）。"""
+        try:
+            from .reader_ledger import ReaderLedger
+            ReaderLedger(self.store, self.cfg).update_post_chapter(no)
+        except Exception:
+            logger.exception("读者认知账本章末推进失败（降级跳过）: no=%d", no)
+
     def _report_reveal_issues(self, silent: bool = False) -> None:
         """REQ-揭示执行跟踪：全书完成后汇总揭示执行问题（提前剧透 fatal /
         到点未揭示 major），写日志与 trace；异常降级，不阻塞导出与结算。"""
@@ -736,6 +746,9 @@ class NovelPipeline:
             # REQ-揭示执行跟踪：每章落盘后检测 world_reveals 真相锚定词是否被正文写出
             if getattr(self.cfg, "reveal_tracking", True):
                 self._update_reveal_status(no, silent=silent)
+            # REQ-reader-ledger：每章落盘后推进伏笔承诺状态机（回收检测）+ 爽点配额 tally
+            if getattr(self.cfg, "reader_ledger", True):
+                self._update_reader_ledger(no, silent=silent)
             # 高质量模式：每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5，原每 3 章），结果只影响后续章节
             _v_every = max(1, int(getattr(self.cfg, "verify_every", 5) or 5))
             if getattr(self.cfg, 'high_quality_mode', False) and no % _v_every == 0 and no < total:

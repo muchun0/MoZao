@@ -6,7 +6,10 @@
 """
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
@@ -301,6 +304,8 @@ class ChapterWriter:
         self._personal_loaded: str | None = None
         #: P0-7 小说级记忆：懒加载 BookMemory（None=未初始化；关闭/失败 → None 跳过）
         self._book_memory = None
+        #: REQ-reader-ledger：读者体验层叙事账本（读者认知/伏笔承诺/爽点配额）懒加载
+        self._reader_ledger = None
         #: P0-8：最近一章场景累计机制数字基线（_generate_chapter_scenes 写入，
         #: write() 质检透传用；未走场景路径时为空 dict）
         self._scene_state_acc: dict = {}
@@ -316,6 +321,19 @@ class ChapterWriter:
             except Exception:
                 self._book_memory = None
         return self._book_memory
+
+    def _reader_ledger_obj(self):
+        """REQ-reader-ledger：懒加载读者体验层叙事账本；总开关关闭/失败 → None。
+
+        方法名避开实例属性 self._reader_ledger（属性=缓存对象/关闭标记，不与方法同名）。"""
+        if self._reader_ledger is None and getattr(self.cfg, "reader_ledger", True):
+            try:
+                from .reader_ledger import ReaderLedger
+                self._reader_ledger = ReaderLedger(self.store, self.cfg)
+            except Exception:
+                logger.exception("读者认知账本初始化失败（降级跳过）")
+                self._reader_ledger = False   # 初始化失败置 False，避免每章重复尝试
+        return self._reader_ledger or None
 
     def _book_canon(self, max_chars: int = 800) -> str:
         """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
@@ -489,6 +507,17 @@ class ChapterWriter:
                 memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
         except Exception:
             logger.exception("章级设计卡注入失败（降级跳过）")
+
+        # REQ-reader-ledger：读者认知账本/伏笔承诺/爽点配额注入（追加到 memory_context，
+        # 场景级与整章两条写章路径都吃到；异常降级空串不阻塞）
+        try:
+            _rl = self._reader_ledger_obj()
+            if _rl is not None:
+                _rl_block = _rl.inject_block(chapter_no)
+                if _rl_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
+        except Exception:
+            logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
 
         # 注入用户锁定的内容作为硬约束
         try:

@@ -327,3 +327,15 @@
 - 决策：①新增 `pipeline/chapter_design.py`（纯 Python 前置、零 LLM），从章级 conflict/emotion + conflict_matrix 派生逐章 A1–A7 设计卡，落 `chapter_design.json`（store 唯一读写、空 data 不落盘、幂等复用）；②注入走 stages.write 的 memory_context 组装区（仿章末钩子块），一处拼接覆盖场景/整章/回退整章三条写章路径，templates.scene_prompt/chapter_prompt 预留 `chapter_design` 一级参数；③新开关 `chapter_design`（默认 True）先注册 FEATURE_FLAGS + NovelConfig；④**修数据源**：`manager._backfill_pacing` 在大纲复用短路 + 扩写落盘前幂等补三字段（借 architect.pacing.plan_outline 这个纯确定性函数，不触发 opening.apply 等副作用）。
 - 边界：不重复注入已接线字段；关系模板是 20 种开放指引（非白名单枚举，绝不误杀模板外关系）；后校验（event_ledger 应发生 vs 已消费对账/戏份级别/对白功能弱覆盖）只 logger.warning 留痕，不阻断不重写。
 - 测试：新增 `tests/test_chapter_design.py`（16 用例，p0×2/p1×12/p2×1），mock provider 端到端冒烟 ALL PASS（设计卡块真实到达写手 prompt）。全量 pytest：553 passed（本环境 MySQL 不可用，7 个 DB 用例收集期报错 + 13 个 DB 用例 1045 失败，均已 stash 验证为 clean checkout 预先存在的环境问题，与本次改动无关）。停在 feat/chapter-design，未合并。
+
+## 2026-10-14 二期：读者认知账本 + 伏笔承诺状态机 + 爽点配额（feat/reader-ledger，未合并）
+
+- 背景：生成链路已有防重演/面板数字闭环/记忆四账本/质量防线，但缺「读者体验层」约束——写手不知道读者此刻已知什么/在等什么/被误导成什么；伏笔只有世界阶段设计时校验（validator 只埋不收 fatal），进入逐章后 `buried_ch/reveal_ch` 是死数据，无临期提醒/超时告警/回收确认；爽文「3 章一小爽」无写章时节奏缺口提醒。
+- 决策（novel_gen/pipeline/reader_ledger.py 单模块三内聚类，零 LLM 确定性）：
+  1. **三块账本收敛为单代码模块 + 三个独立落盘 JSON**（YAGNI：共享注入/落盘/降级逻辑故不拆三 py；落盘独立保持单一职责）：`reader_knowledge.json`（known 已揭/reveal_ch<=当前章、waiting 伏笔挂起 buried<=n<reveal、misbelief 反转章前 r-2..r-1 误认窗口）/ `foreshadow_commitment.json`（planted→due_soon 临期=reveal-lead<=n<reveal / overdue 超时=n>reveal 未回收 / revealed 回收）/ `payoff_quota.json`（题材 power=爽文 3/10/15、lite=非爽文 5/15/25，基于 outline emotion/tag/key_nodes 校验章级节奏，未达注入软提示）。
+  2. **回收检测确定性**：reveal_ch<=当前章 且本章正文命中伏笔 name 或 content 子串 → revealed；检测不到保留原状态（注入层按 overdue 软提醒，**不强行标记 revealed 防假回收**）。`_fs_blob` 拼接空格不可用作整串子串，改为 name/content 分别命中。
+  3. **注入体积分章命中 + 上限裁剪**（仿 setting_cards）：known/waiting≤6、misbelief≤2、临期/超时≤6、爽点缺口≤3 行；空 actionable 整块不出现（防 token 膨胀）。注入点 stages.write 拼 outline 块后追加 memory_context，场景级与整章两路径同吃。
+  4. **接线**：manager 写章循环 `_update_reveal_status` 旁加 `_update_reader_ledger(no)` 章末推进；FEATURE_FLAGS 注册 `reader_ledger`(总开关)/`foreshadow_lead`(=3)/`payoff_quota`，NovelConfig 同名字段。题材配额表 GENRE_PROFILE 独立常量模块（§11.3 业务数据与代码分离），未命中题材回落 power。
+  5. **降级**：总开关 False 不读不写不注入；任一账本异常 logger.exception 留痕、注入空串、不阻塞；回收/配额失败静默降级。
+- 踩坑（命名冲突）：ChapterWriter 实例属性 `self._reader_ledger=None` 与同名懒加载方法 `_reader_ledger()` 互相遮蔽（属性 None 覆盖方法 → 调方法报 'NoneType not callable'）；仿 book_memory（属性 `_book_memory`/方法 `_memory` 不同名）修正为属性 `_reader_ledger` / 方法 `_reader_ledger_obj`。
+- 验证：新增 tests/test_reader_ledger.py 17 用例（p0 端到端接线×2 / p1 三态+状态机+回收检测+配额×11 / p2 边界降级×4）全绿；相关回归 68 绿（test_setting_cards/test_book_memory/test_reveal_tracking/test_feature_flags/test_schemas/test_memory_direct_read/test_p0_wiring）；全量离线 554 过，13 失败均为缺实时 MySQL（pymysql root@localhost 拒绝）/webapp 依赖，与本次改动无关。停在 feat/reader-ledger 分支，不合并 devtest/master（三期并行，由组织者串行协调）。

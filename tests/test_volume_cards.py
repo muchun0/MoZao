@@ -19,11 +19,13 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from novel_gen.config import NovelConfig
+from novel_gen.config import NovelConfig, LLMConfig
 from novel_gen.store.project import ProjectStore
 from novel_gen.store.schemas import (Outline, Volume, VolumeCard, ChapterPlan)
 from novel_gen.pipeline.agents.pacing import PacingAgent
 from novel_gen.pipeline.stages import ChapterWriter, _normalize_scene_targets
+from novel_gen.pipeline.manager import NovelPipeline
+from novel_gen.llm.factory import create_llm
 
 
 @pytest.fixture
@@ -120,6 +122,23 @@ def test_plan_outline_volume_cards_last_vol_no_legacy(store):
     ag = PacingAgent(cfg, MagicMock(), store)
     out2, _ = ag.plan_outline(o)
     assert out2.volume_cards[0].legacy == ""
+
+
+@pytest.mark.p1
+def test_backfill_pacing_fills_volume_cards(tmp_path):
+    """manager._backfill_pacing：旧 outline（缺卷卡）→ write_chapter 前幂等补齐卷卡。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2200, total_words=10000,
+                      llm=LLMConfig(provider="mock"))
+    store = ProjectStore.create(tmp_path / "p", cfg)
+    store.save_outline(_outline_with_volumes())
+    pipe = NovelPipeline(cfg, store, create_llm(cfg.llm))
+    out = pipe._backfill_pacing(store.load_outline())
+    assert len(out.volume_cards) == 2, "缺卷卡的旧 outline 应补齐"
+    assert out.volume_cards[0].goal != "" and out.volume_cards[0].legacy != ""
+    assert out.volume_cards[1].legacy == ""  # 末卷无下一卷 → 空
+    # 幂等：再跑一遍不重复叠加
+    out2 = pipe._backfill_pacing(out)
+    assert len(out2.volume_cards) == 2
 
 
 # ---------- 场景字数预算收敛 ----------

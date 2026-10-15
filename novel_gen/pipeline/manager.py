@@ -420,6 +420,9 @@ class NovelPipeline:
     def write_chapter(self, no: int, silent: bool = False) -> Chapter:
         self._enter_scene("chapter")
         outline = self.store.load_outline()
+        # REQ-写作正向引导 5.5：写章前幂等补齐卷卡（老书存量 outline 无 volume_cards
+        # 时，续写/重生成章节也必须吃到卷目标传导；plan_outline 只补缺失，幂等安全）
+        outline = self._backfill_pacing(outline, silent=silent)
         if outline is None or no > len(outline.chapters):
             raise RuntimeError(f"大纲不存在或章节号越界（{no}/{len(outline.chapters) if outline else 0}）")
         plan = outline.chapters[no - 1]

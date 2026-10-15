@@ -996,6 +996,20 @@ class ChapterWriter:
         _bmem = self._book_pitfalls(top_n=5, min_count=1)
         if _bmem:
             _mem = (_mem + "\n\n" if _mem else "") + _bmem
+        # REQ-写作正向引导 5.3 权威基线补盲（2026-10-15）：一期把「权威当前值·只抄
+        # 不推」只接进了场景路径（scene_prompt），而本书 high_quality_mode 下拆场景
+        # 频繁失败、主路径实为回退整章 → 整章路径缺权威基线，机制数字纪律靠 LLM 运气
+        # （二期实证 ch3/ch4/ch6 跨章数字 3→1/37→1 漂移）。这里把权威当前值文本
+        # 注入整章 prompt，与场景路径同口径。
+        _pbt = ""
+        try:
+            from .chapter_state import panel_baseline_dict as _pbd
+            _pb_base = _pbd((panel_baseline or {}).get("numbers") or []) \
+                if isinstance(panel_baseline, dict) else {}
+            if _pb_base:
+                _pbt = "\n".join(f"- {k}：{v}" for k, v in _pb_base.items())
+        except Exception:
+            _pbt = ""
         system, user = chapter_prompt(
             self.cfg, chapter_no=chapter_no,
             chapter_title=plan_title, chapter_goal=plan_goal,
@@ -1006,6 +1020,7 @@ class ChapterWriter:
             teardown_anchor=self._teardown_anchor(),
             personal_anchor=self._personal_anchor(),
             user_memory_block=self._user_memory_block(),
+            panel_baseline=_pbt,
         )
         system = self._sys(system)
         # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
@@ -1090,23 +1105,9 @@ class ChapterWriter:
                       + "\n".join(_dedup_parts)) if _dedup_parts else ""
             _text = self.llm.chat(system, user + _dedup, temperature=0.85,
                                   frequency_penalty=0.4, presence_penalty=0.2) or ""
-        # REQ-写作正向引导 5.5 字数预算收敛（整章回退路径补齐）：场景路径有 P0-18 slim
-        # 治理单场景超长，整章回退路径此前超 chapter_words×1.35 只作附注（用户约束
-        # "质量过关不整章回退重写"），超长照常交付 → 全书字数硬伤（v9 ch4=5050/ch6=4310）。
-        # 这里对最终稿做一次精简（保留剧情与数字、删注水，压到目标×1.2 内），
-        # 仍是"精简而非整章重写"，不违背用户约束。
-        try:
-            _text = _strip_html_tags(_text or "")
-            _cap = max(getattr(self.cfg, "chapter_words", 2200), 500)
-            if _text and not _is_repetitive_text(_text) and len(_text) > _cap * 1.5:
-                _slim = self._slim_scene(_text, {"target_words": _cap}, chapter_no,
-                                         plan_title, silent)
-                if _slim and len(_slim) < len(_text):
-                    if not silent:
-                        print(f"  [回退整章] 第{chapter_no}章超长（{len(_text)}→{len(_slim)} 字），已精简")
-                    _text = _slim
-        except Exception:
-            logger.exception("回退整章超长精简失败（保留原稿）")
+        # 字数超长不做任何 LLM 级处理（用户决策 2026-10-15：单章超长不触发整章回退/
+        # 精简重写——超长不等于写得差，重写浪费 token 且历轮越改越差）。超长仅作
+        # 附注展示（见上方 _over 检查），交付由质检层按字数规则记录。
         return _text
 
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,

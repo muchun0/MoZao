@@ -1191,6 +1191,26 @@ def characters_action_fill_prompt(cfg, chapter_no, chapter_title, chapter_goal,
     return system, user
 
 
+def _panel_baseline_block(panel_baseline: str) -> str:
+    """REQ-写作正向引导 5.3 机制数字权威基线块（场景/整章/重写共用）。
+
+    账本算好的权威当前值，正文出现的机制数字必须与之逐一对应、只准抄写，禁止模型
+    自行推演/增减/改写；事件结算后的新值只在结算瞬间由结算提示给出，未提示的数字
+    一律保持基线不变。空基线 → 空串（不注入）。
+    """
+    if not panel_baseline:
+        return ""
+    return (
+        f"\n【机制数字·权威当前值（硬约束：只抄不推）】\n"
+        f"以下是代码按机制账本算好的权威数字，正文出现的机制数字必须与这些值逐一对应：\n"
+        f"{panel_baseline}\n"
+        f"纪律：① 只准原样抄写，禁止自行计算、增减或改写任何数值；"
+        f"② 事件（死亡/复活/重置）结算只在结算瞬间出现一次数字：死亡瞬间显示结算前值，"
+        f"结算完成后显示新值，其余时刻（赶路、对话、确认状态）用叙述带过（如'他看了一眼面板，还剩一次'）；"
+        f"③ 本场景未发生结算的字段，数字必须保持以上权威值不变，禁止出现与权威值不同的任何数值。\n"
+    )
+
+
 def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_context, prev_tail, dynamic_module, core_event="", scene_state_hint="", force_new_progression=False, forbid_event="", personal_anchor="", teardown_anchor="", event_progress="", done_beats="", consumed_events="", upcoming_events="", panel_baseline="", panel_violations="", book_pitfalls="", book_canon="", state_anchor="", user_memory_block="", chapter_design=""):
     system = (
         "你是一位高产的网络小说签约写手。你正在写长篇小说的其中一个场景。"
@@ -1260,15 +1280,7 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     # 账本算好的权威当前值，正文出现的机制数字必须与之逐一对应、只准抄写，禁止模型
     # 自行推演/增减/改写；事件结算后的新值只在结算瞬间由结算提示给出，未提示的数字
     # 一律保持基线不变。
-    panel_baseline_block = (
-        f"\n【机制数字·权威当前值（硬约束：只抄不推）】\n"
-        f"以下是代码按机制账本算好的权威数字，正文出现的机制数字必须与这些值逐一对应：\n"
-        f"{panel_baseline}\n"
-        f"纪律：① 只准原样抄写，禁止自行计算、增减或改写任何数值；"
-        f"② 事件（死亡/复活/重置）结算只在结算瞬间出现一次数字：死亡瞬间显示结算前值，"
-        f"结算完成后显示新值，其余时刻（赶路、对话、确认状态）用叙述带过（如'他看了一眼面板，还剩一次'）；"
-        f"③ 本场景未发生结算的字段，数字必须保持以上权威值不变，禁止出现与权威值不同的任何数值。\n"
-    ) if panel_baseline else ""
+    panel_baseline_block = _panel_baseline_block(panel_baseline)
     panel_violation_block = (
         f"\n【重试强制规则（上一条正文中机制数字违反方向规则，已作废）】\n"
         f"{panel_violations}\n"
@@ -1646,6 +1658,7 @@ def chapter_prompt(
     personal_anchor: str = "",
     teardown_anchor: str = "",
     user_memory_block: str = "",
+    panel_baseline: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1687,6 +1700,7 @@ def chapter_prompt(
         f"{('【题材共性参考】\n' + research_block + '\n\n') if research_block else ''}"
         f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
         f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
+        f"{_panel_baseline_block(panel_baseline)}"
         f"写作要求：\n"
         f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
         f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"

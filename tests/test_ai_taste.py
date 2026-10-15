@@ -47,7 +47,7 @@ def test_heavy_sample_detected():
     issues = ai_taste_issues(_AI_HEAVY, threshold=60)
     types = {it["type"] for it in issues}
     assert "AI痕迹-连接词堆砌" in types
-    assert "AI痕迹-情绪词直白" in types
+    assert "AI痕迹-情绪词堆砌（点破允许）" in types
     assert all(it["level"] == "中改" for it in issues)
 
 
@@ -63,8 +63,30 @@ def test_natural_text_low_false_positive():
 def test_parallel_and_para_detected():
     """排比句式与段落雷同也能检出（扣分并产出 issue）。"""
     parallel = "他望着窗。他望着门。他望着天。他望着地。" * 3
-    assert score_ai_taste(parallel) == 85   # 仅排比维度扣 15
+    # 排比扣 15 + 零直白扣 10（该样本无'他怕了'式点破，属演过头提示）
+    assert score_ai_taste(parallel) == 75
     assert any(it["type"] == "AI痕迹-句式排比" for it in ai_taste_issues(parallel, 100))
+
+
+@pytest.mark.p1
+def test_simile_density_detected():
+    """'像……'明喻密度超限：命中「明喻过密（警示）」，白描收敛引导（非禁词）。"""
+    simile_heavy = (
+        "风像刀子。夜像墨。街像一条冻僵的蛇。灯像垂死的眼。雪像盐，又像灰。"
+    ) * 4
+    assert any(it["type"] == "AI痕迹-明喻过密（警示）"
+               for it in ai_taste_issues(simile_heavy, threshold=100))
+
+
+@pytest.mark.p1
+def test_zero_direct_detected_and_pointed_exempt():
+    """零直白：全程无点破句式命中提示；含'他怕了'式点破则豁免。"""
+    acted_only = "他攥紧拳头，指节发白，半天没说话。她低着头，把药瓶推过去。" * 3
+    assert any(it["type"] == "AI痕迹-全程演过头（零直白）"
+               for it in ai_taste_issues(acted_only, threshold=100))
+    pointed = "他怕了。他认得这种感觉——上次腿被打断那夜，冷也是这么冷。" * 3
+    assert not any(it["type"] == "AI痕迹-全程演过头（零直白）"
+                   for it in ai_taste_issues(pointed, threshold=100))
 
 
 @pytest.mark.p1

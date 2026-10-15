@@ -170,10 +170,10 @@ def test_scene_prompt_injects_state_hint_and_time_marker():
     assert "【本场景时间锚点】三天后" in user_s
     assert "【本章已推进状态" in user_s
     assert "可死次数：1" in user_s and "疤脸已死" in user_s
-    assert "状态衔接" in user_s and "禁止回退" in user_s
-    assert "时间过渡" in user_s and "闪回" in user_s
-    assert "视角" in user_s and "肉眼可见" in user_s
-    assert "内心反应底线" in user_s
+    assert "事件只推进本场景" in user_s and "禁止回到更早时点重演" in user_s
+    assert "时间纪律" in user_s and "闪回" in user_s
+    assert "视角" in user_s and "上帝视角" in user_s
+    assert "演七分、说三分" in user_s
 
 
 @pytest.mark.p2

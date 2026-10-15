@@ -61,7 +61,7 @@ def test_scene_prompt_first_scene_requires_continuation():
         "前情记忆", "上一章结尾：他踏上第一级台阶……", "",
     )
     assert "必须从【上一章节结尾】" in user
-    assert "禁止硬切到无关新场景" in user
+    assert "禁止硬切换场" in user
     assert "不要写场景之间的过渡总结" not in user  # 旧表述已替换为强制承接
 
 
@@ -75,8 +75,8 @@ def test_scene_prompt_later_scene_requires_continuation():
          "anchors": [], "target_words": 1200},
         "前情记忆", "上一场景结尾：他走出登记大厅……", "",
     )
-    assert "自然承接上一个场景的结尾" in user
-    assert "禁止毫无交代的跳跃换场" in user
+    assert "自然承接上一场景结尾" in user
+    assert "禁止硬切换场" in user
 
 
 @pytest.mark.p1

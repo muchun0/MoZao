@@ -306,6 +306,14 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     except Exception:
         logger.exception("用户级记忆编辑信号失败（降级跳过）: project=%s no=%d",
                          project_id, no)
+    # REQ-写作正向引导 5.6：用户编辑保存 = 用户认可好文风 → 入 good 账本
+    # （零 LLM，失败静默降级；与 user_edited 标记同处触发）
+    try:
+        from novel_gen.pipeline.book_memory import BookMemory
+        BookMemory(store, store.load_config()).record_good_manual(no, ch.content)
+    except Exception:
+        logger.exception("good 账本人工修订入账失败（降级跳过）: project=%s no=%d",
+                         project_id, no)
     store.save_chapter(ch)
     if ch.summary:
         store.append_summary(no, ch.summary)

@@ -589,6 +589,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
 
+        # REQ-写作正向引导 5.6：good 账本注入（本作高分章好片段——参考质感非内容
+        # 来源；场景与整章两条写章路径都吃到，软约束不阻塞）
+        try:
+            _gmem = self._memory()
+            if _gmem is not None:
+                _good = _gmem.good_block(top_n=3)
+                if _good:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _good
+        except Exception:
+            pass
+
         # 注入用户锁定的内容作为硬约束
         try:
             lock_path = self.store.dir / "lock.json"
@@ -760,6 +771,11 @@ class ChapterWriter:
                     _mem = self._memory()
                     if _mem is not None:
                         _mem.record_taste(chapter_no, int(_qc.get("score", 0) or 0),
+                                          _qc.get("issues") or [])
+                        # REQ-写作正向引导 5.6：高分章（≥85 且无大改）段落自动入
+                        # good 账本（写得好 → 被学习 → 写得更好 闭环）
+                        _mem.record_good(chapter_no, content,
+                                          int(_qc.get("score", 0) or 0),
                                           _qc.get("issues") or [])
                         _mem.decay(chapter_no)
                 except Exception:

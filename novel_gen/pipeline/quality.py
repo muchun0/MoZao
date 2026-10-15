@@ -970,6 +970,8 @@ class QualityChecker:
 
         只对重写路径生效（for_rewrite=True 措辞：删除重复版本）；场景生成用
         stages 侧注入的 pitfall_block（min_count=2 纪律类）。
+        REQ-写作正向引导 5.6：叠加 good 账本（本作高分章好片段——重写不只
+        「避免什么」，还要「按什么质感写」，参考质感非内容来源）。
         """
         if self.memory is None or not getattr(self.cfg, "book_memory", True):
             return ""
@@ -985,7 +987,8 @@ class QualityChecker:
                 or "蚀化" in (str(it.get("type") or ""))
             ]
             nb = self.memory.numeric_backfill(num_issues)
-            return "\n\n".join(x for x in (pb, nb) if x)
+            gb = self.memory.good_block(top_n=2)
+            return "\n\n".join(x for x in (pb, nb, gb) if x)
         except Exception:
             return ""
 

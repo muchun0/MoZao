@@ -1323,6 +1323,9 @@ class ChapterWriter:
                 for s in scenes[idx:] if str(s.get("event") or "").strip()
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
+            # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
+            # 信号时，明确「结算瞬间只显示结算前/后两个权威值，其余保持基线不变」，
+            # 把 P0-8 期望值（次数-1/蚀化+1）前置到生成端，治跨章数字漂移。
             panel_baseline_text = ""
             _panel_base: dict = {}
             try:
@@ -1332,6 +1335,23 @@ class ChapterWriter:
                     panel_baseline_text = "\n".join(
                         f"- {k}：{v}" for k, v in _panel_base.items()
                     )
+                    # 结算提示：事件层信号判定本场景是否含死亡/复活结算
+                    _ev_text = " ".join(
+                        str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
+                    )
+                    try:
+                        from .chapter_state import death_signals as _deathsig
+                        from .chapter_state import book_death_signals as _bdeathsig
+                        _sigs = self._memory().book_signals() if self._memory() is not None else []
+                        if _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs):
+                            panel_baseline_text += (
+                                "\n【本场景结算提示】本场景含死亡/复活结算：结算瞬间只显示"
+                                "两个权威值——死亡瞬间显示结算前值，结算完成后显示按机制递减/递增后的新值"
+                                "（次数/剩余类递减 1，蚀化/进度类递增 1）；其余字段必须保持基线不变，"
+                                "禁止出现第三个数值。"
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 _panel_base, panel_baseline_text = {}, ""
             # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段

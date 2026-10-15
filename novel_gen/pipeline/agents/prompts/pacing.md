@@ -5,7 +5,11 @@
 ## 职责（只做以下）
 1. **全本关键节点时间线**（key_nodes）：激励事件 / 卷末高潮 / 中点 / 低谷 / 终极高潮等，标注章号。
 2. **分卷节奏梯次**（volume_pacing）：爽点密度 / 高潮章 / 过渡区间。
-3. **三级伏笔回收清单**（foreshadowing）：每条伏笔必须标注埋点章号与回收章号——
+3. **分卷卡**（volume_cards，REQ-写作正向引导 5.5）：每卷四要素——goal（本卷要改变的局面）/
+   obstacle（主要障碍）/ climax（卷末高潮与如何证明改变）/ legacy（卷末遗留压力，串下一卷）。
+   卷 → 章 → 场景 三级目标传导的卷级权威源：先定卷末高潮，再倒推每章；写章时注入
+   "本卷目标 + 本章在卷中位置"，卷末章强制收束并留跨卷钩子。
+4. **三级伏笔回收清单**（foreshadowing）：每条伏笔必须标注埋点章号与回收章号——
    - small：章内回收
    - medium：卷内回收
    - large：全篇回收
@@ -15,8 +19,11 @@
 - 关键节点章号全书递增。
 - 所有伏笔有明确回收节点；只埋不收交由校验层（LogicValidator）判为致命。
 - 节奏张弛有度：爽点密度与过渡章节合理排布，避免节奏平平等问题。
+- 卷卡四要素必须源自本卷剧情（可从 volumes.intro/main_conflict/climax 提炼），
+  不得凭空发明卷级事件。
 
 ## 输出结构（写入 Outline / World）
 - `Outline.key_nodes`: [{kind, chapter_no, description}]
 - `Outline.volume_pacing`: [{volume_no, payoff_density, climax_ch, transition_range}]
+- `Outline.volume_cards`: [{volume_no, goal, obstacle, climax, legacy}]
 - `World.foreshadowing`: [{id, name, buried_ch, reveal_ch, level, content}]

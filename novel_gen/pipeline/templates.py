@@ -1050,7 +1050,8 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         "- time_marker: 本场景的时间锚点（与上一场景的时间间隔与标记，如'同日午后''三天后''翌日清晨'；"
         "若机制规则含每日重置，跨天场景必须写明重置后的机制数字）\n"
         f"- target_words: 该场景目标字数（硬约束：全部场景 target_words 之和必须等于 {cfg.chapter_words}，"
-        f"允许 ±10%；单个场景不得超过 1400 字。禁止为了凑场景数或凑字数超写）\n\n"
+        f"允许 ±10%；单个场景不得超过 1400 字。禁止为了凑场景数或凑字数超写；"
+        f"下方示例中的数值仅示格式，实际必须按『本章总字数 ÷ 场景数』分配）\n\n"
         "场景连续性硬规则：第一个场景必须承接上一章结尾的场景与人物状态，"
         "从上一章结束的地方接着展开；后续场景沿剧情推进自然过渡，禁止跳跃式换场。\n"
         "事件互斥硬规则（防同事件两版本拼接）：\n"
@@ -1080,7 +1081,7 @@ def split_scenes_prompt(cfg, chapter_no, chapter_title, chapter_goal, prev_tail=
         '输出 JSON：{"events": [{"id": "事件1", "desc": "...", "conflict": "...", '
         '"action": "...", "final_state": "..."}, ...], '
         '"scenes": [{"location": "...", "scene_event_ref": "事件N", "emotion": "...", '
-        '"anchors": ["..."], "time_marker": "...", "target_words": 1200}...], '
+        '"anchors": ["..."], "time_marker": "...", "target_words": ' + str(max(800, int(cfg.chapter_words or 0) // 2)) + '}...], '
         '"characters_action": [{"name": "...", "goal": "...", '
         '"key_actions": ["..."], "emotion": "...", "dialogue_intent": "..."}]}'
     )

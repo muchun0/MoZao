@@ -439,6 +439,66 @@ class ChapterWriter:
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
+    def _volume_card_block(self, chapter_no: int, outline) -> str:
+        """REQ-写作正向引导 5.5：分卷卡注入块（卷目标传导，软约束指引）。
+
+        卷 → 章 目标传导：给写手"本卷要改变的局面 + 主要障碍 + 卷末高潮/证明 +
+        本章在卷中的位置（卷首铺垫/卷中推进/卷末高潮）"——先定卷末高潮，再倒推
+        本章该完成什么。卷末章（chapter_no == volume.end_ch）强制收束本卷目标并留
+        跨卷钩子（legacy）。无卷卡/无 volumes 归属/异常 → 空串（不注入，降级安全）。
+        """
+        try:
+            cards = getattr(outline, "volume_cards", None) or []
+            vols = getattr(outline, "volumes", None) or []
+            if not cards or not vols:
+                return ""
+            vol = None
+            for v in vols:
+                start = int(getattr(v, "start_ch", 0) or 0)
+                end = int(getattr(v, "end_ch", 0) or 0)
+                if start and start <= chapter_no <= (end or start):
+                    vol = v
+                    break
+            if vol is None:
+                return ""
+            card = None
+            vno = int(getattr(vol, "no", 0) or 0)
+            for c in cards:
+                if int(getattr(c, "volume_no", 0) or 0) == vno:
+                    card = c
+                    break
+            if card is None:
+                return ""
+            start = int(getattr(vol, "start_ch", 0) or 0)
+            end = int(getattr(vol, "end_ch", 0) or 0)
+            span = max(end - start, 1)
+            pos = "卷中推进"
+            if chapter_no - start <= span * 0.33:
+                pos = "卷首铺垫（本章负责埋本卷矛盾的引子/铺陈局面，不急于兑现卷末高潮）"
+            elif chapter_no >= end or (end - start) * 0.9 <= chapter_no - start:
+                pos = "卷末高潮（本章必须推动卷末高潮临近/收束本卷主要矛盾）"
+            goal = str(getattr(card, "goal", "") or "").strip()
+            obstacle = str(getattr(card, "obstacle", "") or "").strip()
+            climax = str(getattr(card, "climax", "") or "").strip()
+            legacy = str(getattr(card, "legacy", "") or "").strip()
+            lines = [f"【本卷目标·本章位置（REQ-写作正向引导：本卷为第{vno}卷《{getattr(vol, 'name', '') or ''}》，"
+                     f"第{start}-{end}章；先定卷末高潮，再倒推本章）】"]
+            if goal:
+                lines.append(f"- 本卷要改变的局面：{goal}")
+            if obstacle:
+                lines.append(f"- 本卷主要障碍：{obstacle}")
+            if climax:
+                lines.append(f"- 卷末高潮与如何证明改变：{climax}")
+            lines.append(f"- 本章在卷中的位置：{pos}")
+            if chapter_no >= end and legacy:
+                lines.append(f"- 跨卷钩子（本章结尾必须留出并指向下一卷的压力）：{legacy}")
+            elif chapter_no >= end:
+                lines.append("- 跨卷钩子（本章为卷末章，结尾必须留下卷末遗留压力，串起下一卷）")
+            return "\n".join(lines)
+        except Exception:
+            logger.exception("分卷卡注入失败（降级不注入）")
+        return ""
+
     def write(
         self,
         chapter_no: int,
@@ -507,6 +567,16 @@ class ChapterWriter:
                 memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
         except Exception:
             logger.exception("章级设计卡注入失败（降级跳过）")
+
+        # REQ-写作正向引导 5.5：分卷卡块（本卷目标+障碍+卷末高潮+本章在卷中位置+卷末收束），
+        # 仿章级设计卡块拼进 memory_context（软约束指引）；无卷卡/无归属/异常 → 空串不注入。
+        try:
+            if outline is not None:
+                _vc_block = self._volume_card_block(chapter_no, outline)
+                if _vc_block:
+                    memory_context = memory_context + "\n\n" + _vc_block if memory_context else _vc_block
+        except Exception:
+            logger.exception("分卷卡注入失败（降级跳过）")
 
         # REQ-reader-ledger：读者认知账本/伏笔承诺/爽点配额注入（追加到 memory_context，
         # 场景级与整章两条写章路径都吃到；异常降级空串不阻塞）
@@ -1020,6 +1090,23 @@ class ChapterWriter:
                       + "\n".join(_dedup_parts)) if _dedup_parts else ""
             _text = self.llm.chat(system, user + _dedup, temperature=0.85,
                                   frequency_penalty=0.4, presence_penalty=0.2) or ""
+        # REQ-写作正向引导 5.5 字数预算收敛（整章回退路径补齐）：场景路径有 P0-18 slim
+        # 治理单场景超长，整章回退路径此前超 chapter_words×1.35 只作附注（用户约束
+        # "质量过关不整章回退重写"），超长照常交付 → 全书字数硬伤（v9 ch4=5050/ch6=4310）。
+        # 这里对最终稿做一次精简（保留剧情与数字、删注水，压到目标×1.2 内），
+        # 仍是"精简而非整章重写"，不违背用户约束。
+        try:
+            _text = _strip_html_tags(_text or "")
+            _cap = max(getattr(self.cfg, "chapter_words", 2200), 500)
+            if _text and not _is_repetitive_text(_text) and len(_text) > _cap * 1.5:
+                _slim = self._slim_scene(_text, {"target_words": _cap}, chapter_no,
+                                         plan_title, silent)
+                if _slim and len(_slim) < len(_text):
+                    if not silent:
+                        print(f"  [回退整章] 第{chapter_no}章超长（{len(_text)}→{len(_slim)} 字），已精简")
+                    _text = _slim
+        except Exception:
+            logger.exception("回退整章超长精简失败（保留原稿）")
         return _text
 
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
@@ -1232,6 +1319,16 @@ class ChapterWriter:
                     scenes = []
         except Exception:
             scenes = []
+
+        # REQ-写作正向引导 5.5 场景字数预算收敛（确定性、零 LLM）：校验通过后把各
+        # 场景 target_words 按比例归一，合计精确等于 chapter_words。治"±10% 校验放行后
+        # 仍有残差 → 逐场景生成整章超长（v9 ch4=5050/ch6=4310 字数硬伤）"。
+        if scenes:
+            try:
+                _normalize_scene_targets(
+                    scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
+            except Exception:
+                pass
 
         if not scenes:
             # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。
@@ -2272,6 +2369,40 @@ def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
             for k in ("conflict", "action", "final_state"):
                 if e.get(k):
                     sc[k] = e[k]
+
+
+def _normalize_scene_targets(scenes: list, chapter_words: int = 0) -> list:
+    """REQ-写作正向引导 5.5 场景字数预算收敛（确定性、零 LLM）：
+
+    拆场景校验通过后，把各场景 target_words 按比例归一，使合计精确等于 chapter_words。
+    治"LLM 拆场景 target_words 和偏离章目标（±10% 校验放行后仍有残差，如 3×1200 vs 2200
+    恰好压在阈值边缘）→ 逐场景生成后整章超长（v9 ch4=5050/ch6=4310 字数硬伤）"。
+    - chapter_words<=0 / scenes 空 → 原样返回（调用方不动作）
+    - 当前合计 <=0 → 均分（余数补最后一个场景）
+    - 否则按当前占比缩放，四舍五入到整数，最后一个场景吸收取整误差，保证合计精确
+      等于 chapter_words（防累加误差漂移）
+    - 归一后单场景不得低于下限（下限由 _validate_scene_plan 已保证；归一只会缩小
+      超限场景，不产生新的低于下限项——和=章目标且校验已过时，各场景均 >= 下限×1）
+    """
+    if not scenes or chapter_words <= 0:
+        return scenes
+    total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
+    if total <= 0:
+        base = chapter_words // len(scenes)
+        rem = chapter_words - base * len(scenes)
+        for i, sc in enumerate(scenes):
+            if isinstance(sc, dict):
+                sc["target_words"] = base + (rem if i == len(scenes) - 1 else 0)
+        return scenes
+    scaled = [int(round(chapter_words * int(sc.get("target_words") or 0) / total))
+              for sc in scenes if isinstance(sc, dict)]
+    diff = chapter_words - sum(scaled)
+    if diff:
+        scaled[-1] += diff
+    for i, sc in enumerate(scenes):
+        if isinstance(sc, dict):
+            sc["target_words"] = scaled[i]
+    return scenes
 
 
 def _validate_scene_plan(scenes: list, chapter_words: int = 0,

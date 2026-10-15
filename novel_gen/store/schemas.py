@@ -7,6 +7,42 @@ from typing import Optional
 
 
 @dataclass
+class VolumeCard:
+    """分卷卡（REQ-写作正向引导 5.5）：卷 → 章 → 场景 目标传导的卷级权威源。
+
+    先定卷末高潮，再倒推每章；由 plan_outline 从 volumes 确定性派生（零 LLM，
+    只补缺失不覆盖）。字段语义：
+    - goal：本卷要改变的局面（一句话）
+    - obstacle：本卷主要障碍
+    - climax：卷末高潮与"如何证明改变"
+    - legacy：卷末遗留压力（串下一卷）
+    """
+    volume_no: int = 0
+    goal: str = ""
+    obstacle: str = ""
+    climax: str = ""
+    legacy: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "volume_no": self.volume_no, "goal": self.goal, "obstacle": self.obstacle,
+            "climax": self.climax, "legacy": self.legacy,
+        }
+
+    @classmethod
+    def from_dict(cls, d) -> "VolumeCard":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(
+            volume_no=int(d.get("volume_no", 0) or 0),
+            goal=_norm_str(d.get("goal", "")),
+            obstacle=_norm_str(d.get("obstacle", "")),
+            climax=_norm_str(d.get("climax", "")),
+            legacy=_norm_str(d.get("legacy", "")),
+        )
+
+
+@dataclass
 class Volume:
     """分卷大纲（二级大纲）。"""
     no: int = 0
@@ -180,6 +216,7 @@ class Outline:
     key_nodes: list[KeyNode] = field(default_factory=list)        # 全本关键节点时间线（REQ 骨架层）
     volume_pacing: list[VolumePacing] = field(default_factory=list)  # 分卷节奏梯次（REQ 节奏层）
     emotion_curve: list[EmotionBeat] = field(default_factory=list)   # 全本情绪曲线卡（P2 情绪层）
+    volume_cards: list[VolumeCard] = field(default_factory=list)     # 分卷卡（REQ-写作正向引导 5.5）
 
     def to_dict(self) -> dict:
         return {
@@ -194,6 +231,7 @@ class Outline:
             "key_nodes": [k.to_dict() for k in self.key_nodes],
             "volume_pacing": [v.to_dict() for v in self.volume_pacing],
             "emotion_curve": [e.to_dict() for e in self.emotion_curve],
+            "volume_cards": [v.to_dict() for v in self.volume_cards],
         }
 
     @classmethod
@@ -210,6 +248,7 @@ class Outline:
             key_nodes=[KeyNode.from_dict(k) for k in d.get("key_nodes", [])],
             volume_pacing=[VolumePacing.from_dict(v) for v in d.get("volume_pacing", [])],
             emotion_curve=[EmotionBeat.from_dict(e) for e in d.get("emotion_curve", [])],
+            volume_cards=[VolumeCard.from_dict(v) for v in d.get("volume_cards", [])],
         )
 
 

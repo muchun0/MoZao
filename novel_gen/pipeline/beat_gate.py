@@ -123,22 +123,10 @@ def _extract_slots(beat: str) -> tuple[list[str], list[str], list[str]]:
         trigs = _MOD_SYNONYMS[main]
         if any(t in beat for t in trigs):
             mods.append(main)
-    # 关键实词元：拍内去停用字后的 2 字滑窗（剔除被动作/修饰/实体触发词覆盖的字符区间），
-    # 作为对象候选进 subjects。捕获"密林深处→[密林,林深,深处]"这类场景实词。
-    clean = [c for c in beat if c not in _STOP_CHARS]
-    if len(clean) >= 2:
-        for i in range(len(clean) - 1):
-            g = clean[i] + clean[i + 1]
-            if g in _STOP_CHARS:
-                continue
-            if g in _ENTITY_WORDS:
-                if g not in subjects:
-                    subjects.append(g)
-                continue
-            if any(t == g for tbl in (_ACTION_SYNONYMS, _MOD_SYNONYMS) for t in tbl.values()):
-                continue  # 动作/修饰触发词已单独成槽
-            if g not in subjects:
-                subjects.append(g)
+    # 注意：不做"去停用字后 2 字滑窗实词元"。无分词器时滑窗必然产生跨界假词
+    # （"清晨出门"→ 沉清/晨出/门检…），污染 hit/miss 报告。通用场景的关键实词
+    # 由同义/修饰表命中保证（如"踏入密林深处"→前往、"发现隐藏祭坛"→发现/隐藏），
+    # subjects 只保留真实网络实体词，避免跨界污染。
     # 修饰槽去重、对象槽去重
     mods = list(dict.fromkeys(mods))
     subjects = list(dict.fromkeys(subjects))

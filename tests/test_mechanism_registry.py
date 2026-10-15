@@ -229,8 +229,8 @@ class TestV10Regression:
         assert all("寸" not in i for i in out)
 
     def test_inch_regression_still_blocked_without_event(self):
-        # v9 ch4 四十一寸→ch5 三十七寸：无事件时寸回退必须拦截
-        content = "蚀痕从手腕往肘弯，只剩三十七寸。"
+        # v9 ch4 四十一寸→ch5 三十七寸：无事件时寸回退必须拦截（累计格式）
+        content = "蚀痕已延伸三十七寸"
         out = cs.ledger_check(
             content, {"可死次数": 0, "蚀化": 101, "寸": 41},
             cs.mechanism_field_registry(BASELINE), 0, {"可死次数": 0, "蚀化": 101, "寸": 41})

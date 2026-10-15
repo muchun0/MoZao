@@ -740,10 +740,17 @@ def ledger_extract_numbers(text: str, registry: dict[str, str]) -> dict[str, int
             continue
         out[core] = val   # 顺序覆盖 → 末值
     if "寸" in registry:
-        # 寸是累计长度语义：取正文所有「N寸」的最大值（「距心脏不到一寸」是剩余
-        # 描述、小于已延伸长度，若取末值会误覆盖累计值）
+        # 寸是累计长度语义：只认累计格式「已延伸 N寸」/面板行「蚀痕：N寸」
+        # （基线「已延伸三十七寸」的正文对应写法），取其中最大值。v12 实证：
+        # 增量叙事（「爬了一寸」）与局部描述（「三寸长的裂口」/「每抽一寸」）
+        # 混用，max 提取会把非累计 N寸当字段值（ledger ch3 寸=3 → ch4 报
+        # 「1 较 3 回退」误报）——收紧后增量/局部不入账（继承上一章末），
+        # 累计格式仍可查回退（防 v9 ch4 四十一寸→ch5 三十七寸矛盾）。
         inch_vals: list[int] = []
-        for m in re.finditer(r"([0-9]+|[一二三四五六七八九十百两]+)\s*寸", text):
+        for m in re.finditer(
+            r"(?:已延伸|蚀痕\s*[：:])\s*([0-9]+|[一二三四五六七八九十百两]+)\s*寸",
+            text,
+        ):
             s = m.group(1)
             try:
                 inch_vals.append(_cn_to_int(s))

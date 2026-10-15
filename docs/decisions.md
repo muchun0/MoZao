@@ -355,3 +355,13 @@
 - 新文件：`novel_gen/pipeline/beat_gate.py`、`novel_gen/pipeline/scene_inspector.py`；store 加 beat_gate/continue_drafts 读写；路由并入 webapp/routers/projects_chapters.py（4 个新接口，按域不回写 core/server）；前端 ToolsPanel 加 3 张卡片（场景体检/三分支续写/生成过程）+ api/tools.js 封装。
 - 测试：新增 tests/test_beat_gate.py(8)+test_scene_inspector.py(4)+test_beat_gate_wiring.py(2)，p1/p2 marker；全量 647 passed（633 基线 + 14 新增）零回归。前端 npm install + build 通过，dist 引用一致、正确 gitignore。
 - 边界：停在 feat/beat-gate 分支，不合并（三期并行，组织者串行协调）。
+
+## 2026-10-15 BeatGate 覆盖率假阴性修复（feat/beat-gate-semantic-slot）
+- 背景：三期 F1 用"字符 bigram ≥50% 子串命中"判单拍覆盖，实测第1章 5 拍全实质覆盖却报 coverage=0.00/fail。根因：bigram 对近义改写（清晨↔蒙蒙亮、咬喉↔咬穿、检查面板↔面板亮）零免疫力，且长拍被摊成大量跨界 bigram（沉清/晨出/门检/板3…）。**不是正文缺拍，是算法假阴性。**
+- 决策：覆盖判定改为**自适应语义槽 + 同义归一**（沿用 stages `_event_semantic_slots`/`_SCENE_ACTION_NORM` 范式，仍零 LLM、纯确定性、不引入 jieba 等外部分词）：
+  - 每拍自提 3 类语义点：动作槽（同义表归一，如 咬喉/咬穿→被咬死）、对象槽（网络实体词 + 拍内 2 字关键实词元）、修饰限定槽（如 隐藏/清晨，需全命中，防假阳性）；
+  - 单拍覆盖 = 动作槽≥50% 命中 且 对象槽≥1 命中 且 修饰槽全命中；全空槽拍保守 miss；
+  - 语义点从拍文本**自适应提取 + 同义表归一**，对任意世界观/场景通用，不再依赖写死的实体词清单（用户明确要求"不能只认固定那批词"）。
+- 外部契约不变：`compute_beat_coverage`/`assess_chapter` 签名与返回结构 {planned:[{beat,covered,hit,miss}],coverage,verdict,missing} 保持。
+- 测试：改写 tests/test_beat_gate.py（含**真实第一章 5 拍近义改写回归用例**，旧算法 0.00→新算法识别通过）；全量 681 passed（680 基线 + 1 变更）零回归。
+

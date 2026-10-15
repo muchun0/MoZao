@@ -358,6 +358,26 @@ class QualityChecker:
                     _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
                     from .chapter_state import _registry_initial as _rin
                     _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+                    # P0-18（2026-10-15）deaths 双源反推：蚀化不涨时用 decrease 字段
+                    # 递减量补全死亡数。v12 实证：ch3 死 3 次可死次数 3→0，但正文蚀化
+                    # 98→98 未结算 → 蚀化差=0 误判「无死亡」→ 可死次数递减被误报
+                    # 「无事件违规」，且蚀化未递增真违规漏检。decrease 字段（可死次数）
+                    # 的递减量是账本数字（非词面），比蚀化差更抗漏。
+                    try:
+                        from .chapter_state import ledger_extract_numbers as _lex3
+                        _cur3 = _lex3(content or "", _reg)
+                        _dec3 = 0
+                        for _c3, _r3 in _reg.items():
+                            if _r3 == "decrease" and _c3 in _cur3:
+                                _pv3 = _prev_ledger.get(_c3)
+                                if _pv3 is None:
+                                    _pv3 = (_init or {}).get(_c3)
+                                if _pv3 is not None and int(_cur3[_c3]) < int(_pv3):
+                                    _dec3 += int(_pv3) - int(_cur3[_c3])
+                        if _dec3 > 0:
+                            _cumu = max(_cumu, _dec3)
+                    except Exception:
+                        pass
                     for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
                         issues.append({
                             "type": "写作-机制数字方向违规",

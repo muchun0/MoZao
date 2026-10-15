@@ -721,6 +721,30 @@ class ChapterWriter:
                 try:
                     from .chapter_state import panel_baseline_dict as _pbd
                     _bl = _pbd((self._scene_state_acc or {}).get("numbers") or [])
+                    # 整章回退时场景累积为空 → 回落上一章末权威值（chapter_ledger
+                    # 含跨章继承），使校验与重写注入拿到与生成端同口径的权威基线，
+                    # 治整章路径机制数字无基线可依（REQ 5.3 二期补盲）。
+                    if not _bl and chapter_no > 1:
+                        _mem_bl = self._memory()
+                        if _mem_bl is not None:
+                            try:
+                                _ld = _mem_bl.chapter_ledger(chapter_no - 1) or {}
+                                _bl = {k: int(v) for k, v in _ld.items()
+                                       if v is not None}
+                            except Exception:
+                                _bl = {}
+                    # 首章无上章 ledger → 回落机制初始值（与生成端同口径）
+                    if not _bl and chapter_no <= 1:
+                        _mem_bl0 = self._memory()
+                        if _mem_bl0 is not None:
+                            try:
+                                from .chapter_state import (mechanism_field_registry as _mreg0,
+                                                            _registry_initial as _rin0)
+                                _canon0 = (_mem_bl0.load().get("canon") or {})
+                                _bl0 = _canon0.get("mechanism_baseline") or {}
+                                _bl = _rin0(_bl0, _mreg0(_bl0)) or {}
+                            except Exception:
+                                _bl = {}
                 except Exception:
                     _bl = {}
                 chapter, _qc = qc.ensure_quality(
@@ -1004,8 +1028,34 @@ class ChapterWriter:
         _pbt = ""
         try:
             from .chapter_state import panel_baseline_dict as _pbd
-            _pb_base = _pbd((panel_baseline or {}).get("numbers") or []) \
-                if isinstance(panel_baseline, dict) else {}
+            _pb_base: dict = {}
+            # 优先本章场景累积（本章已推进的权威值）
+            if isinstance(panel_baseline, dict):
+                _pb_base = _pbd((panel_baseline or {}).get("numbers") or [])
+            # 整章回退时场景累积为空（无场景循环）→ 回落上一章末权威值（chapter_ledger
+            # 含跨章继承），治 ch2「可死次数 1 vs 上章末 3」/ ch3「寸 3 vs 38」类
+            # 跨章数字漂移——一期场景路径的基线起点正是上章末，整章路径必须同口径。
+            if not _pb_base and chapter_no > 1:
+                _mem_ld = self._memory()
+                if _mem_ld is not None:
+                    try:
+                        _ld = _mem_ld.chapter_ledger(chapter_no - 1) or {}
+                        _pb_base = {k: int(v) for k, v in _ld.items() if v is not None}
+                    except Exception:
+                        _pb_base = {}
+            # 首章无上章 ledger → 回落机制初始值（注册表初始基线），让 ch1 写标准
+            # 面板行，账本链才有权威起点（v12 实证 ch1 无面板 → ch2 自写蚀化 98）。
+            if not _pb_base and chapter_no <= 1:
+                _mem_ld0 = self._memory()
+                if _mem_ld0 is not None:
+                    try:
+                        from .chapter_state import (mechanism_field_registry as _mreg0,
+                                                    _registry_initial as _rin0)
+                        _canon0 = (_mem_ld0.load().get("canon") or {})
+                        _bl0 = _canon0.get("mechanism_baseline") or {}
+                        _pb_base = _rin0(_bl0, _mreg0(_bl0)) or {}
+                    except Exception:
+                        _pb_base = {}
             if _pb_base:
                 _pbt = "\n".join(f"- {k}：{v}" for k, v in _pb_base.items())
         except Exception:

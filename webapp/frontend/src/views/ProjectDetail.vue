@@ -58,6 +58,7 @@
               <span class="ch-title">{{ c.title }}</span>
               <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ statusText(c.status) }}</el-tag>
               <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
+              <el-button size="small" type="primary" link @click.stop="openVersions(c)">版本</el-button>
               <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link @click.stop="toggleLock('chapter', c.no)">
                 {{ isChLocked(c.no) ? '🔒已锁' : '🔓锁' }}
               </el-button>
@@ -65,6 +66,22 @@
           </div>
         </div>
         <el-empty v-else description="暂无章节" />
+        <el-dialog v-model="versionsDialog" :title="`章节版本 · 第${versionsNo}章`" width="480px">
+          <div class="ver-list">
+            <div v-for="v in versionList" :key="v.v" class="ver-item" :class="{ active: v.selected }">
+              <div class="ver-info">
+                <span class="ver-no">v{{ v.v }}</span>
+                <el-tag size="small" :type="v.selected ? 'success' : 'info'">{{ v.selected ? '当前' : sourceText(v.source) }}</el-tag>
+                <span class="ver-words">{{ v.words }}字</span>
+                <span class="ver-ts">{{ fmtVerTime(v.ts) }}</span>
+              </div>
+              <el-button size="small" link :type="v.selected ? '' : 'primary'" :disabled="v.selected"
+                         @click="selectVersion(v.v)">{{ v.selected ? '使用中' : '选择/回退' }}</el-button>
+            </div>
+            <el-empty v-if="!versionList.length" description="暂无历史版本（重写/重生成会自动保留多版本）" />
+          </div>
+          <div class="ver-tip">每次重写/重生成都会追加新版本、保留旧版；切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。</div>
+        </el-dialog>
       </el-tab-pane>
 
       <el-tab-pane label="大纲" name="outline">
@@ -267,7 +284,7 @@
 import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, regenerateChapters, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline, expandSelection } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, getChapterVersions, selectChapterVersion, importOutline, expandSelection } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -288,6 +305,10 @@ const worldDraft = ref({
 })
 const worldSaving = ref(false)
 const lock = ref({})
+// REQ-章节版本化：版本选择弹窗状态
+const versionsDialog = ref(false)
+const versionsNo = ref(0)
+const versionList = ref([])
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
 // 导致 outlineReady 翻转、v-else 按钮组整体消失。用 hadOutline 保住按钮组（生成中置灰而非隐藏）。
@@ -376,15 +397,16 @@ const groupedChapters = computed(() => {
 })
 
 async function regenChapter(c) {
-  try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？当前内容将被覆盖。`, '重新生成章节', { type: 'warning' }) } catch { return }
+  try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
   try {
     const res = await rewriteChapter(pid, c.no)
+    const verTxt = res.version ? `，v${res.version}` : ''
     // P0-3：质检未通过不再静默交付——明确红标提示，用户可人工改稿或再次重写
     if (res.quality && !res.quality.passed) {
-      ElMessage.warning(`第${c.no}章已重新生成（${res.words}字），但质检未通过（score=${res.quality.score}，${res.quality.issue_count}个问题），请人工检查后再编辑`)
+      ElMessage.warning(`第${c.no}章已重新生成（${res.words}字${verTxt}），但质检未通过（score=${res.quality.score}，${res.quality.issue_count}个问题），请人工检查后再编辑`)
     } else {
-      ElMessage.success(`第${c.no}章已重新生成（${res.words}字）`)
+      ElMessage.success(`第${c.no}章已重新生成（${res.words}字${verTxt}）`)
     }
     loadChapters()
   } catch (e) {
@@ -396,6 +418,41 @@ async function regenChapter(c) {
       ElMessage.error('重生成失败')
     }
   } finally { regenNo.value = 0 }
+}
+
+// REQ-章节版本化：版本选择
+function sourceText(src) {
+  return { ai: 'AI生成', user: '人工编辑', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
+}
+function fmtVerTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+async function openVersions(c) {
+  versionsNo.value = c.no
+  versionList.value = []
+  versionsDialog.value = true
+  try {
+    const res = await getChapterVersions(pid, c.no)
+    versionList.value = res.versions || []
+  } catch (e) {
+    ElMessage.error('加载章节版本失败')
+    versionsDialog.value = false
+  }
+}
+async function selectVersion(v) {
+  try {
+    await ElMessageBox.confirm(`确定回退到第${versionsNo.value}章的 v${v} 版本？当前选中将切换为该版本。`, '切换版本', { type: 'warning' })
+  } catch { return }
+  try {
+    const res = await selectChapterVersion(pid, versionsNo.value, v)
+    ElMessage.success(`已切换到 v${v}（${res.words}字）`)
+    versionList.value = (await getChapterVersions(pid, versionsNo.value)).versions || []
+    loadChapters()
+  } catch (e) {
+    ElMessage.error(e?.message || '切换版本失败')
+  }
 }
 function addCharacter() {
   worldDraft.value.characters.push({ name: "", role: "", desc: "", appearance: "", personality: "", desire: "", wound: "", arc: "", speech_style: "", relations: "" })
@@ -792,6 +849,14 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
 .ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }
 .ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }
+.ver-list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow: auto; }
+.ver-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #e4e7ed; border-radius: 8px; }
+.ver-item.active { border-color: #67c23a; background: #f0f9eb; }
+.ver-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ver-no { font-weight: 600; font-size: 14px; }
+.ver-words { color: #909399; font-size: 12px; }
+.ver-ts { color: #909399; font-size: 12px; }
+.ver-tip { margin-top: 12px; color: #909399; font-size: 12px; line-height: 1.6; }
 .ch-item:hover { background: #f5f7fa; }
 .ch-no { color: #909399; font-size: 13px; width: 60px; }
 .ch-title { flex: 1; }

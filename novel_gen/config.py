@@ -61,6 +61,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "user_memory_inject_top", 5, "用户级跨书纪律注入 Top-N 条数：按次数×跨书数排序取前 N 条注入正文 prompt"),
     FeatureFlag("memory", "reader_ledger", True, "读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）：写章时注入读者已知/在等/误认、临期/超时伏笔收束提醒、爽点节奏缺口提示；False=全部关闭（不读不写不注入）"),
     FeatureFlag("memory", "foreshadow_lead", 3, "伏笔临期窗口：距 reveal_ch 提前 N 章开始注入'本章应开始收束该伏笔'（REQ-reader-ledger）"),
+    FeatureFlag("memory", "chapter_commit", True, "章节原子提交+投影一致性（REQ-借鉴webnovel A/B）：每章收尾把章后入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕、同章幂等，并写 projection_log 供一致性体检；False=回退原分散调用（行为不变）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -272,6 +273,7 @@ class NovelConfig:
     user_memory_inject_top: int = feature_default("user_memory_inject_top")            # 用户级跨书纪律注入 Top-N 条数
     reader_ledger: bool = feature_default("reader_ledger")                             # 读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）
     foreshadow_lead: int = feature_default("foreshadow_lead")                          # 伏笔临期窗口：距 reveal_ch 提前 N 章开始收束提醒
+    chapter_commit: bool = feature_default("chapter_commit")                           # 章节原子提交+投影一致性（REQ-借鉴webnovel）：每章收尾统一提交 + projection_log
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）

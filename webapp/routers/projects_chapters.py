@@ -74,10 +74,50 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
                     break
     except Exception:
         pass
+    # REQ-章节版本化：返回该章当前选中版本号（重写/质检重写已自动追加新版本；
+    # kept_previous 内容未变则不追加，version 保持原选中版本）
+    _version = 0
+    try:
+        for _v in store.list_versions(chapter.no):
+            if _v.get("selected"):
+                _version = _v.get("v") or 0
+                break
+    except Exception:
+        _version = 0
     return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
             "summary": chapter.summary, "words": len(chapter.content),
             "balance_warning": stop_reason if should_stop else "",
-            "quality": quality, "kept_previous": kept_previous}
+            "quality": quality, "kept_previous": kept_previous, "version": _version}
+
+
+@app.get("/api/projects/{project_id}/chapters/{no}/versions")
+def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_require_user)):
+    """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    return {"no": no, "versions": store.list_versions(no)}
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/versions/{v}/select")
+def select_chapter_version(project_id: str, no: int, v: int,
+                           user: dict = Depends(_require_user)):
+    """回退/选中章节版本（REQ-章节版本化）：把 v{v} 复制回当前选中（HEAD）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需切换版本请先解锁")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    ch = store.select_version(no, v)
+    if ch is None:
+        raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在（可能已被淘汰）")
+    # P2（REQ §5 验收10）：回退后账本为旧版本投影，仅提示，不重放
+    logger.info("章节版本回退: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
+    return {"no": no, "selected_version": v, "words": len(ch.content)}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")
@@ -314,7 +354,8 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     except Exception:
         logger.exception("good 账本人工修订入账失败（降级跳过）: project=%s no=%d",
                          project_id, no)
-    store.save_chapter(ch)
+    # REQ-章节版本化：用户编辑保存 = 追加一个 source=user 版本（不覆盖旧版）
+    store.save_chapter(ch, source="user")
     if ch.summary:
         store.append_summary(no, ch.summary)
     logger.info("章节编辑: uid=%d project=%s no=%d title=%s words=%d",
@@ -324,7 +365,8 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
 
 @app.post("/api/projects/{project_id}/regenerate-from/{no}")
 def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user)):
-    """从第 no 章重新生成：删除 no 及之后所有章节与记忆，然后从 no 重新开跑。"""
+    """从第 no 章重新生成（REQ-章节版本化，方案 a）：从 no 起为每章追加候选版本，
+    旧版本全部保留不删，由用户逐章选择/回退最优版本。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     outline = store.load_outline()
@@ -347,12 +389,9 @@ def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user
             _RUNS.pop(project_id, None)
         raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
     try:
-        # 删除 no 及之后章节 + 对应记忆
-        for ch in store.list_chapters():
-            if ch.no >= no:
-                p = store.chapter_path(ch.no)
-                if p.exists():
-                    p.unlink()
+        # REQ-章节版本化（方案 a）：不再删除 no 及之后章节文件（保留全部历史版本），
+        # 改为从 no 起逐章追加候选版本（save_chapter 自动追加），旧版保留，由用户逐章选择/回退。
+        # 仅清空 no 及之后的记忆摘要（正文版本不受影响，重生成后 append_summary 重新累积）。
         summaries = [x for x in store.load_summaries() if int(x.get("no", 0)) < no]
         store._write_json(store.memory_path(), summaries)
 

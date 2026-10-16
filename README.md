@@ -451,7 +451,7 @@ python -m pytest tests/ -v
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗、结算（P0）、加密（P0）、防重演闭环、揭示跟踪等。
 
-> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **680 pytest 全绿**。
+> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **707 pytest 全绿**。
 
 ## 说明与边界
 
@@ -544,6 +544,11 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-15**：第二十次合并（devtest → master，8783cca，**未部署**）——**正文去机械感优化（REQ-写作正向引导 一/二/三期）**：把正文生成从"禁令驱动"改为"正向引导驱动"（用户诊断：样章"不像人写的、不够直白、读着费脑子"，禁令叠罗汉矫枉过正）。
+  - **一期（feat/positive-guidance-writing）**：场景规则 23→10 条（禁令改正向引导）；机制数字注入"权威当前值·只抄不推"（panel_baseline）；AI 腔词表从"禁止"改"警示 + 密度意识"（明喻用在刀刃上、零直白检测）；writer.md 写入"演七分说三分""白描是最高级写法"。验收：全书 11 章重生成均分 95.5。
+  - **二期（feat/volume-cards）**：卷→章→场景三级目标传导（`Outline.volume_cards` 卷卡：goal/obstacle/climax/legacy）+ 场景字数预算收敛（1200 字/场景基准）；机制权威基线三路径补盲（场景 / `_fallback_whole_chapter` 整章回退 / `_rewrite_*` 重写均注入"承接链只抄不推"）；账本双源反推（deaths = max(蚀化差, decrease 字段)）+ 首章初始值回落；寸字段提取收紧为累计格式。验收：全书重生成均分 79.1-85.9（vs master 63.2）。**决策：章节字数超长不触发整章级 LLM 处理（超长≠写得差，浪费 token）**。
+  - **三期（feat/good-memory）**：踩坑 + 正向样例双账本（REQ 5.6）——`BookMemory` 新增 goods 账本：高分章（质检 ≥85 且无大改）段落自动入账（`record_good`）+ 用户编辑保存免质检入账（`record_good_manual`，webapp 触发），按手法确定性分类（对话-潜台词/战斗-动作链/情绪-白描+点破/环境-物象白描/叙事-节奏），每类 ≤5 条、总量 ≤50、每条 ≤300 字；场景生成（stages memory_context）与重写（quality `_memory_block`）双路径注入 `good_block`（标注"参考质感非内容来源"防抄袭）；`record_taste` 联动形成"写得好→被学习→写得更好"闭环。验收：全书重生成均分 **81.4、通过 9/11**（5 章满分；ch1 从 45→100），vs 二期 79.1/7、master 63.2/6 提升确定。
+  - 回归：全量 **707 pytest 全绿**（P0/P1 433 全绿；新增 volume_cards/mechanism_registry/good 账本用例）。部署：已合并 master（8783cca），服务器发版待执行。
 - **2026-10-14**：第十九次发版（master 411a466）——**创作设计层 + 读者体验层 + 产品化门禁工具三连发**（devtest 三功能合并）。
   - **一期·章级设计卡接线（chapter_design）**：新增 `pipeline/chapter_design.py`（纯 Python 前置、零 LLM），从章级 conflict/emotion + `World.conflict_matrix` 派生逐章 A1–A7 设计卡（关系模板/对白功能/戏份级别等），落 `chapter_design.json`，注入 `stages.write` 的 memory_context（一处拼接覆盖场景/整章/回退三条写章路径）；并修复 `Outline.key_nodes/volume_pacing/emotion_curve` 因大纲复用短路从不填充的数据源缺口（`_backfill_pacing` 幂等补三字段）。开关 `chapter_design`（默认 True）。
   - **二期·读者认知账本（reader_ledger）**：新增 `pipeline/reader_ledger.py`（零 LLM 确定性）三块独立账本——`reader_knowledge.json`（读者已知/在等/被误导三态）、`foreshadow_commitment.json`（伏笔 planted→临期/超时/回收状态机）、`payoff_quota.json`（爽文「3 章一小爽」节奏配额）；写章时注入读者视角约束，回收检测确定性（正文命中伏笔名/内容才标记回收，防假回收）。开关 `reader_ledger`（默认 True）。

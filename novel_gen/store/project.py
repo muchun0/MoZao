@@ -41,6 +41,10 @@ def _safe_name(name: str) -> str:
     return cleaned or "novel"
 
 
+# REQ-章节版本化：每章正文版本上限，超出淘汰最旧（HEAD/当前选中版本永不被淘汰）。
+_CHAPTER_VERSION_LIMIT = 15
+
+
 class ProjectStore:
     def __init__(self, project_dir: Path):
         self.dir = Path(project_dir)
@@ -331,10 +335,121 @@ class ProjectStore:
 
     # ---------- 章节 ----------
     def chapter_path(self, no: int) -> Path:
+        """当前选中版本（HEAD）的章节文件——load_chapter/list_chapters 照常读它。"""
         return self.chapters_dir / f"{no:03d}.json"
 
-    def save_chapter(self, chapter: Chapter) -> None:
-        self._write_json(self.chapter_path(chapter.no), chapter.to_dict())
+    def chapter_version_path(self, no: int, ver: int) -> Path:
+        """章节历史版本存档文件 chapters/<no>/v<k>.json。"""
+        return self.chapters_dir / f"{no:03d}" / f"v{ver}.json"
+
+    # ---------- 章节版本库（REQ-章节版本化） ----------
+    def chapter_versions_path(self) -> Path:
+        return self.dir / "chapter_versions.json"
+
+    def load_chapter_versions(self) -> dict:
+        """返回 {章号: {versions:[...], selected:k, history:[{v,ts,source}]}}；无则空 dict。"""
+        d = self._read_json(self.chapter_versions_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_chapter_versions(self, data: dict) -> None:
+        self._write_json(self.chapter_versions_path(), data)
+
+    def save_chapter(self, chapter: Chapter, source: Optional[str] = None,
+                     version_limit: Optional[int] = None) -> Optional[int]:
+        """章节正文版本化保存（REQ-章节版本化）。
+
+        - `chapters/<no>.json` = 当前选中版本（HEAD），`load_chapter`/`list_chapters` 照常读；
+        - 历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引；
+        - 内容与 HEAD 相同 → 幂等不追加，返回 None；
+        - 内容不同 → 追加 `v{next}`（旧 HEAD 存档进版本库）、更新 HEAD 与 selected，返回 next；
+        - 存量单版本章节（无版本索引）首次保存时把当前 HEAD 存档为 v1(legacy)，新内容为 v2；
+        - 每章版本超 `version_limit`（默认 15）淘汰最旧（跳过 selected，HEAD 不淘汰）。
+        """
+        no = chapter.no
+        head_d = self._read_json(self.chapter_path(no), None)
+        head_content = head_d.get("content") if isinstance(head_d, dict) else None
+        new_content = getattr(chapter, "content", "")
+        if head_content is not None and new_content == head_content:
+            return None  # 幂等：内容未变不追加
+        src = source or getattr(chapter, "source", "ai") or "ai"
+        limit = version_limit if version_limit and version_limit > 0 else _CHAPTER_VERSION_LIMIT
+
+        index = self.load_chapter_versions()
+        rec = index.get(str(no))
+        if not isinstance(rec, dict):
+            rec = {"versions": [], "selected": None, "history": []}
+        versions = [v for v in rec.get("versions", []) if isinstance(v, int)]
+        history = list(rec.get("history", [])) if isinstance(rec.get("history"), list) else []
+
+        if not versions and head_content is not None:
+            # 存量单版本章节初始化：旧 HEAD 存档为 v1(legacy)，新内容为 v2
+            self._write_json(self.chapter_version_path(no, 1), head_d)
+            versions.append(1)
+            history.append({"v": 1, "ts": 0, "source": "legacy"})
+            next_v = 2
+        elif not versions:
+            next_v = 1  # 全新章节，HEAD 即 v1
+        else:
+            next_v = max(versions) + 1
+
+        # 写版本存档 + 写 HEAD（当前选中）
+        self._write_json(self.chapter_version_path(no, next_v), chapter.to_dict())
+        self._write_json(self.chapter_path(no), chapter.to_dict())
+        versions.append(next_v)
+        history.append({"v": next_v, "ts": int(time.time()), "source": src})
+        rec = {"versions": versions, "selected": next_v, "history": history}
+
+        # 版本上限淘汰最旧（跳过 selected，永不淘汰 HEAD）
+        while len(rec["versions"]) > limit:
+            oldest = min(v for v in rec["versions"] if v != rec["selected"])
+            p = self.chapter_version_path(no, oldest)
+            if p.exists():
+                p.unlink()
+            rec["versions"].remove(oldest)
+            rec["history"] = [h for h in rec["history"] if h.get("v") != oldest]
+
+        index[str(no)] = rec
+        self.save_chapter_versions(index)
+        return next_v
+
+    def load_chapter_version(self, no: int, ver: int) -> Optional[Chapter]:
+        d = self._read_json(self.chapter_version_path(no, ver), None)
+        return Chapter.from_dict(d) if d else None
+
+    def select_version(self, no: int, ver: int) -> Optional[Chapter]:
+        """回退/选中某版本：把 v{ver} 复制回 HEAD（chapters/<no>.json）并更新 selected。"""
+        ch = self.load_chapter_version(no, ver)
+        if ch is None:
+            return None
+        index = self.load_chapter_versions()
+        rec = index.get(str(no))
+        if isinstance(rec, dict) and ver in (rec.get("versions") or []):
+            rec["selected"] = ver
+            index[str(no)] = rec
+            self.save_chapter_versions(index)
+        self._write_json(self.chapter_path(no), ch.to_dict())
+        return ch
+
+    def list_versions(self, no: int) -> list[dict]:
+        """返回该章版本列表（升序），每项 {v, selected, source, ts, words}。"""
+        index = self.load_chapter_versions()
+        rec = index.get(str(no)) or {}
+        versions = [v for v in (rec.get("versions") or []) if isinstance(v, int)]
+        selected = rec.get("selected")
+        history = {h.get("v"): h for h in (rec.get("history") or [])
+                   if isinstance(h, dict)}
+        out: list[dict] = []
+        for v in sorted(versions):
+            ch = self.load_chapter_version(no, v)
+            h = history.get(v) or {}
+            out.append({
+                "v": v,
+                "selected": (v == selected),
+                "source": h.get("source", ""),
+                "ts": h.get("ts"),
+                "words": len(ch.content) if ch else 0,
+            })
+        return out
 
     def load_chapter(self, no: int) -> Optional[Chapter]:
         d = self._read_json(self.chapter_path(no), None)

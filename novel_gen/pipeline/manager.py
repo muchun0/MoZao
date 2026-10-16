@@ -452,49 +452,54 @@ class NovelPipeline:
 
         return chapter
 
-    def _update_character_states(self, no: int, silent: bool = False) -> None:
-        """P0-2：每章正文落盘后更新人物动态状态快照（失败降级，不阻塞生成）。"""
+    def _update_character_states(self, no: int, silent: bool = False) -> bool:
+        """P0-2：每章正文落盘后更新人物动态状态快照。成功/正常跳过返回 True；
+        异常返回 False（失败留痕到章节提交记录，不阻塞生成）。"""
         try:
             from .character_state import extract_character_states
             world = self.store.load_world()
             ch = self.store.load_chapter(no)
             if not world or not ch or not ch.content:
-                return
+                return True
             old = self.store.load_character_states()
             new = extract_character_states(self.llm, self.cfg, world, ch, no, old)
             self.store.save_character_states(new)
+            return True
         except Exception:
             logger.exception("人物状态更新失败（降级跳过）: no=%d", no)
+            return False
 
-    def _update_chapter_state(self, no: int, silent: bool = False) -> None:
+    def _update_chapter_state(self, no: int, silent: bool = False) -> bool:
         """REQ-章内自洽与机制账本：每章落盘后抽取章末状态（机制数字/人物生死/
-        物品/时间/事实），供下一章承接；失败降级，不阻塞生成。"""
+        物品/时间/事实），供下一章承接。成功/正常跳过返回 True；异常返回 False。"""
         try:
             from .chapter_state import extract_chapter_state
             ch = self.store.load_chapter(no)
             if not ch or not ch.content:
-                return
+                return True
             world = self.store.load_world()
             state = extract_chapter_state(self.llm, self.cfg, world, ch, no,
                                           old_state=self.store.load_chapter_state())
             if state:
                 self.store.save_chapter_state(state)
+            return True
         except Exception:
             logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
+            return False
 
-    def _update_reveal_status(self, no: int, silent: bool = False) -> None:
+    def _update_reveal_status(self, no: int, silent: bool = False) -> bool:
         """REQ-揭示执行跟踪：每章正文落盘后，检测 world_reveals 真相锚定词是否被
-        本章正文写出，累积命中章号到 reveal_status.json（供提前剧透/到点未揭示判定）；
-        失败降级，不阻塞生成。"""
+        本章正文写出，累积命中章号到 reveal_status.json（供提前剧透/到点未揭示判定）。
+        成功/正常跳过返回 True；异常返回 False。"""
         try:
             from .chapter_state import detect_reveal_hits
             world = self.store.load_world()
             ch = self.store.load_chapter(no)
             if not world or not ch or not ch.content:
-                return
+                return True
             reveals = getattr(world, "world_reveals", None) or []
             if not reveals:
-                return
+                return True
             status = self.store.load_reveal_status()
             for i, r in enumerate(reveals):
                 key = str(i)
@@ -510,18 +515,55 @@ class NovelPipeline:
                         hits.append(no)
                 status[key] = item
             self.store.save_reveal_status(status)
+            return True
         except Exception:
             logger.exception("揭示执行跟踪失败（降级跳过）: no=%d", no)
+            return False
 
-    def _update_reader_ledger(self, no: int, silent: bool = False) -> None:
+    def _update_reader_ledger(self, no: int, silent: bool = False) -> bool:
         """REQ-reader-ledger：每章落盘后推进伏笔承诺状态机（回收检测）+ 爽点配额 tally。
 
-        失败降级留痕，不阻塞生成主流程（与 _update_reveal_status 同模式）。"""
+        成功返回 True；异常返回 False（失败留痕到章节提交记录，不阻塞生成）。"""
         try:
             from .reader_ledger import ReaderLedger
             ReaderLedger(self.store, self.cfg).update_post_chapter(no)
+            return True
         except Exception:
             logger.exception("读者认知账本章末推进失败（降级跳过）: no=%d", no)
+            return False
+
+    def _commit_after_chapter(self, no: int, silent: bool = False) -> None:
+        """REQ-借鉴webnovel A：把每章收尾的章后入账收敛为一次统一提交。
+
+        开关 chapter_commit=False 时回退原分散调用（各动作自带开关与降级，行为不变）；
+        开启时经 ChapterCommitter 统一编排 4 个账本动作——先落提交基线、失败留痕到
+        chapter_commit.json、同章幂等，并写 projection_log 供一致性体检。失败不阻塞生成。
+        """
+        if not getattr(self.cfg, "chapter_commit", True):
+            # 回退：保持原分散调用语义（各动作自带开关与降级）
+            if getattr(self.cfg, "character_state_tracking", True):
+                self._update_character_states(no, silent=silent)
+            if getattr(self.cfg, "chapter_state_tracking", True):
+                self._update_chapter_state(no, silent=silent)
+            if getattr(self.cfg, "reveal_tracking", True):
+                self._update_reveal_status(no, silent=silent)
+            if getattr(self.cfg, "reader_ledger", True):
+                self._update_reader_ledger(no, silent=silent)
+            return
+        committer = getattr(self, "_committer", None)
+        if committer is None:
+            from .commit import ChapterCommitter
+            committer = ChapterCommitter(self.store, self.cfg, self.trace)
+            committer.add_action("character_states", self._update_character_states,
+                                 enabled=getattr(self.cfg, "character_state_tracking", True))
+            committer.add_action("chapter_state", self._update_chapter_state,
+                                 enabled=getattr(self.cfg, "chapter_state_tracking", True))
+            committer.add_action("reveal_status", self._update_reveal_status,
+                                 enabled=getattr(self.cfg, "reveal_tracking", True))
+            committer.add_action("reader_ledger", self._update_reader_ledger,
+                                 enabled=getattr(self.cfg, "reader_ledger", True))
+            self._committer = committer
+        committer.commit_chapter(no, silent=silent)
 
     def _report_reveal_issues(self, silent: bool = False) -> None:
         """REQ-揭示执行跟踪：全书完成后汇总揭示执行问题（提前剧透 fatal /
@@ -743,18 +785,8 @@ class NovelPipeline:
         for no in range(done + 1, total + 1):
             self.write_chapter(no, silent=silent)
             self._mark_state("writing", last_chapter=no)
-            # P0-2：每章正文落盘后更新人物动态状态快照（可开关，失败降级不阻塞）
-            if getattr(self.cfg, "character_state_tracking", True):
-                self._update_character_states(no, silent=silent)
-            # REQ-章内自洽与机制账本：每章落盘后抽取章末状态供下一章承接（可开关，失败降级）
-            if getattr(self.cfg, "chapter_state_tracking", True):
-                self._update_chapter_state(no, silent=silent)
-            # REQ-揭示执行跟踪：每章落盘后检测 world_reveals 真相锚定词是否被正文写出
-            if getattr(self.cfg, "reveal_tracking", True):
-                self._update_reveal_status(no, silent=silent)
-            # REQ-reader-ledger：每章落盘后推进伏笔承诺状态机（回收检测）+ 爽点配额 tally
-            if getattr(self.cfg, "reader_ledger", True):
-                self._update_reader_ledger(no, silent=silent)
+            # REQ-借鉴webnovel A：章后入账收敛为一次统一提交（落基线/失败留痕/幂等/投影日志）
+            self._commit_after_chapter(no, silent=silent)
             # 高质量模式：每 verify_every 章跑一次全局一致性校验（REQ-token优化 P1-5，原每 3 章），结果只影响后续章节
             _v_every = max(1, int(getattr(self.cfg, "verify_every", 5) or 5))
             if getattr(self.cfg, 'high_quality_mode', False) and no % _v_every == 0 and no < total:

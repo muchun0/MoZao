@@ -568,6 +568,51 @@ class ProjectStore:
         data[str(chapter_no)] = dict(result or {})
         self._write_json(self.beat_gate_path(), data)
 
+    # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
+    def chapter_commit_path(self) -> Path:
+        return self.dir / "chapter_commit.json"
+
+    def load_chapter_commit(self) -> Optional[dict]:
+        """返回 {chapters: {章号: {status, done[], failed[]}}, updated_ch}；无提交返回 None。"""
+        d = self._read_json(self.chapter_commit_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_chapter_commit(self, data: dict) -> None:
+        """整体覆盖保存（提交基线/进度/结果，唯一权威）。"""
+        self._write_json(self.chapter_commit_path(), data)
+
+    def projection_log_path(self) -> Path:
+        return self.dir / "projection_log.jsonl"
+
+    def load_projection_log(self) -> list[dict]:
+        """返回投影日志全部条目（JSONL，逐行容错解析）。"""
+        path = self.projection_log_path()
+        if not path.exists():
+            return []
+        out: list[dict] = []
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                out.append(json.loads(ln))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return out
+
+    def append_projection_log(self, entry: dict) -> None:
+        """追加一条投影日志（读全量 + 原子写回，与 _write_json 一致防半截）。"""
+        entries = self.load_projection_log()
+        entries.append(dict(entry or {}))
+        path = self.projection_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in entries) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+
     # ---------- 三分支续写草稿（三期 F3，预览模式不写正文章节） ----------
     def continue_drafts_path(self) -> Path:
         return self.dir / "continue_drafts.json"

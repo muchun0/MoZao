@@ -29,7 +29,7 @@
 | 创作设计与读者体验 | **章级设计卡（chapter_design）**：从章级 conflict/emotion + 冲突矩阵派生逐章 A1–A7 设计卡注入写章（零 LLM）；**读者认知账本（reader_ledger）**：读者已知/在等/被误导三态 + 伏笔临期/超时/回收状态机 + 爽点节奏配额，写章注入读者视角约束（零 LLM） |
 | 产品化工具（工具面板） | **场景体检**：对已生成章节做字数/事件推进/情节重演/章首承接/章末钩子 5 维度确定性体检并给修复建议（对标 Sudowrite Scene Inspector）；**三分支续写**：一次生成 3 方向（冲突升级/埋伏笔/转折）续写候选，选一条复制使用（预览模式不自动改正文）；**生成过程（思维链）**：只读展示本章「计划→产出→校验」链条；**Beat 覆盖度门禁**：正文对大纲逐拍覆盖率自检（绿/黄/红标） |
 | 封面 | 硅基流动 Tongyi-MAI/Z-Image-Turbo 一体封面；每本限 5 次 |
-| 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆 |
+| 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆；**章节版本化**（REQ-章节版本化，git 式多版本保留）：重写/重生成追加新版本、旧版保留，阅读器「版本」弹窗逐章选择/回退最优版本（`GET /chapters/{no}/versions`、`POST /chapters/{no}/versions/{v}/select`） |
 | Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用）；技能与风格角色管理入口已从项目工具面板迁至**用户工作台**（/workspace） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
 | 用户工作台 | `/workspace` 6 tab：概览（余额/可退/返佣/下级指标）/ 账户与账单（充值流水/退款申请）/ 推广返佣（邀请码绑定/下级列表/返佣明细）/ 模型配置（BYOK）/ 我的技能（新建/市场发布安装）/ 风格角色（增删改/挂载技能/参考文风） |
@@ -205,7 +205,7 @@ D:\PythonProjects\DouBao\
 | book_teardown | id, genre, title, summary, content(JSON), source_project, source_type(research/seed/manual), user_id, view_count, status（爆款拆书库） |
 | agent_trace | id, trace_id, user_id, project_id, event, payload(JSON), created_at（全链路快照，质量报表聚合底座 P2-4） |
 
-- 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头
+- 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头；**章节版本化**：`chapters/<no>.json` 为当前选中版本，历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引（每章上限 15、HEAD 不淘汰），`load_chapter`/`list_chapters` 读当前选中版本（对外行为不变）
 - `init_db()` 启动时自动建表 + 增量迁移
 
 ---

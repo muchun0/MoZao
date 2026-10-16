@@ -341,6 +341,22 @@ def test_chapter_writer_lazy_memory_and_injection(store):
     assert "蚀骨蚰" in writer._book_canon()
 
 
+def test_chapter_writer_good_block_injection(store):
+    """三期 REQ5.6：ChapterWriter 的 BookMemory 在 good 账本入账后 good_block 非空
+    （write() memory_context 组装调用 good_block，场景/整章两路径注入）。"""
+    cfg = store.load_config()
+    llm = MagicMock()
+    writer = ChapterWriter(cfg, llm, store, Memory(store, 5))
+    mem = writer._memory()
+    assert mem.good_block() == ""      # 空账本不注入
+    mem.record_good_manual(1, _good_text())
+    block = mem.good_block(top_n=2)
+    assert "写得好的片段" in block
+    assert "参考质感" in block
+    assert "- 第1章" in block
+    assert "不是内容来源" in block
+
+
 @pytest.mark.p1
 def test_book_memory_disabled_skips_all(store):
     """book_memory=False → record/注入全跳过（管线行为与 P0-5 一致）。"""

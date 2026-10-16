@@ -10,7 +10,7 @@ REQ-scene-plan-align §7.2 根因 C/D/E）。
 - _lcs_len：最长公共子序列长度（序列很短，O(n*m) DP 足够）
 - _beats_rewrite_detected：新场景节拍序列 vs 已完成场景节拍序列 → 是否重演
   （LCS ≥ 4 且 LCS/较短序列 ≥ 0.7：完整循环重演判据；正常单事件 2-3 拍不触发）
-- _beat_cycle_issues：整章正文 → 同一长度 ≥4 节拍子序列出现 ≥2 次（质检情节级重演检测）
+- _beat_cycle_issues：整章正文 → 同一长度 ≥4 节拍子序列出现 ≥2 次且共享 ≥2 种强情节拍（质检情节级重演检测）
 """
 from __future__ import annotations
 
@@ -24,8 +24,10 @@ _BEAT_DICT = {
     "戳穿": "戳穿", "识破": "戳穿", "看穿": "戳穿",
     "失控": "失控", "白光": "失控", "炸开": "失控", "爆裂": "失控",
     "咽气": "死亡", "毙命": "死亡", "断气": "死亡", "被撕": "死亡", "贯穿": "死亡",
-    "死亡": "死亡", "倒下": "死亡",
-    "复活": "复活", "醒来": "复活", "睁眼": "复活", "爬起": "复活", "回神": "复活",
+    "死亡": "死亡",
+    # 注意：'倒下' 不映射死亡——2026-10-15 ch3 实证影子/障碍物'倒下'被误抽为
+    # 死亡拍，污染节拍序列凑出假循环（死亡有咽气/毙命/断气/被撕/贯穿 5 词兜底）
+    "复活": "复活", "醒来": "复活", "睁开眼": "复活", "睁眼": "复活", "爬起": "复活", "回神": "复活",
     "面板": "面板", "蚀化": "面板", "蚀痕": "面板",
     "对峙": "对峙", "别动": "对峙", "盯着": "对峙", "冷笑": "对峙", "命大": "对峙",
     "包扎": "包扎", "按住": "包扎", "撕布": "包扎", "止血": "包扎", "换药": "包扎",
@@ -50,6 +52,20 @@ _BEAT_LCS_MIN = 4
 _BEAT_LCS_RATIO = 0.7
 #: 质检情节级检测：整章内同一长度 ≥4 节拍子序列出现 ≥2 次（非重叠）判重演
 _CYCLE_MIN = 4
+#: 章内循环判定：两个循环窗口「共享」的节拍中，强情节拍种数 ≥ 2 才判重演。
+#: 治 2026-10-15 全书复测误报：高频骨架拍（留牌/对峙/离场/石阶/面板）在正常章节
+#: 多次出现（反复摸铜牌/对视/走石阶/面板结算），凑成 ≥4 拍子序列重复被误判为
+#: "同事件循环重演"（ch2/ch3/ch9/ch11 全误报，正文通读无复读）；而 v7/v8 实证的
+#: 章内重演（盘问→戳穿→失控→挡死→死亡→复活完整循环）两个版本共享 6 种强情节拍。
+#: 强情节拍 = 剧情转折/特殊事件拍（非高频骨架拍），循环必须两次都含 ≥2 种才算
+#: "同一事件换措辞重演"；仅骨架拍组合重复（不同事件共享同一行为词）不判。
+_CYCLE_STRONG_BEATS = {
+    "盘问", "戳穿", "失控", "挡死", "死亡", "复活",
+    "结拜", "诊脉", "药包", "翻尸", "装晕", "暗格", "地图",
+}
+_CYCLE_STRONG_MIN = 2
+#: 循环窗口最大长度差：同一事件链重演的两个窗口长度相近（差 ≤2）
+_CYCLE_LEN_DELTA = 2
 
 
 def _extract_beat_sequence(text: str) -> list[str]:
@@ -175,16 +191,42 @@ def _beats_scene_isomorphic(seq: list[str], scene_ledger: list[list[str]]) -> bo
 
 def _beat_cycle_issues(content: str) -> list[dict]:
     """质检 2.12 情节级重演检测（确定性）：整章正文内同一长度 ≥4 节拍序列
-    （非重叠）出现 ≥2 次 = 同事件多版本重演（换措辞循环，文本 n-gram 漏检）。
+    出现 ≥2 次 = 同事件多版本重演（换措辞循环，文本 n-gram 漏检）。
 
-    判定用「子序列」而非「连续子串」：换措辞版本可能插入少量节拍
-    （如 CYCLE_B 在盘问与戳穿间插入'对峙'），连续匹配会漏检——
-    只要后续窗口的 LCS ≥ 0.7×窗口长度即判同一循环再现。
+    双判据（2026-10-15 全书复测校准）：
+    1. 连续子序列判据：同一长度 ≥4 的连续节拍串出现 ≥2 次且串内含 ≥2 种
+       强情节拍（完整循环等长再现；换措辞在序列层即相同序列——CYCLE_A/B、
+       test_inspector 面板死亡复活×6 均命中；ch2 对峙留牌×2 无强拍被拦）。
+    2. 窗口判据（容忍换措辞插入 1-2 拍）：LCS ≥ 0.8×窗口长 + 两窗口长度差
+       ≤2 + 共享强情节拍 ≥2。治 ch11 实证误报：两个不同失控事件被骨架拍
+       （面板/对峙）拼进 6 拍窗口 vs 后续 10 拍窗口——长度差 4、LCS 占比
+       0.67，双判据均拦。
     """
     seq = _extract_beat_sequence(content)
     if len(seq) < _CYCLE_MIN * 2:
         return []
     n = len(seq)
+
+    # 判据1：连续子序列重复（完整循环等长再现）
+    for L in range(_CYCLE_MIN, min(_CYCLE_MIN + 5, n) + 1):
+        seen: dict[tuple, int] = {}
+        for i in range(n - L + 1):
+            t = tuple(seq[i:i + L])
+            seen[t] = seen.get(t, 0) + 1
+        for t, c in seen.items():
+            if c < 2:
+                continue
+            strong = sum(1 for b in set(t) if b in _CYCLE_STRONG_BEATS)
+            if strong < _CYCLE_STRONG_MIN:
+                continue
+            return [{
+                "type": "情节-同事件循环重演",
+                "detail": f"同一情节节拍序列「{'→'.join(t)}」在章内出现 ≥2 次，"
+                          "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
+                "level": "大改",
+            }]
+
+    # 判据2：容忍少量插入的窗口匹配（换措辞版本可能插入 1-2 拍）
     max_win = min(_CYCLE_MIN + 4, n)
     for i in range(n - _CYCLE_MIN + 1):
         for L in range(_CYCLE_MIN, max_win - i + 1):
@@ -193,11 +235,20 @@ def _beat_cycle_issues(content: str) -> list[dict]:
                 win = seq[j:min(j + L + 4, n)]
                 if len(win) < _CYCLE_MIN:
                     continue
-                if _lcs_len(sub, win) >= max(_CYCLE_MIN, int(L * 0.7)):
-                    return [{
-                        "type": "情节-同事件循环重演",
-                        "detail": f"同一情节节拍序列「{'→'.join(sub)}」在章内出现 ≥2 次，"
-                                  "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
-                        "level": "大改",
-                    }]
+                if abs(len(sub) - len(win)) > _CYCLE_LEN_DELTA:
+                    continue
+                if _lcs_len(sub, win) < max(_CYCLE_MIN, int(L * 0.8)):
+                    continue
+                # 共享节拍 = 两个窗口同时出现的节拍（保序交集，近似 LCS 内容）
+                shared = [b for b in sub if b in set(win)]
+                strong = sum(1 for b in set(shared) if b in _CYCLE_STRONG_BEATS)
+                if strong < _CYCLE_STRONG_MIN:
+                    # 仅高频骨架拍重复（不同事件共享行为词），非同一事件换措辞重演
+                    continue
+                return [{
+                    "type": "情节-同事件循环重演",
+                    "detail": f"同一情节节拍序列「{'→'.join(sub)}」在章内出现 ≥2 次，"
+                              "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
+                    "level": "大改",
+                }]
     return []

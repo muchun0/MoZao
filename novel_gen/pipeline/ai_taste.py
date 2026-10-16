@@ -15,7 +15,7 @@ CONNECTIVE_WORDS = [
     "毕竟", "更何况", "由此可见", "换句话说", "换言之",
 ]
 
-# 抽象情绪词直白宣告（应改为动作+微表情，见 _character_depth_rules）
+# 抽象情绪词直白宣告（点破允许：'他怕了'+动作支撑；密度过高=堆砌警示，见 _character_depth_rules）
 EMOTION_WORDS = [
     "愤怒", "震惊", "无奈", "开心", "难过", "恐惧", "兴奋",
     "悲伤", "痛苦", "幸福", "激动", "失望", "害怕", "紧张",
@@ -24,8 +24,12 @@ EMOTION_WORDS = [
 
 # 连接词密度阈值（每千字）
 CONN_DENSITY_LIMIT = 6.0
-# 情绪词密度阈值（每千字）
+# 情绪词密度阈值（每千字）——超限为警示（收敛），非禁词
 EMO_DENSITY_LIMIT = 2.0
+# '像……'明喻密度阈值（每千字）——白描传神很少用比喻，超限为警示（非禁词）
+SIMILE_DENSITY_LIMIT = 2.0
+# 直白点破句式：代词 + 情绪词 + 了/得/极（'他怕了''她恨得发颤'）
+_DIRECT_PATTERN = re.compile(r"(他|她|我|它)(怕|恨|慌|怒|疼|惊|愣|慌|酸|软|麻)[了得极]")
 
 
 def _count(text: str, words: list[str]) -> int:
@@ -74,11 +78,20 @@ def score_ai_taste(text: str) -> int:
         score -= 25
     if _count(text, EMOTION_WORDS) * 1000 / total >= EMO_DENSITY_LIMIT:
         score -= 20
+    if text.count("像") * 1000 / total >= SIMILE_DENSITY_LIMIT:
+        score -= 10
+    if _zero_direct(text):
+        score -= 10
     if _parallel_issue(text):
         score -= 15
     if _para_similar(text):
         score -= 10
     return max(0, min(100, score))
+
+
+def _zero_direct(text: str) -> bool:
+    """零直白：全文无一处直白点破句式（'他怕了'式）——情绪演过头、缺说三分。"""
+    return not _DIRECT_PATTERN.search(text)
 
 
 def ai_taste_issues(text: str, threshold: int = 60) -> list[dict]:
@@ -89,6 +102,7 @@ def ai_taste_issues(text: str, threshold: int = 60) -> list[dict]:
     total = len(text)
     conn = _count(text, CONNECTIVE_WORDS)
     emo = _count(text, EMOTION_WORDS)
+    simile = text.count("像")
     if conn * 1000 / total >= CONN_DENSITY_LIMIT:
         issues.append({
             "type": "AI痕迹-连接词堆砌",
@@ -97,8 +111,20 @@ def ai_taste_issues(text: str, threshold: int = 60) -> list[dict]:
         })
     if emo * 1000 / total >= EMO_DENSITY_LIMIT:
         issues.append({
-            "type": "AI痕迹-情绪词直白",
-            "detail": f"抽象情绪词密度 {emo * 1000 / total:.1f}/千字（'他很愤怒/她很震惊'式直白宣告，应用动作+微表情替代）",
+            "type": "AI痕迹-情绪词堆砌（点破允许）",
+            "detail": f"抽象情绪词密度 {emo * 1000 / total:.1f}/千字——直白点破本身是好的写法（'他怕了'+动作支撑），但密度过高像情绪词连发；多数情绪用动作+微表情承载，点破留给关键节点",
+            "level": "中改",
+        })
+    if simile * 1000 / total >= SIMILE_DENSITY_LIMIT:
+        issues.append({
+            "type": "AI痕迹-明喻过密（警示）",
+            "detail": f"'像……'明喻密度 {simile * 1000 / total:.1f}/千字——白描重在传神、很少用比喻；收敛到 ≤2/千字，其余用动词链直写",
+            "level": "中改",
+        })
+    if _zero_direct(text):
+        issues.append({
+            "type": "AI痕迹-全程演过头（零直白）",
+            "detail": "全文无一处直白点破（'他怕了'式）——情绪只演不说，读者要自己猜；铺垫到位处直接点破，点破处紧跟动作/生理反应作支撑",
             "level": "中改",
         })
     if _parallel_issue(text):

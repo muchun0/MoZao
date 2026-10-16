@@ -336,22 +336,25 @@ class NovelPipeline:
             logger.exception("分章设定卡构建失败（降级为全量注入）")
 
     def _backfill_pacing(self, outline, silent: bool = False):
-        """REQ-chapter-design P1：幂等补齐 outline.key_nodes/volume_pacing/emotion_curve。
+        """REQ-chapter-design P1：幂等补齐 outline.key_nodes/volume_pacing/emotion_curve/volume_cards。
 
         根因（能力评估 2026-10-14 实证）：pacing.plan_outline 只挂在 ArchitectAgent.run_outline，
         而 run_outline 复用短路与 _run_expand_outline 都不调它 → 两真实项目三字段全空。
         plan_outline 本身"只补缺失不覆盖"、零 LLM，重复调用安全。失败降级不阻塞。
+        REQ-写作正向引导 5.5：volume_cards（分卷卡）同走此补齐路径——旧 outline 可能
+        三字段齐全但缺卷卡（老书存量数据），必须一并纳入补齐条件。
         """
         try:
             if outline is None or not getattr(outline, "chapters", None):
                 return outline
             if (getattr(outline, "key_nodes", None) and getattr(outline, "volume_pacing", None)
-                    and getattr(outline, "emotion_curve", None)):
+                    and getattr(outline, "emotion_curve", None)
+                    and getattr(outline, "volume_cards", None)):
                 return outline
             outline, _ = self.architect.pacing.plan_outline(outline)
             self.store.save_outline(outline)
             if not silent:
-                print("[节奏补齐] 已补齐 key_nodes/volume_pacing/emotion_curve")
+                print("[节奏补齐] 已补齐 key_nodes/volume_pacing/emotion_curve/volume_cards")
         except Exception:
             logger.exception("节奏字段补齐失败（降级跳过）")
         return outline
@@ -417,6 +420,9 @@ class NovelPipeline:
     def write_chapter(self, no: int, silent: bool = False) -> Chapter:
         self._enter_scene("chapter")
         outline = self.store.load_outline()
+        # REQ-写作正向引导 5.5：写章前幂等补齐卷卡（老书存量 outline 无 volume_cards
+        # 时，续写/重生成章节也必须吃到卷目标传导；plan_outline 只补缺失，幂等安全）
+        outline = self._backfill_pacing(outline, silent=silent)
         if outline is None or no > len(outline.chapters):
             raise RuntimeError(f"大纲不存在或章节号越界（{no}/{len(outline.chapters) if outline else 0}）")
         plan = outline.chapters[no - 1]

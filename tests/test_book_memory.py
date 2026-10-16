@@ -341,6 +341,22 @@ def test_chapter_writer_lazy_memory_and_injection(store):
     assert "蚀骨蚰" in writer._book_canon()
 
 
+def test_chapter_writer_good_block_injection(store):
+    """三期 REQ5.6：ChapterWriter 的 BookMemory 在 good 账本入账后 good_block 非空
+    （write() memory_context 组装调用 good_block，场景/整章两路径注入）。"""
+    cfg = store.load_config()
+    llm = MagicMock()
+    writer = ChapterWriter(cfg, llm, store, Memory(store, 5))
+    mem = writer._memory()
+    assert mem.good_block() == ""      # 空账本不注入
+    mem.record_good_manual(1, _good_text())
+    block = mem.good_block(top_n=2)
+    assert "写得好的片段" in block
+    assert "参考质感" in block
+    assert "- 第1章" in block
+    assert "不是内容来源" in block
+
+
 @pytest.mark.p1
 def test_book_memory_disabled_skips_all(store):
     """book_memory=False → record/注入全跳过（管线行为与 P0-5 一致）。"""
@@ -542,3 +558,86 @@ def test_parse_cn_number():
     assert _parse_cn_number("37寸") == 37
     assert _parse_cn_number("无数字") == 0
     assert _parse_cn_number("") == 0
+
+
+# ---------- REQ-写作正向引导 5.6：good 账本（正向样例双账本） ----------
+
+def _good_text():
+    return (
+        "他下颌绷紧，手背青筋一点点鼓了起来，一个字都没回。\n"
+        "他怕了。他认得这种感觉——上次腿被打断那夜，冷也是这么冷。\n"
+        "“你在撒谎。”她没看他，指节在桌面上敲了三下。\n"
+        "油灯把影子拉得很长，铁匠铺的灰落了一层，风从门缝里钻进来，"
+        "带着潮锈的气味。\n"
+        "他掀开闸门，扑进烟尘，一把攥住那截铁链，猛地往回拽。"
+    )
+
+
+def test_record_good_high_score_chapter(store):
+    mem = _memory(store)
+    n = mem.record_good(1, _good_text(), 90, [])
+    assert n > 0
+    samples = mem.load()["goods"]["samples"]
+    assert len(samples) == n
+    # 各类都有分类（对话-潜台词 / 情绪-白描+点破 / 环境-物象白描 / 战斗-动作链）
+    cats = {s["cat"] for s in samples}
+    assert "对话-潜台词" in cats
+    assert "情绪-白描+点破" in cats
+    assert "战斗-动作链" in cats
+    assert all(int(s["src_ch"]) == 1 for s in samples)
+
+
+def test_record_good_ignores_low_score_or_big_issue(store):
+    mem = _memory(store)
+    assert mem.record_good(1, _good_text(), 84, []) == 0
+    assert mem.record_good(2, _good_text(), 90,
+                           [{"type": "机制数字-方向违规", "level": "大改"}]) == 0
+    assert mem.load()["goods"]["samples"] == []
+
+
+def test_record_good_per_chapter_dedupe_and_capacity(store):
+    mem = _memory(store)
+    # 同章同类型只入 1 条
+    assert mem.record_good(1, _good_text(), 90, []) > 0
+    n1 = len(mem.load()["goods"]["samples"])
+    mem.record_good(1, _good_text(), 95, [])
+    assert len(mem.load()["goods"]["samples"]) == n1
+    # 每类容量 ≤5：连喂 10 章同类型，该类仍 ≤5
+    for ch in range(2, 12):
+        mem.record_good(ch, _good_text(), 90, [])
+    samples = mem.load()["goods"]["samples"]
+    from collections import Counter
+    counts = Counter(s["cat"] for s in samples)
+    assert all(v <= 5 for v in counts.values())
+    assert len(samples) <= 50
+
+
+def test_good_block_empty_and_injected(store):
+    mem = _memory(store)
+    assert mem.good_block() == ""
+    mem.record_good(1, _good_text(), 90, [])
+    block = mem.good_block(top_n=2)
+    assert "写得好的片段" in block
+    assert "参考质感" in block
+    assert block.count("- 第1章") <= 2
+
+
+def test_good_block_disabled(store):
+    cfg = store.load_config()
+    cfg.book_memory = False
+    mem = BookMemory(store, cfg)
+    mem.record_good(1, _good_text(), 90, [])
+    assert mem.good_block() == ""
+
+
+def test_record_good_manual_no_score_condition(store):
+    mem = _memory(store)
+    # 用户人工修订：免质检高分条件直接入账（用户认可 = 好文风）
+    assert mem.record_good_manual(3, _good_text()) > 0
+    samples = mem.load()["goods"]["samples"]
+    assert all(int(s["src_ch"]) == 3 for s in samples)
+    assert all(int(s["score"]) == 100 for s in samples)
+    # 短段落（<20 字）不入账
+    assert mem.record_good_manual(4, "他走了。") == 0
+
+

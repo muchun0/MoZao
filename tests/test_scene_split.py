@@ -500,16 +500,16 @@ def test_scene_prompt_prevention_rules():
     scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
              "anchors": [], "target_words": 1200, "final_state": "面板 2/3，蚀痕已越肘弯"}
     _, user = scene_prompt(cfg, 1, "第一章", 1, scene, "前情记忆", "", "")
-    assert "机制数字结算时机" in user                   # 死亡瞬间 vs 复活后 数字口径
-    assert "术语锁定" in user                           # 禁止'光盾'变'命执盾'
+    assert "机制数字结算（硬约束）" in user             # 死亡瞬间 vs 复活后 数字口径
+    assert "术语与状态口径" in user                     # 禁止'光盾'变'命执盾'
     assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
-    assert "死亡多样化" in user                         # 连续死亡死因不同
-    assert "面板显示纪律" in user                       # 数字只在结算瞬间出现一次
-    assert "状态度量单一口径" in user                   # 蚀痕累积口径，禁止多处重新计量
+    assert "死因必须不同" in user                       # 连续死亡死因不同
+    assert "面板数字只出现一次且即时结算" in user       # 数字只在结算瞬间出现一次
+    assert "累积口径" in user                           # 蚀痕累积口径，禁止多处重新计量
     assert "增长量只用" in user                         # 蚀痕增长只用'寸'，禁'三指/一指宽'
-    assert "角色身份全局锁定" in user                   # 苏妄言青袍短发不得第二套描述
-    assert "摘要覆盖最终状态" in user                   # 摘要写最终结算数字，不写开篇状态
-    assert "已发生事件禁止重复" in user                 # 本章已发生事件不得再次描写（两版本）
+    assert "外貌/服装/代称全局唯一" in user             # 苏妄言青袍短发不得第二套描述
+    assert "写本章最终结算后的面板状态" in user         # 摘要写最终结算数字，不写开篇状态
+    assert "禁止再次描写同一事件" in user               # 本章已发生事件不得再次描写（两版本）
     assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入（防蚀痕无增量）
 
 

@@ -75,6 +75,7 @@ def _empty() -> dict:
         "pitfalls": [],
         "taste": {"chapters": []},
         "state": {"chapters": [], "erosion_start": 0},
+        "goods": {"samples": []},
     }
 
 
@@ -340,6 +341,155 @@ class BookMemory:
         })
         data["taste"]["chapters"] = chapters[-20:]  # 只留最近 20 章，防膨胀
         self.save()
+
+    # ---------- good 账本（REQ-写作正向引导 5.6：踩坑 + 正向样例双账本）----------
+    # 用户方向①「告诉 AI 怎么写是好的」的落地：只记"什么不行"（pitfalls）没有
+    # "什么好"——高分章（质检 ≥85 分且无大改）的段落按手法分类沉淀为正向样例，
+    # 场景生成/重写注入「本作写得好的片段（参考质感，非内容来源）」，形成
+    # 写得好 → 被学习 → 写得更好 的闭环。写入零额外 LLM（分类用确定性规则）。
+    # 容量约束：每类 ≤5 条、总量 ≤50 条、每条 ≤300 字（防 token 膨胀与污染）。
+    _GOOD_CATS = ("对话-潜台词", "战斗-动作链", "情绪-白描+点破", "环境-物象白描", "叙事-节奏")
+    #: 手法分类的确定性关键词表（粗分即可，目的是防同类刷屏，非精确文体学）
+    _GOOD_ACT_VERBS = ("抓", "砸", "闪", "扑", "退", "追", "咬", "劈", "刺", "躲", "滚",
+                       "跳", "踢", "绷", "攥", "掀", "拧", "扎", "抽", "撞", "挡", "俯",
+                       "仰", "冲", "压", "掐", "扯", "掰", "握")
+    _GOOD_EMO_WORDS = ("怕", "怒", "恨", "冷", "抖", "僵", "麻", "疼", "烫", "沉",
+                       "惊", "恐", "惧", "愣", "慌")
+    _GOOD_SENSE_WORDS = ("光", "影", "风", "灰", "锈", "腥", "潮", "味", "声", "静",
+                         "黑", "暗", "湿", "凉", "烫", "烫")
+
+    def record_good(self, chapter_no: int, content: str, score: int,
+                    issues: list[dict] | None = None) -> int:
+        """高分章好片段自动入账（零 LLM）。
+
+        - 条件：score ≥85 且无「大改」级问题（高分且无硬伤 = 整章质量可信）；
+        - 抽取：正文按段落切分（20~300 字，跳过【摘要】行），按手法确定性分类；
+        - 容量：每章每类最多 1 条（防同章刷屏）、每类总量 ≤5、总量 ≤50；
+        - 返回本次新增条数。
+        """
+        if not self.enabled:
+            return 0
+        if int(score or 0) < 85:
+            return 0
+        if any(str(it.get("level") or "") == "大改" for it in (issues or [])):
+            return 0
+        paras = self._good_paras(content)
+        if not paras:
+            return 0
+        return self._ingest_good_samples(chapter_no, paras, int(score or 0))
+
+    def record_good_manual(self, chapter_no: int, content: str) -> int:
+        """用户人工修订/手动标记章入 good 账本（免质检条件——用户认可 = 好文风）。
+
+        webapp 编辑保存时调用（ch.user_edited=True 同处）；零 LLM。
+        """
+        if not self.enabled:
+            return 0
+        paras = self._good_paras(content)
+        if not paras:
+            return 0
+        return self._ingest_good_samples(chapter_no, paras, 100)
+
+    @staticmethod
+    def _good_paras(content: str) -> list[str]:
+        """好片段候选：正文段落切分（20~300 字，跳过摘要行/块标题）。"""
+        return [
+            p.strip() for p in re.split(r"\n\s*\n|\n", content or "")
+            if 20 <= len(p.strip()) <= 300
+            and "【摘要】" not in p
+            and "【" not in p[:2]
+        ]
+
+    def _ingest_good_samples(self, chapter_no: int, paras: list[str],
+                             score: int) -> int:
+        """入账主体：分类 → 去重 → 容量约束（每类 ≤5、总量 ≤50）。"""
+        data = self.load()
+        samples = data.setdefault("goods", {}).setdefault("samples", [])
+        added = 0
+        for p in paras:
+            cat = self._classify_sample(p)
+            if not cat:
+                continue
+            # 同章同类型已有 → 跳过（防同章刷屏）
+            same_ch = [s for s in samples
+                       if s.get("cat") == cat and int(s.get("src_ch", 0)) == int(chapter_no)]
+            if same_ch:
+                continue
+            # 每类容量：先删最旧（保持最新样例优先）
+            cat_items = [s for s in samples if s.get("cat") == cat]
+            if len(cat_items) >= 5:
+                oldest = min(cat_items, key=lambda s: int(s.get("src_ch", 0)))
+                samples.remove(oldest)
+            samples.append({
+                "cat": cat,
+                "text": p[:300],
+                "src_ch": int(chapter_no),
+                "score": int(score or 0),
+            })
+            added += 1
+            if len(samples) >= 50:
+                break
+        if added:
+            self.save()
+        return added
+
+    def good_block(self, top_n: int = 3, max_chars: int = 900) -> str:
+        """【本作写得好的片段】注入块：各类取最新高分样例，总 ≤top_n 条。
+
+        场景生成与重写共用——标注"参考质感，不是内容来源"（防风格漂移/抄袭感）。
+        空账本/关闭 → 空串。
+        """
+        if not self.enabled:
+            return ""
+        data = self.load()
+        samples = data.get("goods", {}).get("samples") or []
+        if not samples:
+            return ""
+        # 各类取最新（src_ch 最大者），再按最近章取前 top_n 条
+        picked: list[dict] = []
+        for cat in self._GOOD_CATS:
+            items = [s for s in samples if s.get("cat") == cat]
+            if items:
+                items.sort(key=lambda s: (int(s.get("src_ch", 0)), int(s.get("score", 0))))
+                picked.append(items[-1])
+        picked.sort(key=lambda s: int(s.get("src_ch", 0)), reverse=True)
+        picked = picked[:max(1, int(top_n or 1))]
+        lines = []
+        for s in picked:
+            lines.append(
+                f"- 第{s.get('src_ch','')}章（{s.get('cat','')}）："
+                f"{str(s.get('text','')).strip()[:280]}"
+            )
+        out = ("【本作写得好的片段（来自本书高分章，参考质感与节奏——不是内容来源，"
+               "不得照抄情节；写本章时模仿这里的句式密度与白描手法）】\n"
+               + "\n".join(lines))
+        return out[:max_chars]
+
+    @classmethod
+    def _classify_sample(cls, text: str) -> str:
+        """段落手法分类（确定性规则，零 LLM）。
+
+        判定顺序：对话（含引号）> 动作链（动作动词密度）> 情绪白描（情绪词+身体/
+        生理反应）> 环境物象（感官词+物象）> 叙事节奏。无命中 → ""（不入账）。
+        """
+        t = str(text or "").strip()
+        if not t:
+            return ""
+        if "“" in t or "”" in t or '"' in t or "「" in t:
+            # 对话段落：含引号对白；引号内容占比 >40% 才算"对话为主"
+            q = sum(1 for ch in t if ch in "“”\"「」")
+            if q >= 2:
+                return cls._GOOD_CATS[0]
+        acts = sum(1 for w in cls._GOOD_ACT_VERBS if w in t)
+        if acts >= 3:
+            return cls._GOOD_CATS[1]
+        emos = sum(1 for w in cls._GOOD_EMO_WORDS if w in t)
+        if emos >= 2:
+            return cls._GOOD_CATS[2]
+        senses = sum(1 for w in cls._GOOD_SENSE_WORDS if w in t)
+        if senses >= 3:
+            return cls._GOOD_CATS[3]
+        return cls._GOOD_CATS[4]
 
     # ---------- 机制状态账本（P0-10，确定性数字锚）----------
     # v7 第 6 章实证：正文死亡 3 次（ch1/3/4）未反映到蚀化（ch6 仍 97%），且章内

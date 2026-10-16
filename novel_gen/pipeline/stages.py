@@ -439,6 +439,66 @@ class ChapterWriter:
     def _sys(self, system: str) -> str:
         return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
 
+    def _volume_card_block(self, chapter_no: int, outline) -> str:
+        """REQ-写作正向引导 5.5：分卷卡注入块（卷目标传导，软约束指引）。
+
+        卷 → 章 目标传导：给写手"本卷要改变的局面 + 主要障碍 + 卷末高潮/证明 +
+        本章在卷中的位置（卷首铺垫/卷中推进/卷末高潮）"——先定卷末高潮，再倒推
+        本章该完成什么。卷末章（chapter_no == volume.end_ch）强制收束本卷目标并留
+        跨卷钩子（legacy）。无卷卡/无 volumes 归属/异常 → 空串（不注入，降级安全）。
+        """
+        try:
+            cards = getattr(outline, "volume_cards", None) or []
+            vols = getattr(outline, "volumes", None) or []
+            if not cards or not vols:
+                return ""
+            vol = None
+            for v in vols:
+                start = int(getattr(v, "start_ch", 0) or 0)
+                end = int(getattr(v, "end_ch", 0) or 0)
+                if start and start <= chapter_no <= (end or start):
+                    vol = v
+                    break
+            if vol is None:
+                return ""
+            card = None
+            vno = int(getattr(vol, "no", 0) or 0)
+            for c in cards:
+                if int(getattr(c, "volume_no", 0) or 0) == vno:
+                    card = c
+                    break
+            if card is None:
+                return ""
+            start = int(getattr(vol, "start_ch", 0) or 0)
+            end = int(getattr(vol, "end_ch", 0) or 0)
+            span = max(end - start, 1)
+            pos = "卷中推进"
+            if chapter_no - start <= span * 0.33:
+                pos = "卷首铺垫（本章负责埋本卷矛盾的引子/铺陈局面，不急于兑现卷末高潮）"
+            elif chapter_no >= end or (end - start) * 0.9 <= chapter_no - start:
+                pos = "卷末高潮（本章必须推动卷末高潮临近/收束本卷主要矛盾）"
+            goal = str(getattr(card, "goal", "") or "").strip()
+            obstacle = str(getattr(card, "obstacle", "") or "").strip()
+            climax = str(getattr(card, "climax", "") or "").strip()
+            legacy = str(getattr(card, "legacy", "") or "").strip()
+            lines = [f"【本卷目标·本章位置（REQ-写作正向引导：本卷为第{vno}卷《{getattr(vol, 'name', '') or ''}》，"
+                     f"第{start}-{end}章；先定卷末高潮，再倒推本章）】"]
+            if goal:
+                lines.append(f"- 本卷要改变的局面：{goal}")
+            if obstacle:
+                lines.append(f"- 本卷主要障碍：{obstacle}")
+            if climax:
+                lines.append(f"- 卷末高潮与如何证明改变：{climax}")
+            lines.append(f"- 本章在卷中的位置：{pos}")
+            if chapter_no >= end and legacy:
+                lines.append(f"- 跨卷钩子（本章结尾必须留出并指向下一卷的压力）：{legacy}")
+            elif chapter_no >= end:
+                lines.append("- 跨卷钩子（本章为卷末章，结尾必须留下卷末遗留压力，串起下一卷）")
+            return "\n".join(lines)
+        except Exception:
+            logger.exception("分卷卡注入失败（降级不注入）")
+        return ""
+
     def write(
         self,
         chapter_no: int,
@@ -508,6 +568,16 @@ class ChapterWriter:
         except Exception:
             logger.exception("章级设计卡注入失败（降级跳过）")
 
+        # REQ-写作正向引导 5.5：分卷卡块（本卷目标+障碍+卷末高潮+本章在卷中位置+卷末收束），
+        # 仿章级设计卡块拼进 memory_context（软约束指引）；无卷卡/无归属/异常 → 空串不注入。
+        try:
+            if outline is not None:
+                _vc_block = self._volume_card_block(chapter_no, outline)
+                if _vc_block:
+                    memory_context = memory_context + "\n\n" + _vc_block if memory_context else _vc_block
+        except Exception:
+            logger.exception("分卷卡注入失败（降级跳过）")
+
         # REQ-reader-ledger：读者认知账本/伏笔承诺/爽点配额注入（追加到 memory_context，
         # 场景级与整章两条写章路径都吃到；异常降级空串不阻塞）
         try:
@@ -518,6 +588,17 @@ class ChapterWriter:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
         except Exception:
             logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
+
+        # REQ-写作正向引导 5.6：good 账本注入（本作高分章好片段——参考质感非内容
+        # 来源；场景与整章两条写章路径都吃到，软约束不阻塞）
+        try:
+            _gmem = self._memory()
+            if _gmem is not None:
+                _good = _gmem.good_block(top_n=3)
+                if _good:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _good
+        except Exception:
+            pass
 
         # 注入用户锁定的内容作为硬约束
         try:
@@ -651,6 +732,30 @@ class ChapterWriter:
                 try:
                     from .chapter_state import panel_baseline_dict as _pbd
                     _bl = _pbd((self._scene_state_acc or {}).get("numbers") or [])
+                    # 整章回退时场景累积为空 → 回落上一章末权威值（chapter_ledger
+                    # 含跨章继承），使校验与重写注入拿到与生成端同口径的权威基线，
+                    # 治整章路径机制数字无基线可依（REQ 5.3 二期补盲）。
+                    if not _bl and chapter_no > 1:
+                        _mem_bl = self._memory()
+                        if _mem_bl is not None:
+                            try:
+                                _ld = _mem_bl.chapter_ledger(chapter_no - 1) or {}
+                                _bl = {k: int(v) for k, v in _ld.items()
+                                       if v is not None}
+                            except Exception:
+                                _bl = {}
+                    # 首章无上章 ledger → 回落机制初始值（与生成端同口径）
+                    if not _bl and chapter_no <= 1:
+                        _mem_bl0 = self._memory()
+                        if _mem_bl0 is not None:
+                            try:
+                                from .chapter_state import (mechanism_field_registry as _mreg0,
+                                                            _registry_initial as _rin0)
+                                _canon0 = (_mem_bl0.load().get("canon") or {})
+                                _bl0 = _canon0.get("mechanism_baseline") or {}
+                                _bl = _rin0(_bl0, _mreg0(_bl0)) or {}
+                            except Exception:
+                                _bl = {}
                 except Exception:
                     _bl = {}
                 chapter, _qc = qc.ensure_quality(
@@ -666,6 +771,11 @@ class ChapterWriter:
                     _mem = self._memory()
                     if _mem is not None:
                         _mem.record_taste(chapter_no, int(_qc.get("score", 0) or 0),
+                                          _qc.get("issues") or [])
+                        # REQ-写作正向引导 5.6：高分章（≥85 且无大改）段落自动入
+                        # good 账本（写得好 → 被学习 → 写得更好 闭环）
+                        _mem.record_good(chapter_no, content,
+                                          int(_qc.get("score", 0) or 0),
                                           _qc.get("issues") or [])
                         _mem.decay(chapter_no)
                 except Exception:
@@ -926,6 +1036,46 @@ class ChapterWriter:
         _bmem = self._book_pitfalls(top_n=5, min_count=1)
         if _bmem:
             _mem = (_mem + "\n\n" if _mem else "") + _bmem
+        # REQ-写作正向引导 5.3 权威基线补盲（2026-10-15）：一期把「权威当前值·只抄
+        # 不推」只接进了场景路径（scene_prompt），而本书 high_quality_mode 下拆场景
+        # 频繁失败、主路径实为回退整章 → 整章路径缺权威基线，机制数字纪律靠 LLM 运气
+        # （二期实证 ch3/ch4/ch6 跨章数字 3→1/37→1 漂移）。这里把权威当前值文本
+        # 注入整章 prompt，与场景路径同口径。
+        _pbt = ""
+        try:
+            from .chapter_state import panel_baseline_dict as _pbd
+            _pb_base: dict = {}
+            # 优先本章场景累积（本章已推进的权威值）
+            if isinstance(panel_baseline, dict):
+                _pb_base = _pbd((panel_baseline or {}).get("numbers") or [])
+            # 整章回退时场景累积为空（无场景循环）→ 回落上一章末权威值（chapter_ledger
+            # 含跨章继承），治 ch2「可死次数 1 vs 上章末 3」/ ch3「寸 3 vs 38」类
+            # 跨章数字漂移——一期场景路径的基线起点正是上章末，整章路径必须同口径。
+            if not _pb_base and chapter_no > 1:
+                _mem_ld = self._memory()
+                if _mem_ld is not None:
+                    try:
+                        _ld = _mem_ld.chapter_ledger(chapter_no - 1) or {}
+                        _pb_base = {k: int(v) for k, v in _ld.items() if v is not None}
+                    except Exception:
+                        _pb_base = {}
+            # 首章无上章 ledger → 回落机制初始值（注册表初始基线），让 ch1 写标准
+            # 面板行，账本链才有权威起点（v12 实证 ch1 无面板 → ch2 自写蚀化 98）。
+            if not _pb_base and chapter_no <= 1:
+                _mem_ld0 = self._memory()
+                if _mem_ld0 is not None:
+                    try:
+                        from .chapter_state import (mechanism_field_registry as _mreg0,
+                                                    _registry_initial as _rin0)
+                        _canon0 = (_mem_ld0.load().get("canon") or {})
+                        _bl0 = _canon0.get("mechanism_baseline") or {}
+                        _pb_base = _rin0(_bl0, _mreg0(_bl0)) or {}
+                    except Exception:
+                        _pb_base = {}
+            if _pb_base:
+                _pbt = "\n".join(f"- {k}：{v}" for k, v in _pb_base.items())
+        except Exception:
+            _pbt = ""
         system, user = chapter_prompt(
             self.cfg, chapter_no=chapter_no,
             chapter_title=plan_title, chapter_goal=plan_goal,
@@ -936,6 +1086,7 @@ class ChapterWriter:
             teardown_anchor=self._teardown_anchor(),
             personal_anchor=self._personal_anchor(),
             user_memory_block=self._user_memory_block(),
+            panel_baseline=_pbt,
         )
         system = self._sys(system)
         # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
@@ -1020,6 +1171,9 @@ class ChapterWriter:
                       + "\n".join(_dedup_parts)) if _dedup_parts else ""
             _text = self.llm.chat(system, user + _dedup, temperature=0.85,
                                   frequency_penalty=0.4, presence_penalty=0.2) or ""
+        # 字数超长不做任何 LLM 级处理（用户决策 2026-10-15：单章超长不触发整章回退/
+        # 精简重写——超长不等于写得差，重写浪费 token 且历轮越改越差）。超长仅作
+        # 附注展示（见上方 _over 检查），交付由质检层按字数规则记录。
         return _text
 
     def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
@@ -1233,6 +1387,16 @@ class ChapterWriter:
         except Exception:
             scenes = []
 
+        # REQ-写作正向引导 5.5 场景字数预算收敛（确定性、零 LLM）：校验通过后把各
+        # 场景 target_words 按比例归一，合计精确等于 chapter_words。治"±10% 校验放行后
+        # 仍有残差 → 逐场景生成整章超长（v9 ch4=5050/ch6=4310 字数硬伤）"。
+        if scenes:
+            try:
+                _normalize_scene_targets(
+                    scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
+            except Exception:
+                pass
+
         if not scenes:
             # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。
             # P0-8：整章回退路径补基线校验——self._scene_state_acc 此时仍是上一章章末
@@ -1323,6 +1487,9 @@ class ChapterWriter:
                 for s in scenes[idx:] if str(s.get("event") or "").strip()
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
+            # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
+            # 信号时，明确「结算瞬间只显示结算前/后两个权威值，其余保持基线不变」，
+            # 把 P0-8 期望值（次数-1/蚀化+1）前置到生成端，治跨章数字漂移。
             panel_baseline_text = ""
             _panel_base: dict = {}
             try:
@@ -1332,6 +1499,23 @@ class ChapterWriter:
                     panel_baseline_text = "\n".join(
                         f"- {k}：{v}" for k, v in _panel_base.items()
                     )
+                    # 结算提示：事件层信号判定本场景是否含死亡/复活结算
+                    _ev_text = " ".join(
+                        str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
+                    )
+                    try:
+                        from .chapter_state import death_signals as _deathsig
+                        from .chapter_state import book_death_signals as _bdeathsig
+                        _sigs = self._memory().book_signals() if self._memory() is not None else []
+                        if _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs):
+                            panel_baseline_text += (
+                                "\n【本场景结算提示】本场景含死亡/复活结算：结算瞬间只显示"
+                                "两个权威值——死亡瞬间显示结算前值，结算完成后显示按机制递减/递增后的新值"
+                                "（次数/剩余类递减 1，蚀化/进度类递增 1）；其余字段必须保持基线不变，"
+                                "禁止出现第三个数值。"
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 _panel_base, panel_baseline_text = {}, ""
             # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段
@@ -2252,6 +2436,40 @@ def _expand_scene_event_refs(scenes: list, events_list: list) -> None:
             for k in ("conflict", "action", "final_state"):
                 if e.get(k):
                     sc[k] = e[k]
+
+
+def _normalize_scene_targets(scenes: list, chapter_words: int = 0) -> list:
+    """REQ-写作正向引导 5.5 场景字数预算收敛（确定性、零 LLM）：
+
+    拆场景校验通过后，把各场景 target_words 按比例归一，使合计精确等于 chapter_words。
+    治"LLM 拆场景 target_words 和偏离章目标（±10% 校验放行后仍有残差，如 3×1200 vs 2200
+    恰好压在阈值边缘）→ 逐场景生成后整章超长（v9 ch4=5050/ch6=4310 字数硬伤）"。
+    - chapter_words<=0 / scenes 空 → 原样返回（调用方不动作）
+    - 当前合计 <=0 → 均分（余数补最后一个场景）
+    - 否则按当前占比缩放，四舍五入到整数，最后一个场景吸收取整误差，保证合计精确
+      等于 chapter_words（防累加误差漂移）
+    - 归一后单场景不得低于下限（下限由 _validate_scene_plan 已保证；归一只会缩小
+      超限场景，不产生新的低于下限项——和=章目标且校验已过时，各场景均 >= 下限×1）
+    """
+    if not scenes or chapter_words <= 0:
+        return scenes
+    total = sum(int(sc.get("target_words") or 0) for sc in scenes if isinstance(sc, dict))
+    if total <= 0:
+        base = chapter_words // len(scenes)
+        rem = chapter_words - base * len(scenes)
+        for i, sc in enumerate(scenes):
+            if isinstance(sc, dict):
+                sc["target_words"] = base + (rem if i == len(scenes) - 1 else 0)
+        return scenes
+    scaled = [int(round(chapter_words * int(sc.get("target_words") or 0) / total))
+              for sc in scenes if isinstance(sc, dict)]
+    diff = chapter_words - sum(scaled)
+    if diff:
+        scaled[-1] += diff
+    for i, sc in enumerate(scenes):
+        if isinstance(sc, dict):
+            sc["target_words"] = scaled[i]
+    return scenes
 
 
 def _validate_scene_plan(scenes: list, chapter_words: int = 0,

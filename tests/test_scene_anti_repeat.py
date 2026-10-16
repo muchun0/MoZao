@@ -172,6 +172,67 @@ def test_beat_cycle_issues_clean():
     assert _beat_cycle_issues(clean) == []
 
 
+# ---------- 2026-10-15 全书复测误报回归（强情节拍共享 ≥2 约束） ----------
+
+@pytest.mark.p1
+def test_beat_cycle_issues_no_false_positive_high_freq_beats():
+    """高频骨架拍循环（对峙→留牌→对峙→留牌，0 种强情节拍）→ 不报。
+    ch2 实证误报：反复对视/摸铜牌凑出的假循环，正文无复读。"""
+    content = (
+        "陆沉盯着她，她收下铜牌。陆沉又盯着她，她把铜牌拍回桌上。"
+        "她离开前回头盯着他，他捏着铜牌没吭声。"
+    )
+    assert _beat_cycle_issues(content) == []
+
+
+@pytest.mark.p1
+def test_beat_cycle_issues_no_false_positive_env_beats():
+    """环境+骨架拍循环（石阶→对峙→石阶→面板→石阶，0 种强情节拍）→ 不报。
+    ch9 实证误报：走石阶/对视/面板结算的环境骨架重复。"""
+    content = (
+        "他踏上石阶，盯着前面的赤尉。又走完一段石阶，面板亮出可死次数。"
+        "最后一阶石阶，他停下，回头盯着来路，面板数字没变。"
+    )
+    assert _beat_cycle_issues(content) == []
+
+
+@pytest.mark.p1
+def test_beat_cycle_issues_no_false_positive_one_strong_shared():
+    """仅 1 种强情节拍共享（失控→面板→失控→面板，不同事件共享行为词）→ 不报。
+    ch11 实证误报：两次不同失控事件共享'失控'拍，非同一事件换措辞重演。"""
+    content = (
+        "他失控撞向岩壁，面板显示可死次数。她执能失控出手，面板又亮了一次。"
+    )
+    assert _beat_cycle_issues(content) == []
+
+
+@pytest.mark.p1
+def test_beat_cycle_issues_no_false_positive_unequal_windows():
+    """窗口长度差大的跨事件匹配（6 拍 vs 10 拍，骨架拍拼窗）→ 不报。
+    ch11 实证误报：两个不同失控事件被面板/对峙骨架拍拼进一个 6 拍窗口，
+    与后续 10 拍窗口 LCS 达标但长度差 4，非同一事件链等长重演。"""
+    content = (
+        "玄将失控扑来，陆沉对峙，玄将死亡，面板显示可死次数。"
+        "他又失控蜕皮，面板再亮。玄将再死，面板又亮，他失控对峙，"
+        "面板，他包扎伤口，转身离去。"
+    )
+    assert _beat_cycle_issues(content) == []
+
+
+@pytest.mark.p1
+def test_beat_cycle_issues_detects_strong_shared_two_versions():
+    """同一事件两版本共享 ≥2 种强情节拍且窗口等长
+    （盘问→失控→死亡→面板 ×2）→ 仍报大改。"""
+    content = (
+        "她盘问他，他失控，咽气倒下，面板显示可死次数。"
+        "她又逼问，执能爆裂，断气，面板又亮。"
+    )
+    issues = _beat_cycle_issues(content)
+    assert len(issues) == 1
+    assert issues[0]["type"] == "情节-同事件循环重演"
+    assert issues[0]["level"] == "大改"
+
+
 # ---------- scene_prompt 事件进度硬约束 ----------
 
 def _scene(cfg, event="苏妄言盘问陆沉", idx=2, n=4, progress=True):

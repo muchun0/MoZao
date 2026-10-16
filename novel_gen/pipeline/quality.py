@@ -162,7 +162,8 @@ class QualityChecker:
                 print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{_MAX_REWRITE} 次自动重写...")
             if self.guard is not None:
                 self.guard.enter_scene("revise")
-            rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues)
+            rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues,
+                                           baseline=baseline)
             if not rewritten or len(rewritten) <= len(content) * 0.5:
                 if not silent:
                     print("  [自校验] 重写结果无效（为空或长度不足），停止重写")
@@ -357,6 +358,26 @@ class QualityChecker:
                     _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
                     from .chapter_state import _registry_initial as _rin
                     _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+                    # P0-18（2026-10-15）deaths 双源反推：蚀化不涨时用 decrease 字段
+                    # 递减量补全死亡数。v12 实证：ch3 死 3 次可死次数 3→0，但正文蚀化
+                    # 98→98 未结算 → 蚀化差=0 误判「无死亡」→ 可死次数递减被误报
+                    # 「无事件违规」，且蚀化未递增真违规漏检。decrease 字段（可死次数）
+                    # 的递减量是账本数字（非词面），比蚀化差更抗漏。
+                    try:
+                        from .chapter_state import ledger_extract_numbers as _lex3
+                        _cur3 = _lex3(content or "", _reg)
+                        _dec3 = 0
+                        for _c3, _r3 in _reg.items():
+                            if _r3 == "decrease" and _c3 in _cur3:
+                                _pv3 = _prev_ledger.get(_c3)
+                                if _pv3 is None:
+                                    _pv3 = (_init or {}).get(_c3)
+                                if _pv3 is not None and int(_cur3[_c3]) < int(_pv3):
+                                    _dec3 += int(_pv3) - int(_cur3[_c3])
+                        if _dec3 > 0:
+                            _cumu = max(_cumu, _dec3)
+                    except Exception:
+                        pass
                     for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
                         issues.append({
                             "type": "写作-机制数字方向违规",
@@ -923,7 +944,8 @@ class QualityChecker:
 
     # ---------- 自动重写（1 次；REQ-token优化 P1-4：定点化，不整章重出） ----------
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,
-                      content: str, issues: list[dict]) -> str:
+                      content: str, issues: list[dict],
+                      baseline: dict | None = None) -> str:
         """优先只重写问题段落（省整章重出 token 60~75%）；无定位点/跨度过大 → 整章重写。"""
         try:
             if getattr(self.cfg, "targeted_rewrite", True):
@@ -934,10 +956,12 @@ class QualityChecker:
                     if len(spans) == 1 and (spans[0][1] - spans[0][0]) < len(content) * 0.6:
                         rewritten = self._rewrite_span(
                             chapter_no, plan_title, plan_goal, content, spans[0], issues,
+                            baseline=baseline,
                         )
                         if rewritten and rewritten != content:
                             return rewritten
-            return self._rewrite_whole(chapter_no, plan_title, plan_goal, content, issues)
+            return self._rewrite_whole(chapter_no, plan_title, plan_goal, content, issues,
+                                       baseline=baseline)
         except Exception:
             return ""
 
@@ -946,6 +970,8 @@ class QualityChecker:
 
         只对重写路径生效（for_rewrite=True 措辞：删除重复版本）；场景生成用
         stages 侧注入的 pitfall_block（min_count=2 纪律类）。
+        REQ-写作正向引导 5.6：叠加 good 账本（本作高分章好片段——重写不只
+        「避免什么」，还要「按什么质感写」，参考质感非内容来源）。
         """
         if self.memory is None or not getattr(self.cfg, "book_memory", True):
             return ""
@@ -961,7 +987,8 @@ class QualityChecker:
                 or "蚀化" in (str(it.get("type") or ""))
             ]
             nb = self.memory.numeric_backfill(num_issues)
-            return "\n\n".join(x for x in (pb, nb) if x)
+            gb = self.memory.good_block(top_n=2)
+            return "\n\n".join(x for x in (pb, nb, gb) if x)
         except Exception:
             return ""
 
@@ -1026,11 +1053,14 @@ class QualityChecker:
                 "重写必须按此删除后再连贯成篇）】\n" + "\n".join(lines))
 
     def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
-                       content: str, issues: list[dict]) -> str:
+                       content: str, issues: list[dict],
+                       baseline: dict | None = None) -> str:
         """整章重写（原行为，无定位信息/定点失败时兜底）。
 
         注入设定上下文（世界观/机制卡/人物卡/章末账本）——重写不得在"信息真空"
         中进行，否则模型不知道机制结算规则，数字与矛盾修不动（实测复检仍 5 条）。
+        REQ-写作正向引导 5.3：重写同样注入「权威当前值·只抄不推」（一期只接了
+        场景路径，重写路径缺权威基线 → 数字违规重写后仍违规，二期实证）。
         """
         try:
             target = max(self.cfg.chapter_words, 500)
@@ -1068,6 +1098,15 @@ class QualityChecker:
                 "禁止两事件结束时间一状态\n\n"
             ) if has_event_dup else ""
             mem_block = self._memory_block(issues)
+            # REQ-写作正向引导 5.3：权威当前值注入重写（与生成路径同口径——重写
+            # 必须按账本权威值修数字，禁止模型自由发挥）
+            _blk_text = ""
+            try:
+                from .templates import _panel_baseline_block as _pbb
+                if baseline:
+                    _blk_text = _pbb("\n".join(f"- {k}：{v}" for k, v in baseline.items()))
+            except Exception:
+                _blk_text = ""
             # P0-10 重写前诊断（混合方案②）：独立审稿判多稿拼接/对话循环 →
             # 注入"删除哪段、保留哪段"确定性指令（治 v4 重写越改越差）
             _diag = self._diagnose_rewrite(content)
@@ -1079,6 +1118,7 @@ class QualityChecker:
                 f"【本章目标】{plan_goal}\n"
                 + (f"\n{ctx}\n" if ctx else "")
                 + (f"\n{mem_block}\n" if mem_block else "")
+                + (f"\n{_blk_text}\n" if _blk_text else "")
                 + (f"\n{_diag_text}\n" if _diag_text else "")
                 + f"【质检问题】\n{issue_block}\n\n"
                 f"重写要求：\n"
@@ -1114,7 +1154,8 @@ class QualityChecker:
             return ""
 
     def _rewrite_span(self, chapter_no: int, plan_title: str, plan_goal: str,
-                      content: str, span: tuple[int, int], issues: list[dict]) -> str:
+                      content: str, span: tuple[int, int], issues: list[dict],
+                      baseline: dict | None = None) -> str:
         """只重写问题窗口：上下文 + 问题段 → LLM 输出替换段 → Python 拼回（零结构破坏）。"""
         try:
             s, e = span
@@ -1126,12 +1167,21 @@ class QualityChecker:
             )
             ctx = self._context_block(chapter_no)
             mem_block = self._memory_block(issues)
+            # REQ-写作正向引导 5.3：权威当前值注入定点重写（数字违规段修复必须按权威值）
+            _blk_text = ""
+            try:
+                from .templates import _panel_baseline_block as _pbb
+                if baseline:
+                    _blk_text = _pbb("\n".join(f"- {k}：{v}" for k, v in baseline.items()))
+            except Exception:
+                _blk_text = ""
             prompt = (
                 f"你是资深网文写手。以下是第{chapter_no}章《{plan_title}》的一个段落，"
                 f"质检发现如下问题，请只重写这个段落（不要改动上下文，不要输出其他内容）。\n"
                 f"【本章目标】{plan_goal}\n"
                 + (f"\n{ctx}\n" if ctx else "")
                 + (f"\n{mem_block}\n" if mem_block else "")
+                + (f"\n{_blk_text}\n" if _blk_text else "")
                 + f"【质检问题】\n{issue_block}\n\n"
                 f"【段落前文（保持衔接，不要重复）】\n{ctx_before}\n\n"
                 f"【需要重写的段落】\n{problem_seg}\n\n"

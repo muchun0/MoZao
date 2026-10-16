@@ -11,7 +11,7 @@ REQ-多Agent协作分层优化：负责「全本关键节点时间线（激励�
 """
 from __future__ import annotations
 
-from ...store.schemas import (EmotionBeat, ForeshadowItem, KeyNode, Outline, VolumePacing, World)
+from ...store.schemas import (EmotionBeat, ForeshadowItem, KeyNode, Outline, VolumeCard, VolumePacing, World)
 from .base import BaseAgent
 
 
@@ -77,6 +77,36 @@ class PacingAgent(BaseAgent):
         vp.sort(key=lambda x: x.volume_no)
         outline.volume_pacing = vp
 
+        # REQ-写作正向引导 5.5：分卷卡（volume_cards）确定性派生（零 LLM）。
+        # 卷 → 章 → 场景 三级目标传导的卷级权威源：先定卷末高潮，再倒推每章。
+        # 从 volumes 现有字段提炼（本书 volumes.intro/main_conflict/climax 已是一句话
+        # 完整剧情）：goal=本卷要改变的局面（intro）、obstacle=主要障碍（main_conflict）、
+        # climax=卷末高潮与如何证明改变（climax）、legacy=串下一卷的遗留压力
+        # （下一卷 intro 首句）。只补缺失不覆盖已有设计。
+        existing_vc = {getattr(v, "volume_no", 0) for v in (getattr(outline, "volume_cards", None) or [])}
+        vcs = list(getattr(outline, "volume_cards", None) or [])
+        for i, v in enumerate(vols):
+            vno = int(getattr(v, "no", 0) or 0)
+            if vno in existing_vc:
+                continue
+            nxt_intro = ""
+            if i + 1 < len(vols):
+                nxt_intro = str(getattr(vols[i + 1], "intro", "") or "").strip()
+                if nxt_intro:
+                    # 取下一卷 intro 首句作为遗留压力（按常见断句切第一句）
+                    import re as _re
+                    _segs = _re.split(r"[。；;！？]", nxt_intro)
+                    nxt_intro = (_segs[0] if _segs else "").strip()
+            vcs.append(VolumeCard(
+                volume_no=vno,
+                goal=str(getattr(v, "intro", "") or "").strip(),
+                obstacle=str(getattr(v, "main_conflict", "") or "").strip(),
+                climax=str(getattr(v, "climax", "") or "").strip(),
+                legacy=nxt_intro,
+            ))
+        vcs.sort(key=lambda x: x.volume_no)
+        outline.volume_cards = vcs
+
         # 情绪曲线卡（P2）：基于各章 emotion/tag 聚合成跨章 EmotionBeat 区间（零 LLM）。
         # 只补缺失（已有 emotion_curve 不覆盖）；产出全本爽点/虐点/悬念分布，供章节情绪配比。
         if chapters and not (getattr(outline, "emotion_curve", None) or []):
@@ -103,7 +133,7 @@ class PacingAgent(BaseAgent):
             outline.emotion_curve = curve
 
         summary = {"key_nodes": len(outline.key_nodes), "volume_pacing": len(outline.volume_pacing),
-                   "emotion_curve": len(outline.emotion_curve)}
+                   "emotion_curve": len(outline.emotion_curve), "volume_cards": len(outline.volume_cards)}
         return outline, summary
 
     def plan_foreshadow(self, outline: Outline, world: World) -> tuple[World, int]:

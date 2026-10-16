@@ -176,8 +176,9 @@ def test_chapter_prompt_injects_events_sequence():
 
 @pytest.mark.p1
 def test_write_keeps_previous_when_quality_fails(tmp_path, monkeypatch):
-    """方案4（落盘分流）：质检未通过且该章已有旧版 → write() 保留旧版正文，
-    不把坏章覆盖上去；save_chapter 落盘的是旧版。"""
+    """方案4（落盘分流）+ 版本质量：质检未通过且该章已有旧版 → write() 保留旧版正文
+    为当前选中，不把坏章覆盖上去；但本轮重写候选稿以「候选版本」入库（promote=False），
+    用户可在版本弹窗查看/选择/对比（重写稿不再被静默丢弃）。"""
     from unittest.mock import MagicMock
     from novel_gen.pipeline.quality import QualityChecker
 
@@ -193,18 +194,90 @@ def test_write_keeps_previous_when_quality_fails(tmp_path, monkeypatch):
     # write() 整章生成 + 可能的字数兜底：返回足够长且含摘要的正文
     llm.chat.side_effect = lambda *a, **k: "新版坏文。" * 500 + "\n\n【摘要】新版摘要"
 
-    # monkeypatch 模块4：ensure_quality 返回 passed=False（坏章）
+    # monkeypatch 模块4：ensure_quality 返回 passed=False（坏章）+ 版本日志
+    # （初始稿 + 每轮重写稿都带质检问题，供 stages 逐版落库）
     def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary,
                      silent=False, baseline=None, core_event=""):
+        rewrite_text = "重写候选稿。" * 400 + "\n\n【摘要】重写摘要"
         return (Chapter(no=chapter_no, title=plan_title, content=content, summary=summary),
-                {"passed": False, "score": 75, "issues": []})
+                {
+                    "passed": False, "score": 75, "issues": [],
+                    "versions": [
+                        {"round": 0, "content": content, "summary": summary,
+                         "auto_revised": False,
+                         "quality": {"passed": False, "score": 75, "issue_count": 0,
+                                     "auto_revised": False, "issues": []}},
+                        {"round": 1, "content": rewrite_text, "summary": "重写摘要",
+                         "auto_revised": True,
+                         "quality": {"passed": False, "score": 60, "issue_count": 1,
+                                     "auto_revised": True,
+                                     "issues": [{"level": "中改", "type": "结构-字数偏少",
+                                                 "detail": "字数不足"}]}},
+                    ],
+                })
     monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)
 
     writer = ChapterWriter(cfg, llm, store, Memory(store))
     ch = writer.write(1, "第一章", "目标", None, silent=True)
-    # 返回与落盘的都是旧版正文，坏章未覆盖
+    # 返回与当前选中的都是旧版正文，坏章未覆盖 HEAD
     assert ch.content == old.content
     assert store.load_chapter(1).content == old.content
+    # 版本库：v1=旧版(legacy/ai)选中，v2=初始稿候选，v3=重写候选稿（都保留）
+    v = store.list_versions(1)
+    assert len(v) >= 3
+    assert v[0]["selected"] is True
+    # 重写候选稿可单独加载（用户能查看/选择），不再是"看不到、选择不了"
+    cand = [x for x in v if x["v"] != v[0]["v"]]
+    assert any(x["quality"]["auto_revised"] for x in cand)
+    assert any(x["quality"]["score"] == 60 for x in cand)
+
+
+@pytest.mark.p1
+def test_write_versions_all_saved_when_passed(tmp_path, monkeypatch):
+    """质检通过：初始稿 + 每轮重写稿逐版落库，且未用户管理时自动选中评分最高版本。"""
+    from unittest.mock import MagicMock
+    from novel_gen.pipeline.quality import QualityChecker
+
+    cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
+    cfg.high_quality_mode = False
+    cfg.scene_split = False
+    cfg.agent_guard.quality_check = True
+    store = ProjectStore.create(tmp_path / "pq3", cfg)
+
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: "优质正文。" * 500 + "\n\n【摘要】好摘要"
+
+    def _fake_ensure(self, chapter_no, plan_title, plan_goal, content, summary,
+                     silent=False, baseline=None, core_event=""):
+        # 真实 ensure_quality：返回的 chapter 即最终采用版本（与 versions[-1] 一致）
+        final_text = "重写优选稿。" * 450 + "\n\n【摘要】优摘要"
+        final_ch = Chapter(no=chapter_no, title=plan_title, content=final_text,
+                           summary="优摘要")
+        return (final_ch,
+                {
+                    "passed": True, "score": 98, "issues": [],
+                    "versions": [
+                        {"round": 0, "content": content, "summary": summary,
+                         "auto_revised": False,
+                         "quality": {"passed": True, "score": 95, "issue_count": 0,
+                                     "auto_revised": False, "issues": []}},
+                        {"round": 1, "content": final_text, "summary": "优摘要",
+                         "auto_revised": True,
+                         "quality": {"passed": True, "score": 98, "issue_count": 0,
+                                     "auto_revised": True, "issues": []}},
+                    ],
+                })
+    monkeypatch.setattr(QualityChecker, "ensure_quality", _fake_ensure)
+
+    writer = ChapterWriter(cfg, llm, store, Memory(store))
+    ch = writer.write(1, "第一章", "目标", None, silent=True)
+    v = store.list_versions(1)
+    assert len(v) == 2
+    # 自动选分：评分最高的 v2(98) 为当前选中，HEAD 同步为该版本内容
+    assert v[-1]["selected"] is True
+    assert v[-1]["quality"]["score"] == 98
+    assert "重写优选稿" in store.load_chapter(1).content
+    assert "重写优选稿" in ch.content
 
 
 @pytest.mark.p1

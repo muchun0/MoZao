@@ -814,8 +814,46 @@ class ChapterWriter:
                               "（含注册表外字段/重复节拍/链式账本违规），"
                               f"改落盘本轮重写最优候选（{len(content)} 字）")
 
+        # REQ-章节版本化 + 版本质量（每次生成都展示、每版带质检问题）：
+        # ensure_quality 的 versions 日志 = 初始稿 + 每轮重写稿（各自带质检结果）。
+        # 逐版落库：除最终稿外的候选版本以 promote=False 入库（不顶替当前选中，
+        # 用户在版本弹窗可见/可选择/可对比），最终稿按方案4 决策决定是否成为 HEAD。
+        # 保留旧版（kept_previous）时最终稿也以候选版本入库，不再丢弃重写产物。
+        try:
+            _qc_versions = _qc.get("versions") if isinstance(_qc, dict) else None
+        except Exception:
+            _qc_versions = None
+        if _qc_versions:
+            try:
+                for _v in _qc_versions[:-1]:
+                    _vch = Chapter(no=chapter_no, title=plan_title,
+                                   content=_v.get("content", "") or "",
+                                   summary=_v.get("summary", "") or "",
+                                   goal=plan_goal)
+                    self.store.save_chapter(
+                        _vch,
+                        source="rewrite" if _v.get("auto_revised") else "ai",
+                        quality=_v.get("quality") if isinstance(_v.get("quality"), dict) else None,
+                        promote=False,
+                    )
+                _final = _qc_versions[-1]
+                _final_ch = Chapter(no=chapter_no, title=plan_title,
+                                    content=_final.get("content", "") or content,
+                                    summary=_final.get("summary", "") or summary,
+                                    goal=plan_goal)
+                self.store.save_chapter(
+                    _final_ch,
+                    source="rewrite" if _final.get("auto_revised") else "ai",
+                    quality=_final.get("quality") if isinstance(_final.get("quality"), dict) else None,
+                    promote=not kept_previous,
+                )
+            except Exception:
+                logger.exception("质检版本落库失败: no=%d", chapter_no)
+
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
-        self.store.save_chapter(chapter)
+        if not _qc_versions:
+            # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
+            self.store.save_chapter(chapter)
         # 三期 F1：Beat 覆盖度门禁（纯确定性、零 LLM）——正文落盘后自检对章计划拍的
         # 覆盖率，分级记录到 beat_gate.json（pass/warn/fail/skip）。检测+记录+提示，不独立
         # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。

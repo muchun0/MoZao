@@ -390,3 +390,17 @@
   3. 标注"查不到"的场景：仅 **webapp 端**默认落库；`MysqlTraceSink` 构造失败或 novel_gen **离线单跑**（mock/无 MySQL）时静默回退 `NullTraceSink` 不入表——有意的降级设计，非丢数据。
   4. 提示词**源头**仍在 `agents/prompts/*.md` 或模板/数据文件（§11.3），`agent_trace` 只是每次调用的运行时快照。
 - 验证：纯文档（AGENTS.md + decisions.md），无 pytest 影响；代码与文档描述一致（base.py / trace.py / db/traces.py 已核对）。
+
+
+## 2026-10-17 章节重写版本落库 + 版本质量展示（feat/chapter-version-quality）
+
+- 背景：用户报告"第1章自校验未通过触发自动重写后，重写版本没落库；手动重写质量不如初稿仍不落库；版本弹窗看不到选不了"。根因（方案4 落盘分流）：stages.write() 质检未通过且旧版健康时用旧版覆盖 content，最终 save_chapter 因内容与 HEAD 相同幂等跳过，重写稿整稿被丢弃，从未进入版本库。用户补充需求：每次生成版本都要展示、每版带质检问题；改稿建议整合进版本弹窗（去掉工具 tab 改稿建议卡片）；首次生成默认展示质检评分最高的一版，用户修改/切换后以其操作为准；支持用户删除不同版本章节。
+- 决策（novel_gen/store/project.py + pipeline/quality.py + stages.py + webapp 路由/前端）：
+  1. save_chapter 扩展 quality（写入该版本 history，list_versions 透传）与 promote=False（候选版本：只追加版本存档+索引，不写 HEAD/selected，用于质检未通过但旧版健康时保留旧版、新稿供用户查看/选择）；rec 重建时保留 user_managed（修复中途发现的 user_managed 丢失 bug）；新增 _auto_select_best()（未被用户管理时自动把 score 最高版本设为 selected+HEAD）、delete_version()（selected 不可删，删文件+索引）；select_version() 用户手动选择置 user_managed=True；list_versions 每项增加 quality 字段。
+  2. quality.ensure_quality 输出 result["versions"] 版本日志（初始稿+每轮重写稿，各带 quality 精简结果 passed/score/issue_count/auto_revised/issues），最后 push 一次最终采用版本。
+  3. stages.write() 遍历 _qc["versions"][:-1] 以 promote=False 逐版落库（source=rewrite/ai，带 quality）；最终版按 kept_previous 决定 promote；无 versions 日志时保持旧行为兜底。
+  4. 路由：新增 DELETE /api/projects/{project_id}/chapters/{no}/versions/{v}；rewrite_chapter 改为以实际 HEAD 为准重算 kept_previous 并返回 HEAD 内容（因自动选分可能切换 HEAD），响应新增 candidate_version（kept_previous 时新稿版本号）。
+  5. 前端：版本弹窗每项显示 quality 标签（质检 score/passed 红绿/自动改）+ 改稿建议明细（最多 8 条）+ 删除按钮（selected 隐藏）；regenChapter 区分 kept_previous 提示（含候选版本号）；ToolsPanel 删除改稿建议卡片，改为全书质检卡片。
+- 测试：tests/test_chapter_versions.py(15)+test_quality.py(39)+test_chapter_flow.py(12)；全量 739 passed（P0+P1 459 passed）零回归；前端 build 通过、dist 引用一致。
+- 端到端冒烟：本地服务（8000）验证 DELETE 非选中 200 / selected 400、select 切换 200、list_versions 透传 quality+issues；自动选分确认 v3(score92) 为默认选中。
+- 边界：停在 feat/chapter-version-quality，未合并 devtest（待用户确认验证后合 master 发版）。

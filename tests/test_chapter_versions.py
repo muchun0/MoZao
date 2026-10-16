@@ -127,3 +127,119 @@ def test_select_nonexistent_version_returns_none(store):
     store.save_chapter(_ch(1, "v1 正文"))
     assert store.select_version(1, 99) is None
     assert store.load_chapter(1).content == "v1 正文"  # 不受影响
+
+
+# ---------- 版本质量 / 候选版本 / 自动选分 / 删除（重写版本落库闭环） ----------
+@pytest.mark.p0
+def test_save_candidate_version_does_not_promote(store):
+    """promote=False：新稿只追加为候选版本，不顶替当前选中（HEAD/selected 不变）。"""
+    store.save_chapter(_ch(1, "v1 正文"))
+    r = store.save_chapter(_ch(1, "重写稿"), source="rewrite", promote=False)
+    assert r == 2
+    # HEAD 仍为 v1，selected 仍为 v1
+    assert store.load_chapter(1).content == "v1 正文"
+    v = store.list_versions(1)
+    assert v[0]["selected"] is True
+    assert v[1]["selected"] is False
+    assert v[1]["source"] == "rewrite"
+    # 候选版本可单独加载（用户可查看/选择）
+    assert store.load_chapter_version(1, 2).content == "重写稿"
+
+
+@pytest.mark.p0
+def test_quality_recorded_and_returned(store):
+    """quality 写入该版本 history，list_versions 透传（版本弹窗改稿建议数据源）。"""
+    q = {"passed": False, "score": 42, "issue_count": 3,
+         "auto_revised": True,
+         "issues": [{"level": "大改", "type": "结构-字数严重不足", "detail": "不足 30%"}]}
+    store.save_chapter(_ch(1, "v1 正文"), quality={"passed": True, "score": 90, "issue_count": 0,
+                                                  "auto_revised": False, "issues": []})
+    store.save_chapter(_ch(1, "重写稿"), source="rewrite", quality=q)
+    v = store.list_versions(1)
+    assert v[0]["quality"]["score"] == 90
+    assert v[0]["quality"]["passed"] is True
+    assert v[1]["quality"]["score"] == 42
+    assert v[1]["quality"]["issue_count"] == 3
+    assert v[1]["quality"]["issues"][0]["detail"] == "不足 30%"
+
+
+@pytest.mark.p1
+def test_auto_select_best_on_generation(store):
+    """未被用户管理时：保存后自动把质检评分最高的版本设为当前选中（首次生成展示最好的一版）。"""
+    store.save_chapter(_ch(1, "初稿低分"), quality={"passed": False, "score": 40, "issue_count": 2,
+                                                   "auto_revised": False, "issues": []})
+    store.save_chapter(_ch(1, "重写高分"), source="rewrite", quality={"passed": True, "score": 92,
+                                                                     "issue_count": 0,
+                                                                     "auto_revised": True, "issues": []})
+    v = store.list_versions(1)
+    # 选中应切到评分最高的 v2（92 > 40），HEAD 也同步
+    assert v[1]["selected"] is True
+    assert store.load_chapter(1).content == "重写高分"
+
+
+@pytest.mark.p1
+def test_user_managed_stops_auto_select(store):
+    """用户手动选择后置 user_managed：再生成时不自动按评分切走用户所选版本。"""
+    store.save_chapter(_ch(1, "初稿低分"), quality={"passed": False, "score": 40, "issue_count": 2,
+                                                   "auto_revised": False, "issues": []})
+    store.save_chapter(_ch(1, "重写高分"), source="rewrite", quality={"passed": True, "score": 92,
+                                                                     "issue_count": 0,
+                                                                     "auto_revised": True, "issues": []})
+    # 用户手动回退到 v1 → 置 user_managed
+    store.select_version(1, 1)
+    assert store.load_chapter(1).content == "初稿低分"
+    # 再次生成更低分版本：user_managed 下不自动选分，HEAD 保持本轮新稿
+    # （若无 user_managed，自动选分会切回 92 分的 v2）
+    store.save_chapter(_ch(1, "再次重写"), source="rewrite", quality={"passed": False, "score": 50,
+                                                                    "issue_count": 1,
+                                                                    "auto_revised": True, "issues": []})
+    v = store.list_versions(1)
+    assert v[-1]["selected"] is True  # 本轮新稿成为 HEAD，不被自动选分干扰
+    assert store.load_chapter(1).content == "再次重写"
+    # 用户之前选择的 v1 仍保留在版本库中可回退
+    assert [x["v"] for x in v] == [1, 2, 3]
+
+
+@pytest.mark.p1
+def test_user_edit_marks_managed(store):
+    """source=user 人工编辑保存 → 置 user_managed，后续自动生成不自动选分。"""
+    store.save_chapter(_ch(1, "v1 正文"), quality={"passed": True, "score": 80, "issue_count": 0,
+                                                  "auto_revised": False, "issues": []})
+    store.save_chapter(_ch(1, "人工修订"), source="user")
+    # 再生成 95 分新稿：若无 user_managed 会自动切到 v1(80)→ 有 user_managed 则新稿成为 HEAD
+    store.save_chapter(_ch(1, "新ai稿"), quality={"passed": True, "score": 95, "issue_count": 0,
+                                                 "auto_revised": False, "issues": []})
+    v = store.list_versions(1)
+    assert v[-1]["selected"] is True  # 新稿成为 HEAD
+    assert v[-1]["source"] == "ai"
+
+
+@pytest.mark.p2
+def test_delete_version(store):
+    """删除历史版本：当前选中（selected/HEAD）不可删，其余删除后索引与文件移除。"""
+    store.save_chapter(_ch(1, "v1 正文"))
+    store.save_chapter(_ch(1, "v2 正文"))
+    store.save_chapter(_ch(1, "v3 正文"))
+    # 删除非选中 v1
+    assert store.delete_version(1, 1) is True
+    assert store.load_chapter_version(1, 1) is None
+    v = store.list_versions(1)
+    assert [x["v"] for x in v] == [2, 3]
+    # 删除当前选中 v3 被拒绝
+    assert store.delete_version(1, 3) is False
+    assert store.load_chapter(1).content == "v3 正文"
+    # 删除不存在的版本返回 False
+    assert store.delete_version(1, 99) is False
+
+
+@pytest.mark.p2
+def test_auto_select_best_skips_legacy_without_quality(store):
+    """存量 legacy 版本无 quality.score → 不参与自动选分，避免误切（老项目重写安全）。"""
+    store._write_json(store.chapter_path(1), _ch(1, "旧版正文").to_dict())
+    store.save_chapter(_ch(1, "新稿"), source="rewrite", quality={"passed": True, "score": 85,
+                                                                 "issue_count": 0,
+                                                                 "auto_revised": True, "issues": []})
+    v = store.list_versions(1)
+    # v1 legacy 无 quality，自动选分只在有 score 的版本中选 → v2 选中
+    assert v[-1]["selected"] is True
+    assert v[-1]["source"] == "rewrite"

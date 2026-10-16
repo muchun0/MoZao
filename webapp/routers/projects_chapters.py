@@ -48,9 +48,17 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
         logger.exception("单章重写失败: project=%s no=%d", project_id, no)
         raise HTTPException(status_code=500, detail=f"重写失败：{e}")
 
-    # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖，
-    # 返回 content 与重写前一致即为 kept_previous（前端据此提示"已保留旧版"）
-    kept_previous = bool(prev_content) and chapter.content == prev_content
+    # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖。
+    # 注意：若该章未被用户管理，store 保存后会自动选分（首次生成默认展示质检评分
+    # 最高的一版），HEAD 可能是旧高分版或本轮新稿——以实际 HEAD 为准计算 kept_previous
+    # 并返回 HEAD 内容，保证前端展示与后端选中一致。
+    try:
+        head = store.load_chapter(no)
+    except Exception:
+        head = chapter
+    kept_previous = bool(prev_content) and head is not None and head.content == prev_content
+    if head is not None:
+        chapter = head
 
     logger.info("章节重写: uid=%d project=%s no=%d words=%d",
                 user["id"], project_id, no, len(chapter.content))
@@ -77,17 +85,22 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     # REQ-章节版本化：返回该章当前选中版本号（重写/质检重写已自动追加新版本；
     # kept_previous 内容未变则不追加，version 保持原选中版本）
     _version = 0
+    _candidate_version = 0
     try:
         for _v in store.list_versions(chapter.no):
             if _v.get("selected"):
                 _version = _v.get("v") or 0
-                break
+            elif _v.get("source") == "rewrite" and (_v.get("v") or 0) > _candidate_version:
+                # kept_previous 时本轮重写新稿以候选版本入库（不顶替选中），
+                # 返回其版本号供前端提示"新版本已保留，可在版本列表查看/选择"
+                _candidate_version = _v.get("v") or 0
     except Exception:
         _version = 0
     return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
             "summary": chapter.summary, "words": len(chapter.content),
             "balance_warning": stop_reason if should_stop else "",
-            "quality": quality, "kept_previous": kept_previous, "version": _version}
+            "quality": quality, "kept_previous": kept_previous, "version": _version,
+            "candidate_version": _candidate_version}
 
 
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")
@@ -118,6 +131,25 @@ def select_chapter_version(project_id: str, no: int, v: int,
     # P2（REQ §5 验收10）：回退后账本为旧版本投影，仅提示，不重放
     logger.info("章节版本回退: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
     return {"no": no, "selected_version": v, "words": len(ch.content)}
+
+
+@app.delete("/api/projects/{project_id}/chapters/{no}/versions/{v}")
+def delete_chapter_version(project_id: str, no: int, v: int,
+                           user: dict = Depends(_require_user)):
+    """删除章节版本（版本质量扩展）：删除指定历史版本存档（当前选中版本不可删）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需删除版本请先解锁")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    ok = store.delete_version(no, v)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在或为当前使用中版本，无法删除")
+    logger.info("章节版本删除: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
+    return {"no": no, "deleted_version": v, "versions": store.list_versions(no)}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")

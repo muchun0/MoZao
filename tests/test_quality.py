@@ -104,6 +104,33 @@ def test_quality_passed_no_rewrite(store):
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", long_content, "摘要")
     assert result["passed"] is True
     assert calls["n"] == 1  # 读者 LLM 校验 1 次（章内矛盾自检默认仅高质量模式，REQ-token优化 P1-3）
+    # 版本日志：未触发重写时仅初始稿一版，且带质检信息（版本弹窗"每个版本的问题"数据源）
+    assert len(result.get("versions") or []) == 1
+    assert result["versions"][0]["round"] == 0
+    assert result["versions"][0]["auto_revised"] is False
+    assert result["versions"][0]["quality"]["passed"] is True
+    assert result["versions"][0]["quality"]["score"] == result["score"]
+
+
+@pytest.mark.p2
+def test_ensure_quality_versions_log_on_rewrite(store):
+    """触发自动重写时：versions 日志逐轮记录（初始稿 + 每轮重写稿，各自带质检问题）。"""
+    from unittest.mock import MagicMock
+    qc = QualityChecker(store.load_config(), MagicMock(), store)
+    # 初始稿字数严重不足 → 触发重写；重写稿复检通过
+    qc._rewrite_once = MagicMock(return_value=_LONG_OK_TEXT)
+    chapter, result = qc.ensure_quality(1, "第一章", "推进主线", "太短了。", "摘要")
+    versions = result.get("versions") or []
+    assert len(versions) >= 2
+    assert versions[0]["round"] == 0
+    assert versions[0]["auto_revised"] is False
+    assert versions[-1]["round"] >= 1
+    assert versions[-1]["auto_revised"] is True
+    # 每版带质检问题：初始稿有"字数严重不足"类问题，重写稿通过
+    assert any(it.get("type") == "结构-字数严重不足"
+               for it in (versions[0]["quality"]["issues"] or []))
+    assert versions[-1]["quality"]["passed"] is True
+    assert chapter.content == _LONG_OK_TEXT
 
 
 @pytest.mark.p2

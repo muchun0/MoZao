@@ -124,12 +124,41 @@ class QualityChecker:
         P0-5 兜底：重写无效/超轮仍未消除问题时，回退到循环内「问题最少、分数最高」
         的最优版本，不再把重写后的坏稿原样落盘（第四轮第 5 章：重写 2 无效 break
         后坏稿直接落盘的缺口）。
+
+        版本日志（REQ-章节版本化扩展）：返回 result["versions"]——初始稿 + 每轮
+        重写稿的 {round, content, summary, auto_revised, quality(精简)} 列表，
+        供 stages.write 逐版落库（每次生成的版本都展示、每版带质检问题）。
         """
+        versions: list[dict] = []
+
+        def _push(content: str, smry: str, res: dict, round_no: int,
+                  auto: bool) -> None:
+            if versions and versions[-1]["content"] == content:
+                return  # 内容未变不重复记录（重写无效/抢救无变化）
+            issues = res.get("issues") or []
+            versions.append({
+                "round": round_no,
+                "content": content,
+                "summary": smry,
+                "auto_revised": bool(auto),
+                "quality": {
+                    "passed": bool(res.get("passed")),
+                    "score": int(res.get("score", 0)),
+                    "issue_count": len(issues),
+                    "issues": [
+                        {"level": it.get("level", ""), "type": it.get("type", ""),
+                         "detail": (it.get("detail") or "")[:120]}
+                        for it in issues
+                    ],
+                },
+            })
+
         result = self.check(chapter_no, plan_title, plan_goal, content, summary,
                             baseline=baseline, core_event=core_event)
         issues = result["issues"]
         rewritten_occurred = False
         self._record_pitfalls(chapter_no, issues)
+        _push(content, summary, result, 0, False)
 
         # 事后自愈①：章内多稿拼接 → 确定性单稿抢救（不依赖 LLM，避免重写再次堆稿）
         if _has_type(issues, "章内大量自重复"):
@@ -148,6 +177,7 @@ class QualityChecker:
                                     baseline=baseline, core_event=core_event)
                 issues = result["issues"]
                 self._record_pitfalls(chapter_no, issues)
+                _push(content, summary, result, 0, True)
 
         # P0-5 最优版本账本：初始稿作为基准，重写轮内择优（问题数升序、分数降序）
         best_content, best_summary, best_issues, best_result = content, summary, issues, result
@@ -183,6 +213,7 @@ class QualityChecker:
             if not silent:
                 print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
                       f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
+            _push(content, summary, result, rewrite_rounds, True)
             # P0-5 择优：问题更少，或问题相同但分数更高 → 更新最优版本
             if len(issues) < len(best_issues) or (
                 len(issues) == len(best_issues)
@@ -210,6 +241,9 @@ class QualityChecker:
         if self.trace is not None:
             self.trace.record_quality(chapter_no, result, issues, auto_revised=rewritten_occurred)
 
+        # 版本日志收尾：最终采用版本（best 回退后 content 已换，确保最后一版=最终稿）
+        _push(content, summary, result, rewrite_rounds, rewritten_occurred)
+        result["versions"] = versions
         return Chapter(no=chapter_no, title=plan_title, content=content,
                        summary=summary, goal=plan_goal), result
 

@@ -86,15 +86,15 @@
       </div>
     </el-card>
 
-    <!-- 改稿建议 -->
+    <!-- 全书质检（全书质量汇总/终审/一致性校验；每章改稿建议已整合进章节版本弹窗） -->
     <el-card class="tool-card">
-      <template #header><b>改稿建议</b></template>
-      <p class="muted">自动改稿记录与待人工处理的中改问题（含全书质量汇总）</p>
-      <el-button size="small" @click="loadReview">查看改稿建议</el-button>
+      <template #header><b>全书质检</b></template>
+      <p class="muted">全书质量汇总与终审；每章改稿建议见「章节 → 版本」弹窗</p>
+      <el-button size="small" @click="loadReview">查看全书质检</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
         <template v-else>
-          <div v-if="!reviewItems.length && !reviewSummary.chapter_count" class="ok-box">暂无改稿记录</div>
+          <div v-if="!reviewSummary.chapter_count && !finalReview && !verifyIssues.length" class="ok-box">暂无质检记录</div>
           <div v-if="reviewSummary.chapter_count" class="summary-box">
             <b>全书质量汇总</b>
             <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
@@ -114,23 +114,6 @@
               <div v-for="(it, i) in finalReview.issues" :key="i" class="review-issue">
                 <span class="review-type">[{{ it.type }}]</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
               </div>
-            </div>
-          </div>
-          <div v-for="r in reviewItems" :key="r.chapter" class="review-chapter">
-            <div class="review-head">
-              <b>第{{ r.chapter }}章</b>
-              <span v-if="r.auto_revised" class="tag-auto">已自动改</span>
-              <span v-else-if="(r.issues||[]).length" class="tag-todo">待人工处理 {{ r.issues.length }} 处</span>
-              <span v-else class="tag-ok">无问题</span>
-              <span v-if="r.quality_check && r.quality_check.score !== undefined && r.quality_check.score !== null" class="tag-score">质检 {{ r.quality_check.score }}</span>
-              <span v-if="r.reader_hook_score" class="tag-auto" style="margin-left:auto">追更欲 {{ r.reader_hook_score }}/5</span>
-            </div>
-            <div v-if="r.reader_feeling" class="review-feeling">读者感受：{{ r.reader_feeling }}</div>
-            <div v-for="(it, i) in (r.issues||[])" :key="i" class="review-issue">
-              <span :class="it.level === '小改' ? 'lv-small' : 'lv-big'">{{ it.level || '小改' }}</span>
-              <span v-if="it.type" class="review-type">[{{ it.type }}]</span>
-              <span v-if="it.pos" class="review-pos">{{ it.pos }}：</span>
-              <span>{{ it.detail }}</span>
             </div>
           </div>
           <div v-if="verifyIssues.length" class="verify-block">
@@ -237,7 +220,6 @@ import { ElMessage } from 'element-plus'
 const props = defineProps({ pid: String })
 
 const verifyResult = ref([])
-const reviewItems = ref([])
 const reviewSummary = ref({})
 const finalReview = ref(null)
 const verifyIssues = ref([])
@@ -417,12 +399,11 @@ async function runVerify(kind, label) {
 async function loadReview() {
   try {
     const r = await toolsApi.getReview(props.pid)
-    reviewItems.value = r.items || []
     reviewSummary.value = r.summary || {}
     verifyIssues.value = r.verify_issues || []
     finalReview.value = r.final_review || null
     reviewLoaded.value = true
-  } catch (e) { ElMessage.error('改稿记录加载失败') }
+  } catch (e) { ElMessage.error('全书质检加载失败') }
 }
 
 async function loadRhythm() {

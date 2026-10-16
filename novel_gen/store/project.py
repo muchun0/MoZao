@@ -355,13 +355,22 @@ class ProjectStore:
         self._write_json(self.chapter_versions_path(), data)
 
     def save_chapter(self, chapter: Chapter, source: Optional[str] = None,
-                     version_limit: Optional[int] = None) -> Optional[int]:
-        """章节正文版本化保存（REQ-章节版本化）。
+                     version_limit: Optional[int] = None,
+                     quality: Optional[dict] = None,
+                     promote: bool = True) -> Optional[int]:
+        """章节正文版本化保存（REQ-章节版本化 + 版本质量/自动选分扩展）。
 
         - `chapters/<no>.json` = 当前选中版本（HEAD），`load_chapter`/`list_chapters` 照常读；
         - 历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引；
         - 内容与 HEAD 相同 → 幂等不追加，返回 None；
         - 内容不同 → 追加 `v{next}`（旧 HEAD 存档进版本库）、更新 HEAD 与 selected，返回 next；
+        - `promote=False`：只追加版本存档+索引，**不写 HEAD、不更新 selected**（候选版本，
+          用于质检未通过但旧版健康时保留旧版为当前选中、新稿供用户查看/选择）；
+        - `quality`：质检结果 {passed,score,issue_count,auto_revised,issues:[]}，写入该版本
+          history 记录，`list_versions` 透传展示（版本弹窗"每个版本存在的问题"数据源）；
+        - 用户干预标记：source="user"（人工编辑）时置 `user_managed=True`；此后自动选分不再
+          覆盖用户选择（用户手动 select_version 同样置位）。未被用户管理时，保存后自动把
+          质检评分最高的版本设为当前选中（首次生成默认展示评分最高的一版）；
         - 存量单版本章节（无版本索引）首次保存时把当前 HEAD 存档为 v1(legacy)，新内容为 v2；
         - 每章版本超 `version_limit`（默认 15）淘汰最旧（跳过 selected，HEAD 不淘汰）。
         """
@@ -392,12 +401,23 @@ class ProjectStore:
         else:
             next_v = max(versions) + 1
 
-        # 写版本存档 + 写 HEAD（当前选中）
+        # 写版本存档（候选版本不写 HEAD、不改 selected）
         self._write_json(self.chapter_version_path(no, next_v), chapter.to_dict())
-        self._write_json(self.chapter_path(no), chapter.to_dict())
         versions.append(next_v)
-        history.append({"v": next_v, "ts": int(time.time()), "source": src})
-        rec = {"versions": versions, "selected": next_v, "history": history}
+        history.append({
+            "v": next_v, "ts": int(time.time()), "source": src,
+            "quality": quality if isinstance(quality, dict) else None,
+        })
+        if promote:
+            self._write_json(self.chapter_path(no), chapter.to_dict())
+            rec = {"versions": versions, "selected": next_v, "history": history,
+                   "user_managed": bool(rec.get("user_managed"))}
+        else:
+            rec = {"versions": versions, "selected": rec.get("selected"), "history": history,
+                   "user_managed": bool(rec.get("user_managed"))}
+        # 人工编辑 → 标记用户已管理（此后自动选分不再覆盖）
+        if src == "user":
+            rec["user_managed"] = True
 
         # 版本上限淘汰最旧（跳过 selected，永不淘汰 HEAD）
         while len(rec["versions"]) > limit:
@@ -410,14 +430,76 @@ class ProjectStore:
 
         index[str(no)] = rec
         self.save_chapter_versions(index)
+        # 未被用户管理 → 自动把质检评分最高的版本设为当前选中（首次生成默认展示最好的一版）
+        if promote and not rec.get("user_managed"):
+            self._auto_select_best(no)
         return next_v
+
+    def _auto_select_best(self, no: int) -> Optional[int]:
+        """把该章质检评分（quality.score）最高的版本设为当前选中（HEAD/selected）。
+
+        仅比较带 quality.score 的版本（存量 legacy 无质量记录不参与，避免误切）；
+        score 相同取版本号较大者（更新的稿）。返回选中的 v；无可选/已是选中则 None。
+        用户已干预（user_managed）的章节不调用本方法（调用方 save_chapter 已判断）。
+        """
+        index = self.load_chapter_versions()
+        rec = index.get(str(no))
+        if not isinstance(rec, dict):
+            return None
+        versions = [v for v in rec.get("versions", []) if isinstance(v, int)]
+        history = {h.get("v"): h for h in (rec.get("history") or []) if isinstance(h, dict)}
+        best_v, best_score = None, None
+        for v in versions:
+            q = history.get(v, {}).get("quality") or {}
+            s = q.get("score")
+            if s is None:
+                continue
+            if best_score is None or s > best_score or (s == best_score and v > best_v):
+                best_score, best_v = s, v
+        if best_v is None or best_v == rec.get("selected"):
+            return None
+        rec["selected"] = best_v
+        index[str(no)] = rec
+        self.save_chapter_versions(index)
+        ch = self.load_chapter_version(no, best_v)
+        if ch is not None:
+            self._write_json(self.chapter_path(no), ch.to_dict())
+        return best_v
+
+    def delete_version(self, no: int, ver: int) -> bool:
+        """删除该章指定历史版本（当前选中 selected 不可删；HEAD 是 selected 的副本不删）。
+
+        删除版本存档文件 + 索引项。返回是否删除成功。
+        """
+        index = self.load_chapter_versions()
+        rec = index.get(str(no))
+        if not isinstance(rec, dict):
+            return False
+        versions = [v for v in rec.get("versions", []) if isinstance(v, int)]
+        if ver not in versions:
+            return False
+        if ver == rec.get("selected"):
+            return False  # 当前使用中版本不可删
+        p = self.chapter_version_path(no, ver)
+        if p.exists():
+            p.unlink()
+        versions.remove(ver)
+        rec["versions"] = versions
+        rec["history"] = [h for h in (rec.get("history") or [])
+                          if not (isinstance(h, dict) and h.get("v") == ver)]
+        index[str(no)] = rec
+        self.save_chapter_versions(index)
+        return True
 
     def load_chapter_version(self, no: int, ver: int) -> Optional[Chapter]:
         d = self._read_json(self.chapter_version_path(no, ver), None)
         return Chapter.from_dict(d) if d else None
 
     def select_version(self, no: int, ver: int) -> Optional[Chapter]:
-        """回退/选中某版本：把 v{ver} 复制回 HEAD（chapters/<no>.json）并更新 selected。"""
+        """回退/选中某版本：把 v{ver} 复制回 HEAD（chapters/<no>.json）并更新 selected。
+
+        用户手动选择 → 置 user_managed=True（此后自动选分不再覆盖用户选择）。
+        """
         ch = self.load_chapter_version(no, ver)
         if ch is None:
             return None
@@ -425,13 +507,18 @@ class ProjectStore:
         rec = index.get(str(no))
         if isinstance(rec, dict) and ver in (rec.get("versions") or []):
             rec["selected"] = ver
+            rec["user_managed"] = True
             index[str(no)] = rec
             self.save_chapter_versions(index)
         self._write_json(self.chapter_path(no), ch.to_dict())
         return ch
 
     def list_versions(self, no: int) -> list[dict]:
-        """返回该章版本列表（升序），每项 {v, selected, source, ts, words}。"""
+        """返回该章版本列表（升序），每项 {v, selected, source, ts, words, quality}。
+
+        quality = 该版本生成时的质检结果（passed/score/issue_count/auto_revised/issues），
+        无质检记录的版本（legacy 等）为 None。
+        """
         index = self.load_chapter_versions()
         rec = index.get(str(no)) or {}
         versions = [v for v in (rec.get("versions") or []) if isinstance(v, int)]
@@ -448,6 +535,7 @@ class ProjectStore:
                 "source": h.get("source", ""),
                 "ts": h.get("ts"),
                 "words": len(ch.content) if ch else 0,
+                "quality": h.get("quality"),
             })
         return out
 

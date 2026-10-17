@@ -139,6 +139,57 @@ def test_top_pitfalls_min_count_filter(store):
     assert mem.top_pitfalls(top_n=5, min_count=2) == []   # 无 ≥2 次的 → 不注入
 
 
+@pytest.mark.p1
+def test_top_pitfalls_self_ch_depollution(store):
+    """P3 去污染：self_ch=当前重写章 时，last_ch==self_ch 的本轮错误降权到尾部，
+    让 Top-N 优先取跨章真历史教训，不把本章刚犯的错当历史教训回灌。"""
+    mem = _memory(store)
+    # 跨章真历史教训（count=5，last_ch=4）
+    for ch in (2, 3, 4):
+        mem.record_pitfall(ch, [{"type": "情节-同事件循环重演", "detail": "重演", "level": "大改"}])
+    mem.record_pitfall(5, [{"type": "情节-同事件循环重演", "detail": "重演", "level": "大改"}])
+    # 第 1 章本轮刚犯的错（count=12，last_ch=1，recent_rounds=12）——污染源
+    for _ in range(1):  # 同章多轮只累加一次 recent；这里补 11 轮模拟 high recent
+        pass
+    mem.record_pitfall(1, [{"type": "写作-机制数字方向违规", "detail": "回升", "level": "大改"}])
+    mem.record_pitfall(1, [{"type": "自相矛盾-事件重复", "detail": "两版本", "level": "大改"}])
+    mem.record_pitfall(1, [{"type": "自相矛盾-身体状态/行为模式", "detail": "矛盾", "level": "大改"}])
+    # 直接改 last_ch=1 的 recent_rounds 模拟高频率（同章多轮回灌的真实形态）
+    for p in mem.load()["pitfalls"]:
+        if p["pattern"] != "情节-同事件循环重演":
+            p["recent_rounds"] = 12
+    mem.save()
+
+    # 无 self_ch：last_ch=1 的污染源（高 count）排前
+    tops = mem.top_pitfalls(top_n=3, min_count=1)
+    pats = [p["pattern"] for p in tops]
+    assert "写作-机制数字方向违规" in pats[:3]      # last_ch=1 的高 count 排前
+
+    # self_ch=1：跨章真教训（last_ch=4 的循环重演）升到首位，
+    # 第1章本轮错误（机制数字方向违规）不再排第一——降权而非剔除
+    tops2 = mem.top_pitfalls(top_n=3, min_count=1, self_ch=1)
+    assert tops2[0]["pattern"] == "情节-同事件循环重演"   # 跨章教训升顶
+    assert tops2[0]["last_ch"] == 5
+    # 机制数字方向违规（last_ch=1）不再是注入第一条
+    assert not (tops2[0]["pattern"] == "写作-机制数字方向违规" and tops2[0]["last_ch"] == 1)
+
+    # pitfall_block 透传生效：头部第一条是跨章教训，不含「最近第 1 章」
+    pb = mem.pitfall_block(top_n=3, min_count=1, self_ch=1)
+    assert "情节-同事件循环重演" in pb
+    assert "最近第 1 章" not in pb.splitlines()[1]      # 第1行注入条目非本轮错误
+
+
+@pytest.mark.p1
+def test_top_pitfalls_self_ch_none_keeps_original(store):
+    """self_ch=None（不指定当前章）→ 行为与改动前完全一致（向后兼容）。"""
+    mem = _memory(store)
+    mem.record_pitfall(2, [{"type": "A类", "detail": "x", "level": "大改"}])
+    mem.record_pitfall(4, [{"type": "B类", "detail": "y", "level": "大改"}])
+    tops = mem.top_pitfalls(top_n=2, min_count=1, self_ch=None)
+    # 与不带 self_ch 的调用等序（向后兼容）
+    assert [p["pattern"] for p in tops] == [p["pattern"] for p in mem.top_pitfalls(2, 1)]
+
+
 # ---------- 进化 ----------
 
 @pytest.mark.p1
@@ -639,5 +690,49 @@ def test_record_good_manual_no_score_condition(store):
     assert all(int(s["score"]) == 100 for s in samples)
     # 短段落（<20 字）不入账
     assert mem.record_good_manual(4, "他走了。") == 0
+
+
+@pytest.mark.p1
+def test_rewrite_whole_injects_good_block(store):
+    """第二点：重写路径（_rewrite_whole → _memory_block）叠加 good 正向质感引导。
+    重写不只「避免什么」，还要「按什么质感写」——good 账本有值必须注入。"""
+    mem = _memory(store)
+    mem.record_good(1, _good_text(), 90, [])
+    llm = MagicMock()
+    llm.chat.return_value = _LONG_OK_TEXT
+    qc = _qc(store, llm, memory=mem)
+    qc._rewrite_whole(7, "第七章", "目标", "旧正文。", [])
+    prompt = llm.chat.call_args[0][1]
+    assert "写得好的片段" in prompt
+    assert "参考质感" in prompt
+    assert "不是内容来源" in prompt
+
+
+@pytest.mark.p1
+def test_rewrite_whole_pitfall_self_ch_depollution(store):
+    """第二/三点联动：重写第1章（self_ch=1）时，pitfall 注入把本章刚犯的错
+    降权到尾部，Top-N 取跨章真教训；而 good 正向引导正常注入。"""
+    mem = _memory(store)
+    # 跨章真教训（last_ch=4）
+    for ch in (2, 3, 4):
+        mem.record_pitfall(ch, [{"type": "情节-同事件循环重演", "detail": "重演", "level": "大改"}])
+    # 第1章本轮刚犯的错（last_ch=1，污染源）
+    mem.record_pitfall(1, [{"type": "写作-机制数字方向违规", "detail": "回升", "level": "大改"}])
+    mem.record_pitfall(1, [{"type": "自相矛盾-事件重复", "detail": "两版本", "level": "大改"}])
+    mem.record_good(1, _good_text(), 90, [])
+    llm = MagicMock()
+    llm.chat.return_value = _LONG_OK_TEXT
+    qc = _qc(store, llm, memory=mem)
+    qc._rewrite_whole(1, "第一章", "目标", "旧正文。", [])
+    prompt = llm.chat.call_args[0][1]
+    # 跨章真教训进注入
+    assert "情节-同事件循环重演" in prompt
+    # 本章刚犯的错（机制数字方向违规）被降权，不再作为注入的第一条错误
+    mem_block = prompt[prompt.find("【本作历史错误"):]
+    first_line = mem_block.splitlines()[1]
+    assert "机制数字方向违规" not in first_line
+    assert "情节-同事件循环重演" in first_line
+    # good 正向引导照常注入
+    assert "写得好的片段" in prompt
 
 

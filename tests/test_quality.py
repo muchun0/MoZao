@@ -467,7 +467,7 @@ def test_rewrite_whole_injects_event_dedup_rules():
     qc = QualityChecker(cfg, llm, None)
     issues = [
         {"type": "自相矛盾-事件重复", "detail": "同一事件两版本：救苏妄言石殿版/墟口外版", "level": "大改"},
-        {"type": "写作-字数超出目标", "detail": "正文 4500 字", "level": "中改"},
+        {"type": "写作-字数超出目标", "detail": "正文 4500 字", "level": "小改"},
     ]
     out = qc._rewrite_whole(1, "第一章", "目标", "旧正文", issues)
     assert out
@@ -479,7 +479,7 @@ def test_rewrite_whole_injects_event_dedup_rules():
     llm2 = MagicMock()
     llm2.chat.side_effect = lambda *a, **k: "重写后的正文。\n\n【摘要】最终 2/3"
     qc2 = QualityChecker(cfg, llm2, None)
-    qc2._rewrite_whole(1, "第一章", "目标", "旧正文", [{"type": "写作-字数超出目标", "detail": "4500 字", "level": "中改"}])
+    qc2._rewrite_whole(1, "第一章", "目标", "旧正文", [{"type": "写作-字数超出目标", "detail": "4500 字", "level": "小改"}])
     p2 = llm2.chat.call_args.args[1] if llm2.chat.call_args.args else llm2.chat.call_args[1]
     assert "删除重复的事件版本" not in p2
 
@@ -672,19 +672,20 @@ def test_dialogue_loop_no_false_positive():
 
 @pytest.mark.p1
 def test_length_audit_issues():
-    """字数审计：>1.35 倍目标 → 中改提示（不判大改、不触发重写）；正常 → 不报。
+    """字数审计：>1.35 倍目标 → 小改提示（不扣分、不判大改、不触发重写）；正常 → 不报。
 
     2026-09-30 方向修正：超长 ≠ 质量失败，纯字数不触发整章重写（省 token）；
-    质量硬伤由截断/循环/拼接/矛盾等维度判定。
+    2026-10-17 再修正：超长连小改也不扣分——剧情与质量正常不应因字数减分，
+    不能单纯以字数作为质量判断。
     """
     cfg = NovelConfig(title="测试书", chapter_words=1000, total_words=4000)
     qc = _qc_with_cfg(cfg)
-    # 1.7 倍 → 仅中改（不再大改）
+    # 1.7 倍 → 仅小改（不扣分、不再大改）
     issues = qc._length_audit_issues("长" * 1700)
-    assert issues and issues[0]["level"] == "中改" and "字数超出目标" in issues[0]["type"]
-    # 1.4 倍 → 中改
+    assert issues and issues[0]["level"] == "小改" and "字数超出目标" in issues[0]["type"]
+    # 1.4 倍 → 小改
     mid = qc._length_audit_issues("长" * 1400)
-    assert any(i["level"] == "中改" and "字数超出" in i["type"] for i in mid)
+    assert any(i["level"] == "小改" and "字数超出" in i["type"] for i in mid)
     # 正常 → 不报
     assert qc._length_audit_issues("长" * 1200) == []
 

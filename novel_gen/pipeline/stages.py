@@ -345,14 +345,18 @@ class ChapterWriter:
         except Exception:
             return ""
 
-    def _book_pitfalls(self, top_n: int = 3, min_count: int = 2) -> str:
+    def _book_pitfalls(self, top_n: int = 3, min_count: int = 2,
+                       self_ch: int | None = None) -> str:
         """P0-7：本作历史错误（场景生成纪律）注入块——只注入已反复出现（≥2 次）
-        的踩坑，避免低频问题过度束缚正常生成。空则空串。"""
+        的踩坑，避免低频问题过度束缚正常生成。self_ch：当前章号（P3 去污染——
+        last_ch==当前章 的本轮错误降权到尾部，避免把本章刚犯的错当历史教训回灌）。
+        空则空串。"""
         mem = self._memory()
         if mem is None:
             return ""
         try:
-            return mem.pitfall_block(top_n=top_n, min_count=min_count)
+            return mem.pitfall_block(top_n=top_n, min_count=min_count,
+                                     self_ch=self_ch)
         except Exception:
             return ""
 
@@ -591,6 +595,8 @@ class ChapterWriter:
 
         # REQ-写作正向引导 5.6：good 账本注入（本作高分章好片段——参考质感非内容
         # 来源；场景与整章两条写章路径都吃到，软约束不阻塞）
+        # §11.6 降级纪律：注入失败必须留痕，禁止无日志裸吞异常（good 缺失会导致
+        # 重写/场景只被「历史错误」负反馈束缚、失去正向质感引导）。
         try:
             _gmem = self._memory()
             if _gmem is not None:
@@ -598,7 +604,7 @@ class ChapterWriter:
                 if _good:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _good
         except Exception:
-            pass
+            logger.exception("good 账本注入失败（降级跳过，不阻塞写章；但 good 质感引导缺失）")
 
         # 注入用户锁定的内容作为硬约束
         try:
@@ -1490,7 +1496,9 @@ class ChapterWriter:
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
         # P0-7 小说级记忆：本作历史错误（已反复出现 ≥2 次的踩坑）注入场景 prompt，
         # 在生成点抑制已知高频错误（换措辞重演/数字回退等）；空账本 → 空串不注入。
-        book_pitfalls_text = self._book_pitfalls()
+        # P3 去污染：传 self_ch=当前章——last_ch==本章 的本轮错误降权到尾部，避免把
+        # 本章刚犯的错当历史教训回灌（第1章重写循环自我污染的根因之一）。
+        book_pitfalls_text = self._book_pitfalls(self_ch=int(chapter_no))
         # P0-8 小说级记忆：机制基线注入块（蚀痕位置等权威口径；拆场景已注入 canon 全文，
         # 场景层只注入机制基线，避免 terms/disciplines 重复刷屏）
         book_canon_text = ""

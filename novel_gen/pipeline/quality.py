@@ -999,19 +999,22 @@ class QualityChecker:
         except Exception:
             return ""
 
-    def _memory_block(self, issues: list[dict]) -> str:
+    def _memory_block(self, issues: list[dict], chapter_no: int | None = None) -> str:
         """P0-7：重写时注入本作历史错误（踩坑 Top-N）+ 数字修复回灌；空则返回空串。
 
         只对重写路径生效（for_rewrite=True 措辞：删除重复版本）；场景生成用
         stages 侧注入的 pitfall_block（min_count=2 纪律类）。
         REQ-写作正向引导 5.6：叠加 good 账本（本作高分章好片段——重写不只
         「避免什么」，还要「按什么质感写」，参考质感非内容来源）。
+        chapter_no：当前重写章号（P3 去污染——last_ch==本章 的本轮错误降权到
+        尾部，避免把本章刚犯的错当历史教训回灌）。
         """
         if self.memory is None or not getattr(self.cfg, "book_memory", True):
             return ""
         try:
             top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
-            pb = self.memory.pitfall_block(top_n=top_n, for_rewrite=True)
+            pb = self.memory.pitfall_block(top_n=top_n, for_rewrite=True,
+                                           self_ch=chapter_no)
             # P0-8（2026-10-10）：数字 issue 挑选收紧为 type 精确匹配——原条件含
             # "面板" in detail，会把「情节-同事件循环重演」（detail 含"面板"字样）误挑
             # 进 numeric_backfill（v6 实测两条纪律 rule 错配的同源 bug）。
@@ -1131,7 +1134,7 @@ class QualityChecker:
                 "10. 每个事件的结束状态（面板数字/蚀痕位置/伤势）必须比上一事件结束时有增量变化，"
                 "禁止两事件结束时间一状态\n\n"
             ) if has_event_dup else ""
-            mem_block = self._memory_block(issues)
+            mem_block = self._memory_block(issues, chapter_no)
             # REQ-写作正向引导 5.3：权威当前值注入重写（与生成路径同口径——重写
             # 必须按账本权威值修数字，禁止模型自由发挥）
             _blk_text = ""
@@ -1200,7 +1203,7 @@ class QualityChecker:
                 f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
             )
             ctx = self._context_block(chapter_no)
-            mem_block = self._memory_block(issues)
+            mem_block = self._memory_block(issues, chapter_no)
             # REQ-写作正向引导 5.3：权威当前值注入定点重写（数字违规段修复必须按权威值）
             _blk_text = ""
             try:

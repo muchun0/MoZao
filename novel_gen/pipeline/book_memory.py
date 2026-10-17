@@ -155,11 +155,28 @@ class BookMemory:
         self.save()
         return added
 
-    def top_pitfalls(self, top_n: int = 5, min_count: int = 1) -> list[dict]:
-        """按 次数降序 → 最近复发降序 → 最近章降序 取 Top-N（重写/场景注入用）。"""
+    def top_pitfalls(self, top_n: int = 5, min_count: int = 1,
+                     self_ch: int | None = None) -> list[dict]:
+        """按 次数降序 → 最近复发降序 → 最近章降序 取 Top-N（重写/场景注入用）。
+
+        self_ch：当前正在生成/重写的章号。当某错误的 last_ch == self_ch 时，
+        说明它是「本轮刚犯的错」（正在被 numeric_backfill / 质检 issue 直接处理），
+        不是跨章沉淀的「历史教训」——降权到排序尾部，避免把当前章自身的失败
+        当历史教训反复回灌（P3 去污染：第1章重写循环的 self 污染根因）。跨章
+        真历史教训（last_ch < self_ch）不受影响，仍按原序霸榜。
+        """
         data = self.load()
         pits = [p for p in data["pitfalls"] if int(p.get("count", 0)) >= min_count]
+
+        def _self_flag(p: dict) -> int:
+            """0=跨章历史教训（正常权重）；1=当前章刚犯的错（降权到尾部）。"""
+            if self_ch is None:
+                return 0
+            last_ch = int(p.get("last_ch", 0))
+            return 0 if last_ch != int(self_ch) else 1
+
         pits.sort(key=lambda p: (
+            _self_flag(p),
             -int(p.get("count", 0)),
             -int(p.get("recent_rounds", 0)),
             -int(p.get("last_ch", 0)),
@@ -652,15 +669,17 @@ class BookMemory:
 
     # ---------- 注入组装 ----------
     def pitfall_block(self, top_n: int = 5, min_count: int = 1,
-                      for_rewrite: bool = False) -> str:
+                      for_rewrite: bool = False, self_ch: int | None = None) -> str:
         """【本作历史错误】注入块：Top-N 踩坑（按次数×最近频率排序）。
 
         for_rewrite=True：重写专用措辞（强调删除重复版本）；场景生成用 False。
+        self_ch：当前章号——本错最近就在本错犯（last_ch==self_ch）时降权到尾部，
+        避免把「本轮刚犯的错」当历史教训回灌（P3 去污染）。
         空账本/关闭 → 返回空串（调用方不注入）。
         """
         if not self.enabled:
             return ""
-        pits = self.top_pitfalls(top_n, min_count)
+        pits = self.top_pitfalls(top_n, min_count, self_ch=self_ch)
         if not pits:
             return ""
         lines = []

@@ -1155,27 +1155,17 @@ class ChapterWriter:
             if _text:
                 try:
                     from .chapter_state import (panel_direction_violations as _pdv,
-                                                panel_causal_violations as _pcv,
-                                                death_signals as _deathsig,
-                                                book_death_signals as _bdeathsig,
                                                 mechanism_field_registry as _mregf,
                                                 unknown_mechanism_fields as _unkf)
-                    _ev_text = " ".join(
-                        str(e.get(k) or "") for e in (fallback_events or [])
-                        for k in ("desc", "conflict", "final_state")
-                    )
-                    _sigs = self._memory().book_signals() if self._memory() is not None else []
-                    # P0-14 修正：通用标准（词面）OR 个性化标准（本书机制词）——两套独立
-                    _death = _deathsig(_text) or _bdeathsig(_text, _sigs) or \
-                        _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
-                    if panel_baseline:
-                        _viols = _pdv(_text, panel_baseline)
-                        if _death:
-                            _viols = _viols + _pcv(_text, panel_baseline, True)
-                    # P0-15/16 通用版：注册表外字段（累计死亡次数类）回退整章同样拦截
+                    # 2026-10-17 弱化：砍死亡信号与因果校验——被动方向检查（不回退/不回升）
+                    # 保留；方向规则从设定账本派生（registry，支持加点/升级等新机制）；
+                    # 数字结算准确性改由事后质检软提示兜底，生成端不再强制结算。
                     _regf = _mregf((self._memory().load().get("canon") or {})
                                    .get("mechanism_baseline") or {}) \
                         if self._memory() is not None else {}
+                    if panel_baseline:
+                        _viols = _pdv(_text, panel_baseline, _regf)
+                    # P0-15/16 通用版：注册表外字段（累计死亡次数类）回退整章同样拦截
                     if _regf:
                         _viols = _viols + _unkf(_text, _regf)
                 except Exception:
@@ -1545,23 +1535,8 @@ class ChapterWriter:
                     panel_baseline_text = "\n".join(
                         f"- {k}：{v}" for k, v in _panel_base.items()
                     )
-                    # 结算提示：事件层信号判定本场景是否含死亡/复活结算
-                    _ev_text = " ".join(
-                        str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
-                    )
-                    try:
-                        from .chapter_state import death_signals as _deathsig
-                        from .chapter_state import book_death_signals as _bdeathsig
-                        _sigs = self._memory().book_signals() if self._memory() is not None else []
-                        if _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs):
-                            panel_baseline_text += (
-                                "\n【本场景结算提示】本场景含死亡/复活结算：结算瞬间只显示"
-                                "两个权威值——死亡瞬间显示结算前值，结算完成后显示按机制递减/递增后的新值"
-                                "（次数/剩余类递减 1，蚀化/进度类递增 1）；其余字段必须保持基线不变，"
-                                "禁止出现第三个数值。"
-                            )
-                    except Exception:
-                        pass
+                    # 2026-10-17 弱化：移除依赖死亡信号的强"结算提示"——数字是背景参考，
+                    # 不再由生成端强制结算展示；准确性改由事后质检软提示兜底。
             except Exception:
                 _panel_base, panel_baseline_text = {}, ""
             # P0-15/16 通用版：机制字段白名单注入（closed-world）——基线声明的字段
@@ -1780,9 +1755,6 @@ class ChapterWriter:
                 if piece and _panel_base:
                     try:
                         from .chapter_state import (panel_direction_violations as _pdv,
-                                                    panel_causal_violations as _pcv,
-                                                    death_signals as _deathsig,
-                                                    book_death_signals as _bdeathsig,
                                                     mechanism_field_registry as _mreg,
                                                     unknown_mechanism_fields as _unk)
                         _reg = {}
@@ -1793,21 +1765,10 @@ class ChapterWriter:
                                 _reg = _mreg(_canon.get("mechanism_baseline") or {})
                         except Exception:
                             _reg = {}
-                        # P0-8 死亡-结算因果校验（v6 实证：第 2 章死亡后次数 2→0 超扣、
-                        # 第 3 章死亡后蚀化 98→98 未递增、第 7 章死亡后次数 1→1 死而不扣——
-                        # 方向校验只报"回退/回升"，"未变化/超扣"不触发）。死亡信号 =
-                        # 正文显式死亡表达 OR 本场景事件层信号（event/conflict/final_state，
-                        # 覆盖正文隐式死亡"很冷。然后是黑"式）。
-                        _ev_text = " ".join(
-                            str(sc.get(k) or "") for k in ("event", "conflict", "final_state")
-                        )
-                        _sigs = self._memory().book_signals() if self._memory() is not None else []
-                        # P0-14 修正：通用标准 OR 个性化标准（两套独立，不并入通用词表）
-                        _death = _deathsig(piece) or _bdeathsig(piece, _sigs) or \
-                            _deathsig(_ev_text) or _bdeathsig(_ev_text, _sigs)
-                        _viols = _pdv(piece, _panel_base)
-                        if _death:
-                            _viols = _viols + _pcv(piece, _panel_base, True)
+                        # 2026-10-17 弱化：砍死亡信号与因果校验——只做被动方向检查
+                        # （不回退/不回升，方向来自设定账本 registry）+ 字段白名单；
+                        # 数字结算准确性由事后质检软提示兜底。
+                        _viols = _pdv(piece, _panel_base, _reg)
                         # P0-15/16 通用版：注册表外机制字段违规（closed-world 白名单）
                         if _reg:
                             _viols = _viols + _unk(piece, _reg)

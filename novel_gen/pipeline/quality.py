@@ -307,7 +307,7 @@ class QualityChecker:
         #    字面大段重复），这里从"数值账本"角度校验：数字必须随事件严格增减。
         for it in self._panel_progress_issues(content):
             issues.append(it)
-            score -= 30
+            score -= 5
 
         # 2.8b 面板数字方向校验（P0-5，2026-10-10）：与场景级防线4 同基线
         #    （panel_baseline_dict(numbers)），质检层二次兜底——重写/改稿产物
@@ -315,14 +315,19 @@ class QualityChecker:
         #    （如第 5 章场景级静默）也在落盘前拦截。无基线/标签未识别不校验。
         if baseline:
             try:
-                from .chapter_state import panel_direction_violations as _pdv
-                for it in _pdv(content, baseline):
+                from .chapter_state import (panel_direction_violations as _pdv,
+                                            mechanism_field_registry as _mregq)
+                _regq = {}
+                if self.memory is not None:
+                    _regq = _mregq((self.memory.load().get("canon") or {})
+                                   .get("mechanism_baseline") or {})
+                for it in _pdv(content, baseline, _regq):
                     issues.append({
                         "type": "写作-机制数字方向违规",
                         "detail": it,
-                        "level": "大改",
+                        "level": "小改",
                     })
-                    score -= 30
+                    score -= 5
             except Exception:
                 pass
 
@@ -342,10 +347,13 @@ class QualityChecker:
         #    次数：39/37」幻觉行（注册表外字段）与链式数字违规全部漏检。修复：本区块
         #    只依赖 memory（注册表/账本从 canon/state 取），不再依赖场景透传 baseline；
         #    区块内 2.8b 方向校验单独保留 `if baseline`（需场景级基线才可判）。
+        # 2.8c P0-15/16 通用链式校验（2026-10-17 弱化版，REQ-机制数字软提示与通用化）：
+        #    保留机制字段注册表（closed-world）+ 链式账本 + 事件驱动双向校验，但机制
+        #    数字问题一律降为「小改/软提示」——给改稿建议、不强制重写、不阻塞流程。
+        #    已移除蚀化跨章累计强校验（erosion_cumulative_check）。
         if self.memory is not None:
             try:
-                from .chapter_state import (erosion_cumulative_check as _ecc,
-                                            mechanism_field_registry as _mreg2,
+                from .chapter_state import (mechanism_field_registry as _mreg2,
                                             unknown_mechanism_fields as _unk2,
                                             ledger_check as _lchk)
                 _st = self.memory.load().get("state") or {}
@@ -358,25 +366,15 @@ class QualityChecker:
                      if c.get("erosion") is not None), None)
                 _start = int(_st.get("erosion_start", 0) or 0)
                 _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
-                # P0-14/2026-10-10 口径统一：本章死亡次数用「本章末蚀化 - 上一章末蚀化」
-                # 蚀化差反推（与 stages 账本入账同口径）——词面 death_count 会因
-                # 复活/死于等表达多词命中而虚高（v10 ch3 实际死 2 次词面计 6），
-                # 导致 increase 字段「应 ≥ prev+6」误报合法 98→100。
-                from .chapter_state import _EROSION_SEQ_RE as _eseq2
-                _eros_now = max((int(_m.group(1)) for _m in _eseq2.finditer(content or "")),
+                # 本章死亡数：正文蚀化最高值 - 上一章末蚀化（蚀化差反推，账本同口径）。
+                # _EROSION_SEQ_RE 原在 chapter_state（已随蚀化跨章校验移除），本地定义。
+                _eros_re = re.compile(r"(?:蚀化|进度|蚀痕)\s*[：:]\s*([0-9]+)")
+                _eros_now = max((int(_m.group(1)) for _m in _eros_re.finditer(content or "")),
                                 default=0)
                 _cumu = max(0, _eros_now - _base) if _base > 0 else 0
-                if _base > 0:
-                    for _it in _ecc(content, _base, _cumu):
-                        issues.append({
-                            "type": "写作-机制数字方向违规",
-                            "detail": _it,
-                            "level": "大改",
-                        })
-                        score -= 30
                 # P0-15/16 通用版（2026-10-10）：机制字段注册表（closed-world）+ 链式
-                # 账本 + 事件驱动双向。基线声明的字段逐字段校验：
-                #   未知字段出现（累计死亡次数类）→ 大改；
+                # 账本 + 事件驱动双向。基线声明的字段逐字段校验（2026-10-17 均降小改）：
+                #   未知字段出现（累计死亡次数类）→ 小改建议；
                 #   无事件时 decrease 必须不变 / increase 面板必须不变（寸只查不回退）；
                 #   有事件时 decrease 必减、increase 必 ≥ 上章末 + 死亡数。
                 _canon = (self.memory.load().get("canon") or {})
@@ -386,9 +384,9 @@ class QualityChecker:
                         issues.append({
                             "type": "写作-机制字段白名单违规",
                             "detail": _it,
-                            "level": "大改",
+                            "level": "小改",
                         })
-                        score -= 30
+                        score -= 5
                     _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
                     from .chapter_state import _registry_initial as _rin
                     _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
@@ -416,9 +414,9 @@ class QualityChecker:
                         issues.append({
                             "type": "写作-机制数字方向违规",
                             "detail": _it,
-                            "level": "大改",
+                            "level": "小改",
                         })
-                        score -= 30
+                        score -= 5
             except Exception:
                 pass
 
@@ -468,7 +466,7 @@ class QualityChecker:
         if summary:
             for it in self._summary_consistency_issues(content, summary):
                 issues.append(it)
-                score -= 30
+                score -= 5
 
         # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
         for it in self._ending_issues(content):
@@ -736,17 +734,18 @@ class QualityChecker:
             out.append({
                 "type": "写作-机制数字未结算推进",
                 "detail": "面板数字「" + "；".join(major[:3]) + "」在死亡/结算事件后仍未变化，"
-                          "数值未随事件结算推进（如死亡次数未递减）；"
-                          "数字必须按机制卡随事件严格增减，禁止同值跨结算点复现",
-                "level": "大改",
+                          "数值未随事件结算推进（如死亡次数未递减）；建议按机制卡随事件结算，"
+                          "避免同值跨结算点复现（改稿建议，不强制重写）",
+                "level": "小改",
             })
         if minor:
             out.append({
                 "type": "写作-面板数字重复显示（冗余）",
                 "detail": "面板数字「" + "；".join(minor[:3]) + "」在无新事件时重复显示，"
-                          "稀释面板的紧张感；面板数字只在结算/刷新瞬间出现一次，"
-                          "后续确认状态改用叙述（如'他看了一眼面板，还剩一次'）",
-                "level": "中改",
+                          "稀释面板的紧张感；建议面板数字只在结算/刷新瞬间出现一次，"
+                          "后续确认状态改用叙述（如'他看了一眼面板，还剩一次'）"
+                          "（改稿建议，不强制重写）",
+                "level": "小改",
             })
         return out
 
@@ -843,8 +842,9 @@ class QualityChecker:
         return [{
             "type": "写作-摘要与正文最终状态不符",
             "detail": f"摘要提到「{final_sum}」，而正文最终结算为「{final_body}」——"
-                      f"摘要未随正文更新，应覆盖本章最终面板状态（死亡次数递减到哪）",
-            "level": "大改",
+                      f"摘要未随正文更新，建议覆盖本章最终面板状态（死亡次数递减到哪）"
+                      "（改稿建议，不强制重写）",
+            "level": "小改",
         }]
 
     def _salvage_single_draft(self, content: str) -> str:

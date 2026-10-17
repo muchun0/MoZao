@@ -575,32 +575,6 @@ def test_erosion_anchor_deterministic():
 
 
 @pytest.mark.p1
-def test_book_signals_add_and_dedup():
-    """书级个性化死亡信号记忆闭环（P0-14）：add 写入 → book_signals 读取；去重、上限。"""
-    store = _store()
-    mem = _memory(store)
-    assert mem.book_signals() == []
-    mem.add_book_signal("呼吸断了")
-    mem.add_book_signal("尸体被翻过来")
-    mem.add_book_signal("呼吸断了")          # 去重
-    sigs = mem.book_signals()
-    assert sigs == ["呼吸断了", "尸体被翻过来"]
-    # 空白/未启用安全
-    mem.add_book_signal("")
-    assert mem.book_signals() == ["呼吸断了", "尸体被翻过来"]
-
-
-@pytest.mark.p1
-def test_book_signals_empty_store():
-    """全新 store（无记忆文件）→ 空信号；写入后读取（记忆闭环）。"""
-    store2 = _store()
-    mem2 = _memory(store2)
-    assert mem2.book_signals() == []
-    mem2.add_book_signal("呼吸断了")
-    assert mem2.book_signals() == ["呼吸断了"]
-
-
-@pytest.mark.p1
 def test_parse_cn_number():
     from novel_gen.pipeline.book_memory import _parse_cn_number
     assert _parse_cn_number("已伸三十七寸") == 37

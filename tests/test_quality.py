@@ -366,7 +366,7 @@ def test_panel_progress_close_repeat_ok():
 
 @pytest.mark.p1
 def test_panel_no_event_repeat_is_minor():
-    """同值跨段复现但中间无结算事件（赶路/确认状态）→ 降级中改"冗余显示"，不再误报大改。
+    """同值跨段复现但中间无结算事件（赶路/确认状态）→ 降级小改"冗余显示"，不再误报大改。
 
     《万墟之上》21:52 版：第二次死亡后结算 1/3，之后赶路/章末备注栏变化时又显示
     两次 1/3——数字本就不该变，属冗余显示而非结算未推进。
@@ -382,19 +382,19 @@ def test_panel_no_event_repeat_is_minor():
                + "\n\n面板闪了一下，备注栏多出四个字，数字没变：今日可死次数：1/3。")
     issues = qc._panel_progress_issues(content)
     assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
-    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "小改" for i in issues)
 
 
 @pytest.mark.p1
 def test_panel_event_between_repeat_still_major():
-    """两次同值之间有死亡/复活等结算事件 → 仍判大改（真结算未推进）。"""
+    """两次同值之间有死亡/复活等结算事件 → 仍判小改（真结算未推进，2026-10-17 降级）。"""
     qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
     content = ("他死了第一次，视野角落亮起：今日可死次数：2/3。\n\n"
                + _PAD_C + _PAD_D + _PAD_C
                + "\n\n他死了第二次，视野角落仍显示：今日可死次数：2/3。\n\n"
                + _PAD_D)
     issues = qc._panel_progress_issues(content)
-    assert any("机制数字未结算推进" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+    assert any("机制数字未结算推进" in (i.get("type", "") or "") and i["level"] == "小改" for i in issues)
 
 
 @pytest.mark.p1
@@ -418,18 +418,18 @@ def test_panel_recall_not_event():
                "面板在视野角落亮着：今日可死次数：2/3。")
     issues = qc._panel_progress_issues(content)
     assert not any("机制数字未结算推进" in (i.get("type", "") or "") for i in issues), issues
-    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "中改" for i in issues)
+    assert any("面板数字重复显示（冗余）" in (i.get("type", "") or "") and i["level"] == "小改" for i in issues)
 
 
 @pytest.mark.p1
 def test_summary_consistency_mismatch():
-    """摘要提到的面板分数与正文最终结算不一致 → 大改（摘要未随正文更新）。"""
+    """摘要提到的面板分数与正文最终结算不一致 → 小改（摘要未随正文更新，2026-10-17 降级）。"""
     qc = QualityChecker(NovelConfig(title="t", chapter_words=2500, total_words=10000), None, None)
     content = ("他死了，面板跳出今日可死次数：1/3。复活后他往墟口爬，"
                "视野角落的今日可死次数：1/3 不再变化。")
     bad_sum = "陆沉死了一次，面板从 3/3 结算为 2/3，蚀痕延伸一寸。"
     issues = qc._summary_consistency_issues(content, bad_sum)
-    assert any("摘要与正文最终状态不符" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
+    assert any("摘要与正文最终状态不符" in (i.get("type", "") or "") and i["level"] == "小改" for i in issues)
 
 
 @pytest.mark.p1

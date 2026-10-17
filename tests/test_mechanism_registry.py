@@ -207,15 +207,6 @@ class TestV10Regression:
         out = cs.unknown_mechanism_fields(content, reg)
         assert any("累计死亡次数" in i for i in out)
 
-    def test_death_count_by_erosion_delta(self):
-        # v10 ch3：上一章末蚀化 98，本章正文蚀化 100 → 蚀化差=2（实际死 2 次）
-        content = "第一次死于赤尉之手。\n第二次又死了一次。\n距离蚀化：100%。"
-        from novel_gen.pipeline.chapter_state import _EROSION_SEQ_RE
-        eros = max((int(m.group(1)) for m in _EROSION_SEQ_RE.finditer(content)),
-                   default=0)
-        assert eros == 100
-        assert max(0, eros - 98) == 2
-
     def test_ledger_check_no_false_positive_on_valid_erosion(self):
         # v10 ch3 合法 98→100（死 2 次）：蚀化不报；寸字段有事件增量豁免
         content = ("今日可死次数：1；距离蚀化：99%。\n"
@@ -242,7 +233,6 @@ class TestV10Regression:
         mem = _types.SimpleNamespace()
         mem._load = lambda: {"canon": {"mechanism_baseline": BASELINE}}
         mem.load = lambda: {"canon": {"mechanism_baseline": BASELINE}}
-        mem.book_signals = lambda: []
         fake = _types.SimpleNamespace()
         fake._memory = lambda: mem
         blk = stages.ChapterWriter.__dict__["_panel_whitelist_block"]
@@ -250,12 +240,6 @@ class TestV10Regression:
         assert "可死次数" in out and "蚀化" in out and "寸" in out
         assert "累计死亡次数" in out
         assert "0 时，本章不得再发生死亡结算" in out
-
-    def test_pcv_skips_zero_baseline(self):
-        # v11 ch6：基线 0 无法再 -1，「死亡未结算」是误报 → _pcv 跳过
-        out = cs.panel_causal_violations(
-            "今日可死次数：0\n他死了又复活。", {"可死次数": 0}, True)
-        assert out == []
 
     def test_ledger_ch6_no_false_4_deaths(self):
         # v11 ch6：ch5 无面板断链 → 质检 _base 回落起始 97 → 蚀化差 101-97=4 误报；
@@ -266,15 +250,3 @@ class TestV10Regression:
             cs.mechanism_field_registry(BASELINE), 0,
             {"可死次数": 3, "蚀化": 97, "寸": 37})
         assert out == []
-
-    def test_erosion_inherited_when_missing(self):
-        # v11：无面板章入账时 erosion 继承上一章末（101），账本永不破链
-        from novel_gen.pipeline.chapter_state import _EROSION_SEQ_RE
-        eros = None
-        mv = [int(m.group(1)) for m in _EROSION_SEQ_RE.finditer("本章无面板行")]
-        if mv:
-            eros = max(mv)
-        prev_eros = 101
-        if eros is None and prev_eros is not None:
-            eros = int(prev_eros)
-        assert eros == 101

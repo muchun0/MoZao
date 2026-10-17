@@ -325,19 +325,40 @@ def panel_numbers_sequence(text: str, baseline: dict[str, int]) -> dict[str, lis
     return out
 
 
-def panel_direction_violations(text: str, baseline: dict[str, int]) -> list[str]:
+def _registry_dir(registry: dict[str, str], label: str) -> str | None:
+    """从设定账本派生的字段注册表查方向：优先精确核心词，其次子串匹配大类关键词。
+    registry 为 None/空时返回 None（调用方退回固定规则）。"""
+    if not registry:
+        return None
+    if label in registry:
+        return registry[label]
+    for k, v in registry.items():
+        if label in k or k in label:
+            return v
+    return None
+
+
+def panel_direction_violations(text: str, baseline: dict[str, int],
+                               registry: dict[str, str] | None = None) -> list[str]:
     """面板数字方向校验：正文中机制数字序列违反方向规则 → 返回违规描述列表。
 
-    - 次数/剩余（decrease）：序列中后值 > 前值 = 回升违规；但前值 == 0 且后值更大
-      视为"子时重置"（机制允许）放行；
-    - 蚀化/进度（increase）：序列中后值 < 前值 = 回退违规（只增不减，严格）；
-    - 无基线或标签未识别 → 不校验（避免误伤）。
+    - 方向规则来源：registry = mechanism_field_registry(baseline) 从设定账本派生
+      （字段名语义通用判定，支持加点/升级等非死亡型机制方向，不写死"次数递减/
+      蚀化递增"）；未传 registry（或空）时退回固定 _PANEL_DIR_RULES（兼容旧调用）。
+    - decrease：序列中后值 > 前值 = 回升违规；但前值 == 0 且后值更大视为"重置"放行；
+    - increase：序列中后值 < 前值 = 回退违规（只增不减，严格）；
+    - 无基线或标签未识别/未注册 → 不校验（避免误伤）。
     """
     if not text or not baseline:
         return []
+    dirs = registry if registry else dict(_PANEL_DIR_RULES)
     out: list[str] = []
     for label, seq in panel_numbers_sequence(text, baseline).items():
-        rule = dict(_PANEL_DIR_RULES)[label]
+        rule = dirs.get(label)
+        if rule is None and registry:
+            rule = _registry_dir(registry, label)
+        if not rule:
+            continue
         if len(seq) < 2:
             continue
         for a, b in zip(seq, seq[1:]):
@@ -368,187 +389,9 @@ def panel_baseline_dict(numbers: list[str]) -> dict[str, int]:
     return last
 
 
-# ---------- P0-8 死亡-结算因果校验（2026-10-10） ----------
-# 背景：v6 通读实证三类数字硬伤——第 2 章死亡后次数 2→0（超扣）、第 3 章死亡后
-# 蚀化 98→98（未递增）、第 7 章死亡后次数 1→1（死而不扣）。既有方向校验只报
-# 「回退/回升」（b<a / b>a），"死亡后未变化/超扣"不触发。本组函数引入高精度
-# 死亡事件信号（正文显式死亡表达 OR 事件层信号），确定性校验：
-#   - 发生死亡 → 次数期望 = 基线-1（或子时重置后的 N-1）；蚀化期望 = 基线+1；
-#   - 未发生死亡 → 不做因果校验（"没死面板不变"合法，防误伤）。
-# 隐式死亡（"很冷。然后是黑"式）依赖事件层信号；双漏时由质检 _panel_progress_issues
-# 兜底（已知局限，见 docs/TECH-book-memory.md）。
-_PANEL_DEATH_RE = re.compile(
-    r"(?:死了|死亡|死过|死去|被杀|被斩|被击杀|击杀|斩杀|处死|击毙|毙命|丧命|殒命|咽气|咽了气|断了气|断气|没了气息|"
-    r"没了呼吸|死而复生|复活|又活了|起死回生|复生|第[一二三四五六七八九十百\d０-９]+次死|"
-    r"死在|身死|阵亡|战死|没命)"
-)
-#: 死亡表达排除语境：否定/比喻/决心/名词化（快死了=将死未死；死也要/别死/不怕死等）
-#: 2026-10-10 P0-14 追加「累计死亡|死亡次数|已死亡」：v8 第 5/6 章实证——模型在
-#: 面板自述行「累计死亡次数：3 / 11」里写"死亡"词，词面计数误判为死亡结算事件
-#: （ch5/ch6 正文实际 0 次死亡却各计 1~3 次，账本被污染）。
-_PANEL_DEATH_EXCLUDE = re.compile(
-    r"(?:死也要|别死|不会死|不怕死|拼死|找死|要死|该死的|死里逃生|死活|死灰|死寂|"
-    r"死路|死命|死去活来|死心|死结|死人|死脑筋|死撑|死战|死斗|死磕|快死|将死|垂死|"
-    r"差点|险些|差一点|差点儿|死期|死讯|死尸|尸首|死状|死法|死亡人数|死亡率|视死如归|"
-    r"九死一生|生死|赴死|等死|装死|诈死|假死|昏死|一死|不惧死|宁死|该死的|死过一次的人|死人堆|"
-    r"累计死亡|死亡次数|已死亡|死亡数量|总死亡)"  # P0-14：自述统计类不计为死亡结算；差点/险些=未死
-)
+# 2026-10-17 移除死亡信号词表与因果校验（REQ-机制数字软提示与通用化）：不再做语义
+# 死亡判断，数字结算改由设定账本 + 被动方向校验 + 事后质检软提示处理。
 
-
-def death_signals(text: str) -> bool:
-    """【通用死亡标准（跨书词面层）】正文是否发生死亡/复活结算事件。
-
-    - 命中显式死亡词（死了/死亡/被杀/复活/死而复生/第 N 次死…）；
-    - 排除否定与比喻语境（别/不/没/怕/拒/未 + 死亡词；快死/死也要/拼死/死活…）
-      与自述统计类（累计死亡/死亡次数——v8 第 5/6 章面板自述误计实证）；
-    - 零 LLM、确定性；供 panel_causal_violations 与 stages 场景防线使用。
-    - 用户约束（2026-10-10 P0-14 修正）：这是**跨书通用标准**；本书特有的死亡表达
-      （金手指机制驱动，如《万墟之上》面板结算/蚀化递增/复活三联）由
-      book_death_signals/book_death_count 独立标准判定，不并入本词表——
-      其他书没有这套机制，通用词面不得被单本书的词污染。
-    """
-    t = (text or "")
-    if not t:
-        return False
-    for m in _PANEL_DEATH_RE.finditer(t):
-        span = t[max(0, m.start() - 8):m.end() + 8]
-        if _PANEL_DEATH_EXCLUDE.search(span):
-            continue
-        ctx = t[max(0, m.start() - 12):m.start()]
-        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
-            continue
-        return True
-    return False
-
-
-def death_count(text: str) -> int:
-    """【通用死亡标准】正文死亡结算次数（确定性统计，跨书词面层）。
-
-    与 death_signals 同规则，但统计每次命中（"死了…复活…又死了"=2 次）；
-    相邻 50 字内的多次命中视为同一次结算（"他被贯穿…彻底死了"连写不重复计）。
-    P0-14：自述统计类（累计死亡/死亡次数）已排除——v8 第 5/6 章面板自述
-    「累计死亡次数：N」不再误计为死亡结算。本书机制表达由 book_death_count 独立计。
-    """
-    t = (text or "")
-    if not t:
-        return 0
-    count = 0
-    last_end = -1_000_000   # 远负初值：否则第一条命中（start-(-1)<50）恒被相邻去重吞掉
-    for m in _PANEL_DEATH_RE.finditer(t):
-        span = t[max(0, m.start() - 8):m.end() + 8]
-        if _PANEL_DEATH_EXCLUDE.search(span):
-            continue
-        ctx = t[max(0, m.start() - 12):m.start()]
-        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
-            continue
-        if m.start() - last_end < 50:
-            last_end = max(last_end, m.end())
-            continue
-        count += 1
-        last_end = m.end()
-    return count
-
-
-# ---------- P0-14 个性化死亡标准（本书机制层，2026-10-10） ----------
-# 用户约束修正：死亡判定要「通用 + 个性化」两种独立标准。
-#  - 通用标准 = 上面 death_signals/death_count（跨书词面，任何书适用）；
-#  - 个性化标准 = 下面 book_death_signals/book_death_count（本书金手指机制驱动的
-#    死亡表达，如《万墟之上》面板结算式死亡"呼吸断了/尸体被翻过来"等隐式表达，
-#    由 book_memory 记忆闭环按本书实证写入 state.extra_death_signals）——
-#    独立正则、独立计数，不并入通用词表（其他小说没有这套机制，通用词面
-#    不得被单本书的词污染；同样地，无书级信号的普通书该标准自动为空=不启用）。
-def _book_words_re(book_signals):
-    words = [str(w).strip() for w in (book_signals or []) if str(w).strip()]
-    if not words:
-        return None
-    return re.compile("|".join(re.escape(w) for w in words))
-
-
-def book_death_signals(text: str, book_signals=None) -> bool:
-    """【个性化死亡标准（本书机制层）】书级词表命中即本书死亡结算事件。
-
-    与通用标准完全独立（不并入 _PANEL_DEATH_RE）；同样过否定/比喻与自述统计
-    排除（书级词出现在"没呼吸断了/累计死亡次数"等语境同样不计）。
-    """
-    t = (text or "")
-    _re = _book_words_re(book_signals)
-    if not _re or not t:
-        return False
-    for m in _re.finditer(t):
-        span = t[max(0, m.start() - 8):m.end() + 8]
-        if _PANEL_DEATH_EXCLUDE.search(span):
-            continue
-        ctx = t[max(0, m.start() - 12):m.start()]
-        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
-            continue
-        return True
-    return False
-
-
-def book_death_count(text: str, book_signals=None) -> int:
-    """【个性化死亡标准】书级死亡表达次数（独立 50 字去重，不与通用计数合并）。"""
-    t = (text or "")
-    _re = _book_words_re(book_signals)
-    if not _re or not t:
-        return 0
-    count = 0
-    last_end = -1_000_000
-    for m in _re.finditer(t):
-        span = t[max(0, m.start() - 8):m.end() + 8]
-        if _PANEL_DEATH_EXCLUDE.search(span):
-            continue
-        ctx = t[max(0, m.start() - 12):m.start()]
-        if re.search(r"(?:别|不|没|无|怕|拒|未|休|防|免)[^，。！？\n]{0,8}$", ctx):
-            continue
-        if m.start() - last_end < 50:
-            last_end = max(last_end, m.end())
-            continue
-        count += 1
-        last_end = m.end()
-    return count
-
-
-def panel_causal_violations(text: str, baseline: dict[str, int], death: bool) -> list[str]:
-    """死亡-结算因果校验：发生死亡事件时，次数必须较基线 -1、蚀化必须 +1。
-
-    - decrease（次数/剩余）：期望末值 = 基线 - 1；末值 == 基线 → "死亡后未递减"；
-      末值 < 基线 - 1 → "超扣"；末值 > 基线（非 0 基线）已由方向校验报回升，不重复；
-      正文含子时重置（0→N）时，期望按重置后的序列末值 - 1（0→N 由方向校验放行）。
-    - increase（蚀化/进度）：期望末值 = 基线 + 1；末值 == 基线 → "死亡后未递增"；
-      末值 < 基线 → 已由方向校验报回退，不重复。
-    - death=False（未检出死亡）→ 返回空列表（"没死面板不变"合法，不误伤）。
-    - 无基线 → 不校验。返回违规描述列表（与 panel_direction_violations 同风格）。
-    """
-    if not text or not baseline or not death:
-        return []
-    out: list[str] = []
-    for label, seq in panel_numbers_sequence(text, baseline).items():
-        if len(seq) < 2:
-            continue
-        rule = dict(_PANEL_DIR_RULES)[label]
-        last = seq[-1]
-        base = seq[0]
-        if rule == "decrease":
-            # v11 实证（2026-10-10）：基线 0 时无法再 -1，「死亡后未结算（仍为 0）」
-            # 是误报（0 就是 0，无递减空间）；次数用尽边界由 ledger_check 的
-            # 「上一章末已为 0 仍死亡」校验负责，这里不重复。
-            if base == 0:
-                continue
-            # 子时重置：序列中 0 后跟更大值 → 期望 = 重置后序列末值 - 1
-            reset_after = None
-            for a, b in zip(seq, seq[1:]):
-                if a == 0 and b > a:
-                    reset_after = b
-            expect = (reset_after - 1) if reset_after is not None else (base - 1)
-            if last == base:
-                out.append(f"面板「{label}」基线 {base}（递减规则）：正文发生死亡但数字未结算（仍为 {last}），死亡后必须 -1，正确应为 {max(expect, 0)}")
-            elif last < expect:
-                out.append(f"面板「{label}」基线 {base}（递减规则）：死亡结算超扣 {base}→{last}（每次死亡只 -1），正确应为 {max(expect, 0)}")
-        elif rule == "increase":
-            expect = base + 1
-            if last == base:
-                out.append(f"面板「{label}」基线 {base}（只增不减规则）：正文发生死亡但蚀化未递增（仍为 {last}），死亡后必须 +1，正确应为 {expect}")
-    return out
 
 
 def panel_baseline_text(numbers: list[str]) -> str:
@@ -573,46 +416,8 @@ def detect_reveal_hits(text: str, reveal) -> bool:
     return any(k and k.lower() in t for k in kws)
 
 
-# ---------- P0-10 蚀化跨章累计校验（2026-10-10，治 v7 第 6 章口径冲突）----------
-# v7 第 6 章实证：ch1/3/4 共死亡 3 次，蚀化应 97→100%，但正文仍写「距离蚀化：97%」
-# 且章内出现「第 98 次蚀化满」自相矛盾——单章内 panel_causal_violations 只校验
-# 「本章死亡→本章+1」，跨章累计死亡不入账，LLM 对跨章数字自由发挥。本函数做
-# 确定性跨章累计校验：正文蚀化值必须 = 起始蚀化 + 截至本章累计死亡（代码计算）。
-_EROSION_SEQ_RE = re.compile(
-    r"(?:蚀化|进度|蚀痕)\s*[：:]\s*([0-9]+)"
-)
-
-
-def erosion_cumulative_check(text: str, baseline_erosion: int,
-                             cumulative_deaths: int) -> list[str]:
-    """蚀化跨章累计校验（零 LLM）：正文所有「蚀化/进度」显示值中最高者，
-    必须等于 起始蚀化 + 截至本章累计死亡；低于期望 = 未按死亡累计推进，
-    高于期望 = 超发。无基线/无正文数字/无累计死亡 → 不校验（降级安全）。
-
-    返回违规 detail 列表（与 panel_direction_violations 同风格），供重写回灌。
-    """
-    if not text or baseline_erosion <= 0:
-        return []
-    vals = [int(m.group(1)) for m in _EROSION_SEQ_RE.finditer(text or "")]
-    if not vals:
-        return []
-    expect = baseline_erosion + max(0, cumulative_deaths)
-    peak = max(vals)
-    out: list[str] = []
-    if peak < expect:
-        out.append(
-            f"蚀化跨章累计违规：起始蚀化 {baseline_erosion}%，截至本章已累计死亡 "
-            f"{cumulative_deaths} 次（每死 +1%），蚀化应为 {expect}%，"
-            f"但正文最高只显示 {peak}%——蚀化未按死亡累计推进，正确应为 {expect}%"
-        )
-    elif peak > expect:
-        out.append(
-            f"蚀化跨章累计违规：起始蚀化 {baseline_erosion}%，截至本章已累计死亡 "
-            f"{cumulative_deaths} 次（每死 +1%），蚀化应为 {expect}%，"
-            f"正文却出现 {peak}%——蚀化超发，正确应为 {expect}%"
-        )
-    # 章内递减（如 100%→97% 回退）已由 panel_direction_violations 单章校验覆盖，不重复
-    return out
+# 2026-10-17 移除蚀化跨章累计校验（REQ-机制数字软提示与通用化）：蚀化随结算推进的
+# 精确值改由设定账本链式承接 + 被动方向校验 + 事后质检软提示处理，不再做跨章强校验。
 
 
 # ---------- P0-15/16 通用版：机制字段注册表 + 链式账本 + 事件驱动双向（2026-10-10） ----------

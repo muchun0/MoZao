@@ -310,7 +310,8 @@ class BookMemory:
         mb = data["canon"].get("mechanism_baseline") or {}
         if mb:
             lines = [f"- {k}：{v}" for k, v in mb.items()]
-            parts.append("【本作机制基线（机制数字的唯一来源）】\n" + "\n".join(lines))
+            parts.append("【本作机制基线（背景参考：机制数字与身体状态的当前口径，"
+                         "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
         joined = "\n\n".join(parts)
         return joined[:max_chars]
 
@@ -324,8 +325,8 @@ class BookMemory:
         if not mb:
             return ""
         lines = [f"- {k}：{v}" for k, v in mb.items()]
-        return ("【本作机制基线（机制数字与身体状态/蚀痕等唯一权威来源——"
-                "正文必须逐条遵守，禁止自造位置/数值口径）】\n" + "\n".join(lines))
+        return ("【本作机制基线（背景参考：机制数字与身体状态/蚀痕的当前口径，"
+                "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
 
     # ---------- 事件账本（跨章消费状态）----------
     def record_event_consumed(self, event_desc: str, chapter_no: int) -> bool:
@@ -578,34 +579,8 @@ class BookMemory:
             if int(c.get("ch", 0)) <= int(up_to_ch)
         )
 
-    # ---------- P0-14 书级个性化死亡信号（2026-10-10） ----------
-    # 用户约束：死亡判定要素（面板结算/复活/蚀化递增三联）是《万墟之上》这类
-    # 具体书的机制，不应做成所有书通用的硬编码词表——通用词表（chapter_state
-    # _PANEL_DEATH_RE）保留，本书特有表达由本记忆账本动态补充：质检/人工确认
-    # 某章实际发生死亡但 death_signals 漏检时，把该书死亡表达词 add_book_signal
-    # 写入 state.extra_death_signals，后续章生成/质检注入（v8 实证漏检：ch4
-    # 「呼吸断了」、ch7「尸体被翻过来」）。
-    def book_signals(self) -> list[str]:
-        """本作书级死亡信号词表（从 state.extra_death_signals 读取）。"""
-        if not self.enabled:
-            return []
-        data = self.load()
-        st = data.get("state") or {}
-        sigs = st.get("extra_death_signals") or []
-        return [str(s).strip() for s in sigs if str(s).strip()]
-
-    def add_book_signal(self, word: str) -> None:
-        """记忆闭环：记录本作一条书级死亡信号词（去重，上限 50 防膨胀）。"""
-        if not self.enabled or not str(word).strip():
-            return
-        data = self.load()
-        st = data.setdefault("state", {"chapters": [], "erosion_start": 0})
-        sigs = [str(s).strip() for s in (st.get("extra_death_signals") or []) if str(s).strip()]
-        w = str(word).strip()
-        if w not in sigs:
-            sigs.append(w)
-        st["extra_death_signals"] = sigs[-50:]
-        self.save()
+    # 2026-10-17 移除书级死亡信号词表（REQ-机制数字软提示与通用化）：不再做语义死亡
+    # 判断，数字结算改由设定账本 + 被动方向校验 + 事后质检软提示处理。
 
     def erosion_anchor(self, up_to_ch: int) -> str:
         """确定性数字锚（P0-14 链式版，2026-10-10）：蚀化当前应 = 上一章末蚀化值
@@ -637,9 +612,8 @@ class BookMemory:
             return ""
         base_val = int(prev) if prev is not None else start
         lines = [
-            f"- 距离蚀化：承接上一章末值 {base_val}%（链式口径：蚀化永久累计不重置，"
-            f"本章发生死亡则必须 +1、未发生死亡则保持此值不变；正文结算值必须等于此数，"
-            "禁止自造蚀化口径，禁止回退到更早的起始值）"
+            f"- 距离蚀化：背景参考，承接上一章末值 {base_val}%（蚀化只增不减；"
+            f"若本章发生结算则 +1、无结算保持；正文若出现该数字须与此一致，不要求刻意展示）"
         ]
         # 蚀痕起始寸数：canon.mechanism_baseline 蚀痕字段含「已伸X寸」（中文数字；
         # 英文键 scar_current/scar_start 兼容——P0-10 实测 world 基线键为英文）
@@ -649,10 +623,10 @@ class BookMemory:
         if scratch_line:
             start_inch = _parse_cn_number(scratch_line)  # 0=未解析出寸数（跳过寸数断言，只保留基线原文）
             inch_tail = f"；每死亡一次再伸一寸（累计已伸 {start_inch + max(0, base_val - start)} 寸）" if start_inch else ""
-            lines.append(f"- 蚀痕基线（唯一口径）：{scratch_line}{inch_tail}；"
-                         "正文位置描述必须与此连续（起点+累计长度），禁止同一状态每处重新计量")
-        return ("【机制数字确定性锚（代码按上一章末值链式承接，正文必须逐字遵守——"
-                "禁止自造蚀化/蚀痕口径）】\n" + "\n".join(lines))
+            lines.append(f"- 蚀痕基线（参考口径）：{scratch_line}{inch_tail}；"
+                         "正文若提到蚀痕位置须与此连续，不要求刻意展示")
+        return ("【机制数字·背景参考（代码按上一章末值链式承接；正文按需自然呈现，"
+                "结算时为准——不要求刻意展示数字）】\n" + "\n".join(lines))
 
     def _erosion_start_from_baseline(self) -> int:
         """从 canon.mechanism_baseline 的 panel_format（如「距离蚀化：97%」）解析起始蚀化。"""

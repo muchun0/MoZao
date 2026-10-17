@@ -1277,10 +1277,8 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"不得展开演绎）】\n{upcoming_events}\n"
     ) if upcoming_events else ""
     # P0-3 面板数字确定性闭环（2026-10-09 生成端第三轮）：权威基线注入 + 违反方向规则重试。
-    # 2026-10-15 REQ-写作正向引导 5.3：升级为「权威终值·只抄不推」——这些值是代码按
-    # 账本算好的权威当前值，正文出现的机制数字必须与之逐一对应、只准抄写，禁止模型
-    # 自行推演/增减/改写；事件结算后的新值只在结算瞬间由结算提示给出，未提示的数字
-    # 一律保持基线不变。
+    # 2026-10-17 机制数字软提示与通用化（REQ-机制数字软提示与通用化）：基线降为
+    # 「背景参考·不要求刻意展示」——正文按需自然呈现，结算时为准，不再逼模型写面板。
     panel_baseline_block = _panel_baseline_block(panel_baseline)
     panel_violation_block = (
         f"\n【重试强制规则（上一条正文中机制数字违反方向规则，已作废）】\n"
@@ -1290,12 +1288,11 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
     book_pitfalls_block = (
         f"\n{book_pitfalls}\n"
     ) if book_pitfalls else ""
-    # P0-8 小说级记忆：机制基线注入（蚀痕位置/机制数字唯一权威来源，正文禁止自造口径）
+    # P0-8 小说级记忆：机制基线注入（背景参考，正文按需呈现，不要求刻意展示）
     book_canon_block = (
         f"\n{book_canon}\n"
     ) if book_canon else ""
-    # P0-10 机制数字确定性锚（代码按账本累计算出：蚀化当前应 = 起始基线 + 累计死亡；
-    # 治 v7 第 6 章蚀化跨章口径——LLM 只写这个数，不自由发挥）
+    # P0-10 机制数字链式承接（背景参考：代码按上一章末值链式承接，结算时为准，不要求刻意展示）
     state_anchor_block = (
         f"\n{state_anchor}\n"
     ) if state_anchor else ""

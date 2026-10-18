@@ -474,8 +474,15 @@ def scene_inspect_chapter(project_id: str, no: int, user: dict = Depends(_requir
     cfg = store.load_config()
     if not getattr(cfg, "scene_inspector", True):
         raise HTTPException(status_code=400, detail="场景体检已关闭")
-    from novel_gen.pipeline.scene_inspector import inspect_chapter
+    from novel_gen.pipeline.scene_inspector import inspect_chapter, collect_suggestions
     report = inspect_chapter(store, no, target_words=int(getattr(cfg, "chapter_words", 0) or 0))
+    # P1-5 读时体检 → 生成反馈闭环：把 bad/warn 维度的建议沉淀进 store，
+    # 下一章生成时自动携带（失败静默，不阻塞体检展示）。
+    try:
+        store.save_inspector_suggestions(no, collect_suggestions(report))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("场景体检建议落盘失败（降级，仅展示不闭环）", exc_info=True)
     # 附带 beat 覆盖门禁结果（F1 落盘产物）
     bg = store.load_beat_gate().get(str(no))
     report["beat_gate"] = bg

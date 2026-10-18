@@ -54,6 +54,24 @@ def inspect_chapter(store, chapter_no: int, target_words: int = 0) -> dict:
             "dimensions": dimensions}
 
 
+def collect_suggestions(report: dict) -> list[str]:
+    """P1-5：从体检报告抽 bad/warn 维度的非空 suggestion，供下一章生成注入（闭环）。
+
+    「纯展示」→「生成反馈」：体检发现的改进建议不再只停在报告里，而是沉淀后
+    作为下一章的写作先验携带。空建议/报告异常 → []（降级安全）。
+    """
+    out: list[str] = []
+    for dim in (report.get("dimensions") or []):
+        if not isinstance(dim, dict):
+            continue
+        if (dim.get("level") or "") in ("bad", "warn"):
+            s = (dim.get("suggestion") or "").strip()
+            if s:
+                out.append(f"{dim.get('dim','')}：{s}")
+    return out
+
+
+
 def _dim_words(words: int, target: int) -> dict:
     if not target or target <= 0:
         return {"dim": "字数", "level": "ok", "detail": f"{words} 字", "suggestion": ""}

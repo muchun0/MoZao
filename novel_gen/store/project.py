@@ -791,6 +791,21 @@ class ProjectStore:
         data = self.load_pending_commitments()
         return data.get(str(chapter_no - 1))
 
+    # ---------- 场景体检建议（P1-5 读时体检 → 生成反馈闭环） ----------
+    def inspector_suggestions_path(self) -> Path:
+        return self.dir / "inspector_suggestions.json"
+
+    def load_inspector_suggestions(self) -> dict:
+        """返回 {chapter_no: [建议,...]}（bad/warn 维度的非空 suggestion）。"""
+        d = self._read_json(self.inspector_suggestions_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_inspector_suggestions(self, chapter_no: int, suggestions: list) -> None:
+        """按章覆盖写入体检建议（该章唯一权威；供下一章生成注入闭环）。"""
+        data = self.load_inspector_suggestions()
+        data[str(chapter_no)] = [s for s in (suggestions or []) if str(s).strip()]
+        self._write_json(self.inspector_suggestions_path(), data)
+
     # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
     def chapter_commit_path(self) -> Path:
         return self.dir / "chapter_commit.json"

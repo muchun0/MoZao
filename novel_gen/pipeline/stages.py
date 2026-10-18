@@ -647,6 +647,22 @@ class ChapterWriter:
             logger.exception("beat 正向供给注入失败（降级跳过）")
             return ""
 
+    def _inspector_block(self, chapter_no: int) -> str:
+        """P1-5 场景体检建议闭环：读上一章体检沉淀的 bad/warn 建议，注入本章生成。
+        空/关闭/异常 → 空串（降级安全，不阻塞写章）。"""
+        if not getattr(self.cfg, "scene_inspector", True):
+            return ""
+        try:
+            _sug = self.store.load_inspector_suggestions().get(str(int(chapter_no) - 1)) or []
+            _sug = [str(s) for s in _sug if str(s).strip()]
+            if not _sug:
+                return ""
+            lines = "\n".join(f"- {s}" for s in _sug[:4])
+            return "【上一章场景体检的改进建议（本章写作时规避或落实）】\n" + lines
+        except Exception:
+            logger.exception("场景体检建议注入失败（降级跳过）")
+            return ""
+
     def _next_chapter_exempt_type(self, chapter_no: int) -> str:
         """S3.3 L2 章型豁免：读大纲本章 tag，命中高潮/战斗/对话等 → 返回章型名（挂账镜头豁免）。
 
@@ -869,6 +885,15 @@ class ChapterWriter:
                 memory_context = (memory_context + "\n\n" if memory_context else "") + _bp
         except Exception:
             logger.exception("beat 正向供给注入失败（降级跳过，不阻塞写章）")
+
+        # P1-5 场景体检建议闭环注入（上一章体检沉淀的改进建议）。
+        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _insp = self._inspector_block(chapter_no)
+            if _insp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _insp
+        except Exception:
+            logger.exception("场景体检建议注入失败（降级跳过，不阻塞写章）")
 
         # 注入用户锁定的内容作为硬约束
         try:

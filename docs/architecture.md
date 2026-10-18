@@ -70,13 +70,14 @@
 | `commit.py` | **章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B，2026-10-16）**：`ChapterCommitter` 把 manager 章末 4 个分散入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线 pending、逐动作执行、失败即时 incomplete 留痕、全成功 committed、同章已提交则幂等 skip、开关关闭 disabled 直接依次调用；每次提交写 `projection_log.jsonl`；`check_projection` 扫描各派生视图（chapter_commit/chapter_state/reveal_status/foreshadow_commitment/payoff_quota/summaries/scenes/beat_gate/character_states/book_memory）覆盖章号，定位"哪个账本落后于当前章号"；命令行体检 `tools/projection_check.py <项目目录> [--up-to N] [--view ...]`（lagging 退出码 2）；总开关 `chapter_commit`（默认 True，False 回退 manager 原分散调用、行为不变）；对齐 WebNovel Writer 的「CHAPTER_COMMIT 驱动投影 + doctor 体检」，写与记分离 |
 | `stages.py` | `ChapterWriter` 逐章正文：**场景级生成**（拆场景→逐场景→润色，高质量模式/≥2000 字普通模式）；**REQ-scene-plan-align 拆场景规划对齐大纲人物动线**：事件清单从大纲 `character_moves` 确定性派生（`_derive_events_from_moves` 切拍+因果合并至 2-4 事件，纯字符串零 LLM，开关 `scene_plan_align` 默认 True），`split_scenes_prompt` 注入事件硬骨架（模型只补 conflict/action/final_state），派生事件覆盖模型输出（同 id 结构化字段合并保留），场景 `scene_event_ref` 必须恰好覆盖派生 id 集合（不通过回退整章，整章路径仍注入派生事件）；moves 缺失/派生失败/开关关闭完整回退原 LLM 规划路径；派生模式下事件互斥用 desc 相似度兜底（防大纲拍重复，不做槽位检查防误杀递进拍）；**REQ-scene-plan-align §7.3 正文层防重演（2026-10-09）**：场景正文节拍序列登记 `done_beat_seqs` + `beats._beats_rewrite_detected` 比对（换措辞完整循环重演拦截，命中重试至多 2 次，仍重演回退整章 `_fallback_whole_chapter` 复用）；场景 prompt 注入 `event_progress` 事件进度硬约束（只推进本场景事件、禁提前消费后续事件）；行动表措辞改为"每场景只落实本场景事件相关行动"（防全章行动逐场景重复落实）；**生成端第二轮（2026-10-09）**：①场景 prompt 新增 `done_beats` 事前约束（已发生节拍序列注入后续场景，事后比对升级事前告知）；②防线3 触发条件三重叠加——`_beat_cycle_issues`（场景自身内部循环，堵场景1盲区）+ 整序列 LCS + `_beats_local_rewrite_detected` 局部子序列重合（重试稿压缩/插序逃逸兜底）；③`_fallback_whole_chapter` 生成后即时校验（情节级重演+字数超 1.35×目标→重试至多 2 次，注入重复节拍证据+压缩字数目标），不再把重演全部押给质检重写 |
 | `beats.py` | **情节节拍序列（REQ-scene-plan-align §7.3 措施3/5，2026-10-09）**：`_extract_beat_sequence` 正文→归一化节拍序列（长词优先/去连续重复）、`_lcs_len` 最长公共子序列、`_beats_rewrite_detected` 场景重演判定（LCS≥4 且占比≥0.7）、`_beats_local_rewrite_detected` 局部子序列重合判定（已完成序列 4-7 拍子序列被复现 ≥0.8→局部重演，重试稿压缩逃逸兜底）、`_beat_cycle_issues` 整章情节级重演检测；stages 与 quality 共用，零 LLM 确定性 |
-| `beat_gate.py` | **三期 F1 Beat 覆盖度门禁（2026-10-14，docs/REQ-beat-gate.md）**：`_split_plan_beats`（character_moves→逐拍）/`_char_bigrams`（停用字过滤的字符二元组）/`compute_beat_coverage`（拍内 bigram≥50% 命中=覆盖）/`assess_chapter`；纯确定性零 LLM，分级 pass(≥0.6)/warn([0.4,0.6))/fail(<0.4)/skip(无计划拍)；stages.write() 落盘后接线，结果落 `beat_gate.json`；检测+记录+提示，不新起 LLM 重写循环 |
+| `beat_gate.py` | **三期 F1 Beat 覆盖度门禁（2026-10-14，docs/REQ-beat-gate.md）**：`_split_plan_beats`（character_moves→逐拍）/`_char_bigrams`（停用字过滤的字符二元组）/`compute_beat_coverage`（拍内 bigram≥50% 命中=覆盖）/`assess_chapter`；纯确定性零 LLM，分级 pass(≥0.6)/warn([0.4,0.6))/fail(<0.4)/skip(无计划拍)；stages.write() 落盘后接线，结果落 `beat_gate.json`；检测+记录+提示，不新起 LLM 重写循环；**REQ-超长篇攻坚 S3.2/S3.1（2026-10-18，feat/req-longform-batch1）**：`loose` 去标点归一匹配（`_norm_for_loose`，缓解标点/近义假阴性）、章型白名单（`detect_chapter_type` 对话/过渡章 → `skip_chapter_type` 不卡 fail，治误伤）、节点分级（`priorities` P0/P1/P2，P2 不计分母）；默认 `loose=True`/`chapter_type="auto"`/`priorities=None` 向后兼容；开关 `beat_loose_match`/`beat_chapter_type`/`beat_node_priority` |
+| `pending_commitments.py` | **章末承诺台账（REQ-超长篇攻坚 S3.1，2026-10-18）**：beat_gate 评估后确定性生成四类清单（committed 已兑现 / missed 漏兑现 / planted 新埋 / must_carry_to_next 下章必补）落 `pending_commitments.json`；`compensation_block` 有漏兑现才生成下章补偿块文本（无则空串=零 token），由 stages 在写章 prompt **最前部**注入（S1.3 Lost in the Middle：到期必兑现节点放 prompt 首部）；与 event_progress（场景内禁抢跑）正交，前者防提前消费、后者防漏兑现；开关 `pending_commitments`（默认 True，False 不读不写不注入） |
 | `scene_inspector.py` | **三期 F2 场景体检（2026-10-14，对标 Sudowrite Scene Inspector）**：`inspect_chapter` 读时实时算 字数/事件推进(对照 scenes.json)/重复度(复用 `beats._beat_cycle_issues`)/章首承接(上章尾)/章末钩子兑现 5 维度，输出 `{dim,level,detail,suggestion}`；零新 LLM、单维度 try 隔离降级 |
 | `review_summary.py` | 全书质量汇总（P0-3）：改稿问题类型分布 / 质检平均分 / 校验问题统计（纯函数，供 /review 接口聚合） |
 | `editor.py` | 编辑质检（大纲后 9 维审稿，<7 分自动修正）；**diff 式修正**（REQ-token优化 P1-6）：`_revise_diff` 只输出 `{"updates":[{no,title?,intro?,goal?}]}`（max_tokens 4096→1200），`_apply_updates` Python 合并回原大纲，解析失败/关闭回退 `_revise_whole` 整章重出 |
 | `reviser.py` | 单章重写/审校入口 |
 | `repetition.py` | 防同质化常驻提示词、防重复 |
-| `style_anchor.py` | 双锚风格锚定（REQ-双锚风格锚定）：个人旧稿锚 `extract_personal_anchor`（只抽 `user_edited` 章、限段限长）+ 题材锚组装 `build_teardown_anchor`（styles/takeaways/excerpts）+ 统一包装 `wrap_style_anchor`；`ChapterWriter`（stages.py）懒提取个人锚 `_personal_anchor` + 懒读 store 题材锚，经 `personal_anchor`/`teardown_anchor` 参数注入 scene/chapter prompt——**覆盖正文生成、单章重写、从第 N 章重生成全部写章路径** |
+| `style_anchor.py` | 双锚风格锚定（REQ-双锚风格锚定）：个人旧稿锚 `extract_personal_anchor`（只抽 `user_edited` 章、限段限长）+ 题材锚组装 `build_teardown_anchor`（styles/takeaways/excerpts）+ 统一包装 `wrap_style_anchor`；`ChapterWriter`（stages.py）懒提取个人锚 `_personal_anchor` + 懒读 store 题材锚 `_teardown_anchor`，经 `personal_anchor`/`teardown_anchor` 参数注入 scene/chapter prompt——**覆盖正文生成、单章重写、从第 N 章重生成全部写章路径**；**REQ-超长篇攻坚 S2.1（2026-10-18）双锚开关治理**：题材锚 `teardown_style_anchor` 全路径 gate（默认关）+ **新增个人旧稿锚开关 `personal_style_anchor`（默认关）**——stages._teardown_anchor/_personal_anchor 与 manager 扩写路径均先判开关，关时一律传空不注入（默认路径零变化；个人锚此前无条件注入需受控） |
 | `trace.py` | 全链路快照（模块1）：TraceSink 接口 + TraceRecorder（trace_id/project/user/scene 上下文，step_order 自增） |
 | `guard.py` | 成本防护（模块2）：AgentGuard 循环次数/场景限次/累计 Token 阈值，超限抛 `AgentGuardError` 并留痕 |
 | `quality.py` | 结果自校验（模块4）：QualityChecker 确定性规则（字数/重复/合规/章内同句复读）+ 读者视角 LLM 校验（章内矛盾自检 `consistency_llm_check` 默认仅高质量模式）+ 1 次自动重写；**定点重写**（REQ-token优化 P1-4）：`_locate_problem_spans` 按 issue pos 段落→detail 原句锚点定位窗口 ±200 字，窗口覆盖 <60% 正文才局部重写并 Python 拼回，无定位/跨度过大回退 `_rewrite_whole` 整章重出；含 P1-4 AI 痕迹扣分项；`auto_revised` 真值落 review.json（P2-4）；章内同句复读（REQ-章内自洽）：叙述≥3次/长句2次/面板行2次→大改触发重写，对话口头禅≤2豁免；**2.12 情节级重演检测**（`beats._beat_cycle_issues`：同一节拍序列非重叠 ≥2 次→大改，换措辞完整循环重演兜底）；**P0-7 记忆接入（2026-10-10）**：`__init__` 可选 `memory`（BookMemory，None/关闭全跳过）、每轮 check 后 `_record_pitfalls` 入账+`escalate`、`_rewrite_whole`/`_rewrite_span` 注入 `_memory_block`（本作历史错误 Top-N + 数字修复回灌「正确应为 Z」）；**REQ-写作正向引导 5.6（2026-10-15）** `_memory_block` 叠加 `good_block`（本作高分章好片段——重写不只「避免什么」还要「按什么质感写」，参考质感非内容来源） |
@@ -200,3 +201,32 @@
 3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core.py` 结算链。
 4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。
 5. 不确定某文件干什么 → 先查 `docs/filemap.md`；涉及历史决策 → 查 `docs/decisions.md`。
+
+## 8. 超长篇生成攻坚（第一批 + 第二批已合入 devtest）
+
+> 需求来源：`docs/REQ-超长篇生成攻坚.md`。治长文四大天花板：记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸。开关默认值以 `novel_gen/config.py` 为准，双锚默认全关（避免放大 AI 特征）。
+
+### 8.1 新增模块
+
+| 文件 | 职责 |
+|---|---|
+| `pipeline/pending_commitments.py` | 章末承诺台账：`build_commitment_ledger`（committed/missed/planted/must_carry_to_next 四类清单）、`compensation_block`（L1 上章补偿块）、`l2_hangover_block`（S3.3 L2 连续漏兑现→下章挂账镜头，章型豁免） |
+
+### 8.2 关键落点
+
+- **beat 门禁扩展（S3.2）**：`pipeline/beat_gate.py` —— loose 去标点匹配 `_norm_for_loose`/`_slot_hit(loose)`、章型白名单 `detect_chapter_type`（对话=引号占比≥0.35、过渡=<50字）、节点优先级 P0/P1/P2（`beat_node_priority`）。
+- **承诺台账接线（S3.1）**：`store/project.py` 增 `pending_commitments_path/load/save/prev`；`stages.py` write() 落盘 + `_pending_compensation_block`（L1+L2 合并）注入 memory_context 前段（S1.3 前置）。
+- **双锚（S2.1）**：`stages.py` `_teardown_anchor`/`_personal_anchor`，开关默认关返回空串，不注入。
+- **降本（S4.3/S4.1）**：`llm/base.py`+`providers.py` `json_mode`→`response_format={"type":"json_object"}` + `prompt_cache_hit_tokens` 埋点；`templates.py:1644 chapter_prompt` 在 `prefix_cache_aligned` 下把稳定块（字数·硬指标+constraints+题材参考）前置 user 最前；`config.state_extract_frequency` 3→5。
+- **伏笔原文存档（S1.1）**：`store/schemas.py ForeshadowItem.original_excerpt`；`pipeline/reader_ledger.py` `_archive_foreshadow_excerpts`（埋设章落盘时抽原文句）、`_foreshadow_block` 附【到期伏笔原文】。
+- **周期再锚定（S2.2）**：`stages.py` `ChapterWriter._rolling_style_anchor(chapter_no)`（`chapter_no%style_reanchor_every==0` 时读 `BookMemory.good_block(top_n=3, max_chars=900)` 注入 system 前段）。
+- **漂移检测（S2.4-L1）**：`pipeline/ai_taste.py` `style_drift_metrics`（句长均值/cv/TTR/填充词占比/明喻密度）+ `drift_score`，纯确定性每章可跑，供与前期章基线对比。
+
+### 8.3 开关清单
+
+- 第一批：`beat_loose_match`/`beat_chapter_type`/`beat_node_priority`/`pending_commitments` = True；`teardown_style_anchor`/`personal_style_anchor` = False（双锚默认关）。
+- 第二批：`json_schema_output`/`prefix_cache_aligned`/`foreshadow_original_text`/`style_anchor_rolling`/`style_drift_check` = True；`style_reanchor_every` = 5（0=关）；`state_extract_frequency` = 5（原 3）。
+
+### 8.4 二期项（顺延）
+
+S3.4（fail 章 LLM 复核，需人工标注集验证>80% 后开）/ S2.3（滚动锚固定+滚动双轨）/ S2.5（L3 LLM 裁判）/ S3.6（远期大纲）/ S1.4（语义双路回收判定）；S4.2（小模型静态路由）/ S4.4（润色分层）待各自 A/B 验证后另开。

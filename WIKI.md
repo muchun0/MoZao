@@ -186,6 +186,16 @@ D:\PythonProjects\DouBao\
 - 全书完成 `check_reveal_execution` 校验：**提前剧透**（锚定词在 from_ch 前出现）→ fatal；**到点未揭示**（from_ch 已过正文未提及）→ major；旧数据无 keywords 不误报
 - 开关 `reveal_tracking`（FEATURE_FLAGS，默认 True）；失败降级不阻塞生成/结算
 
+### 超长篇生成攻坚（REQ-超长篇生成攻坚.md，2026-10-18，第二批/二期）
+
+治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸），按三批落地：
+
+- **第一批（S3.2/S3.1/S1.3/S2.1）**：① `beat_loose_match`（beat_gate 去标点 loose 匹配）/`beat_chapter_type`（章型白名单，对话=引号≥0.35、过渡=<50字）/`beat_node_priority`（大纲节点 P0/P1/P2 分级）；② `pending_commitments`（章末承诺台账：committed/missed/planted 清单 + 下章补偿块注入）；③ 补偿块前置 memory_context 最前；④ `teardown_style_anchor`/`personal_style_anchor` 双锚**默认关**（防放大 AI 特征）
+- **第二批（降本 + 中成本）**：`json_schema_output`（response_format json_object）+ `state_extract_frequency`(5)；`prefix_cache_aligned`（稳定块前置 user 最前，最大化 DeepSeek 前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；`foreshadow_original_text`（伏笔原文句存档注入到期章）；`style_reanchor_every`(5)+`style_anchor_rolling`（每 5 章滚动风格锚）；`l2_hangover_block`（连续漏兑现节点→下章挂账镜头，章型豁免）；`style_drift_check`（确定性漂移检测：句长波动系数/TTR/填充词/明喻密度）
+- **二期**：`ledger_stalled`（伏笔埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ `foreshadow_semantic_check`（LLM 语义判推进，默认关）；`fixed_style_anchor`（开头原文+个人旧稿作风格原点，默认关）；`style_judge_l3`（L3 风格裁判，每 verify_every 章六维比对超阈值触发再锚定，默认开）；`outline_rolling_detail`（远期大纲粗粒度，默认关）+ `outline_far_skip`(30)；`beat_fail_judge`（fail 章 LLM 二级复核，默认关，启用待人工标注集一致率>80%）
+- **默认关项汇总**（线上行为与关闭前一致）：双锚体系（题材/个人旧稿/固定锚）+ `foreshadow_semantic_check` + `outline_rolling_detail` + `beat_fail_judge`，需要时开开关即可
+- 成本口径以 `agent_trace` 实测为准；存量项目仅新项目生效（不写迁移）
+
 ---
 
 ## 5. 数据库结构（MySQL）

@@ -33,7 +33,16 @@ def admin_quality_report(project_id: str = "", days: int = 0,
                          user: dict = Depends(_require_admin)):
     """P2-4 质量指标报表（只读）：按项目/时间维度聚合 agent_trace（质检得分/重写/问题/弃书/成本）。"""
     from ..db.traces import quality_report as _quality_report
-    return _quality_report(project_id=project_id, days=int(days or 0))
+    report = _quality_report(project_id=project_id, days=int(days or 0))
+    # P2-2 SPC 控制图：读项目 store 的 quality_metrics 聚合，检测「质量骤降」信号。
+    if project_id:
+        try:
+            store = _find_project(project_id)
+            from novel_gen.pipeline.spc import quality_spc_report
+            report["spc"] = quality_spc_report(store.load_quality_metrics())
+        except Exception:
+            report["spc"] = None
+    return report
 
 
 @app.get("/api/admin/skills")

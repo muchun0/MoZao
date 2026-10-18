@@ -806,6 +806,21 @@ class ProjectStore:
         data[str(chapter_no)] = [s for s in (suggestions or []) if str(s).strip()]
         self._write_json(self.inspector_suggestions_path(), data)
 
+    # ---------- 质量指标采集（P2-2 SPC 控制图数据源） ----------
+    def quality_metrics_path(self) -> Path:
+        return self.dir / "quality_metrics.json"
+
+    def load_quality_metrics(self) -> dict:
+        """返回 {chapter_no: {passed_once, rewrite_rounds, compliance_hit, checked_at}}。"""
+        d = self._read_json(self.quality_metrics_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_quality_metric(self, chapter_no: int, metric: dict) -> None:
+        """按章覆盖写入质检指标（该章唯一权威；供 SPC 控制图聚合）。"""
+        data = self.load_quality_metrics()
+        data[str(chapter_no)] = dict(metric or {})
+        self._write_json(self.quality_metrics_path(), data)
+
     # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
     def chapter_commit_path(self) -> Path:
         return self.dir / "chapter_commit.json"

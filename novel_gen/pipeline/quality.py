@@ -293,6 +293,16 @@ class QualityChecker:
         result["compliance_rejected"] = bool(
             has_compliance(result.get("issues") or [])
         )
+        # P2-2 SPC 控制图数据采集：每章落一次通过/重写轮数/合规命中指标，
+        # 供管理端画控制图检测「质量骤降」信号。失败静默（降级不阻塞写章）。
+        try:
+            self.store.save_quality_metric(chapter_no, {
+                "passed_once": bool(rewrite_rounds == 0 and result.get("passed")),
+                "rewrite_rounds": int(rewrite_rounds),
+                "compliance_hit": bool(result["compliance_rejected"]),
+            })
+        except Exception:
+            pass
         return Chapter(no=chapter_no, title=plan_title, content=content,
                        summary=summary, goal=plan_goal), result
 

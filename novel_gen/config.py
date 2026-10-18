@@ -103,6 +103,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "style_judge_drift_threshold", 2, "L3 风格裁判触发阈值（超长篇攻坚 S2.5）：漂移维度数≥N 即判定需再锚定并触发滚动锚刷新"),
     FeatureFlag("review", "outline_rolling_detail", False, "远期大纲粗粒度（超长篇攻坚 S3.6）：beat_gate 分母只算窗口内节点，距当前>outline_far_skip 的远期节点不计入 fail 判定（方向约束）；默认False；True=开启(滚动细化大纲生成为后续项)"),
     FeatureFlag("review", "outline_far_skip", 30, "远期大纲窗口阈值（超长篇攻坚 S3.6）：距当前章>N 的节点视为远期，beat_gate 判定时排除"),
+    FeatureFlag("review", "beat_fail_judge", False, "fail 章 LLM 二级复核（超长篇攻坚 S3.4）：仅对 beat_gate=fail 章跑 1 次 pointwise judge 确认未兑现清单（anti-length、judge 异模型族），防误报；返回未兑现清单才进 L3 定点重写；默认 False（启用待自建 20-50 章人工标注集验证一致率>80%）"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
     # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
     FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
@@ -340,6 +341,7 @@ class NovelConfig:
     style_judge_drift_threshold: int = feature_default("style_judge_drift_threshold")  # L3 裁判触发阈值（S2.5）：漂移维度数阈值
     outline_rolling_detail: bool = feature_default("outline_rolling_detail")   # 远期大纲粗粒度（S3.6）：beat_gate 分母只算窗口内节点，默认关
     outline_far_skip: int = feature_default("outline_far_skip")                # 远期大纲窗口阈值（S3.6）：距当前章>N 视为远期排除
+    beat_fail_judge: bool = feature_default("beat_fail_judge")                 # fail 章 LLM 二级复核（S3.4）：确认未兑现清单防误报，默认关
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁

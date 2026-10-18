@@ -34,6 +34,27 @@ from .templates import (
     _pick_dynamic_module,
 )
 
+
+def _parse_json_obj(text) -> dict:
+    """健壮 LLM JSON 解析（REQ 11.7：剥代码块/截断/尾逗号/字段兜底，异常返回空 dict）。"""
+    import json as _json
+    try:
+        if not isinstance(text, str):
+            text = str(text)
+        t = text.strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+        if m:
+            t = m.group(1).strip()
+        # 截断检测：尾部不完整 JSON 时去掉最后一段未闭合
+        if not t.startswith("{"):
+            i = t.find("{")
+            t = t[i:] if i >= 0 else t
+        # 尾逗号修复
+        t = re.sub(r",\s*([}\]])", r"\1", t)
+        return _json.loads(t) if isinstance(_json.loads(t), dict) else {}
+    except Exception:
+        return {}
+
 _CN_NUM = "一二三四五六七八九十"
 
 
@@ -456,6 +477,43 @@ class ChapterWriter:
         except Exception:
             logger.warning("远期大纲节点获取失败（降级跳过，不阻塞生成）", exc_info=True)
             return None
+
+    def _beat_fail_judge(self, chapter_no: int, content: str,
+                         plan_moves: str, missing: list[str]) -> None:
+        """REQ-超长篇攻坚 S3.4 fail 章 LLM 二级复核。
+
+        仅 beat_gate=fail 且开关 beat_fail_judge（默认关）时调用。用 1 次 pointwise judge
+        复核 beat_gate 判定的"未兑现拍"是否真的未兑现：judge 与生成端异模型族（用便宜模型，
+        anti-length：明确提示"正文少、拍已兑现不算未兑现"）。judge 确认未兑现的清单
+        才写入 verify_issues（作为 L3 定点重写触发信号）；误报（judge 认为已兑现）不记录。
+        上线前须自建 20-50 章人工标注集验证一致率>80%。失败降级跳过，不阻塞生成。
+        """
+        try:
+            body = content or ""
+            miss = [str(m) for m in (missing or []) if str(m).strip()]
+            if not miss or len(body.strip()) < 100:
+                return
+            sys_j = ("你是剧情执行复核。下面给出本章【计划拍】与【正文】，逐条判断计划拍是否"
+                     "真的未兑现。注意 anti-length：即使正文较短，只要拍的关键动作/事件确实发生"
+                     "即算已兑现，不要因正文少就判未兑现。只输出 JSON："
+                     "{\"unfulfilled\": [\"拍1\",\"拍2\"], \"reason\": \"简短理由\"}。"
+                     "只列入【确实未兑现】的拍。")
+            user_j = (f"【计划拍】\n" + "；".join(miss)
+                      + f"\n\n【正文（第{chapter_no}章）】\n" + body[:2500])
+            raw = self.llm.chat(sys_j, user_j, temperature=0.2, max_tokens=400)
+            data = _parse_json_obj(raw)
+            unfulfilled = [str(u) for u in (data.get("unfulfilled") or []) if str(u).strip()]
+            if unfulfilled:
+                reason = str(data.get("reason", "") or "")
+                self.store.append_verify_issues(chapter_no, [{
+                    "type": "BeatGate-fail 复核（L3触发）",
+                    "detail": f"judge 确认未兑现 {len(unfulfilled)} 拍：{'、'.join(unfulfilled)}。"
+                              f"{reason}",
+                    "level": "中改",
+                }])
+                self._trace_step(f"第{chapter_no}章fail复核", {"unfulfilled": unfulfilled})
+        except Exception as e:
+            logger.warning("fail 章 LLM 复核失败（降级跳过，不阻塞生成）: %s", e)
 
     def _user_memory_block(self) -> str:
         """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
@@ -1031,6 +1089,12 @@ class ChapterWriter:
                     far_beats=_far,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
+                # REQ S3.4 fail 章 LLM 二级复核：仅 beat_gate=fail 且开关 beat_fail_judge
+                # 开时，跑 1 次 pointwise judge 确认"未兑现清单"真实存在（防 beat_gate 误报），
+                # 返回未兑现清单才进 L3 定点重写。默认关（启用待人工标注集验证一致率>80%）。
+                if (getattr(self.cfg, "beat_fail_judge", False)
+                        and _bg.get("verdict") == "fail"):
+                    self._beat_fail_judge(chapter_no, content, plan_moves, _bg.get("missing") or [])
                 # REQ S3.1：章末承诺台账（beat_gate 后确定性落账，供下章补偿块消费）
                 if getattr(self.cfg, "pending_commitments", True):
                     from .pending_commitments import build_commitment_ledger

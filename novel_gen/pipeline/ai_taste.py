@@ -31,6 +31,79 @@ SIMILE_DENSITY_LIMIT = 2.0
 # 直白点破句式：代词 + 情绪词 + 了/得/极（'他怕了''她恨得发颤'）
 _DIRECT_PATTERN = re.compile(r"(他|她|我|它)(怕|恨|慌|怒|疼|惊|愣|慌|酸|软|麻)[了得极]")
 
+# ---- REQ-超长篇攻坚 S2.4-L1 漂移量化常量（唯一事实来源，§11.3 不散落硬编码）----
+#: 句长波动系数过小 → 句长趋同、模板化
+_SENT_CV_TOO_LOW = 0.45
+#: 句长波动系数过大 → 节奏失控、可读性差
+_SENT_CV_TOO_HIGH = 1.20
+#: 词汇多样性 TTR 过低 → 用词单调
+_TTR_TOO_LOW = 0.35
+#: 无意义填充词（口头禅）占比过高 → 重复用词（主语名等正常高频词不判漂移）
+_FILLER_WORDS = ("然后", "于是", "只见", "当即", "顿时", "但是", "然而",
+                 "因此", "不禁", "果然", "终于", "终于还是")
+_FILLER_LIMIT = 0.006
+
+
+def _sentences(text: str) -> list[str]:
+    """按中文句末标点切句（确定性）。"""
+    return [s.strip() for s in re.split(r"[。！？!?；;\n]+", text) if s.strip()]
+
+
+def style_drift_metrics(text: str) -> dict:
+    """REQ-超长篇攻坚 S2.4-L1：确定性文风漂移量化指标（≈0 token，每章可跑）。
+
+    返回：句长均值/波动系数 cv、词汇多样性 TTR、最高频 2 字词占比（口头禅）、明喻密度。
+    这些指标跨章对比（如与前期章均值比），偏离即文风漂移信号（Foreverse 实证句长波动
+    系数是金指标）。
+    """
+    if not text:
+        return {}
+    sents = _sentences(text)
+    total = len(text)
+    lens = [len(s) for s in sents]
+    mean_len = sum(lens) / len(lens) if lens else 0
+    std = (sum((l - mean_len) ** 2 for l in lens) / len(lens)) ** 0.5 if lens else 0
+    cv = std / mean_len if mean_len else 0
+    # 词汇多样性 TTR（字级：去重字符 / 总有效字符——中文 2 字窗口对正常文本过严）
+    chars = [c for c in text if c.strip() and c not in "，。！？；：、…—\"“”‘’"]
+    ttr = len(set(chars)) / len(chars) if chars else 0
+    # 无意义填充词占比（口头禅：然后/于是/只见等堆砌 → 重复用词、语感单调）
+    filler_count = sum(text.count(w) for w in _FILLER_WORDS)
+    filler_ratio = filler_count / total if total else 0
+    simile = text.count("像") * 1000 / total if total else 0
+    return {
+        "sentence_count": len(lens),
+        "mean_sentence_len": round(mean_len, 2),
+        "sentence_cv": round(cv, 4),
+        "ttr": round(ttr, 4),
+        "filler_count": filler_count,
+        "filler_ratio": round(filler_ratio, 4),
+        "simile_per_1k": round(simile, 2),
+    }
+
+
+def drift_score(text: str) -> int:
+    """REQ-超长篇攻坚 S2.4-L1：漂移分 0-100（越高越健康）。基于句长波动/多样性/口头禅/比喻。
+
+    低句长波动（模板化）+ 低 TTR + 高口头禅占比 → 明显漂移，分数低。
+    """
+    m = style_drift_metrics(text)
+    if not m or m.get("sentence_count", 0) < 3:
+        return 100
+    score = 100
+    cv = m["sentence_cv"]
+    if cv < _SENT_CV_TOO_LOW:
+        score -= 20
+    elif cv > _SENT_CV_TOO_HIGH:
+        score -= 10
+    if m["ttr"] < _TTR_TOO_LOW:
+        score -= 25
+    if m["filler_ratio"] > _FILLER_LIMIT:
+        score -= 15
+    if m["simile_per_1k"] >= SIMILE_DENSITY_LIMIT:
+        score -= 10
+    return max(0, min(100, score))
+
 
 def _count(text: str, words: list[str]) -> int:
     return sum(text.count(w) for w in words)

@@ -37,6 +37,8 @@ class LLMClient(ABC):
         # 阶段1：埋点与防护挂载点（由 NovelPipeline 注入）
         self.recorder = None   # TraceRecorder | None
         self.guard = None      # AgentGuard | None
+        # REQ-超长篇攻坚 S4.3：JSON 输出约束开关（factory/管线注入，provider 支持时生效）
+        self.json_schema_output = False
 
     def chat(
         self,
@@ -46,8 +48,13 @@ class LLMClient(ABC):
         max_tokens: Optional[int] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        json_mode: Optional[bool] = None,
     ) -> str:
-        """单轮对话，返回纯文本。模板方法：包装 _chat_impl 做埋点与成本防护。"""
+        """单轮对话，返回纯文本。模板方法：包装 _chat_impl 做埋点与成本防护。
+
+        json_mode：为 True 时向 provider 传 response_format json_object（provider 支持则
+        强制结构化 JSON 输出，降低 chat_json 解析重试；不支持时降级回 parse_tip 路径）。
+        """
         # 模块2：循环上限检查（调用前）
         if self.guard is not None:
             self.guard.before_call()
@@ -59,6 +66,7 @@ class LLMClient(ABC):
                 max_tokens=max_tokens,
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty,
+                json_mode=json_mode,
             )
         except Exception as exc:
             self._after_call(system, user, None, exc, start)
@@ -75,8 +83,9 @@ class LLMClient(ABC):
         max_tokens: Optional[int] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        json_mode: Optional[bool] = None,
     ) -> str:
-        """子类实现：真正调用 Provider。"""
+        """子类实现：真正调用 Provider。json_mode 由子类按自身能力决定是否启用 response_format。"""
 
     # ---------- 阶段1：埋点 + Token 统计 ----------
     def _after_call(self, system: str, user: str, text: Optional[str],
@@ -103,7 +112,11 @@ class LLMClient(ABC):
                     success=exc is None,
                     error=f"{type(exc).__name__}: {exc}" if exc else "",
                     model=self.model_label(),
-                    extra={"call_index": self.call_count},
+                    extra={
+                        "call_index": self.call_count,
+                        # REQ-超长篇攻坚 S4.1：前缀缓存命中 token（DeepSeek 返回），供命中率验证
+                        "prompt_cache_hit_tokens": self.usage.last_prompt_cache_hit_tokens,
+                    },
                 )
             except Exception:
                 pass
@@ -123,6 +136,7 @@ class LLMClient(ABC):
         retries: int = 2,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        json_mode: Optional[bool] = None,
     ) -> dict:
         """让模型输出 JSON，并解析为 dict。解析失败时自动重试（模型偶发输出残缺 JSON）。
 
@@ -130,6 +144,9 @@ class LLMClient(ABC):
         失败则把「解析错误信息」回传给模型要求修正，最多重试 retries 次。
         若判定错误是输出被 max_tokens 截断（Unterminated string 等），
         重试时自动增大 token 上限（+4096，封顶 16384），避免反复在同一上限处截断。
+
+        json_mode：S4.3 约束——None 时按 self.json_schema_output 决定；为 True 时向
+        provider 传 response_format json_object（支持则消除解析重试），不支持自动降级。
         """
         parse_tip = (
             "你的回复必须是单个合法的 JSON 对象，不要输出任何解释、代码块标记或额外文字。"
@@ -137,6 +154,7 @@ class LLMClient(ABC):
         last_err: Optional[Exception] = None
         # 记录本次调用实际使用的 max_tokens，截断时自动增大
         cur_max_tokens = max_tokens
+        use_json_mode = self.json_schema_output if json_mode is None else json_mode
         for attempt in range(retries + 1):
             try:
                 text = self.chat(
@@ -146,6 +164,7 @@ class LLMClient(ABC):
                     max_tokens=cur_max_tokens,
                     frequency_penalty=frequency_penalty,
                     presence_penalty=presence_penalty,
+                    json_mode=use_json_mode,
                 )
                 return _parse_json_strict(text)
             except (json.JSONDecodeError, LLMError) as exc:

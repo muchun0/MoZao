@@ -247,18 +247,30 @@ def test_chapter_prompt_injects_personal_anchor():
 @pytest.mark.p1
 def test_chapter_writer_personal_anchor_lazy(store):
     """ChapterWriter 懒提取个人旧稿锚：无人工编辑章返回空，有则只含 user_edited 章，
-    二次调用走缓存（内容不变）。"""
-    writer = ChapterWriter(store.load_config(), None, store, Memory(store, 5))
+    二次调用走缓存（内容不变）。S2.1 开关治理：须显式开启 personal_style_anchor=True。"""
+    cfg = store.load_config()
+    cfg.personal_style_anchor = True
+    writer = ChapterWriter(cfg, None, store, Memory(store, 5))
     assert writer._personal_anchor() == ""
 
     store.save_chapter(_ch(1, "用户精修段落。" * 30, user_edited=True))
     store.save_chapter(_ch(2, "AI 原文未改。" * 30))
-    writer2 = ChapterWriter(store.load_config(), None, store, Memory(store, 5))
+    writer2 = ChapterWriter(cfg, None, store, Memory(store, 5))
     out = writer2._personal_anchor()
     assert "用户精修段落" in out
     assert "AI 原文未改" not in out
     # 懒缓存：再调返回相同内容
     assert writer2._personal_anchor() == out
+
+
+@pytest.mark.p1
+def test_personal_anchor_default_off(store):
+    """S2.1 开关治理：personal_style_anchor 默认关，即使有 user_edited 章也不注入。"""
+    cfg = store.load_config()
+    assert cfg.personal_style_anchor is False
+    store.save_chapter(_ch(1, "用户精修段落。" * 30, user_edited=True))
+    writer = ChapterWriter(cfg, None, store, Memory(store, 5))
+    assert writer._personal_anchor() == ""
 
 
 @pytest.mark.p1

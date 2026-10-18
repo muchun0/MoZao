@@ -39,6 +39,37 @@ _STOP_CHARS = set("了的着他她它在把被是也就都和与而又再才但�
 #: 计划拍切分（character_moves 逐拍）
 _PLAN_SPLIT_RE = re.compile(r"[→。；;]")
 
+#: loose 匹配用：去标点/空白归一（REQ S3.2）。覆盖判定前先做归一，缓解
+#: 标点差异/近义改写导致的假阴性（"清晨出门。" ↔ "天刚蒙蒙亮出门"）。零 LLM。
+_PUNCT_RE = re.compile(r"[\s，。；、（）()：:「」“”‘’？！…—,.?!;:'\"~·-]+")
+
+
+def _norm_for_loose(s: str) -> str:
+    """去标点/空白归一，供 loose 匹配比较（保留汉字/数字/字母）。"""
+    return _PUNCT_RE.sub("", s or "")
+
+
+#: 对话行匹配：成对引号内的对话片段（中英文引号均计）
+_QUOTE_PARTS = re.compile(r"[“\"][^”\"]{1,120}[”\"]")
+
+
+def detect_chapter_type(content: str, moves: str = "") -> str:
+    """正文确定性判定章型（REQ S3.2 章型白名单，零 LLM）。
+
+    对话章：成对引号内字符占比 ≥0.35 → "对话"（对白为主的章，beat 密度天然低，
+    不应用情节拍去卡 fail）；短章（<50 字）→ "过渡"；其余 → "剧情"。
+    对话/过渡章由 assess 层 skip（不参与覆盖 fail），治"对话章 0% 被误判 fail"误伤。
+    """
+    body = content or ""
+    total = max(len(body), 1)
+    qlen = sum(len(p) for p in _QUOTE_PARTS.findall(body))
+    if qlen / total >= 0.35:
+        return "对话"
+    if total < 50:
+        return "过渡"
+    return "剧情"
+
+
 #: 网络实体词（对象槽）。拍/正文出现任一词即作为"对象已出现"候选。
 _ENTITY_WORDS = (
     "灰卒", "赤尉", "蚀兽", "蚀卒", "小九", "黑猫", "面板", "铁锤", "核心",
@@ -93,9 +124,16 @@ def _normalize_term(term: str) -> tuple[str, tuple[str, ...]]:
     return term, (term,)
 
 
-def _slot_hit(term: str, content: str) -> bool:
-    """某语义点（词）是否在正文出现：归一后按主词族的任一写法匹配。"""
+def _slot_hit(term: str, content: str, loose: bool = True) -> bool:
+    """某语义点（词）是否在正文出现：归一后按主词族的任一写法匹配。
+
+    loose（REQ S3.2）：匹配前先做去标点/空白归一，缓解标点/近义差异导致的假阴性；
+    False 保持原精确子串匹配（向后兼容）。
+    """
     _m, trigs = _normalize_term(term)
+    if loose:
+        _n = _norm_for_loose(content)
+        return any(_norm_for_loose(t) in _n for t in trigs)
     return any(t in content for t in trigs)
 
 
@@ -133,7 +171,7 @@ def _extract_slots(beat: str) -> tuple[list[str], list[str], list[str]]:
     return actions, subjects, mods
 
 
-def _beat_covered(beat: str, content: str) -> tuple[bool, list[str], list[str]]:
+def _beat_covered(beat: str, content: str, loose: bool = True) -> tuple[bool, list[str], list[str]]:
     """单拍是否被正文覆盖：动作槽命中率达标 + 对象槽命中 + 修饰限定槽全部命中。
 
     返回 (covered, hit, miss)：hit/miss 列出命中的语义点与缺失的语义点（含"[动作]"前缀）。
@@ -144,9 +182,9 @@ def _beat_covered(beat: str, content: str) -> tuple[bool, list[str], list[str]]:
     # 动作槽：≥50% 命中（容忍部分动作细节省略，但主体动作必须到）
     act_ok = True
     if actions:
-        act_hit_n = sum(1 for a in actions if _slot_hit(a, content))
+        act_hit_n = sum(1 for a in actions if _slot_hit(a, content, loose))
         for a in actions:
-            (hit if _slot_hit(a, content) else miss).append(f"[动作]{a}")
+            (hit if _slot_hit(a, content, loose) else miss).append(f"[动作]{a}")
         act_ok = act_hit_n * 2 >= len(actions)
     # 对象槽：至少一个实体词命中（无实体词则视为通过）
     sub_ok = True
@@ -159,7 +197,7 @@ def _beat_covered(beat: str, content: str) -> tuple[bool, list[str], list[str]]:
     mod_ok = True
     if mods:
         for m in mods:
-            if _slot_hit(m, content):
+            if _slot_hit(m, content, loose):
                 hit.append(m)
             else:
                 mod_ok = False
@@ -172,22 +210,51 @@ def _beat_covered(beat: str, content: str) -> tuple[bool, list[str], list[str]]:
 
 
 def compute_beat_coverage(content: str, moves: str, core_event: str = "",
-                          min_coverage: float = 0.6, warn_coverage: float = 0.4) -> dict:
-    """计算正文对章计划 beat 的覆盖率并分级。
+                          min_coverage: float = 0.6, warn_coverage: float = 0.4,
+                          chapter_type: str = "剧情", priorities: dict | None = None,
+                          loose: bool = True, far_beats: list[str] | None = None) -> dict:
+    """计算正文对章计划 beat 的覆盖率并分级（REQ S3.2 扩展，向后兼容）。
 
-    返回：{planned:[{beat,covered,hit,miss}], coverage, verdict, missing}
+    返回：{planned:[{beat,covered,hit,miss}], coverage, verdict, missing, chapter_type}
       - 无计划拍 → verdict="skip"，coverage=None（不误报）；
+      - 对话/过渡章 → verdict="skip_chapter_type"（章型白名单：对白/过渡章 beat 密度
+        天然低，不应用情节拍卡 fail，治"对话章 0% 被误判 fail"误伤；coverage=None）；
+      - 提供 priorities（拍→0/1/2）时，P2 节点不计入分母（只算 P0+P1）；
+      - 提供 far_beats（REQ S3.6 远期大纲粗粒度）时，这些"距当前 > 窗口的远期节点"
+        不计入分母（只方向约束，不要求逐拍兑现；全为 far 时 verdict="skip_far"）；
       - coverage ≥ min → "pass"；[warn, min) → "warn"；< warn → "fail"。
     """
     planned_beats = _split_plan_beats(moves) or _split_plan_beats(core_event)
+    # 章型 auto：调用方未指定时由正文确定性判定（对话/过渡章白名单）
+    if chapter_type == "auto":
+        chapter_type = detect_chapter_type(content or "", moves)
+    base = {"chapter_type": chapter_type}
     if not planned_beats:
-        return {"planned": [], "coverage": None, "verdict": "skip", "missing": []}
+        return {**base, "planned": [], "coverage": None, "verdict": "skip", "missing": []}
+    # 章型白名单：对话/过渡章不参与覆盖 fail（治误伤；low-beat 密度章不卡 fail）
+    if chapter_type in ("对话", "过渡"):
+        return {**base, "planned": [], "coverage": None, "verdict": "skip_chapter_type",
+                "missing": []}
+    # 节点分级：P2 氛围节点不计入覆盖率分母（分母只算 P0+P1；未提供则默认全 P1）
+    if priorities:
+        planned_beats = [b for b in planned_beats if priorities.get(b, 1) != 2]
+        if not planned_beats:
+            return {**base, "planned": [], "coverage": None,
+                    "verdict": "skip_priority", "missing": []}
+    # REQ S3.6 远期大纲粗粒度：距当前 > 窗口的远期节点不计入分母（方向约束，不逐拍兑现）
+    if far_beats:
+        far_set = {str(b).strip() for b in far_beats if str(b).strip()}
+        if far_set:
+            planned_beats = [b for b in planned_beats if b not in far_set]
+            if not planned_beats:
+                return {**base, "planned": [], "coverage": None,
+                        "verdict": "skip_far", "missing": []}
     body = content or ""
     planned = []
     covered_count = 0
     missing: list[str] = []
     for beat in planned_beats:
-        ok, hit, miss = _beat_covered(beat, body)
+        ok, hit, miss = _beat_covered(beat, body, loose)
         planned.append({"beat": beat, "covered": ok, "hit": hit, "miss": miss})
         if ok:
             covered_count += 1
@@ -200,17 +267,29 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
         verdict = "warn"
     else:
         verdict = "fail"
-    return {"planned": planned, "coverage": round(coverage, 3),
+    return {**base, "planned": planned, "coverage": round(coverage, 3),
             "verdict": verdict, "missing": missing}
 
 
 def assess_chapter(content: str, moves: str, core_event: str = "",
-                   min_coverage: float = 0.6, warn_coverage: float = 0.4) -> dict:
-    """对单章正文做 beat 覆盖门禁评估（纯函数，供 stages 接线与 router 体检复用）。"""
-    result = compute_beat_coverage(content, moves, core_event, min_coverage, warn_coverage)
-    if result["verdict"] == "skip":
-        logger.info("[BeatGate] 无计划拍（moves/core_event 均空），跳过覆盖评估")
+                   min_coverage: float = 0.6, warn_coverage: float = 0.4,
+                   chapter_type: str = "auto", priorities: dict | None = None,
+                   loose: bool = True, far_beats: list[str] | None = None) -> dict:
+    """对单章正文做 beat 覆盖门禁评估（纯函数，供 stages 接线与 router 体检复用）。
+
+    chapter_type="auto"（默认）：由正文确定性判定章型（对话/过渡章白名单）；
+    显式传"剧情"/"对话"等则按给定值。loose=False 完全回退旧精确子串匹配（向后兼容）。
+    far_beats（REQ S3.6）：距当前 > 窗口的远期节点，不计入 fail 判定分母。
+    """
+    result = compute_beat_coverage(content, moves, core_event, min_coverage, warn_coverage,
+                                   chapter_type, priorities, loose, far_beats)
+    if result["verdict"] in ("skip", "skip_chapter_type", "skip_priority", "skip_far"):
+        logger.info("[BeatGate] %s（%s）", result["verdict"],
+                    "无计划拍" if result["verdict"] == "skip"
+                    else "对话/过渡章不卡fail" if result["verdict"] == "skip_chapter_type"
+                    else "全部P2节点不计分母" if result["verdict"] == "skip_priority"
+                    else "全部远期节点不计分母(S3.6)")
     else:
-        logger.info("[BeatGate] 覆盖率=%.2f verdict=%s 漏写拍=%d",
-                    result["coverage"], result["verdict"], len(result["missing"]))
+        logger.info("[BeatGate] 覆盖率=%.2f verdict=%s 章型=%s 漏写拍=%d",
+                    result["coverage"], result["verdict"], chapter_type, len(result["missing"]))
     return result

@@ -34,6 +34,27 @@ from .templates import (
     _pick_dynamic_module,
 )
 
+
+def _parse_json_obj(text) -> dict:
+    """健壮 LLM JSON 解析（REQ 11.7：剥代码块/截断/尾逗号/字段兜底，异常返回空 dict）。"""
+    import json as _json
+    try:
+        if not isinstance(text, str):
+            text = str(text)
+        t = text.strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+        if m:
+            t = m.group(1).strip()
+        # 截断检测：尾部不完整 JSON 时去掉最后一段未闭合
+        if not t.startswith("{"):
+            i = t.find("{")
+            t = t[i:] if i >= 0 else t
+        # 尾逗号修复
+        t = re.sub(r",\s*([}\]])", r"\1", t)
+        return _json.loads(t) if isinstance(_json.loads(t), dict) else {}
+    except Exception:
+        return {}
+
 _CN_NUM = "一二三四五六七八九十"
 
 
@@ -362,20 +383,137 @@ class ChapterWriter:
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
-        首次读取后缓存；文件缺失/读取失败返回空串（调用方不注入，行为降级安全）。"""
+        首次读取后缓存；文件缺失/读取失败返回空串（调用方不注入，行为降级安全）。
+        S2.1 双锚开关治理：题材锚开关 `teardown_style_anchor` 默认关，关时一律不注入
+        （2026-10-14 朱雀归因实测为独立负面变量）。"""
+        if not getattr(self.cfg, "teardown_style_anchor", False):
+            return ""
         if self._anchor_loaded is None:
             self._anchor_loaded = self.store.load_teardown_style_anchor()
         return self._anchor_loaded
 
     def _personal_anchor(self) -> str:
         """REQ-双锚风格锚定：懒提取个人旧稿锚（用户人工编辑过的章节片段）。
-        无人工编辑章返回空串（调用方不注入）；提取失败静默返回空串（不阻塞生成）。"""
+        无人工编辑章返回空串（调用方不注入）；提取失败静默返回空串（不阻塞生成）。
+        S2.1 双锚开关治理：个人旧稿锚开关 `personal_style_anchor` 默认关，关时一律不注入
+        （个人锚无条件注入可能放大模板化表达，需显式开启）。"""
+        if not getattr(self.cfg, "personal_style_anchor", False):
+            return ""
         if self._personal_loaded is None:
             try:
                 self._personal_loaded = extract_personal_anchor(self.store.list_chapters())
             except Exception:
                 self._personal_loaded = ""
         return self._personal_loaded
+
+    def _rolling_style_anchor(self, chapter_no: int) -> str:
+        """REQ-超长篇攻坚 S2.2 周期轻量再锚定：周期命中章用 book_memory goods 最近高分片段
+        作滚动风格锚注入 system 前段，治几十万字后文风/语感漂移。
+
+        - 开关 style_reanchor_every=0 或 style_anchor_rolling=False → 空串（不注入）；
+        - 非周期命中章（chapter_no % every != 0）→ 空串（控成本，多数章不注入）；
+        - good_block 为空/读取失败 → 空串（降级安全，不阻塞生成）。
+        """
+        every = int(getattr(self.cfg, "style_reanchor_every", 0) or 0)
+        if every <= 0 or not getattr(self.cfg, "style_anchor_rolling", True):
+            return ""
+        if int(chapter_no or 0) % every != 0:
+            return ""
+        try:
+            from .book_memory import BookMemory
+            mem = BookMemory(self.store, self.cfg)
+            return mem.good_block(top_n=3, max_chars=900)
+        except Exception:
+            logger.warning("滚动风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
+            return ""
+
+    def _fixed_style_anchor(self) -> str:
+        """REQ-超长篇攻坚 S2.3 固定锚+滚动锚双轨：固定锚 = 风格原点（开头 1-2 章原文 +
+        个人旧稿），永不替换，与滚动锚（最近高分，S2.2）双轨合并注入。
+
+        - 开关 fixed_style_anchor 默认 False（双锚体系默认关防放大 AI 特征，开启才注入）；
+        - 开时取第1/2章正文开头片段作全书风格原点（一次性采样、不随章节滚动）；
+        - 空源/读取失败 → 空串（降级安全，不阻塞生成）。
+        """
+        if not getattr(self.cfg, "fixed_style_anchor", False):
+            return ""
+        parts: list[str] = []
+        try:
+            for c in (1, 2):
+                ch = self.store.load_chapter(c)
+                content = getattr(ch, "content", "") or ""
+                if len(content.strip()) >= 200:
+                    parts.append(f"- 开头第{c}章原文：{content[:300].strip()}")
+            pa = self._personal_anchor()
+            if pa:
+                parts.append(f"- 个人旧稿锚：{pa}")
+        except Exception:
+            logger.warning("固定风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
+        return "\n".join(parts)
+
+    def _far_outline_beats(self, chapter_no: int) -> list[str] | None:
+        """REQ-超长篇攻坚 S3.6 远期大纲粗粒度：返回距当前 > outline_far_skip 的远期大纲
+        节点名集合，供 beat_gate 从判定分母排除（方向约束、不逐拍兑现）。
+
+        取大纲 key_nodes（全局关键节点，带 chapter_no）中 chapter_no 距当前超过窗口的
+        节点名；无大纲/读取失败返回 None（调用方按"无远期节点"处理，行为兼容默认关）。
+        """
+        try:
+            outline = self.store.load_outline()
+            far_skip = max(0, int(getattr(self.cfg, "outline_far_skip", 30) or 30))
+            names: list[str] = []
+            for kn in getattr(outline, "key_nodes", None) or []:
+                kch = int(getattr(kn, "chapter_no", 0) or 0)
+                if kch <= 0 or int(chapter_no or 0) <= 0:
+                    continue
+                if abs(int(chapter_no) - kch) > far_skip:
+                    nm = str(getattr(kn, "kind", "") or "").strip()
+                    if nm:
+                        names.append(nm)
+                    desc = str(getattr(kn, "description", "") or "").strip()
+                    if desc:
+                        names.append(desc)
+            return names or None
+        except Exception:
+            logger.warning("远期大纲节点获取失败（降级跳过，不阻塞生成）", exc_info=True)
+            return None
+
+    def _beat_fail_judge(self, chapter_no: int, content: str,
+                         plan_moves: str, missing: list[str]) -> None:
+        """REQ-超长篇攻坚 S3.4 fail 章 LLM 二级复核。
+
+        仅 beat_gate=fail 且开关 beat_fail_judge（默认关）时调用。用 1 次 pointwise judge
+        复核 beat_gate 判定的"未兑现拍"是否真的未兑现：judge 与生成端异模型族（用便宜模型，
+        anti-length：明确提示"正文少、拍已兑现不算未兑现"）。judge 确认未兑现的清单
+        才写入 verify_issues（作为 L3 定点重写触发信号）；误报（judge 认为已兑现）不记录。
+        上线前须自建 20-50 章人工标注集验证一致率>80%。失败降级跳过，不阻塞生成。
+        """
+        try:
+            body = content or ""
+            miss = [str(m) for m in (missing or []) if str(m).strip()]
+            if not miss or len(body.strip()) < 100:
+                return
+            sys_j = ("你是剧情执行复核。下面给出本章【计划拍】与【正文】，逐条判断计划拍是否"
+                     "真的未兑现。注意 anti-length：即使正文较短，只要拍的关键动作/事件确实发生"
+                     "即算已兑现，不要因正文少就判未兑现。只输出 JSON："
+                     "{\"unfulfilled\": [\"拍1\",\"拍2\"], \"reason\": \"简短理由\"}。"
+                     "只列入【确实未兑现】的拍。")
+            user_j = (f"【计划拍】\n" + "；".join(miss)
+                      + f"\n\n【正文（第{chapter_no}章）】\n" + body[:2500])
+            raw = self.llm.chat(sys_j, user_j, temperature=0.2, max_tokens=400)
+            data = _parse_json_obj(raw)
+            unfulfilled = [str(u) for u in (data.get("unfulfilled") or []) if str(u).strip()]
+            if unfulfilled:
+                reason = str(data.get("reason", "") or "")
+                self.store.append_verify_issues(chapter_no, [{
+                    "type": "BeatGate-fail 复核（L3触发）",
+                    "detail": f"judge 确认未兑现 {len(unfulfilled)} 拍：{'、'.join(unfulfilled)}。"
+                              f"{reason}",
+                    "level": "中改",
+                }])
+                self._trace_step(f"第{chapter_no}章fail复核", {"unfulfilled": unfulfilled})
+        except Exception as e:
+            logger.warning("fail 章 LLM 复核失败（降级跳过，不阻塞生成）: %s", e)
 
     def _user_memory_block(self) -> str:
         """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
@@ -438,6 +576,54 @@ class ChapterWriter:
                     return render_block(c.get("design") or {})
         except Exception:
             logger.exception("章级设计卡渲染失败（降级不注入）")
+        return ""
+
+    def _pending_compensation_block(self, chapter_no: int) -> str:
+        """REQ-超长篇生成攻坚 S3.1 + S3.3：上章漏兑现节点补偿块 + 连续漏兑现挂账镜头。
+
+        L1：读上章承诺台账，有漏兑现节点则生成补偿块（S3.1，0 成本）；
+        L2：扫描最近 3 章台账，连续 ≥2 章漏兑现的节点生成"挂账镜头"（S3.3，0 成本；
+            下章为高潮/战斗等豁免章型时不强加）。
+        无漏兑现 / 开关关 / 无台账 / 异常 → 空串（不注入，零 token）。拼进 memory_context，
+        自动覆盖场景/整章/回退整章三条写章链路。
+        """
+        if not getattr(self.cfg, "pending_commitments", True):
+            return ""
+        parts: list[str] = []
+        try:
+            prev = self.store.prev_pending_commitments(chapter_no)
+            if prev:
+                from .pending_commitments import compensation_block
+                cb = compensation_block(prev)
+                if cb:
+                    parts.append(cb)
+        except Exception:
+            logger.exception("上章承诺补偿块注入失败（降级不注入）")
+        try:
+            from .pending_commitments import l2_hangover_block
+            lb = l2_hangover_block(self.store, chapter_no,
+                                   current_chapter_type=self._next_chapter_exempt_type(chapter_no))
+            if lb:
+                parts.append(lb)
+        except Exception:
+            logger.exception("挂账镜头注入失败（降级不注入）")
+        return "\n\n".join(parts) if parts else ""
+
+    def _next_chapter_exempt_type(self, chapter_no: int) -> str:
+        """S3.3 L2 章型豁免：读大纲本章 tag，命中高潮/战斗/对话等 → 返回章型名（挂账镜头豁免）。
+
+        大纲无该章 tag / 无大纲 → 返回空（不强豁免，仍按连续漏兑现注入）。
+        """
+        try:
+            outline = self.store.load_outline()
+            for p in (getattr(outline, "chapters", None) or []):
+                if int(getattr(p, "no", 0) or 0) == int(chapter_no):
+                    tag = str(getattr(p, "tag", "") or "")
+                    for t in ("对话", "过渡", "情绪", "高潮", "战斗"):
+                        if t in tag:
+                            return t
+        except Exception:
+            pass
         return ""
 
     def _sys(self, system: str) -> str:
@@ -530,6 +716,15 @@ class ChapterWriter:
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
         )
         prev_tail = self._prev_tail(chapter_no)
+
+        # REQ S1.3 注入位置工程：到期必兑现的补偿块放 prompt 最前部（Lost in the Middle
+        # ——关键指令放首部，避免被中部大段设定/摘要淹没）；无漏兑现则空串（零 token）。
+        try:
+            _comp_block = self._pending_compensation_block(chapter_no)
+            if _comp_block:
+                memory_context = memory_context + "\n\n" + _comp_block if memory_context else _comp_block
+        except Exception:
+            logger.exception("上章承诺补偿块注入失败（降级跳过）")
 
         # 注入时间线提示
         plan_core_event = ""
@@ -675,6 +870,16 @@ class ChapterWriter:
             if _wl:
                 user = user + _wl
             system = self._sys(system)
+            # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
+            _anchor_parts = []
+            _ra = self._rolling_style_anchor(chapter_no)
+            if _ra:
+                _anchor_parts.append(f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}")
+            _fa = self._fixed_style_anchor()
+            if _fa:
+                _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
+            if _anchor_parts:
+                system = "\n\n".join(_anchor_parts) + "\n\n" + system
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -865,13 +1070,36 @@ class ChapterWriter:
         # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。
         try:
             if getattr(self.cfg, "beat_gate", False):
-                from .beat_gate import assess_chapter
+                from .beat_gate import assess_chapter, detect_chapter_type
+                # REQ S3.2：章型白名单（对话/过渡章不卡 fail）+ loose 匹配 + 节点分级
+                _loose = bool(getattr(self.cfg, "beat_loose_match", True))
+                _ctype = detect_chapter_type(content, plan_moves) \
+                    if getattr(self.cfg, "beat_chapter_type", True) else "剧情"
+                _priorities = None  # 大纲节点分级数据后续接入；未提供默认全 P1 向后兼容
+                # REQ S3.6 远期大纲粗粒度：开启时，距当前 > outline_far_skip 的远期大纲节点
+                # 从 beat_gate 判定分母排除（方向约束，不要求逐拍兑现；默认关不改变行为）
+                _far = None
+                if getattr(self.cfg, "outline_rolling_detail", False):
+                    _far = self._far_outline_beats(chapter_no)
                 _bg = assess_chapter(
                     content, plan_moves, plan_core_event,
                     min_coverage=float(getattr(self.cfg, "beat_gate_min_coverage", 0.6)),
                     warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
+                    chapter_type=_ctype, priorities=_priorities, loose=_loose,
+                    far_beats=_far,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
+                # REQ S3.4 fail 章 LLM 二级复核：仅 beat_gate=fail 且开关 beat_fail_judge
+                # 开时，跑 1 次 pointwise judge 确认"未兑现清单"真实存在（防 beat_gate 误报），
+                # 返回未兑现清单才进 L3 定点重写。默认关（启用待人工标注集验证一致率>80%）。
+                if (getattr(self.cfg, "beat_fail_judge", False)
+                        and _bg.get("verdict") == "fail"):
+                    self._beat_fail_judge(chapter_no, content, plan_moves, _bg.get("missing") or [])
+                # REQ S3.1：章末承诺台账（beat_gate 后确定性落账，供下章补偿块消费）
+                if getattr(self.cfg, "pending_commitments", True):
+                    from .pending_commitments import build_commitment_ledger
+                    _ledger = build_commitment_ledger(_bg, chapter_no)
+                    self.store.save_pending_commitments(chapter_no, _ledger)
         except Exception:
             logger.exception("[BeatGate] 覆盖评估失败（降级不阻塞）: ch=%d", chapter_no)
         # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。
@@ -1563,6 +1791,16 @@ class ChapterWriter:
                 state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
+            # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
+            _anchor_parts = []
+            _ra = self._rolling_style_anchor(chapter_no)
+            if _ra:
+                _anchor_parts.append(f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}")
+            _fa = self._fixed_style_anchor()
+            if _fa:
+                _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
+            if _anchor_parts:
+                sys_c = "\n\n".join(_anchor_parts) + "\n\n" + sys_c
             try:
                 # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
                 # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）

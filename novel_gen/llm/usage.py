@@ -17,9 +17,12 @@ class Usage:
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
+        # REQ-超长篇攻坚 S4.1：前缀缓存命中 token（DeepSeek 等返回，用于 cache_hit 埋点验证命中率）
+        self.prompt_cache_hit_tokens = 0
+        self.last_prompt_cache_hit_tokens = 0
 
     def note(self, prompt_tokens: int = 0, completion_tokens: int = 0,
-             total_tokens: int = 0) -> None:
+             total_tokens: int = 0, prompt_cache_hit_tokens: int = 0) -> None:
         """上报一次调用用量（幂等；为 0 时按前两者推算）。"""
         total = int(total_tokens or 0)
         if total <= 0:
@@ -30,6 +33,9 @@ class Usage:
         self.last_prompt_tokens = int(prompt_tokens or 0)
         self.last_completion_tokens = int(completion_tokens or 0)
         self.last_total_tokens = total
+        hit = int(prompt_cache_hit_tokens or 0)
+        self.prompt_cache_hit_tokens += hit
+        self.last_prompt_cache_hit_tokens = hit
 
     def reset(self) -> None:
         """重置累计（一般用于单任务粒度重新计数）。"""

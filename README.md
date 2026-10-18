@@ -451,7 +451,11 @@ python -m pytest tests/ -v
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗、结算（P0）、加密（P0）、防重演闭环、揭示跟踪等。
 
+<<<<<<< HEAD
 > 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **720 pytest 全绿**。
+=======
+> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **793 pytest 全绿**。
+>>>>>>> devtest
 
 ## 说明与边界
 
@@ -543,6 +547,13 @@ docker compose ps          # 两个容器均 healthy 即就绪
 - **开发文档**：项目规则见 `AGENTS.md`；架构/文件索引/决策见 `docs/`；接口与业务细节见 `WIKI.md`。
 
 ## 更新记录
+
+- **2026-10-18**：第二十四次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
+  - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
+  - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。
+  - **二期**（8afa012，用户拍板全做 + S3.4 代码默认关）：S1.4 伏笔 stalled 状态（埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ 语义双路（LLM 判推进，默认关）；S2.3 固定锚双轨（开头原文+个人旧稿作风格原点，默认关）；S2.5 L3 风格裁判（每 5 章 LLM 六维比对超阈值触发再锚定，默认开）；S3.6 远期大纲粗粒度（beat_gate 远期节点不计 fail 分母，默认关）；S3.4 fail 章 LLM 二级复核（anti-length judge 确认未兑现才进 L3，默认关——启用待人工标注集验证>80%）。
+  - **默认关项**（线上行为与关闭前一致）：双锚体系（题材/个人旧稿/固定锚）+ `foreshadow_semantic_check` + `outline_rolling_detail` + `beat_fail_judge`，需要时开开关即可。
+  - 回归：全量 **793 pytest 全绿**（新增 reader_ledger_stalled / fixed_style_anchor / style_judge_l3 / outline_far_beats / beat_fail_judge 等 27 用例）；真实生成验收（wanxu_rerun_8000_20261018_124715，5 章）无回归。部署：git archive master 打包 → workbench upload → 解压 /opt/novel-gen → docker compose up -d --build；线上验证：容器 healthy + 主页不白屏。
 
 - **2026-10-17**：第二十三次发版（devtest → master，081d5ff，docs 3cd0328，**已上线**）——**机制数字软提示与通用化 + 字数审计不扣分 + good 注入留痕/pitfall 去污染**。核心：① **机制数字软提示与通用化（REQ-机制数字软提示与通用化）**——写作重心还给战斗/剧情/伏笔：生成端机制数字（基线/蚀痕锚）降为「背景参考·不要求刻意展示」、删"只抄不推/必须逐字遵守/结算提示"强指令，「看面板确认状态」类自然伏笔保留但不每章强制；校验端 6 处机制数字问题 大改/中改 → 小改（-5）+改稿建议+不重写不阻塞（`passed` 只看是否大改）；机制方向从固定 `_PANEL_DIR_RULES` 改读**设定账本派生的字段注册表**（`mechanism_field_registry`，字段名语义通用判定，支持加点/升级等非死亡型机制）；移除死亡信号词面/因果（`panel_causal_violations`）/蚀化跨章（`erosion_cumulative_check`）硬校验 + 书级死亡信号记忆；保留字段白名单 + 链式账本 + 6.5 章末 LLM 抽取弱基准。② **字数审计不扣分（08d1302）**：正文超目标 1.35 倍仅小改提示、不扣分不重写（剧情好不因字数减分）。③ **good 注入留痕 + pitfall 去污染（8127a42，随 devtest 并入）**：good 账本注入段禁静默吞异常；pitfall 对"本轮刚犯的错"降权不霸榜回灌。回归：全量 **720 pytest 全绿**。**A/B 验收（《万墟之上》副本 _smoke_mech_soft 全链重生成 1-11 + 双检测器质检，判定：优化）**——同旧硬校验检测器：均分 65.9→84.1（+18.2）、通过 6→9，机制数字方向违规大改 6→1、未结算推进 2→1、同事件循环重演 1→0；新检测器：均分 65.9→97.3、通过 6→10，机制数字大改 8→0。新稿 ch1 正文抽查：面板数字作「看面板确认状态」伏笔出现一次，重心在蚀痕/铁匠铺/灰卒潜行/捡晶战斗，结算逻辑（97→98）自然融入。
   - 部署：git archive master（3cd0328）→ workbench upload → 服务器 md5 与本地一致（1af01e87db0348e9cdfd93674ba885f5）→ `python3 -m zipfile -e` 解压 /opt/novel-gen → `docker compose up -d --build`（novel-gen:latest 新镜像，前端容器内重建）；线上验证：mysql-mozao / novel-gen 均 Up (healthy)、/api/health 200、主 JS 1.1MB（index-Bew8lF3T.js）不白屏。

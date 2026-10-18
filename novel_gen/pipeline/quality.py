@@ -16,6 +16,7 @@ ReaderAgent 内置结果自校验（模块4）：输出前自动校验业务质�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 
@@ -26,6 +27,8 @@ from ..store.schemas import Chapter
 from .templates import reader_review_prompt, _output_discipline
 from .beats import _beat_cycle_issues
 from .trace import TraceRecorder
+
+logger = logging.getLogger(__name__)
 
 # 校验阈值（确定性规则）
 _MIN_WORDS_RATIO = 0.3        # 字数 < 目标 30% 视为严重不足（触发重写）
@@ -486,6 +489,29 @@ class QualityChecker:
                     score -= 20
             except Exception:
                 pass
+
+        # 2.5b 文风漂移 L1 确定性检测（REQ-超长篇攻坚 S2.4，每章必跑 ≈0 token）。
+        #   句长波动系数/TTR/填充词占比/明喻密度 → 漂移分，低分 = 单章模板化信号。
+        #   轻扣分（-5，level=小改）：单章指标波动大，真实漂移是几十万字渐进信号，
+        #   需与前期章基线对比；跨章持续低分才提示再锚定（S2.2 周期性滚动锚兜底）。
+        if getattr(self.cfg, "style_drift_check", True):
+            try:
+                from .ai_taste import drift_score, style_drift_metrics
+                d = drift_score(content)
+                if d < int(getattr(self.cfg, "style_drift_threshold", 60) or 60):
+                    m = style_drift_metrics(content)
+                    issues.append({
+                        "type": "文风漂移-L1（句长模板化）",
+                        "detail": (
+                            f"漂移分 {d}/100；句长波动系数 {m.get('sentence_cv')}（过低=句长趋同"
+                            f"模板化）、词汇多样性 TTR {m.get('ttr')}、填充词占比 "
+                            f"{m.get('filler_ratio')}。单章信号，建议与前期章基线对比，"
+                            f"跨章持续低分需再锚定"),
+                        "level": "小改",
+                    })
+                    score -= 5
+            except Exception:
+                logger.exception("文风漂移 L1 检测失败（降级跳过）")
 
         # 3. 输出合规（模块3 基础合规校验）
         if getattr(self.cfg.agent_guard, "output_check", True):

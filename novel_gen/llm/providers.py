@@ -55,6 +55,7 @@ class OpenAICompatibleClient(LLMClient):
         max_tokens: Optional[int] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        json_mode: Optional[bool] = None,
     ) -> str:
         try:
             kwargs: dict = {}
@@ -64,6 +65,9 @@ class OpenAICompatibleClient(LLMClient):
                 kwargs["frequency_penalty"] = frequency_penalty
             if presence_penalty is not None:
                 kwargs["presence_penalty"] = presence_penalty
+            # REQ-超长篇攻坚 S4.3：JSON 输出约束——provider 支持 response_format 时强制 json_object
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -80,10 +84,13 @@ class OpenAICompatibleClient(LLMClient):
             # 阶段1：Token 用量统计（部分网关不返回 usage，缺省 0 不误统计）
             usage = getattr(resp, "usage", None)
             if usage is not None:
+                # REQ-超长篇攻坚 S4.1：DeepSeek 等返回前缀缓存命中 token，供 cache_hit 埋点
+                cache_hit = getattr(usage, "prompt_cache_hit_tokens", None) or 0
                 self.usage.note(
                     prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                     completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
                     total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                    prompt_cache_hit_tokens=cache_hit,
                 )
             return content
         except LLMError:
@@ -117,6 +124,7 @@ class MockClient(LLMClient):
         max_tokens: Optional[int] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        json_mode: Optional[bool] = None,
     ) -> str:
         if self._delay:
             time.sleep(self._delay)

@@ -1680,7 +1680,19 @@ def chapter_prompt(
     constraints = _chapter_constraints(cfg)
     de_ai_block = _de_ai_rules() if cfg.de_ai else ""
     ending_block = _ending_requirements() if is_final else ""
-    user = (
+    # ---- REQ-超长篇攻坚 S4.1 前缀缓存对齐 ----
+    # 稳定块（同书跨章逐字节一致：单章字数硬指标 + 硬约束 + 题材共性参考）前置到 user 最前，
+    # 变化块（章号/目标/事件/记忆/衔接）置后 → 同书所有章共享最大稳定前缀，命中 DeepSeek 前缀缓存价。
+    # prefix_cache_aligned=False 时保持原组装顺序（稳定块在中部，向后兼容）。
+    aligned = getattr(cfg, "prefix_cache_aligned", True)
+    stable_blocks = (
+        f"【单章字数·硬指标】本章正文（不含【摘要】行）必须达到 {cfg.chapter_words} 字以上。"
+        f"若正文不足，必须通过增加场景细节、人物对话交锋、心理挣扎与行动过程来充实，"
+        f"严禁草草收尾、严禁提前结束章节。字数低于目标视为不合格，会被退回重写。\n"
+        f"{constraints}\n\n"
+        f"{('【题材共性参考】\n' + research_block + '\n') if research_block else ''}"
+    )
+    dynamic_blocks = (
         f"【本章】第{chapter_no}章《{chapter_title}》\n"
         f"【本章目标】{chapter_goal}\n"
         f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{chapter_core_event if chapter_core_event else '（无）'}\n"
@@ -1691,11 +1703,6 @@ def chapter_prompt(
         f"{('【本章设计卡（正向创作指引·软约束：按此设计写本章，不偏离戏剧核心）】\n'
         + chapter_design + '\n') if chapter_design else ''}"
         f"{('【全书结局章】本章是本书最后一章，必须给出完整结局。\n' + ending_block + '\n') if is_final else ''}"
-        f"【单章字数·硬指标】本章正文（不含【摘要】行）必须达到 {cfg.chapter_words} 字以上。"
-        f"若正文不足，必须通过增加场景细节、人物对话交锋、心理挣扎与行动过程来充实，"
-        f"严禁草草收尾、严禁提前结束章节。字数低于目标视为不合格，会被退回重写。\n"
-        f"{constraints}\n\n"
-        f"{('【题材共性参考】\n' + research_block + '\n\n') if research_block else ''}"
         f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
         f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
         f"{_panel_baseline_block(panel_baseline)}"
@@ -1715,6 +1722,44 @@ def chapter_prompt(
         f"{'6' if cfg.anti_similarity else '5'}. 输出格式（必须严格遵循，不要省略）：先输出正文，正文结束后【必须】另起一行"
         f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
     )
+    if aligned:
+        user = stable_blocks + "\n\n" + dynamic_blocks
+    else:
+        user = (
+            f"【本章】第{chapter_no}章《{chapter_title}》\n"
+            f"【本章目标】{chapter_goal}\n"
+            f"【本章核心事件（正文必须完整覆盖，不得偏离或遗漏）】\n{chapter_core_event if chapter_core_event else '（无）'}\n"
+            f"{('【本章事件序列（必须逐事件覆盖、每事件只写一遍，按编号顺序推进剧情：'
+            '从事件1到事件N依次发生，后一事件从上一事件的结果之后续写，'
+            '禁止任何事件重复出现（包括换地点、换措辞重写同一事件），'
+            '禁止回到上一事件开头状态重演）】\n' + chapter_events + '\n') if chapter_events else ''}"
+            f"{('【本章设计卡（正向创作指引·软约束：按此设计写本章，不偏离戏剧核心）】\n'
+            + chapter_design + '\n') if chapter_design else ''}"
+            f"{('【全书结局章】本章是本书最后一章，必须给出完整结局。\n' + ending_block + '\n') if is_final else ''}"
+            f"【单章字数·硬指标】本章正文（不含【摘要】行）必须达到 {cfg.chapter_words} 字以上。"
+            f"若正文不足，必须通过增加场景细节、人物对话交锋、心理挣扎与行动过程来充实，"
+            f"严禁草草收尾、严禁提前结束章节。字数低于目标视为不合格，会被退回重写。\n"
+            f"{constraints}\n\n"
+            f"{('【题材共性参考】\n' + research_block + '\n\n') if research_block else ''}"
+            f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
+            f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
+            f"{_panel_baseline_block(panel_baseline)}"
+            f"写作要求：\n"
+            f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
+            f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"
+            f"3. 开头 1-2 句自然衔接前情；本章内部完成至少一次推进/转折；"
+            f"{'本章是结局章：结尾必须收束全书主线与关键伏笔，并以「结尾升维」收尾（技术→哲学/产品→人性/事件→时代，通过人物视角与具体细节自然带出，不喊口号），不能留悬念断章' if is_final else '结尾留钩子引向下章'}\n"
+            f"3.5 本章每个事件/冲突场面（死亡-复活、被围、救人、逃离、追击等）只允许完整发生一次；"
+            f"禁止同一事件/同一段落以任何形式重复两次及以上（含换地点、换措辞重写同一事件）；"
+            f"事件之间必须因果推进，后一事件从上一事件的结果之后续写，禁止回到上一事件开头状态重演\n"
+            f"4. 语言符合调研建议的文风混合方向；避免重复用词与套路化表达；避雷元素绝对不得出现\n"
+            f"4.5 签约硬指标：对话占比≥60%（描写段≤3行）；每300字一个小钩子；每800字主角≥2次主动决策；"
+            f"第1章第一句直接进冲突（仅第1章适用）；前3章内必须出第一个小高潮；"
+            f"情绪词少而准：关键情绪节点允许直接点破（'他很愤怒'），点破处必须紧跟动作/微表情/生理反应，禁止连发堆砌\n"
+            f"{('5. 防同质化：本章冲突与反转不得与已写章节重复；收益必须对应代价；情绪只通过动作/细节侧面体现，禁止直白心理描写' + chr(10)) if cfg.anti_similarity else ''}"
+            f"{'6' if cfg.anti_similarity else '5'}. 输出格式（必须严格遵循，不要省略）：先输出正文，正文结束后【必须】另起一行"
+            f"输出【摘要】加 1-2 句本章剧情摘要（用于记忆库）；即使以收束句结尾，也必须在之后补上【摘要】行。"
+        )
     ref = _style_reference(cfg)
     if ref:
         system += "\n\n" + ref

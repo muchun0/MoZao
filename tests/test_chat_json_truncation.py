@@ -66,7 +66,7 @@ class _FakeLLM(LLMClient):
         self.calls: list[dict] = []
 
     def _chat_impl(self, system, user, temperature=None, max_tokens=None,
-                   frequency_penalty=None, presence_penalty=None):
+                   frequency_penalty=None, presence_penalty=None, json_mode=None):
         self.calls.append({"max_tokens": max_tokens, "temperature": temperature})
         if not self._responses:
             return '{"ok": true}'

@@ -61,6 +61,26 @@ def _fs_blob(fs) -> str:
     return f"{getattr(fs, 'name', '') or ''} {getattr(fs, 'content', '') or ''}".strip()
 
 
+def _extract_excerpt(content: str, fs, max_chars: int = 150) -> str:
+    """REQ-超长篇攻坚 S1.1：从章正文确定性抽 1-3 句关键句（零 LLM）。
+
+    优先返回含伏笔 name/content 关键字的句子（埋设措辞最贴近原文）；无命中则取章首句兜底。
+    max_chars 控制预算上限（≤150 token ≈ 300 字符），避免回收章注入超预算。
+    """
+    import re
+    blob = _fs_blob(fs)
+    keywords = [w for w in re.split(r"[\s，。！？、；：,.!?;:]", blob) if len(w) >= 2]
+    sents = [s.strip() for s in re.split(r"[。！？!?；;\n]+", content) if s.strip()]
+    if not sents:
+        return ""
+    if keywords:
+        for k in keywords:
+            hit = [s for s in sents if k in s]
+            if hit:
+                return "；".join(hit[:3])[:max_chars]
+    return "；".join(sents[:3])[:max_chars]
+
+
 class ReaderLedger:
     """读者体验层叙事账本门面：写章注入 + 章末状态推进。"""
 
@@ -158,7 +178,11 @@ class ReaderLedger:
         return waiting, known, misbelief
 
     def _foreshadow_block(self, world, outline, n: int) -> str:
-        """伏笔临期/超时收束提醒（只注入 actionable：due_soon + overdue）。"""
+        """伏笔临期/超时收束提醒（只注入 actionable：due_soon + overdue）。
+
+        REQ-超长篇攻坚 S1.1：开关 foreshadow_original_text=True 时，在提醒后附【到期伏笔原文块】——
+        把埋设章存档的原文关键句逐字还给回收章，避免"只记摘要、丢细节"导致回收与埋设措辞脱节。
+        """
         items = self._commitment_items(world, n)
         due = [i for i in items if i["state"] == "due_soon"]
         over = [i for i in items if i["state"] == "overdue"]
@@ -172,7 +196,19 @@ class ReaderLedger:
         for i in over[:6]:
             lines.append(f"- 伏笔「{i['name']}」已超过计划回收章{i['reveal_ch']}仍未回收，"
                          f"本章必须兑现，或显式推迟回收章")
-        return "【伏笔承诺·收束提醒】\n" + "\n".join(lines)
+        block = "【伏笔承诺·收束提醒】\n" + "\n".join(lines)
+        open_text = (self.cfg is not None
+                     and bool(getattr(self.cfg, "foreshadow_original_text", True)))
+        if open_text:
+            excerpts = []
+            for i in (due + over)[:6]:
+                ex = (i.get("original_excerpt") or "").strip()
+                if ex:
+                    excerpts.append(f"- 「{i['name']}」埋设原文：{ex}")
+            if excerpts:
+                block += "\n\n【到期伏笔原文（回收章必须语义呼应的关键句，逐字参考、勿写岔）】\n" \
+                         + "\n".join(excerpts)
+        return block
 
     def _commitment_items(self, world, n: int) -> list[dict]:
         """计算伏笔承诺状态机（合并持久化 revealed_ch）。n < buried 的不纳入。"""
@@ -207,9 +243,13 @@ class ReaderLedger:
                 state = "due_soon"
             else:
                 state = "planted"
+            # REQ-超长篇攻坚 S1.1：原文关键句——优先取账本持久化，其次 ForeshadowItem.original_excerpt
+            excerpt = (prev.get("original_excerpt") or ""
+                       or getattr(fs, "original_excerpt", "") or "").strip()
             out.append({"name": name, "buried_ch": buried, "reveal_ch": reveal,
                         "level": getattr(fs, "level", "medium") or "medium",
-                        "state": state, "revealed_ch": revealed_ch})
+                        "state": state, "revealed_ch": revealed_ch,
+                        "original_excerpt": excerpt})
         return out
 
     def _payoff_block(self, outline, n: int) -> str:
@@ -262,6 +302,10 @@ class ReaderLedger:
         except Exception:
             logger.exception("伏笔承诺账本章末推进失败（降级跳过）: ch=%s", chapter_no)
         try:
+            self._archive_foreshadow_excerpts(chapter_no)
+        except Exception:
+            logger.exception("伏笔原文句存档失败（降级跳过）: ch=%s", chapter_no)
+        try:
             self._update_payoff(chapter_no)
         except Exception:
             logger.exception("爽点配额章末 tally 失败（降级跳过）: ch=%s", chapter_no)
@@ -301,6 +345,47 @@ class ReaderLedger:
             if _fs_name(fs) == name:
                 return fs
         return None
+
+    def _archive_foreshadow_excerpts(self, no: int) -> None:
+        """REQ-超长篇攻坚 S1.1：埋设章落盘原文句存档。
+
+        对 buried_ch == 当前章 且尚未存档原文关键句的伏笔，从本章正文确定性抽 1-3 句
+        （≤150 token/条）写进 foreshadow_commitment.json 的 items.original_excerpt，
+        供 due_soon/overdue 章随收束提醒注入原文块。开关 foreshadow_original_text=False 跳过。
+        """
+        if self.cfg is None or not bool(getattr(self.cfg, "foreshadow_original_text", True)):
+            return
+        world = self.store.load_world()
+        chapter = self.store.load_chapter(no)
+        if world is None or chapter is None or not getattr(chapter, "content", ""):
+            return
+        content = chapter.content
+        targets = [fs for fs in (getattr(world, "foreshadowing", None) or [])
+                   if int(getattr(fs, "buried_ch", 0) or 0) == no]
+        if not targets:
+            return
+        pc = self.store.load_foreshadow_commitment() or {}
+        items = list(pc.get("items", []))
+        by_name = {str(it.get("name") or ""): it for it in items}
+        changed = False
+        for fs in targets:
+            name = _fs_name(fs)
+            if not name:
+                continue
+            it = by_name.get(name)
+            if it is None:
+                it = {"name": name}
+                by_name[name] = it
+            if (it.get("original_excerpt") or "").strip():
+                continue                      # 已存档，幂等跳过
+            excerpt = _extract_excerpt(content, fs)
+            if excerpt:
+                it["original_excerpt"] = excerpt
+                changed = True
+        if changed:
+            merged = [it for it in by_name.values() if it.get("name")]
+            self.store.save_foreshadow_commitment({"version": 1, "updated_ch": int(no),
+                                                   "items": merged})
 
     def _update_payoff(self, no: int) -> None:
         """爽点配额 tally：记录本章小/大/里程碑是否达成（基于大纲设计）。"""

@@ -359,12 +359,14 @@ class ForeshadowItem:
     reveal_ch: int | None = None
     level: str = "medium"   # small / medium / large
     content: str = ""
+    original_excerpt: str = ""  # REQ-超长篇攻坚 S1.1：埋设章原文关键句存档（回收章注入用，≤150 token/条）
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name,
             "buried_ch": self.buried_ch, "reveal_ch": self.reveal_ch,
             "level": self.level, "content": self.content,
+            "original_excerpt": self.original_excerpt,
         }
 
     @classmethod
@@ -379,6 +381,7 @@ class ForeshadowItem:
                 reveal_ch=(int(d["reveal_ch"]) if d.get("reveal_ch") is not None else None),
                 level=_norm_str(d.get("level", "medium")) or "medium",
                 content=_norm_str(d.get("content", "")),
+                original_excerpt=_norm_str(d.get("original_excerpt", "")),
             )
         return cls()
 

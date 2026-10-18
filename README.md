@@ -451,7 +451,7 @@ python -m pytest tests/ -v
 
 用 `mock` provider 离线跑通全部流程，无需任何 API Key。覆盖：配置加载、字数换算、项目落盘往返、记忆上下文、断点续传幂等、正文摘要剥离、txt 导出、强制结局判定、HTML 标签清洗、结算（P0）、加密（P0）、防重演闭环、揭示跟踪等。
 
-> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **707 pytest 全绿**。
+> 测试用例按 P0/P1/P2 分级（`@pytest.mark.p0/p1/p2`）；发版前至少 `python -m pytest tests/ -m "p0 or p1" -v`（P0 全绿才允许发版）。当前全量 **793 pytest 全绿**。
 
 ## 说明与边界
 
@@ -543,6 +543,13 @@ docker compose ps          # 两个容器均 healthy 即就绪
 - **开发文档**：项目规则见 `AGENTS.md`；架构/文件索引/决策见 `docs/`；接口与业务细节见 `WIKI.md`。
 
 ## 更新记录
+
+- **2026-10-18**：第二十三次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
+  - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
+  - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。
+  - **二期**（8afa012，用户拍板全做 + S3.4 代码默认关）：S1.4 伏笔 stalled 状态（埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ 语义双路（LLM 判推进，默认关）；S2.3 固定锚双轨（开头原文+个人旧稿作风格原点，默认关）；S2.5 L3 风格裁判（每 5 章 LLM 六维比对超阈值触发再锚定，默认开）；S3.6 远期大纲粗粒度（beat_gate 远期节点不计 fail 分母，默认关）；S3.4 fail 章 LLM 二级复核（anti-length judge 确认未兑现才进 L3，默认关——启用待人工标注集验证>80%）。
+  - **默认关项**（线上行为与关闭前一致）：双锚体系（题材/个人旧稿/固定锚）+ `foreshadow_semantic_check` + `outline_rolling_detail` + `beat_fail_judge`，需要时开开关即可。
+  - 回归：全量 **793 pytest 全绿**（新增 reader_ledger_stalled / fixed_style_anchor / style_judge_l3 / outline_far_beats / beat_fail_judge 等 27 用例）；真实生成验收（wanxu_rerun_8000_20261018_124715，5 章）无回归。部署：git archive master 打包 → workbench upload → 解压 /opt/novel-gen → docker compose up -d --build；线上验证：容器 healthy + 主页不白屏。
 
 - **2026-10-17**：第二十二次发版（服务器代码 = master **e76bafb**，**已上线**）——**章节重写版本落库 + 版本质量展示（feat/chapter-version-quality）**。修复"自校验自动重写/手动重写后版本不落库、版本弹窗看不到选不了"根因（方案4 落盘分流：质检未通过且旧版健康时重写稿被幂等跳过丢弃）。核心：① `save_chapter` 扩展 `quality`（质检结果写入版本 history 透传展示）与 `promote=False`（候选版本只存档不顶 HEAD），每次生成的版本（含自动重写稿）都进版本库；② 未被用户管理时自动把质检评分最高版本设为当前选中（首次生成默认展示最好一版），用户手动编辑/切换后不再自动覆盖；③ `delete_version`（selected 不可删）+ `DELETE /chapters/{no}/versions/{v}` 接口；④ `ensure_quality` 输出 versions 版本日志（初始稿+每轮重写稿，各带质检问题）；⑤ 前端版本弹窗整合质检分/改稿建议明细/删除按钮，工具 tab「改稿建议」卡片改为「全书质检」。回归：全量 739 pytest 全绿（P0+P1 459）、npm build 通过 dist 引用一致、端到端冒烟（DELETE/select/自动选分）通过。部署：本地 `git archive master` 打包 → workbench upload → 解压 /opt/novel-gen → `docker compose up -d --build`（首次因 daocloud 镜像源 502 失败，重试成功）；线上验证：容器 healthy、主 JS 200/1.1MB 防白屏、openapi 97 路由（新增 DELETE versions 接口）、版本接口鉴权正常、容器内 dist 引用一致。
 

@@ -1613,8 +1613,9 @@ def reader_review_prompt(cfg, chapter_no, chapter_title, chapter_goal, content,
         "8. 机制数字口径（专项）：蚀化/蚀痕/次数等机制数字在本章内前后是否口径一致"
         "（无冲突、无自相矛盾）；发现冲突请标记位置（level 大改）\n"
         + (f"\n【本作历史错误（本书踩坑账本——重点检查这些是否又犯了）】\n{book_pitfalls}\n" if book_pitfalls else "")
-        + '\n输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受", "level": "小改/中改/大改"}], "'
-        '"追更欲": 1-5, "一句话感受": "..."}\n"'
+        + '\n输出 JSON：{"issues": [{"pos": "段X", "type": "类型", "detail": "读者感受",'
+          '"level": "小改/中改/大改", "suggestion": "针对该问题的具体改法（一句话，指出怎么写更好）"}], "'
+          '"追更欲": 1-5, "一句话感受": "..."}\n"'
         "level 判定：小改=句子级瑕疵；中改=某段不爽但还能看；大改=整章想划走。"
     )
     return system, user

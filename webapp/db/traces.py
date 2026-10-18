@@ -96,10 +96,12 @@ def _aggregate_quality(rows: list[dict]) -> dict:
     依赖 trace.record_quality 写入的 extra：{issues, score, issue_count, auto_revised}。
     """
     import json as _json
+    import re as _re
     scores: list[int] = []
     rewrites = 0
     issue_types: dict[str, int] = {}
     checks = 0
+    chapter_map: dict[int, dict] = {}   # P0-5 进度盘：每章状态聚合
     for r in rows:
         checks += 1
         raw = r.get("extra")
@@ -112,6 +114,17 @@ def _aggregate_quality(rows: list[dict]) -> dict:
             extra = raw
         else:
             extra = {}
+        # P0-5 每章状态（红=未过 / 绿=hook>=4 高分 / 黄=自动重写 / 灰=通过普通）
+        _ch_m = _re.search(r"第(\d+)章", str(r.get("step_name") or ""))
+        if _ch_m:
+            _ch = int(_ch_m.group(1))
+            chapter_map[_ch] = {
+                "chapter": _ch,
+                "score": int(extra.get("score") or 0),
+                "passed": bool(extra.get("passed")),
+                "auto_revised": bool(extra.get("auto_revised")),
+                "hook_score": extra.get("hook_score"),
+            }
         sc = extra.get("score")
         if isinstance(sc, (int, float)):
             scores.append(int(sc))
@@ -134,6 +147,19 @@ def _aggregate_quality(rows: list[dict]) -> dict:
         else:
             buckets["80-100"] += 1
     n = len(scores) or 1
+    # P0-5 进度盘：每章色块（红=未过 / 绿=hook>=4 高分 / 黄=自动重写 / 灰=通过普通）
+    chapter_status = []
+    for _ch in sorted(chapter_map):
+        _c = chapter_map[_ch]
+        if not _c["passed"]:
+            _color = "red"
+        elif _c["hook_score"] is not None and int(_c["hook_score"]) >= 4:
+            _color = "green"
+        elif _c["auto_revised"]:
+            _color = "yellow"
+        else:
+            _color = "gray"
+        chapter_status.append({**_c, "color": _color})
     return {
         "quality_checks": checks,
         "score_avg": round(sum(scores) / n, 1) if scores else None,
@@ -141,6 +167,7 @@ def _aggregate_quality(rows: list[dict]) -> dict:
         "rewrite_count": rewrites,
         "rewrite_rate": round(rewrites / n, 3) if checks else 0,
         "issue_top_types": sorted(issue_types.items(), key=lambda x: -x[1])[:10],
+        "chapter_status": chapter_status,   # P0-5 进度盘
     }
 
 
@@ -171,7 +198,7 @@ def quality_report(project_id: str = "", days: int = 0) -> dict:
         if conds:
             qc_where += " AND " + " AND ".join(conds)
         qc_rows = conn.execute(
-            f"SELECT extra FROM agent_trace WHERE {qc_where}", tuple(params)).fetchall()
+            f"SELECT extra, step_name FROM agent_trace WHERE {qc_where}", tuple(params)).fetchall()
         churn_where = "step_type='agent_step' AND step_name LIKE '%%编辑审稿%%'"
         if conds:
             churn_where += " AND " + " AND ".join(conds)

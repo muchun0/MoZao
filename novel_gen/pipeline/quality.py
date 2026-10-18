@@ -132,6 +132,7 @@ class QualityChecker:
         重写稿的 {round, content, summary, auto_revised, quality(精简)} 列表，
         供 stages.write 逐版落库（每次生成的版本都展示、每版带质检问题）。
         """
+        from .compliance import has_compliance
         versions: list[dict] = []
 
         def _push(content: str, smry: str, res: dict, round_no: int,
@@ -217,17 +218,22 @@ class QualityChecker:
                 print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
                       f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
             _push(content, summary, result, rewrite_rounds, True)
-            # P0-5 择优：问题更少，或问题相同但分数更高 → 更新最优版本
-            if len(issues) < len(best_issues) or (
-                len(issues) == len(best_issues)
-                and result.get("score", 0) > best_result.get("score", 0)
+            # P0-5 择优：问题更少，或问题相同但分数更高 → 更新最优版本。
+            # P0-1 合规红线：合规稿一律不参与择优（避免把违规稿当"最优版"回退/落盘）。
+            if (not has_compliance(issues)) and (
+                len(issues) < len(best_issues)
+                or (len(issues) == len(best_issues)
+                    and result.get("score", 0) > best_result.get("score", 0))
             ):
                 best_content, best_summary, best_issues, best_result = content, summary, issues, result
                 best_rewritten = rewritten_occurred
 
         # P0-5 兜底：循环结束仍未通过（超轮/重写无效 break）且已有优于当前的最优版本
-        # → 回退最优版本（坏稿不得顶掉相对较好的版本；首次生成无旧版时尤其关键）
+        # → 回退最优版本（坏稿不得顶掉相对较好的版本；首次生成无旧版时尤其关键）。
+        # P0-1 合规红线：最优版本若含合规问题也不回退（合规稿不作为落盘回退目标）。
         if not result["passed"] and best_content is not None and (
+            not has_compliance(best_issues)
+        ) and (
             len(best_issues) < len(issues)
             or (len(best_issues) == len(issues)
                 and best_result.get("score", 0) > result.get("score", 0))
@@ -247,6 +253,11 @@ class QualityChecker:
         # 版本日志收尾：最终采用版本（best 回退后 content 已换，确保最后一版=最终稿）
         _push(content, summary, result, rewrite_rounds, rewritten_occurred)
         result["versions"] = versions
+        # P0-1 合规红线：最终稿若仍含合规命中 → 标记拒绝（stages 据此不落盘、
+        # 不入版本库）；普通质量问题不含此标记。
+        result["compliance_rejected"] = bool(
+            has_compliance(result.get("issues") or [])
+        )
         return Chapter(no=chapter_no, title=plan_title, content=content,
                        summary=summary, goal=plan_goal), result
 
@@ -513,14 +524,28 @@ class QualityChecker:
             except Exception:
                 logger.exception("文风漂移 L1 检测失败（降级跳过）")
 
-        # 3. 输出合规（模块3 基础合规校验）
+        # 2.5c P0-4 手法/句式层同质度（REQ-门禁质检正向影响）：跨章趋同软提示，
+        #    level=小改、不扣分（不阻断；供作者参考与后续 good 注入降权）。
+        if getattr(self.cfg, "style_homogeneity_check", True):
+            try:
+                for _homog_it in self._style_homogeneity_issues(chapter_no, content):
+                    issues.append(_homog_it)
+            except Exception:
+                logger.exception("同质度检测失败（降级跳过）")
+
+        # 3. 输出合规（模块3 基础合规校验；REQ-门禁质检正向影响 P0-1/P0-2：结构化
+        #    命中信息 rule_category/rule_phrase，供删旧稿重写与首次教育分层使用）
         if getattr(self.cfg.agent_guard, "output_check", True):
-            bad = self._content_check(content)
+            from ..safety import basic_content_check_structured as _bcs
+            bad = _bcs(content)
             if bad:
+                _cats = sorted({b.get("rule_category", "") for b in bad if b.get("rule_category")})
                 issues.append({
                     "type": "合规-疑似违规内容",
-                    "detail": "；".join(bad),
+                    "detail": "；".join(f"「{b.get('phrase', '')}」" for b in bad),
                     "level": "大改",
+                    "rule_category": "、".join(_cats),
+                    "rule_phrase": "；".join(b.get("phrase", "") for b in bad),
                 })
                 score -= 40
 
@@ -558,7 +583,29 @@ class QualityChecker:
         uniq.sort(key=lambda x: 0 if x.get("level") == "大改" else (1 if x.get("level") == "中改" else 2))
 
         passed = not any(x.get("level") == "大改" for x in uniq)
-        return {"passed": passed, "issues": uniq, "score": max(0, min(100, score))}
+
+        # P0-3 质检诊断回喂（REQ-门禁质检正向影响）：确定性维度补 fix_suggestion /
+        # expected_gain（"怎么改 + 预计提升"）；LLM 维度已带 suggestion 的不覆盖；
+        # diag_feedback 关闭时不补（回退旧格式）。
+        if getattr(self.cfg, "diag_feedback", True):
+            try:
+                from .diagnosis import suggest_for as _sf
+                for _it in uniq:
+                    if _it.get("fix_suggestion"):
+                        continue
+                    _fb = _sf(_it)
+                    if _fb:
+                        _it["fix_suggestion"] = _fb.get("fix_suggestion", "")
+                        if _fb.get("expected_gain"):
+                            _it["expected_gain"] = _fb.get("expected_gain")
+            except Exception:
+                pass
+        return {
+            "passed": passed,
+            "issues": uniq,
+            "score": max(0, min(100, score)),
+            "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
+        }
 
     # ---------- 确定性规则实现 ----------
     def _dup_issues(self, chapter_no: int, content: str) -> list[dict]:
@@ -917,6 +964,53 @@ class QualityChecker:
         from ..safety import basic_content_check
         return basic_content_check(content)
 
+    def _style_homogeneity_issues(self, chapter_no: int, content: str) -> list[dict]:
+        """P0-4 手法/句式层同质度（REQ-门禁质检正向影响 §7.6）：跨章风格趋同软提示。
+
+        读最近 3 章正文尾部（含本章），用 ai_taste 指标（句长波动系数 CV / 词汇
+        多样性 TTR）量化；近 3 章 CV 持续偏低且彼此接近（pstdev 小）、TTR 偏低
+        → 跨章趋同模板化信号（可能来自 good 片段过度复用）。level=小改、不扣分
+        （软提示，不阻断流程；供作者/后续降权参考）。
+        读取失败/章数不足/文本过短 → 空列表（降级，不阻塞）。
+        """
+        if chapter_no <= 2 or not content:
+            return []
+        try:
+            from .ai_taste import style_drift_metrics as _sdm
+            rows: list[dict] = []
+            for ch in range(chapter_no - 2, chapter_no + 1):
+                if ch == chapter_no:
+                    txt = content
+                else:
+                    try:
+                        _c = self.store.load_chapter(ch)
+                        txt = getattr(_c, "content", "") or ""
+                    except Exception:
+                        txt = ""
+                if len(txt) < 150:
+                    return []
+                rows.append(_sdm(txt[-600:]))
+            if len(rows) < 3:
+                return []
+            import statistics
+            cvs = [float(r.get("sentence_cv") or 0) for r in rows]
+            ttrs = [float(r.get("ttr") or 0) for r in rows]
+            # 趋同判定（宽松阈值，宁漏报不误伤）：3 章句长 CV 都偏低且彼此接近 + TTR 偏低
+            if (all(c < 0.6 for c in cvs) and statistics.pstdev(cvs) < 0.10
+                    and all(t < 0.6 for t in ttrs)):
+                return [{
+                    "type": "文风同质化-跨章趋同（句式/词汇模板化）",
+                    "detail": (
+                        f"最近 3 章句长波动系数 CV={[round(c, 2) for c in cvs]}、"
+                        f"词汇多样性 TTR={[round(t, 2) for t in ttrs]} 持续偏低且稳定，"
+                        "提示跨章风格趋同（可能来自正向片段过度复用）。建议本章引入 "
+                        "1-2 个新的写法特征或场景处理，避免套路重复。"),
+                    "level": "小改",
+                }]
+            return []
+        except Exception:
+            return []
+
     # ---------- LLM 校验（读者视角 + 人物一致性） ----------
     def _reader_llm_check(self, chapter_no: int, plan_title: str, plan_goal: str,
                           content: str) -> tuple[list[dict], int | None]:
@@ -947,6 +1041,7 @@ class QualityChecker:
                 "type": f"读者-{it.get('type', '')}",
                 "detail": it.get("detail", ""),
                 "level": it.get("level", "小改"),
+                "fix_suggestion": str(it.get("suggestion") or "").strip(),  # P0-3 诊断回喂
             } for it in (data.get("issues") or []) if isinstance(it, dict)]
             hook = data.get("追更欲")
             hook_score = int(hook) if isinstance(hook, (int, float)) and 1 <= int(hook) <= 5 else None
@@ -966,7 +1061,8 @@ class QualityChecker:
         try:
             sys = (
                 "你是严谨的小说文字编辑，通读本章后只找「前后自相矛盾的硬伤」，不评文笔、不评节奏。\n"
-                "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻/事件重复\",\"detail\":\"具体矛盾：前一处…后一处…\"}]}。\n"
+                "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻/事件重复\","
+                "\"detail\":\"具体矛盾：前一处…后一处…\",\"suggestion\":\"统一为…的具体改法\"}]}。\n"
                 "判定标准：两处描写不能同时为真才算矛盾；比喻措辞不同但喻体相同不算；"
                 "随剧情合理变化的伤口/状态不算矛盾；没有矛盾就输出空数组。\n"
                 "特别注意⑤同一事件重复：同一人物面对同一冲突对象、实际做出同一件事（救/围/杀/逃/挡等行为动作）"
@@ -998,6 +1094,7 @@ class QualityChecker:
                     "type": f"自相矛盾-{it.get('type', '')}",
                     "detail": detail,
                     "level": "大改",
+                    "fix_suggestion": str(it.get("suggestion") or "").strip(),  # P0-3 诊断回喂
                 })
             return out
         except Exception:
@@ -1007,8 +1104,20 @@ class QualityChecker:
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,
                       content: str, issues: list[dict],
                       baseline: dict | None = None) -> str:
-        """优先只重写问题段落（省整章重出 token 60~75%）；无定位点/跨度过大 → 整章重写。"""
+        """优先只重写问题段落（省整章重出 token 60~75%）；无定位点/跨度过大 → 整章重写。
+
+        REQ-门禁质检正向影响 P0-1：合规红线命中（compliance_clean_rewrite 开）时
+        **跳过定点重写**，强制 `_rewrite_whole(skip_original=True)` 删旧稿整章重写——
+        违规旧稿的其余段落不得被定点重写保留拼回。
+        """
         try:
+            if getattr(self.cfg, "compliance_clean_rewrite", True):
+                from .compliance import has_compliance
+                if has_compliance(issues):
+                    return self._rewrite_whole(
+                        chapter_no, plan_title, plan_goal, content, issues,
+                        baseline=baseline, skip_original=True,
+                    )
             if getattr(self.cfg, "targeted_rewrite", True):
                 spans = _locate_problem_spans(content, issues)
                 if spans:
@@ -1118,8 +1227,14 @@ class QualityChecker:
 
     def _rewrite_whole(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, issues: list[dict],
-                       baseline: dict | None = None) -> str:
+                       baseline: dict | None = None,
+                       skip_original: bool = False) -> str:
         """整章重写（原行为，无定位信息/定点失败时兜底）。
+
+        skip_original（REQ-门禁质检正向影响 P0-1）：合规红线命中时 True——
+        不携带【当前正文】（违规旧稿不可作为重写参照），注入"整章全新重写"声明 +
+        首次合规教育块（P0-2），模型不得复用/复述原稿任何段落或措辞。
+        P0-3：issue_block 用带建议的诊断（fix_suggestion/expected_gain）。
 
         注入设定上下文（世界观/机制卡/人物卡/章末账本）——重写不得在"信息真空"
         中进行，否则模型不知道机制结算规则，数字与矛盾修不动（实测复检仍 5 条）。
@@ -1128,9 +1243,18 @@ class QualityChecker:
         """
         try:
             target = max(self.cfg.chapter_words, 500)
-            issue_block = "\n".join(
-                f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:8]
-            )
+            if getattr(self.cfg, "diag_feedback", True):
+                try:
+                    from .diagnosis import build_issue_block as _bib
+                    issue_block = _bib(issues, max_n=8)
+                except Exception:
+                    issue_block = "\n".join(
+                        f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:8]
+                    )
+            else:
+                issue_block = "\n".join(
+                    f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:8]
+                )
             # 2026-10-01：问题含"事件重复/两版本"（矛盾自检事件重复、同句复读整段重复等）
             # 时，重写必须显式执行"每事件只写一遍"——质检问题清单只有位置描述，
             # 不注入事件序列纪律，模型会把重复版本换个写法又保留（4500 字版重写 3 轮
@@ -1205,7 +1329,7 @@ class QualityChecker:
                   "（多稿拼接）；严禁把同一场景/事件换措辞、换地点、换细节写多遍后"
                   "拼在一起。如需修改某处内容，直接在该处替换，禁止在文末或他处"
                   "复写另一平行版本。输出必须是前后连贯的一整篇，不是多段草稿的合集。\n"
-                + f"【当前正文】\n{content}"
+                + self._clean_rewrite_block(chapter_no, issues, content, skip_original)
             )
             text = self.llm.chat(
                 "你是资深网络小说写手，擅长按质检意见重写章节。\n\n"
@@ -1217,6 +1341,36 @@ class QualityChecker:
         except Exception:
             return ""
 
+    def _clean_rewrite_block(self, chapter_no: int, issues: list[dict],
+                             content: str, skip_original: bool) -> str:
+        """重写 prompt 尾部注入块（REQ-门禁质检正向影响 P0-1/P0-2）。
+
+        skip_original=False（普通质量问题）→ 原行为，注入【当前正文】作重写参照。
+        skip_original=True（P0-1 合规红线）→ 不注入原稿，注入：
+          - 整章全新重写声明（不得复用/复述原稿任何段落或措辞）；
+          - 首次合规教育块（P0-2：compliance_education 开且本书该 rule_category
+            首次命中才注入；重复命中只重写不重复教育，靠 book_memory 持久化）。
+        """
+        if not skip_original:
+            return f"【当前正文】\n{content}"
+        from .compliance import compliance_categories, compliance_education_block
+        cats = compliance_categories(issues)
+        head = (
+            "\n【本稿含违规内容·整章全新重写】本稿因命中合规红线被整体废弃。\n"
+            "请基于【本章目标】与设定上下文全新写一章，剧情走向可保留核心冲突，"
+            "但不得复用、复述、改写原稿任何段落、措辞或句式；违规类型见【质检问题】。\n"
+        )
+        edu = ""
+        if getattr(self.cfg, "compliance_education", True) and cats:
+            try:
+                if self.memory is not None:
+                    new_cats = self.memory.mark_compliance_educated(cats)
+                    if new_cats:
+                        edu = compliance_education_block(new_cats)
+            except Exception:
+                pass
+        return head + (f"\n{edu}\n" if edu else "")
+
     def _rewrite_span(self, chapter_no: int, plan_title: str, plan_goal: str,
                       content: str, span: tuple[int, int], issues: list[dict],
                       baseline: dict | None = None) -> str:
@@ -1226,9 +1380,18 @@ class QualityChecker:
             ctx_before = content[max(0, s - 200):s]
             ctx_after = content[e:min(len(content), e + 200)]
             problem_seg = content[s:e]
-            issue_block = "\n".join(
-                f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
-            )
+            if getattr(self.cfg, "diag_feedback", True):
+                try:
+                    from .diagnosis import build_issue_block as _bib
+                    issue_block = _bib(issues, max_n=5)
+                except Exception:
+                    issue_block = "\n".join(
+                        f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
+                    )
+            else:
+                issue_block = "\n".join(
+                    f"- [{it.get('type','')}] {it.get('detail','')}" for it in issues[:5]
+                )
             ctx = self._context_block(chapter_no)
             mem_block = self._memory_block(issues, chapter_no)
             # REQ-写作正向引导 5.3：权威当前值注入定点重写（数字违规段修复必须按权威值）

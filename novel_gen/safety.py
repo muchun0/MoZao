@@ -105,3 +105,43 @@ def basic_content_check(text: str) -> list[str]:
     if not text:
         return []
     return [w for w in _CONTENT_BLOCK_PHRASES if w in text]
+
+
+# ---------- 3b. 结构化合规（P0-2 门禁质检正向影响：合规分层+教育） ----------
+# 每个违规词组映射到所属合规大类；教育/分层以此为准（确定性，零 LLM）。
+_COMPLIANCE_RULE_CAT: dict[str, str] = {
+    # 露骨色情描写（固定词组，非单字，避免误伤正常情感/情节描写）
+    "赤裸的性器官": "露骨色情描写", "性交全过程": "露骨色情描写",
+    "口交细节": "露骨色情描写", "精液射入": "露骨色情描写",
+    # 危险行为教唆（恐怖/暴力袭击的操作细节）
+    "制作炸弹的步骤": "危险行为教唆", "自制炸药的配方": "危险行为教唆",
+    "投毒教程": "危险行为教唆", "枪支改装教程": "危险行为教唆",
+    # 未成年人性化（任何形式都不允许）
+    "幼女做爱": "未成年人性化", "儿童性行为": "未成年人性化",
+}
+
+# 大类 → 面向作者的教育措辞（P0-2 首次警告教育，指向内容不指向人）
+_COMPLIANCE_RULE_DESC: dict[str, str] = {
+    "露骨色情描写": "露骨色情内容",
+    "危险行为教唆": "危险行为教唆内容",
+    "未成年人性化": "未成年人性化内容",
+}
+
+
+def basic_content_check_structured(text: str) -> list[dict]:
+    """输出侧结构化合规校验（P0-2）：返回 [{"phrase","rule_category","rule_desc"}]（空=通过）。
+
+    供质检 issue 携带 rule_category/rule_phrase 与首次教育分层使用；
+    命中判定与 basic_content_check 完全同源（_CONTENT_BLOCK_PHRASES 单一事实来源）。
+    """
+    if not text:
+        return []
+    out: list[dict] = []
+    for phrase, cat in _COMPLIANCE_RULE_CAT.items():
+        if phrase in text:
+            out.append({
+                "phrase": phrase,
+                "rule_category": cat,
+                "rule_desc": _COMPLIANCE_RULE_DESC.get(cat, cat),
+            })
+    return out

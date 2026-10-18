@@ -928,6 +928,7 @@ class ChapterWriter:
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
         guard_cfg = getattr(self.cfg, "agent_guard", None)
         qc_passed = True
+        _qc: dict = {}  # quality_check 关闭/异常时兜底（P0-1 合规红线读它需安全）
         if guard_cfg is not None and guard_cfg.quality_check and content:
             try:
                 from .quality import QualityChecker
@@ -981,13 +982,18 @@ class ChapterWriter:
                 try:
                     _mem = self._memory()
                     if _mem is not None:
+                        _hook = _qc.get("hook_score")
                         _mem.record_taste(chapter_no, int(_qc.get("score", 0) or 0),
-                                          _qc.get("issues") or [])
+                                          _qc.get("issues") or [], hook_score=_hook)
                         # REQ-写作正向引导 5.6：高分章（≥85 且无大改）段落自动入
-                        # good 账本（写得好 → 被学习 → 写得更好 闭环）
+                        # good 账本（写得好 → 被学习 → 写得更好 闭环）。
+                        # REQ-门禁质检正向影响 P0-4：hook_score 透传 → 分层入账
+                        # （hook≥4 → demo 示范池）；P0-5：hook 高分 → 正向锚+streak。
                         _mem.record_good(chapter_no, content,
-                                          int(_qc.get("score", 0) or 0),
-                                          _qc.get("issues") or [])
+                                         int(_qc.get("score", 0) or 0),
+                                         _qc.get("issues") or [], hook_score=_hook)
+                        if getattr(self.cfg, "hook_positive_anchor", True):
+                            _mem.record_hook_streak(_hook)
                         _mem.decay(chapter_no)
                 except Exception:
                     pass
@@ -1003,38 +1009,53 @@ class ChapterWriter:
         # → 落盘新稿（ensure_quality 重写后的最优候选），宁要新稿 2 个问题不要
         # 旧版幻觉行。
         kept_previous = False
+        # P0-1 合规红线：最终稿含合规命中 → 该章整体拒绝落盘（除非有健康旧版可保留）。
+        compliance_rejected = bool(_qc.get("compliance_rejected")) if isinstance(_qc, dict) else False
         if not qc_passed:
             prev = None
             try:
                 prev = self.store.load_chapter(chapter_no)
             except Exception:
                 prev = None
-            if prev is not None and getattr(prev, "content", ""):
-                _prev_ok = self._chapter_healthy(prev.content, chapter_no)
+            _prev_ok = (prev is not None and getattr(prev, "content", "")
+                        and self._chapter_healthy(prev.content, chapter_no))
+            if compliance_rejected:
+                # P0-1 合规红线：违规稿一律不落盘。有健康旧版 → 保留旧版；
+                # 无健康旧版 → compliance_rejected 保持 True，整体跳过落盘。
                 if _prev_ok:
                     content, summary = prev.content, prev.summary
                     kept_previous = True
                     if not silent:
-                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
-                              f"保留上一版正文（{len(content)} 字），不覆盖旧章")
-                else:
-                    kept_previous = False
-                    if not silent:
-                        print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
-                              f"上一版正文（{len(prev.content)} 字）健康检查未通过"
-                              "（含注册表外字段/重复节拍/链式账本违规），"
-                              f"改落盘本轮重写最优候选（{len(content)} 字）")
+                        print(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}），"
+                              f"保留上一版健康正文（{len(content)} 字），违规新稿不落盘")
+                elif not silent:
+                    print(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}）"
+                          f"且无健康旧版，该章整体拒绝落盘（compliance_rejected）")
+            elif _prev_ok:
+                content, summary = prev.content, prev.summary
+                kept_previous = True
+                if not silent:
+                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                          f"保留上一版正文（{len(content)} 字），不覆盖旧章")
+            else:
+                kept_previous = False
+                if prev is not None and not silent:
+                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                          f"上一版正文（{len(prev.content)} 字）健康检查未通过"
+                          "（含注册表外字段/重复节拍/链式账本违规），"
+                          f"改落盘本轮重写最优候选（{len(content)} 字）")
 
         # REQ-章节版本化 + 版本质量（每次生成都展示、每版带质检问题）：
         # ensure_quality 的 versions 日志 = 初始稿 + 每轮重写稿（各自带质检结果）。
         # 逐版落库：除最终稿外的候选版本以 promote=False 入库（不顶替当前选中，
         # 用户在版本弹窗可见/可选择/可对比），最终稿按方案4 决策决定是否成为 HEAD。
         # 保留旧版（kept_previous）时最终稿也以候选版本入库，不再丢弃重写产物。
+        # P0-1 合规红线：compliance_rejected（无健康旧版）时整体跳过落库，不入版本库。
         try:
             _qc_versions = _qc.get("versions") if isinstance(_qc, dict) else None
         except Exception:
             _qc_versions = None
-        if _qc_versions:
+        if _qc_versions and not compliance_rejected:
             try:
                 for _v in _qc_versions[:-1]:
                     _vch = Chapter(no=chapter_no, title=plan_title,
@@ -1062,7 +1083,7 @@ class ChapterWriter:
                 logger.exception("质检版本落库失败: no=%d", chapter_no)
 
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
-        if not _qc_versions:
+        if not _qc_versions and not compliance_rejected:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
             self.store.save_chapter(chapter)
         # 三期 F1：Beat 覆盖度门禁（纯确定性、零 LLM）——正文落盘后自检对章计划拍的

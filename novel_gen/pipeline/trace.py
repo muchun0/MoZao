@@ -142,6 +142,8 @@ class TraceRecorder:
                 "score": int(result.get("score", 0)) if result else 0,
                 "issue_count": len(issues),
                 "auto_revised": bool(auto_revised),
+                "passed": bool(result and result.get("passed")),       # P0-5 进度盘
+                "hook_score": result.get("hook_score") if result else None,  # P0-5
             },
         )
 

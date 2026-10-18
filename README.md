@@ -548,6 +548,14 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-18**：第二十五次发版（服务器代码 = master，**已上线**）——**门禁/质检正向影响改造 P0-1~P0-5（feat/req-positive-gating）**：把门禁/质检从「负向查错-打回」升级为「三层正向闭环」（生成前预防 / 生成中引导 / 生成后反馈）。依据《门禁质检正向影响调研报告_2026-10-18.md》（跨行业 6 领域收敛的 5+1 类正向模式）：
+  - **P0-1 合规红线 = 删旧稿重写不落盘**：合规命中（`safety._COMPLIANCE_RULE_CAT` 9 词表 → 露骨色情描写/危险行为教唆/未成年人性化 3 大类）强制 `_rewrite_whole(skip_original=True)` 整章全新重写；最终稿仍违规 → `compliance_rejected=True`，stages 有健康旧版保留旧版、无旧版整体不落盘/不入版本库；best 择优与兜底排除合规稿。新增 `pipeline/compliance.py`（has_compliance / compliance_categories / compliance_education_block）。
+  - **P0-2 首次教育分级**：`basic_content_check_structured` 结构化合规校验（issue 带 rule_category/rule_phrase）；`compliance_education_block` 指向内容不指向人（M6 文化层），book_memory `mark_compliance_educated` 本书内首次去重。
+  - **P0-3 质检诊断回喂**：新增 `pipeline/diagnosis.py`（suggest_for 精确表+前缀表+AI痕迹兜底）；check 补 fix_suggestion/expected_gain；重写改用带建议的 build_issue_block（reask 非盲重写）；reader_review 输出 suggestion。
+  - **P0-4 good 转正 + 多样性治理**：`record_good` 分层入账（demo 示范池/cand 候选池，hook≥4 或 score≥85 → demo）；来源隔离（user/external 优先 + 本作限量 ≤50% 单条 ≤200 字）；采样轮换 pick_state 持久化；注入末尾多样性纪律（每章借鉴 1-2 特征/禁连续复用）；`_style_homogeneity_issues` 跨章趋同软提示（level=小改不扣分）——防 good 片段重复套路。
+  - **P0-5 追更欲正向锚 + streak + 进度盘**：`record_hook_streak` 连续达标账本（hook≥4 累计、<4 冻结一次/重置）；hook_score 透传记忆与 trace；webapp `_aggregate_quality` 增 chapter_status 每章色块（红=未过 / 绿=hook≥4 / 黄=自动重写 / 灰=通过）。
+  - 回归：全量 **822 pytest 全绿**（新增 test_compliance_positive / test_quality_diag / test_hook_positive 29 用例）。部署：devtest 合并 master → git archive 打包 → workbench upload → 解压 /opt/novel-gen → docker compose up -d --build；线上验证：容器 healthy + 主页不白屏。
+
 - **2026-10-18**：第二十四次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
   - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
   - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。

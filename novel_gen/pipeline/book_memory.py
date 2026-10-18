@@ -76,6 +76,8 @@ def _empty() -> dict:
         "taste": {"chapters": []},
         "state": {"chapters": [], "erosion_start": 0},
         "goods": {"samples": []},
+        "compliance_educated": [],   # P0-2：本书已注入过首次合规教育的 rule_category 列表
+        "hook_streak": {"current": 0, "max": 0, "freeze_used": False},  # P0-5 追更欲连续达标
     }
 
 
@@ -345,20 +347,80 @@ class BookMemory:
         return True
 
     # ---------- 经验账本（章节评分/问题分布；P0-8 预留规划层注入）----------
-    def record_taste(self, chapter_no: int, score: int, issues: list[dict]) -> None:
-        """记录本章评分与问题类型分布（score 来自质检结果，零 LLM）。"""
+    def record_taste(self, chapter_no: int, score: int, issues: list[dict],
+                     hook_score: int | None = None) -> None:
+        """记录本章评分与问题类型分布（score 来自质检结果，零 LLM）。
+
+        hook_score（P0-5）：读者审校追更欲 1-5（LLM 产出，可能为 None）；
+        存于 taste.chapters[].hook_score 供 streak 与进度盘使用。
+        """
         if not self.enabled:
             return
         data = self.load()
         chapters = data["taste"].setdefault("chapters", [])
         chapters = [c for c in chapters if int(c.get("ch", 0)) != int(chapter_no)]
-        chapters.append({
+        rec = {
             "ch": int(chapter_no),
             "score": int(score or 0),
             "issue_types": [str(it.get("type") or "") for it in (issues or [])],
-        })
+        }
+        if hook_score is not None:
+            rec["hook_score"] = int(hook_score)
+        chapters.append(rec)
         data["taste"]["chapters"] = chapters[-20:]  # 只留最近 20 章，防膨胀
         self.save()
+
+    # ---------- P0-2 合规首次教育去重 ----------
+    def compliance_educated(self) -> list[str]:
+        """已注入过首次合规教育的 rule_category 列表（空=无）。"""
+        if not self.enabled:
+            return []
+        return list(self.load().get("compliance_educated") or [])
+
+    def mark_compliance_educated(self, categories: list[str]) -> list[str]:
+        """登记本次教育过的 rule_category，返回【新增】的教育过的分类（供调用方注入）。
+
+        幂等：已教育过的分类不重复登记；空输入返回 [] 且不落盘。
+        """
+        if not self.enabled or not categories:
+            return []
+        data = self.load()
+        done = set(data.get("compliance_educated") or [])
+        new_cats = [c for c in categories if c and c not in done]
+        if not new_cats:
+            return []
+        data["compliance_educated"] = sorted(set(done) | set(new_cats))
+        self.save()
+        return new_cats
+
+    # ---------- P0-5 追更欲连续达标（streak）----------
+    def record_hook_streak(self, hook_score: int | None) -> dict:
+        """追更欲连续达标账本（hook_score>=4 为达标）。
+
+        - hook>=4 → current+1，max 取历史峰值；
+        - hook<4 → 若 hook_streak_freeze 开关开且 freeze 未用则冻结一次不重置（记
+          freeze_used=True），否则 current 重置为 0；
+        - hook 为 None（LLM 失败）→ 不累计也不重置（保持现状）。
+        返回 {current, max, freeze_used}。
+        """
+        data = self.load()
+        st = data.setdefault("hook_streak",
+                             {"current": 0, "max": 0, "freeze_used": False})
+        freeze_enabled = bool(getattr(self.cfg, "hook_streak_freeze", True))
+        if hook_score is None:
+            return dict(st)
+        if int(hook_score) >= 4:
+            st["current"] = int(st.get("current", 0)) + 1
+            st["max"] = max(int(st.get("max", 0)), st["current"])
+            st["freeze_used"] = bool(st.get("freeze_used"))
+        else:
+            if freeze_enabled and not st.get("freeze_used"):
+                st["freeze_used"] = True   # 冻结一次，不重置
+            else:
+                st["current"] = 0
+        self.save()
+        return dict(st)
+
 
     # ---------- good 账本（REQ-写作正向引导 5.6：踩坑 + 正向样例双账本）----------
     # 用户方向①「告诉 AI 怎么写是好的」的落地：只记"什么不行"（pitfalls）没有
@@ -376,29 +438,57 @@ class BookMemory:
     _GOOD_SENSE_WORDS = ("光", "影", "风", "灰", "锈", "腥", "潮", "味", "声", "静",
                          "黑", "暗", "湿", "凉", "烫", "烫")
 
-    def record_good(self, chapter_no: int, content: str, score: int,
-                    issues: list[dict] | None = None) -> int:
-        """高分章好片段自动入账（零 LLM）。
+    # demo（示范池，可前置注入）/ cand（候选池，仅重写参考）各维度容量
+    _GOOD_DEMO_CAP_PER_CAT = 5     # demo 每类 ≤5
+    _GOOD_DEMO_CAP_TOTAL = 50      # demo 总量 ≤50
+    _GOOD_CAND_CAP_PER_CAT = 8     # cand 每类 ≤8
+    _GOOD_CAND_CAP_TOTAL = 100     # cand 总量 ≤100
+    # 来源隔离：demo 池中本作自产片段(book)占比上限（其余为 user/external 外部来源）
+    _GOOD_BOOK_RATIO_DEMO = 0.5
 
-        - 条件：score ≥85 且无「大改」级问题（高分且无硬伤 = 整章质量可信）；
-        - 抽取：正文按段落切分（20~300 字，跳过【摘要】行），按手法确定性分类；
-        - 容量：每章每类最多 1 条（防同章刷屏）、每类总量 ≤5、总量 ≤50；
+    @staticmethod
+    def _good_capacity(level: str) -> tuple[int, int]:
+        return (BookMemory._GOOD_DEMO_CAP_PER_CAT, BookMemory._GOOD_DEMO_CAP_TOTAL) \
+            if level == "demo" else (BookMemory._GOOD_CAND_CAP_PER_CAT, BookMemory._GOOD_CAND_CAP_TOTAL)
+
+    def record_good(self, chapter_no: int, content: str, score: int,
+                    issues: list[dict] | None = None,
+                    hook_score: int | None = None, promote: bool | None = None) -> int:
+        """好片段自动入账（零 LLM；REQ-门禁质检正向影响 P0-4）。
+
+        - 入账条件（记录层无条件沉淀）：good_pool_layer 开 → 无「大改」级问题即入账
+          （去掉 score≥85 门槛）；关 → 保持原「score≥85 且无大改」门槛。
+        - 分层（注入层防平庸固化）：promote=True 或 hook_score>=4 或 score>=85 →
+          demo（示范池，可前置注入）；否则 cand（候选池，仅重写/参考）。
+        - 来源：本作自产片段 src_type="book"。
         - 返回本次新增条数。
         """
         if not self.enabled:
             return 0
-        if int(score or 0) < 85:
-            return 0
-        if any(str(it.get("level") or "") == "大改" for it in (issues or [])):
-            return 0
+        layer = bool(getattr(self.cfg, "good_pool_layer", True))
+        if layer:
+            if any(str(it.get("level") or "") == "大改" for it in (issues or [])):
+                return 0
+        else:
+            if int(score or 0) < 85:
+                return 0
+            if any(str(it.get("level") or "") == "大改" for it in (issues or [])):
+                return 0
         paras = self._good_paras(content)
         if not paras:
             return 0
-        return self._ingest_good_samples(chapter_no, paras, int(score or 0))
+        if layer:
+            level = "demo" if (promote or int(hook_score or 0) >= 4
+                               or int(score or 0) >= 85) else "cand"
+        else:
+            level = "demo"
+        return self._ingest_good_samples(chapter_no, paras, int(score or 0),
+                                         src_type="book", level=level)
 
     def record_good_manual(self, chapter_no: int, content: str) -> int:
         """用户人工修订/手动标记章入 good 账本（免质检条件——用户认可 = 好文风）。
 
+        P0-4 来源隔离：用户认可片段 src_type="user"、直接入 demo 示范池。
         webapp 编辑保存时调用（ch.user_edited=True 同处）；零 LLM。
         """
         if not self.enabled:
@@ -406,7 +496,23 @@ class BookMemory:
         paras = self._good_paras(content)
         if not paras:
             return 0
-        return self._ingest_good_samples(chapter_no, paras, 100)
+        return self._ingest_good_samples(chapter_no, paras, 100,
+                                         src_type="user", level="demo")
+
+    def ingest_external_good(self, category_key: str, text: str) -> int:
+        """外部优质片段入账（P0-4 来源隔离）：拆书库/内置范文导入，src_type="external"。
+
+        category_key 须在 _GOOD_CATS 内（否则不入账，防污染分类框架）；
+        直接入 demo 示范池（外部源 = 已验证的高质量文风，可前置注入）。
+        返回新增条数（0 = 未入账）。
+        """
+        if not self.enabled or category_key not in self._GOOD_CATS:
+            return 0
+        t = str(text or "").strip()
+        if not (20 <= len(t) <= 300):
+            return 0
+        return self._ingest_good_samples(0, [t], 100,
+                                         src_type="external", level="demo")
 
     @staticmethod
     def _good_paras(content: str) -> list[str]:
@@ -419,10 +525,15 @@ class BookMemory:
         ]
 
     def _ingest_good_samples(self, chapter_no: int, paras: list[str],
-                             score: int) -> int:
-        """入账主体：分类 → 去重 → 容量约束（每类 ≤5、总量 ≤50）。"""
+                             score: int, src_type: str = "book",
+                             level: str = "demo") -> int:
+        """入账主体：分类 → 去重 → 分层容量约束（demo/cand 各自每类/总量上限）。
+
+        P0-4：容量按 level 分层独立统计；同源同类型同章去重。
+        """
         data = self.load()
         samples = data.setdefault("goods", {}).setdefault("samples", [])
+        cap_per_cat, cap_total = self._good_capacity(level)
         added = 0
         for p in paras:
             cat = self._classify_sample(p)
@@ -430,57 +541,122 @@ class BookMemory:
                 continue
             # 同章同类型已有 → 跳过（防同章刷屏）
             same_ch = [s for s in samples
-                       if s.get("cat") == cat and int(s.get("src_ch", 0)) == int(chapter_no)]
+                       if s.get("cat") == cat
+                       and s.get("src_type") == src_type
+                       and int(s.get("src_ch", 0)) == int(chapter_no)]
             if same_ch:
                 continue
-            # 每类容量：先删最旧（保持最新样例优先）
-            cat_items = [s for s in samples if s.get("cat") == cat]
-            if len(cat_items) >= 5:
+            # 分层容量：该 level 内每类超限 → 删该 level 最旧（保持最新优先）
+            cat_items = [s for s in samples
+                         if s.get("cat") == cat and s.get("level") == level]
+            if len(cat_items) >= cap_per_cat:
                 oldest = min(cat_items, key=lambda s: int(s.get("src_ch", 0)))
+                samples.remove(oldest)
+            level_items = [s for s in samples if s.get("level") == level]
+            if len(level_items) >= cap_total:
+                oldest = min(level_items, key=lambda s: int(s.get("src_ch", 0)))
                 samples.remove(oldest)
             samples.append({
                 "cat": cat,
                 "text": p[:300],
                 "src_ch": int(chapter_no),
                 "score": int(score or 0),
+                "src_type": src_type,
+                "level": level,
             })
             added += 1
-            if len(samples) >= 50:
+            if len(level_items) + added >= cap_total:
                 break
         if added:
             self.save()
         return added
 
     def good_block(self, top_n: int = 3, max_chars: int = 900) -> str:
-        """【本作写得好的片段】注入块：各类取最新高分样例，总 ≤top_n 条。
+        """【本作写得好的片段】注入块（P0-4 采样轮换 + 来源隔离 + 软约束强化）。
 
-        场景生成与重写共用——标注"参考质感，不是内容来源"（防风格漂移/抄袭感）。
+        - 默认只取 demo 示范池（level=demo）；demo 空则回落 cand（兜底，行为不退化）；
+        - 来源隔离：demo 中优先 user/external 外部来源，本作自产 book 限量补足
+          （占比 ≤_GOOD_BOOK_RATIO_DEMO，单条 ≤200 字），防本作自引用闭环套路固化；
+        - 采样轮换：每类在近窗口内按 pick_state 索引轮换（不永远锁最近几章）；
+        - 软约束强化：注入措辞追加"每章限借鉴 1-2 特征、禁连续复用"多样性纪律。
         空账本/关闭 → 空串。
         """
         if not self.enabled:
             return ""
         data = self.load()
-        samples = data.get("goods", {}).get("samples") or []
+        goods = data.get("goods") or {}
+        samples = goods.get("samples") or []
         if not samples:
             return ""
-        # 各类取最新（src_ch 最大者），再按最近章取前 top_n 条
+        # 1) 取注入候选：优先 demo，空则回落 cand
+        pool = [s for s in samples if s.get("level") == "demo"]
+        if not pool:
+            pool = [s for s in samples if s.get("level") in (None, "cand")]
+        if not pool:
+            return ""
+        # 2) 来源隔离：外部(user/external)优先，本作(book)限量补足
+        src_isolation = bool(getattr(self.cfg, "good_src_isolation", True))
+        if src_isolation:
+            book_items = [s for s in pool if s.get("src_type") == "book"]
+            ext_items = [s for s in pool if s.get("src_type") in ("user", "external")]
+            ext_n = min(len(ext_items), max(0, int(top_n or 1)))
+            max_book = max(0, int((int(top_n or 1) - ext_n) * self._GOOD_BOOK_RATIO_DEMO))
+            if max_book == 0 and ext_n < int(top_n or 1):
+                max_book = 1  # 外部不足时至少允许 1 条本作（防 demo 空转）
+            book_n = min(len(book_items), max_book)
+        else:
+            ext_items, book_items = [], pool
+            ext_n, book_n = 0, len(book_items)
+        # 3) 采样轮换：每类窗口内按 pick_state 轮换取
+        rotate = bool(getattr(self.cfg, "good_rotate", True))
+        pick_state = goods.setdefault("pick_state", {})
         picked: list[dict] = []
-        for cat in self._GOOD_CATS:
-            items = [s for s in samples if s.get("cat") == cat]
-            if items:
-                items.sort(key=lambda s: (int(s.get("src_ch", 0)), int(s.get("score", 0))))
-                picked.append(items[-1])
-        picked.sort(key=lambda s: int(s.get("src_ch", 0)), reverse=True)
+
+        def _rotate_take(items: list[dict]) -> dict | None:
+            if not items:
+                return None
+            if not rotate:
+                # 不轮换：取 src_ch 最大（最新）者（回落原行为）
+                return max(items, key=lambda s: (int(s.get("src_ch", 0)),
+                                                 int(s.get("score", 0))))
+            key = (items[0].get("cat") or "misc") + ":" + str(items[0].get("src_type") or "book")
+            idx = int(pick_state.get(key, -1))
+            ordered = sorted(items, key=lambda s: (int(s.get("src_ch", 0)),
+                                                   int(s.get("score", 0))))
+            nxt = (idx + 1) % len(ordered)
+            pick_state[key] = nxt
+            return ordered[nxt]
+
+        # 每类取 1 条（外部优先补足 top_n），再按最近章排序取前 top_n
+        for items, want in ((ext_items, ext_n), (book_items, book_n)):
+            by_cat: dict[str, list[dict]] = {}
+            for s in items:
+                by_cat.setdefault(s.get("cat") or "misc", []).append(s)
+            for s in sorted(by_cat.values(), key=lambda v: -max(
+                    int(x.get("src_ch", 0)) for x in v)):
+                if len(picked) >= want:
+                    break
+                cand = _rotate_take(s)
+                if cand:
+                    picked.append(cand)
         picked = picked[:max(1, int(top_n or 1))]
+        if rotate:
+            self.save()  # 持久化轮换状态
+        picked.sort(key=lambda s: int(s.get("src_ch", 0)), reverse=True)
         lines = []
         for s in picked:
+            src_tag = {"user": "用户修订", "external": "外部优质", "book": "本作"}.get(
+                s.get("src_type"), "本作")
             lines.append(
-                f"- 第{s.get('src_ch','')}章（{s.get('cat','')}）："
-                f"{str(s.get('text','')).strip()[:280]}"
+                f"- 第{s.get('src_ch','')}章（{s.get('cat','')}·{src_tag}）："
+                f"{str(s.get('text','')).strip()[:200 if s.get('src_type')=='book' else 280]}"
             )
-        out = ("【本作写得好的片段（来自本书高分章，参考质感与节奏——不是内容来源，"
-               "不得照抄情节；写本章时模仿这里的句式密度与白描手法）】\n"
-               + "\n".join(lines))
+        out = ("【本作写得好的片段（参考质感与节奏——不是内容来源，不得照抄情节；"
+               "写本章时模仿这里的句式密度与白描手法）】\n"
+               + "\n".join(lines)
+               + "\n【多样性纪律（重要）】每章只借鉴其中 1-2 个可用的写法特征"
+                 "（句式密度/白描手法之一）；禁止连续多章复用同一特征；"
+                 "本章至少引入 1 个本章独有的写法或场景处理，避免套路重复。")
         return out[:max_chars]
 
     @classmethod

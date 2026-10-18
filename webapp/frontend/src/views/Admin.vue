@@ -164,9 +164,9 @@
           title="生成引擎开关全局生效：以表中数据为准，保存后对所有项目生成实时生效（无需发版）；项目 config.json 快照不会被改写。" />
         <el-tabs v-model="configModule">
           <el-tab-pane v-for="g in configGroups" :key="g.module" :label="moduleLabel(g.module)" :name="g.module">
-            <el-table :data="g.items" stripe size="small">
-              <el-table-column prop="label" label="开关" width="200" show-overflow-tooltip />
-              <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
+            <el-table :data="g.items" stripe size="small" class="config-table">
+              <el-table-column prop="label" label="开关" width="210" />
+              <el-table-column prop="description" label="说明" min-width="320" />
               <el-table-column label="当前值" width="220">
                 <template #default="{ row }">
                   <el-switch v-if="row.config_type === 'bool'" v-model="row._val" @change="markDirty(row)" />
@@ -455,4 +455,7 @@ onMounted(() => {
 .dot-green { background: #67c23a; }
 .dot-yellow { background: #e6a23c; }
 .dot-gray { background: #909399; }
+/* 系统设置：超长说明直接换行完整展示，不用弹窗；加大行高提升可读性 */
+.config-table :deep(.el-table__cell) { padding: 10px 6px; }
+.config-table :deep(.cell) { white-space: normal; word-break: break-word; line-height: 1.65; }
 </style>

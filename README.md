@@ -544,7 +544,7 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
-- **2026-10-18**：第二十三次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
+- **2026-10-18**：第二十四次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
   - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
   - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。
   - **二期**（8afa012，用户拍板全做 + S3.4 代码默认关）：S1.4 伏笔 stalled 状态（埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ 语义双路（LLM 判推进，默认关）；S2.3 固定锚双轨（开头原文+个人旧稿作风格原点，默认关）；S2.5 L3 风格裁判（每 5 章 LLM 六维比对超阈值触发再锚定，默认开）；S3.6 远期大纲粗粒度（beat_gate 远期节点不计 fail 分母，默认关）；S3.4 fail 章 LLM 二级复核（anti-length judge 确认未兑现才进 L3，默认关——启用待人工标注集验证>80%）。

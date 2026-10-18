@@ -290,6 +290,35 @@ class ProjectStore:
         d = self._read_json(self.outline_path(), None)
         return Outline.from_dict(d) if d else None
 
+    # ---------- P1-3-B 大纲修订候选（多版本，供用户挑选） ----------
+    def outline_candidates_path(self) -> Path:
+        return self.dir / "outline_candidates.json"
+
+    def save_outline_candidates(self, candidates: list) -> None:
+        """保存大纲修订候选列表（Outline 对象或 dict 均可），供用户挑选。"""
+        data = []
+        for c in candidates or []:
+            data.append(c.to_dict() if hasattr(c, "to_dict") else dict(c))
+        self._write_json(self.outline_candidates_path(), {"candidates": data})
+
+    def load_outline_candidates(self) -> list:
+        """返回候选大纲 dict 列表；无 → []。"""
+        d = self._read_json(self.outline_candidates_path(), None)
+        if not isinstance(d, dict) or not isinstance(d.get("candidates"), list):
+            return []
+        return [c for c in d["candidates"] if isinstance(c, dict)]
+
+    def apply_outline_candidate(self, index: int) -> Optional[Outline]:
+        """把第 index 个候选设为当前大纲（save_outline）。越界/异常 → None。"""
+        candidates = self.load_outline_candidates()
+        if not 0 <= int(index) < len(candidates):
+            return None
+        outline = Outline.from_dict(candidates[int(index)])
+        if outline is None:
+            return None
+        self.save_outline(outline)
+        return outline
+
     # ---------- 编辑审阅结果 ----------
     def editor_review_path(self) -> Path:
         return self.dir / "editor_review.json"

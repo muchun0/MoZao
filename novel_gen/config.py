@@ -105,6 +105,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "outline_far_skip", 30, "远期大纲窗口阈值（超长篇攻坚 S3.6）：距当前章>N 的节点视为远期，beat_gate 判定时排除"),
     FeatureFlag("review", "beat_fail_judge", False, "fail 章 LLM 二级复核（超长篇攻坚 S3.4）：仅对 beat_gate=fail 章跑 1 次 pointwise judge 确认未兑现清单（anti-length、judge 异模型族），防误报；返回未兑现清单才进 L3 定点重写；默认 False（启用待自建 20-50 章人工标注集验证一致率>80%）"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
+    FeatureFlag("review", "outline_multi_candidate", True, "P1-3-B 编辑质检多版本候选：审稿未通过时生成 2-3 个不同侧重(结构/人物/钩子)的修订候选存 store，由用户挑选(Sudowrite 式)，而非自动采用单一 diff；False=保持自动修正"),
     # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
     FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
     FeatureFlag("review", "beat_gate_min_coverage", 0.6, "Beat 覆盖度通过阈值（三期 F1）：覆盖率≥此值=pass"),
@@ -358,6 +359,7 @@ class NovelConfig:
     outline_far_skip: int = feature_default("outline_far_skip")                # 远期大纲窗口阈值（S3.6）：距当前章>N 视为远期排除
     beat_fail_judge: bool = feature_default("beat_fail_judge")                 # fail 章 LLM 二级复核（S3.4）：确认未兑现清单防误报，默认关
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
+    outline_multi_candidate: bool = feature_default("outline_multi_candidate")  # P1-3-B 多版本候选
     # ---- 门禁质检正向影响（REQ-门禁质检正向影响，默认见 FEATURE_FLAGS）----
     compliance_clean_rewrite: bool = feature_default("compliance_clean_rewrite")  # P0-1 合规删旧稿重写
     compliance_education: bool = feature_default("compliance_education")          # P0-2 合规首次教育

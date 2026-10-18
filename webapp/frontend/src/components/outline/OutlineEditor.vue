@@ -87,6 +87,31 @@
       </draggable>
     </div>
 
+    <!-- P1-3-B 多版本候选：编辑质检生成的修订候选，供用户挑选（Sudowrite 式） -->
+    <el-card v-if="candidates.length" class="candidate-card">
+      <template #header>
+        <div class="intro-header">
+          <b>编辑质检修订候选（请选择采用一个）</b>
+          <el-tag type="warning" size="small">当前大纲尚未自动更新</el-tag>
+        </div>
+      </template>
+      <div class="candidate-list">
+        <div v-for="c in candidates" :key="c.index" class="candidate-item">
+          <div class="candidate-head">
+            <el-tag size="small" type="info">候选 {{ c.index + 1 }}</el-tag>
+            <b style="margin-left:8px">{{ c.title || '（未命名）' }}</b>
+            <span class="muted" style="margin-left:8px">{{ c.chapterCount }} 章</span>
+          </div>
+          <div v-if="c.intro" class="candidate-intro">{{ c.intro }}</div>
+          <div class="candidate-chapters">
+            <el-tag v-for="ch in c.chapters" :key="ch" size="small" effect="plain" style="margin:2px">{{ ch }}</el-tag>
+          </div>
+          <el-button size="small" type="primary" :loading="applying === c.index"
+                     @click="applyCandidate(c.index)">采用此候选</el-button>
+        </div>
+      </div>
+    </el-card>
+
     <!-- 底部添加章节 -->
     <div class="chapters-footer">
       <el-button size="small" type="primary" @click="addChapterToVolume(lastVolumeNo())">+ 添加章节</el-button>
@@ -97,7 +122,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import draggable from 'vuedraggable'
-import { getOutline, saveOutline as saveOutlineApi, regenerateVolume } from '../../api/novel'
+import { getOutline, saveOutline as saveOutlineApi, regenerateVolume,
+         getOutlineCandidates, applyOutlineCandidate } from '../../api/novel'
 import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -110,6 +136,8 @@ const volumes = ref([])
 const chapters = ref([])  // 所有章节，每个chapter带volume_no
 const saving = ref(false)
 const regeningVol = ref(0)
+const candidates = ref([])
+const applying = ref(-1)
 async function regenVolume(vol) {
   try {
     await ElMessageBox.confirm('只重写本卷的简介和章节规划，其他分卷不动。继续？', '重生成本卷', { type: 'warning' })
@@ -157,7 +185,30 @@ onMounted(async () => {
   } catch (e) {
     ElMessage.error('大纲加载失败')
   }
+  // P1-3-B 多版本候选：加载编辑质检生成的修订候选（Sudowrite 式，供用户挑选）
+  try {
+    const cr = await getOutlineCandidates(props.pid)
+    candidates.value = (cr?.candidates || []).map((c, i) => ({
+      index: i,
+      title: c.title || '',
+      intro: c.intro || '',
+      chapterCount: (c.chapters || []).length,
+      chapters: (c.chapters || []).map(x => `${x.no}. ${x.title || ''}`).slice(0, 8),
+    }))
+  } catch (e) { /* 候选读取失败静默（非核心） */ }
 })
+
+async function applyCandidate(i) {
+  applying.value = i
+  try {
+    await applyOutlineCandidate(props.pid, i)
+    ElMessage.success('已采用该候选大纲')
+    candidates.value = []
+    emit('saved')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '采用失败')
+  } finally { applying.value = -1 }
+}
 
 function volChapters(vno) {
   return chapters.value.filter(c => c.volume_no === vno)
@@ -240,6 +291,12 @@ async function saveOutline() {
 .vol-label { font-size: 14px; font-weight: 600; color: #232f55; }
 .vol-fields { display: flex; flex-direction: column; gap: 6px; }
 .chapters-footer { display: flex; justify-content: center; margin: 16px 0; padding-top: 12px; border-top: 1px solid #ebeef5; }
+.candidate-card { margin-bottom: 16px; border: 1px solid #e6a23c; }
+.candidate-list { display: flex; flex-direction: column; gap: 12px; }
+.candidate-item { padding: 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafbfc; }
+.candidate-head { display: flex; align-items: center; margin-bottom: 8px; }
+.candidate-intro { color: #606266; font-size: 13px; margin-bottom: 8px; line-height: 1.5; }
+.candidate-chapters { margin-bottom: 8px; }
 .ol-list { display: flex; flex-direction: column; gap: 8px; padding-left: 12px; }
 .ol-card { cursor: grab; }
 .ol-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }

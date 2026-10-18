@@ -422,6 +422,24 @@ class NovelPipeline:
         logger.info("阶段完成: 编辑质检（%s，评分 %.1f，问题 %d 条）",
                     "通过" if review.passed else "需修正", review.score, len(review.issues))
         if not review.passed:
+            # P1-3-B 多版本候选（Sudowrite 式）：审稿未通过时生成 2-3 个不同侧重
+            # 的修订候选存 store，由用户在前端挑选，而非自动采用单一 diff。
+            # 受 outline_multi_candidate 开关控制；关 → 保持自动修正。
+            if getattr(self.cfg, "outline_multi_candidate", True):
+                try:
+                    _cands = self.editor.revise_candidates(
+                        self.cfg, outline, review, research_block)
+                    self.store.save_outline_candidates(_cands)
+                    if not silent:
+                        print(f"[编辑质检] 已生成 {len(_cands)} 个修订候选，请在界面挑选"
+                              f"（未自动采用；见 outline_candidates）")
+                    logger.info("编辑质检生成 %d 个修订候选，待用户挑选", len(_cands))
+                except Exception:
+                    logger.exception("多版本候选生成失败（降级为自动修正）")
+                    revised = self.editor.revise(self.cfg, outline, review, research_block)
+                    if revised is not outline:
+                        self.store.save_outline(revised)
+                return
             if not silent:
                 print("[编辑质检] 正在自动修正大纲...")
             logger.info("编辑质检未通过，自动修正大纲")

@@ -113,13 +113,50 @@ class EditorReviewer:
                 return revised
         return self._revise_whole(cfg, outline, review, research_block)
 
+    def revise_candidates(self, cfg: NovelConfig, outline: Outline, review: EditorReview,
+                          research_block: str, n: int = 3) -> list[Outline]:
+        """P1-3-B 多版本候选（Sudowrite 式）：生成 n 个不同修订侧重的大纲候选供用户挑。
+
+        侧重轮转：结构节奏 / 人物差异化 / 悬念钩子，diff 式（低成本）+ 递增 temperature
+        制造候选差异；去重（书名+章节指纹）；全部失败回退整章重出一个。返回候选列表。
+        """
+        focuses = [
+            "本轮优先强化结构节奏：铺垫/冲突/爽点的节拍密度与先后顺序，让推进更紧凑",
+            "本轮优先强化人物差异化：人物动机、独特性格、关系张力，让角色不脸谱化",
+            "本轮优先强化悬念钩子：章末钩子、伏笔密度与兑现节奏，提升追更欲",
+        ]
+        seen: set = set()
+        out: list[Outline] = []
+        import copy
+        for i in range(max(1, int(n))):
+            focus = focuses[i % len(focuses)]
+            temp = 0.7 + (i * 0.1)
+            # 每个候选基于原始大纲的独立深拷贝（_apply_updates 原地修改，须隔离候选）
+            c = self._revise_diff(cfg, copy.deepcopy(outline), review, research_block,
+                                  focus=focus, temperature=temp)
+            if c is None or len(c.chapters) != len(outline.chapters):
+                continue
+            key = (c.title, tuple((x.title, x.goal) for x in c.chapters))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+        if not out:
+            out.append(self._revise_whole(cfg, outline, review, research_block))
+        return out
+
     def _revise_diff(self, cfg: NovelConfig, outline: Outline, review: EditorReview,
-                     research_block: str) -> Outline | None:
-        """diff 式修正：LLM 只输出需要改动的章节字段，Python 合并回原大纲。"""
+                     research_block: str, focus: str = "", temperature: float = 0.5) -> Outline | None:
+        """diff 式修正：LLM 只输出需要改动的章节字段，Python 合并回原大纲。
+
+        focus（P1-3-B）：本轮修订侧重指示，多版本候选时轮转；空 = 不强调侧重。
+        temperature：候选多样性（默认 0.5，多版本候选时递增）。
+        """
         system = (
             "你是一位网文主编。根据编辑审阅意见，修正以下大纲。"
             "必须保留用户强约束（背景/主角/预设人物/避雷），只调整结构、节奏、钩子和差异化。"
             "只输出需要改动的字段（diff），不要重新输出整个大纲。"
+            + (f"当前修订重点：{focus}" if focus else "")
         )
         outline_text = "\n".join(
             f"第{c.no}章《{c.title}》：{c.goal}" for c in outline.chapters
@@ -139,7 +176,7 @@ class EditorReviewer:
             f"规则：no=0 表示全书级字段（可省略）；章节字段只列出真正需要修改的；"
             f"全部字段都可省略；务必保持章节总数不变。"
         )
-        raw = self.llm.chat(system, user, temperature=0.5, max_tokens=1200)
+        raw = self.llm.chat(system, user, temperature=temperature, max_tokens=1200)
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
             return None

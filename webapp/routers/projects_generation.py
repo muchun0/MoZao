@@ -47,6 +47,27 @@ def regenerate_volume(project_id: str, vol_no: int, user: dict = Depends(_requir
         raise HTTPException(status_code=500, detail=f"重生成失败：{e}")
 
 
+@app.get("/api/projects/{project_id}/outline/candidates")
+def outline_candidates(project_id: str, user: dict = Depends(_require_user)):
+    """P1-3-B 多版本候选（Sudowrite 式）：读编辑质检生成的修订候选列表，供用户挑选。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    return {"candidates": store.load_outline_candidates()}
+
+
+@app.post("/api/projects/{project_id}/outline/candidates/{index}/apply")
+def apply_outline_candidate(project_id: str, index: int,
+                            user: dict = Depends(_require_user)):
+    """P1-3-B 用户挑选某候选 → 设为当前大纲。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    outline = store.apply_outline_candidate(int(index))
+    if outline is None:
+        raise HTTPException(status_code=404, detail="候选不存在或无法解析")
+    return {"applied": True, "title": outline.title,
+            "chapters": len(outline.chapters)}
+
+
 @app.post("/api/projects/{project_id}/generate-outline")
 def generate_outline_only(project_id: str, user: dict = Depends(_require_user)):
     """只跑 research → outline → editor_review → world，不写正文。

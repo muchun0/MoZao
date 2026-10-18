@@ -185,7 +185,8 @@ def _coerce_feature(raw, default):
 # 各 Provider 的默认模型与默认 base_url（OpenAI 兼容协议）
 PROVIDER_DEFAULTS: dict[str, dict] = {
     "deepseek": {
-        "model": "deepseek-chat",
+        # 2026-10-18：deepseek-chat 已由官方停用（2026-07-24 弃用），当前模型名为 deepseek-flash（DeepSeek-V4.1-Flash-1017）
+        "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com",
         "env_key": "DEEPSEEK_API_KEY",
     },

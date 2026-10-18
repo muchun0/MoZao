@@ -136,6 +136,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "hook_positive_anchor", True, "P0-5 追更欲正向锚：hook>=4 的章片段入 good 示范池 + hook_streak 账本累计；False=关闭正向锚与 streak"),
     FeatureFlag("review", "hook_streak_freeze", True, "P0-5 streak 容错：连续达标中断时允许 1 次 freeze（不重置）；False=断签即重置"),
     FeatureFlag("review", "reflexion_note", True, "P1-1 Reflexion 反思笔记：重写 >=2 轮仍未通过时，让 LLM 写一句「错在哪、下次怎么写对」存入 book_memory.reflections，后续章生成注入为先验；False=关闭反思入账（仅记录失败不留反思）"),
+    FeatureFlag("review", "enhance_pass", False, "P1-2 StageGate 正向增强旁路：质检通过(无大改)但仍有 warn 级问题或追更欲未满时，可选触发一次 LLM 增强润色(钩子更强/爽点更密/伏笔呼应)，复检通过且分数不降才采纳，否则保留原稿；受 AgentGuard 成本账约束(与重写共用 revise 限额)；默认关控成本，开启才增强"),
 ]
 
 
@@ -365,6 +366,7 @@ class NovelConfig:
     hook_positive_anchor: bool = feature_default("hook_positive_anchor")          # P0-5 追更欲正向锚+streak
     hook_streak_freeze: bool = feature_default("hook_streak_freeze")              # P0-5 streak 容错
     reflexion_note: bool = feature_default("reflexion_note")                      # P1-1 Reflexion 反思笔记
+    enhance_pass: bool = feature_default("enhance_pass")                          # P1-2 StageGate 增强旁路
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

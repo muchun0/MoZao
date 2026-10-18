@@ -1020,6 +1020,20 @@ class ChapterWriter:
         # → 落盘新稿（ensure_quality 重写后的最优候选），宁要新稿 2 个问题不要
         # 旧版幻觉行。
         kept_previous = False
+        # P1-2 StageGate 增强旁路：质检通过(无大改)但仍有 warn 级问题或追更欲未满时，
+        # 可选触发一次 LLM 增强润色（钩子更强/爽点更密/伏笔呼应）。受 enhance_pass 开关 +
+        # AgentGuard 成本账约束；增强稿复检不过/分数不降则保留原稿，失败静默降级留日志。
+        if qc_passed and getattr(self.cfg, "enhance_pass", False) and isinstance(_qc, dict):
+            try:
+                _enh = self._enhance_pass(chapter_no, plan_title, plan_goal, content, summary,
+                                          _qc, qc, baseline=_bl or None,
+                                          core_event=plan_core_event or None)
+                if _enh is not None:
+                    content, summary = _enh
+                    if not silent:
+                        print(f"  [增强旁路] 第{chapter_no}章质检通过后触发增强润色，已采纳增强稿")
+            except Exception:
+                logger.exception("增强润色旁路失败（降级跳过，保留原稿）")
         # P0-1 合规红线：最终稿含合规命中 → 该章整体拒绝落盘（除非有健康旧版可保留）。
         compliance_rejected = bool(_qc.get("compliance_rejected")) if isinstance(_qc, dict) else False
         if not qc_passed:
@@ -1198,6 +1212,55 @@ class ChapterWriter:
             tail = f"｜摘要：{summary}" if summary else "｜（未生成摘要）"
             print(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
         return chapter
+
+
+    def _enhance_pass(self, chapter_no, plan_title, plan_goal, content, summary,
+                      qc_result: dict, qc, baseline=None, core_event=None):
+        """P1-2 StageGate 增强润色旁路（REQ-门禁质检正向影响 P1-2）。
+
+        质检【通过】但仍有提升空间（存在 warn 级「中改」问题，或追更欲 hook<4）时，
+        对正文做一次 LLM 增强润色（钩子更强/爽点更密/伏笔呼应），复检(check)通过且
+        分数不降才采纳，否则返回 None 保留原稿（达标不是终点，而是「被推进」的绿灯）。
+
+        - 受 enhance_pass 开关（默认关）+ AgentGuard 成本账约束（与重写共用 revise 场景）；
+        - 失败/复检不过/长度不足 → None（§11.6 降级留日志，不阻塞、不回退原稿）。
+        """
+        issues = qc_result.get("issues") or []
+        has_warn = any((it.get("level") or "") == "中改" for it in issues)
+        hook = qc_result.get("hook_score")
+        if not has_warn and (hook is None or int(hook) >= 4):
+            return None  # 无增强空间
+        focus = [f"{it.get('type', '')}:{(it.get('detail', '') or '')[:60]}"
+                 for it in issues if (it.get("level") or "") == "中改"]
+        if hook is not None and int(hook) < 4:
+            focus.append("追更欲偏低：强化章末钩子与伏笔呼应")
+        try:
+            if self.guard is not None:
+                self.guard.enter_scene("revise")
+            raw = self.llm.chat(
+                "你只输出增强润色后的完整章节正文，其余不输出。",
+                "你是资深网文编辑。这篇章节质检【已通过】，但仍有提升空间。"
+                "请在不推翻原结构、不改变剧情的前提下做增强润色："
+                "强化章末钩子、加密爽点密度、加强伏笔呼应。"
+                f"\n增强重点：{'；'.join(focus[:3])}"
+                f"\n\n当前正文：\n{content}",
+                temperature=0.5, max_tokens=4000)
+        except Exception:
+            logger.exception("增强润色 LLM 失败（降级跳过，保留原稿）")
+            return None
+        enhanced = (raw or "").strip()
+        if not enhanced or len(enhanced) <= len(content) * 0.5:
+            return None  # 增强无效（空/截断）
+        # 复检：通过且分数不降才采纳
+        try:
+            nres = qc.check(chapter_no, plan_title, plan_goal, enhanced, summary,
+                            baseline=baseline, core_event=core_event)
+            if not nres.get("passed") or nres.get("score", 0) < int(qc_result.get("score", 0) or 0):
+                return None
+        except Exception:
+            logger.exception("增强润色复检失败（降级跳过，保留原稿）")
+            return None
+        return enhanced, summary
 
 
     def _polish_blocks(self, sys_p: str, user_p: str, text: str) -> str:

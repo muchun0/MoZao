@@ -70,6 +70,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
+    FeatureFlag("writing", "fixed_style_anchor", False, "固定风格锚（超长篇攻坚 S2.3）：开头1-2章原文+个人旧稿作风格原点、永不替换，与滚动锚双轨；默认False（双锚体系默认关防放大AI特征）；True=开启"),
     FeatureFlag("writing", "style_drift_check", True, "L1 确定性漂移检测（超长篇攻坚 S2.4）：每章量化句长波动系数/口头禅/词汇多样性 TTR/比喻密度，输出漂移分供与前期章基线对比，治几十万字后文风漂移；False=关闭"),
     FeatureFlag("writing", "style_drift_threshold", 60, "文风漂移 L1 检测阈值（超长篇攻坚 S2.4）：漂移分低于此值报'文风漂移-L1'小改提示并轻扣 5 分；0=关闭单章提示（检测仍跑）"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
@@ -266,6 +267,7 @@ class NovelConfig:
     de_ai: bool = feature_default("de_ai")                       # 正文生成时注入去AI味写作约束
     style_reanchor_every: int = feature_default("style_reanchor_every")    # 周期轻量再锚定（S2.2）：每 N 章注入滚动风格锚；0=关
     style_anchor_rolling: bool = feature_default("style_anchor_rolling")    # 滚动风格锚（S2.2）：用 book_memory goods 高分片段作滚动风格源
+    fixed_style_anchor: bool = feature_default("fixed_style_anchor")        # 固定风格锚（S2.3）：开头1-2章原文+个人旧稿作风格原点，默认关
     style_drift_check: bool = feature_default("style_drift_check")            # L1 漂移检测（S2.4）：每章量化句长波动/TTR/口头禅/比喻密度
     style_drift_threshold: int = feature_default("style_drift_threshold")      # L1 漂移检测阈值（S2.4）：漂移分低于此值报小改提示
     anti_similarity: bool = feature_default("anti_similarity")   # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述

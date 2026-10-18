@@ -406,6 +406,30 @@ class ChapterWriter:
             logger.warning("滚动风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
             return ""
 
+    def _fixed_style_anchor(self) -> str:
+        """REQ-超长篇攻坚 S2.3 固定锚+滚动锚双轨：固定锚 = 风格原点（开头 1-2 章原文 +
+        个人旧稿），永不替换，与滚动锚（最近高分，S2.2）双轨合并注入。
+
+        - 开关 fixed_style_anchor 默认 False（双锚体系默认关防放大 AI 特征，开启才注入）；
+        - 开时取第1/2章正文开头片段作全书风格原点（一次性采样、不随章节滚动）；
+        - 空源/读取失败 → 空串（降级安全，不阻塞生成）。
+        """
+        if not getattr(self.cfg, "fixed_style_anchor", False):
+            return ""
+        parts: list[str] = []
+        try:
+            for c in (1, 2):
+                ch = self.store.load_chapter(c)
+                content = getattr(ch, "content", "") or ""
+                if len(content.strip()) >= 200:
+                    parts.append(f"- 开头第{c}章原文：{content[:300].strip()}")
+            pa = self._personal_anchor()
+            if pa:
+                parts.append(f"- 个人旧稿锚：{pa}")
+        except Exception:
+            logger.warning("固定风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
+        return "\n".join(parts)
+
     def _user_memory_block(self) -> str:
         """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
 
@@ -761,10 +785,16 @@ class ChapterWriter:
             if _wl:
                 user = user + _wl
             system = self._sys(system)
-            # REQ-超长篇攻坚 S2.2：周期轻量再锚定——周期命中章注入滚动风格锚（book_memory goods）
+            # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
+            _anchor_parts = []
             _ra = self._rolling_style_anchor(chapter_no)
             if _ra:
-                system = f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}\n\n" + system
+                _anchor_parts.append(f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}")
+            _fa = self._fixed_style_anchor()
+            if _fa:
+                _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
+            if _anchor_parts:
+                system = "\n\n".join(_anchor_parts) + "\n\n" + system
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -1664,10 +1694,16 @@ class ChapterWriter:
                 state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
-            # REQ-超长篇攻坚 S2.2：周期轻量再锚定——周期命中章注入滚动风格锚
+            # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
+            _anchor_parts = []
             _ra = self._rolling_style_anchor(chapter_no)
             if _ra:
-                sys_c = f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}\n\n" + sys_c
+                _anchor_parts.append(f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}")
+            _fa = self._fixed_style_anchor()
+            if _fa:
+                _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
+            if _anchor_parts:
+                sys_c = "\n\n".join(_anchor_parts) + "\n\n" + sys_c
             try:
                 # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
                 # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）

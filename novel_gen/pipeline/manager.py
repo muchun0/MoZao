@@ -692,8 +692,57 @@ class NovelPipeline:
                         e_issues = e_data.get("issues", [])
                         if e_issues:
                             self.store.append_verify_issues(chapter_no, e_issues)
+        # REQ-超长篇攻坚 S2.5 L3 风格裁判：每 verify_every 章（本函数触发频率）用 LLM 比对
+        # 最近章 vs 风格原点，漂移维度≥阈值 → 记录报告（后续章锚注入/质检可见），失败降级跳过。
+            self._style_judge_l3(chapter_no, silent=silent)
         except Exception as e:
             logger.warning("一致性校验失败（不阻塞生成）: %s", e)
+
+    def _style_judge_l3(self, chapter_no: int, silent: bool = False) -> None:
+        """REQ-超长篇攻坚 S2.5 L3 风格裁判：每 verify_every 章用 LLM 比对最近章 vs
+        风格原点（开头 1-2 章原文），输出六维差异；漂移维度≥阈值 → 记录报告（写入
+        verify_issues，后续章锚注入/质检可见，等价"触发滚动锚刷新"信号），失败降级跳过。
+
+        每 verify_every 章 1 次 LLM（约 2000-4000 token）。开关 style_judge_l3 默认开（二期全做）。
+        """
+        if not getattr(self.cfg, "style_judge_l3", True):
+            return
+        try:
+            ch = self.store.load_chapter(chapter_no)
+            recent_text = (getattr(ch, "content", "") or "")[:2500]
+            if len(recent_text.strip()) < 300:
+                return
+            origin = ""
+            for c in (1, 2):
+                cc = self.store.load_chapter(c)
+                ct = (getattr(cc, "content", "") or "").strip()
+                if len(ct) >= 200:
+                    origin = ct[:2500]
+                    break
+            if not origin:
+                return
+            sys_j = ("你是文风一致性裁判。比对【风格原点】与【最近章】，判断六维是否发生漂移。"
+                     "只输出 JSON：{\"drifted\": [\"维度1\",\"维度2\"], \"summary\": \"简短结论\"}。"
+                     "维度从【句长、词汇、叙述视角、对话占比、情绪节奏、隐喻密度】中选；"
+                     "某维只有明显偏离原点才算漂移，轻微差异不要列入。")
+            user_j = (f"【风格原点】\n{origin}\n\n"
+                      f"【最近章（第{chapter_no}章）】\n{recent_text}")
+            raw = self.llm.chat(sys_j, user_j, temperature=0.2, max_tokens=500)
+            data = _parse_json_obj(raw)
+            drifted = [str(d) for d in (data.get("drifted") or []) if str(d).strip()]
+            th = max(1, int(getattr(self.cfg, "style_judge_drift_threshold", 2) or 2))
+            if len(drifted) >= th:
+                summary = str(data.get("summary", "") or "")
+                self.store.append_verify_issues(chapter_no, [{
+                    "type": "文风漂移-L3（LLM裁判）",
+                    "detail": f"漂移维度 {len(drifted)} 个：{'、'.join(drifted)}。{summary}",
+                    "level": "中改",
+                }])
+                if not silent:
+                    print(f"  [风格裁判] 第{chapter_no}章文风漂移 {len(drifted)} 维，已记录触发再锚定")
+                self._trace_step(f"第{chapter_no}章风格裁判", {"drifted": drifted, "summary": summary})
+        except Exception as e:
+            logger.warning("L3 风格裁判失败（降级跳过）: %s", e)
 
 
     def _run_final_review(self, silent: bool = False) -> None:

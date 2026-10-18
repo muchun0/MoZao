@@ -99,6 +99,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "targeted_rewrite", True, "定点重写（REQ-token优化 P1-4）：质检触发重写时只重写问题段落窗口，不整章重出；无定位点退回复核回整章"),
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
+    FeatureFlag("review", "style_judge_l3", True, "L3 风格裁判（超长篇攻坚 S2.5）：每 verify_every 章用 LLM 比对最近章 vs 风格原点(开头锚)，输出六维差异；漂移维度≥style_judge_drift_threshold 触发滚动锚刷新；False=关闭(省成本,仅L1确定性漂移)"),
+    FeatureFlag("review", "style_judge_drift_threshold", 2, "L3 风格裁判触发阈值（超长篇攻坚 S2.5）：漂移维度数≥N 即判定需再锚定并触发滚动锚刷新"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
     # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
     FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
@@ -332,6 +334,8 @@ class NovelConfig:
     targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）
+    style_judge_l3: bool = feature_default("style_judge_l3")         # L3 风格裁判（S2.5）：每 verify_every 章 LLM 比对风格，超阈值触发滚动锚刷新
+    style_judge_drift_threshold: int = feature_default("style_judge_drift_threshold")  # L3 裁判触发阈值（S2.5）：漂移维度数阈值
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁

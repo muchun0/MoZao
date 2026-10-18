@@ -552,6 +552,19 @@ docker compose ps          # 两个容器均 healthy 即就绪
   - **P0-5 追更欲正向锚 + streak + 进度盘**：`record_hook_streak` 连续达标账本（hook≥4 累计、<4 冻结一次/重置）；hook_score 透传记忆与 trace；webapp `_aggregate_quality` 增 chapter_status 每章色块（红=未过 / 绿=hook≥4 / 黄=自动重写 / 灰=通过）。
   - 回归：全量 **822 pytest 全绿**（新增 test_compliance_positive / test_quality_diag / test_hook_positive 29 用例）。**部署：master 已合并推送（96bb478），服务器暂未部署（待后续开发完成一并上线）。**
 
+- **2026-10-18**：第二十六次合并（devtest → master，**未部署**）——**门禁/质检正向影响改造 P1/P2（feat/req-positive-gating-p1）**：把正向闭环从 P0 骨架铺到全程（读时/审稿/重写/监控全链路）：
+  - **前端进度盘色带（P0-5 落地）**：Admin.vue 质量报表 tab 增「每章状态（进度盘）」el-card，`_aggregate_quality.chapter_status` 色块（红=未过 / 绿=hook≥4 / 黄=自动重写 / 灰=通过），el-tooltip 章号/质检分/通过/自动重写/追更欲；`npm run build` 通过、dist 引用一致。
+  - **P1-1 Reflexion 反思笔记**（开关 `reflexion_note` 默认 True）：`quality.ensure_quality` 重写≥2 轮仍未通过 → book_memory `reflections` 账本记「错在哪/下次怎么写对」（guard revise 成本账）；写章 memory_context 注入（场景+整章）。
+  - **P1-2 StageGate 增强旁路**（开关 `enhance_pass` 默认 False 控成本）：质检通过但仍有 warn「中改」或追更欲 hook<4 → 一次 LLM 增强润色（钩子更强/爽点更密/伏笔呼应），复检通过且分数不降才采纳。
+  - **P1-3 建议指令库**（开关 `suggestion_lib` 默认 True）：`manager.editor_review` 审稿建议按手法分类（对话-潜台词/战斗-动作链/情绪-白描+点破/环境-物象/叙事-节奏，复用 good 分类框架、零 LLM 关键词）沉淀进 book_memory `suggestion_lib`；写章注入建议块。
+  - **P1-4 BeatGate 正向供给**（开关 `beat_positive_supply` 默认 True）：missing 拍不仅列「漏了」，同时给「可往哪个方向写」示范指引（零 LLM 规则模板）存入 beat_gate；下一章生成注入兑现。
+  - **P1-5 scene_inspector 闭环**（复用 `scene_inspector` 开关）：`collect_suggestions` 抽 bad/warn 维度建议 → store `inspector_suggestions` 落盘（webapp scene-inspect 触发）→ 下一章生成注入（读时体检 → 生成反馈闭环）。
+  - **P2-1 重复正向替换供给**（开关 `repetition_direction` 默认 True）：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（上一章未兑现承诺 + 本章场景设计推进方向），让重写知道「往哪走」。
+  - **P2-2 SPC 控制图 + 变异测试防刷数**：`quality.ensure_quality` 采集每章一次通过/重写轮数/合规命中指标（store `quality_metrics`）；新增 `pipeline/spc.py` I-MR 个体值-移动极差控制图 + `quality_spc_report` 聚合（admin quality-report 接口补 spc）；`tests/test_mutation.py` 故意写坏章节断言检测器能检出（防躺平刷通过）。
+  - **P2-3 申诉撤销 + 误判率**：store `appeals` 读写/撤销/误判率接口（misjudge_rate=overturned/total）；webapp POST 申诉 / 撤销(overturn) / 列表三接口；合规 issue detail 已含命中词组（「phrase」式，P2-3a 供复核）。
+  - **P0-4 多样性治理**（承接用户质疑「good_block 转正注入是否导致 AI 内容越来越一致」）：来源隔离/质量分层/采样轮换/软约束强化/手法层同质度度量五件套。
+  - 回归：全量 **874 pytest 全绿**（P1 五项 34 用例 + P2 变异/SPC/申诉 18 用例；850→874）。**部署：master 已合并推送（96bb478），服务器暂未部署（P0/P1/P2 一并待开发完成后上线）。**
+
 - **2026-10-18**：第二十四次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
   - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
   - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。

@@ -385,6 +385,27 @@ class ChapterWriter:
                 self._personal_loaded = ""
         return self._personal_loaded
 
+    def _rolling_style_anchor(self, chapter_no: int) -> str:
+        """REQ-超长篇攻坚 S2.2 周期轻量再锚定：周期命中章用 book_memory goods 最近高分片段
+        作滚动风格锚注入 system 前段，治几十万字后文风/语感漂移。
+
+        - 开关 style_reanchor_every=0 或 style_anchor_rolling=False → 空串（不注入）；
+        - 非周期命中章（chapter_no % every != 0）→ 空串（控成本，多数章不注入）；
+        - good_block 为空/读取失败 → 空串（降级安全，不阻塞生成）。
+        """
+        every = int(getattr(self.cfg, "style_reanchor_every", 0) or 0)
+        if every <= 0 or not getattr(self.cfg, "style_anchor_rolling", True):
+            return ""
+        if int(chapter_no or 0) % every != 0:
+            return ""
+        try:
+            from .book_memory import BookMemory
+            mem = BookMemory(self.store, self.cfg)
+            return mem.good_block(top_n=3, max_chars=900)
+        except Exception:
+            logger.warning("滚动风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
+            return ""
+
     def _user_memory_block(self) -> str:
         """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
 
@@ -711,6 +732,10 @@ class ChapterWriter:
             if _wl:
                 user = user + _wl
             system = self._sys(system)
+            # REQ-超长篇攻坚 S2.2：周期轻量再锚定——周期命中章注入滚动风格锚（book_memory goods）
+            _ra = self._rolling_style_anchor(chapter_no)
+            if _ra:
+                system = f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}\n\n" + system
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -1610,6 +1635,10 @@ class ChapterWriter:
                 state_anchor=state_anchor_text,
             )
             sys_c = self._sys(sys_c)
+            # REQ-超长篇攻坚 S2.2：周期轻量再锚定——周期命中章注入滚动风格锚
+            _ra = self._rolling_style_anchor(chapter_no)
+            if _ra:
+                sys_c = f"【本作滚动风格锚（参考最近高分片段质感，勿逐字复制）】\n{_ra}\n\n" + sys_c
             try:
                 # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
                 # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）

@@ -65,6 +65,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "chapter_commit", True, "章节原子提交+投影一致性（REQ-借鉴webnovel A/B）：每章收尾把章后入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕、同章幂等，并写 projection_log 供一致性体检；False=回退原分散调用（行为不变）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
+    FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
+    FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
     FeatureFlag("writing", "character_depth", True, "人物立体化：角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度"),
     FeatureFlag("writing", "fanqie_style", True, "番茄节奏：黄金三章 + 爽点闭环 + 断章 + 移动端排版"),
@@ -257,6 +259,8 @@ class NovelConfig:
     # ---- 质量增强开关（默认值见 FEATURE_FLAGS 注册表；新增开关先注册）----
     editor_review: bool = feature_default("editor_review")       # 大纲生成后执行编辑视角质检，不通过则自动修正一次
     de_ai: bool = feature_default("de_ai")                       # 正文生成时注入去AI味写作约束
+    style_reanchor_every: int = feature_default("style_reanchor_every")    # 周期轻量再锚定（S2.2）：每 N 章注入滚动风格锚；0=关
+    style_anchor_rolling: bool = feature_default("style_anchor_rolling")    # 滚动风格锚（S2.2）：用 book_memory goods 高分片段作滚动风格源
     anti_similarity: bool = feature_default("anti_similarity")   # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
     character_depth: bool = feature_default("character_depth")   # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
     fanqie_style: bool = feature_default("fanqie_style")         # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系

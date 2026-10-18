@@ -565,6 +565,12 @@ docker compose ps          # 两个容器均 healthy 即就绪
   - **P0-4 多样性治理**（承接用户质疑「good_block 转正注入是否导致 AI 内容越来越一致」）：来源隔离/质量分层/采样轮换/软约束强化/手法层同质度度量五件套。
   - 回归：全量 **874 pytest 全绿**（P1 五项 34 用例 + P2 变异/SPC/申诉 18 用例；850→874）。**部署：master 已合并推送（96bb478），服务器暂未部署（P0/P1/P2 一并待开发完成后上线）。**
 
+- **2026-10-18**：第二十七次合并（devtest，**master 未合并，未部署**）——**门禁/质检正向影响改造 P1-3-B + 前端交互收尾（feat/req-positive-gating-p1）**：
+  - **P1-3-B 多版本候选（Sudowrite 式，用户拍板「改大纲为人工挑选」）**：`editor.revise_candidates` 生成 3 个不同侧重（结构节奏/人物差异化/悬念钩子）修订候选（diff 式 + 递增 temperature）；**深拷贝隔离候选**（修复 `_apply_updates` 原地修改共享 outline 致候选互相污染）、指纹去重、全败兜底整章重出；store `outline_candidates` 读写 + `apply`（候选设为当前大纲）；`manager.editor_review` 未通过时生成候选存 store 由用户挑（开关 `outline_multi_candidate` 默认 True，关=保持自动修正）；webapp `GET /outline/candidates` + `POST /outline/candidates/{index}/apply`；前端 OutlineEditor 候选卡片区（标题/简介/章节摘要 + 采用按钮，采用后清空并刷新）。回归新增 `tests/test_outline_candidates.py` 5 用例。
+  - **P2-3 前端申诉按钮**（后端三接口已备）：章节「版本」弹窗每条改稿建议后加「申诉」→ 弹框填理由（必填校验）提交 `POST /chapters/{no}/appeal`（带 issue_type），计入误判复核；取消/失败分流。
+  - **进度盘同步到全书质检视图**：`build_review_summary` 的 summary 补 `chapter_status` 四色（未过=红 / 追更欲≥4=绿 / 自动重写=黄 / 通过=灰）；`_save_review` quality_check 落 `hook_score`（供绿色分支）；ToolsPanel「全书质检」卡片渲染色带 + 四色图例（与 Admin 质量报表一致），每色块 tooltip 章号/质检分/追更分/自动重写。
+  - 回归：全量 **881 pytest 全绿**（P1-3-B 5 + chapter_status 2 用例；879→881），npm build 通过、dist 引用一致。**部署：master 未合并，服务器未部署（开发完成，待一并上线）。**
+
 - **2026-10-18**：第二十四次发版（服务器代码 = master，**已上线**）——**超长篇生成攻坚全部（第一批 + 第二批 + 二期，REQ-超长篇生成攻坚.md）**，治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸）：
   - **第一批**（ec2ba11）：① beat 门禁扩展（`beat_gate.py` loose 去标点匹配 / 章型白名单 `detect_chapter_type` 对话=引号≥0.35、过渡=<50字 / 节点优先级 P0/P1/P2）；② 章末承诺台账（`pending_commitments.py` committed/missed/planted 清单 + 下章补偿块）；③ 注入位置工程（补偿块前置 memory_context 最前）；④ 双锚开关治理（`teardown_style_anchor`/`personal_style_anchor` 默认关）。
   - **第二批**（bf912dc，降本 + 中成本）：S4.3 `json_schema_output`（response_format json_object）+ `state_extract_frequency` 3→5；S4.1 `prefix_cache_aligned`（稳定块前置 user 最前，最大化前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；S1.1 `foreshadow_original_text`（伏笔原文句存档注入到期章）；S2.2 `style_reanchor_every`(5) 周期滚动风格锚；S3.3 L2 挂账镜头（连续漏兑现→下章镜头，章型豁免）；S2.4-L1 确定性漂移检测（句长波动系数/TTR/填充词/明喻密度）。

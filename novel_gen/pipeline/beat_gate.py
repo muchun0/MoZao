@@ -212,7 +212,7 @@ def _beat_covered(beat: str, content: str, loose: bool = True) -> tuple[bool, li
 def compute_beat_coverage(content: str, moves: str, core_event: str = "",
                           min_coverage: float = 0.6, warn_coverage: float = 0.4,
                           chapter_type: str = "剧情", priorities: dict | None = None,
-                          loose: bool = True) -> dict:
+                          loose: bool = True, far_beats: list[str] | None = None) -> dict:
     """计算正文对章计划 beat 的覆盖率并分级（REQ S3.2 扩展，向后兼容）。
 
     返回：{planned:[{beat,covered,hit,miss}], coverage, verdict, missing, chapter_type}
@@ -220,6 +220,8 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
       - 对话/过渡章 → verdict="skip_chapter_type"（章型白名单：对白/过渡章 beat 密度
         天然低，不应用情节拍卡 fail，治"对话章 0% 被误判 fail"误伤；coverage=None）；
       - 提供 priorities（拍→0/1/2）时，P2 节点不计入分母（只算 P0+P1）；
+      - 提供 far_beats（REQ S3.6 远期大纲粗粒度）时，这些"距当前 > 窗口的远期节点"
+        不计入分母（只方向约束，不要求逐拍兑现；全为 far 时 verdict="skip_far"）；
       - coverage ≥ min → "pass"；[warn, min) → "warn"；< warn → "fail"。
     """
     planned_beats = _split_plan_beats(moves) or _split_plan_beats(core_event)
@@ -239,6 +241,14 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
         if not planned_beats:
             return {**base, "planned": [], "coverage": None,
                     "verdict": "skip_priority", "missing": []}
+    # REQ S3.6 远期大纲粗粒度：距当前 > 窗口的远期节点不计入分母（方向约束，不逐拍兑现）
+    if far_beats:
+        far_set = {str(b).strip() for b in far_beats if str(b).strip()}
+        if far_set:
+            planned_beats = [b for b in planned_beats if b not in far_set]
+            if not planned_beats:
+                return {**base, "planned": [], "coverage": None,
+                        "verdict": "skip_far", "missing": []}
     body = content or ""
     planned = []
     covered_count = 0
@@ -264,19 +274,21 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
 def assess_chapter(content: str, moves: str, core_event: str = "",
                    min_coverage: float = 0.6, warn_coverage: float = 0.4,
                    chapter_type: str = "auto", priorities: dict | None = None,
-                   loose: bool = True) -> dict:
+                   loose: bool = True, far_beats: list[str] | None = None) -> dict:
     """对单章正文做 beat 覆盖门禁评估（纯函数，供 stages 接线与 router 体检复用）。
 
     chapter_type="auto"（默认）：由正文确定性判定章型（对话/过渡章白名单）；
     显式传"剧情"/"对话"等则按给定值。loose=False 完全回退旧精确子串匹配（向后兼容）。
+    far_beats（REQ S3.6）：距当前 > 窗口的远期节点，不计入 fail 判定分母。
     """
     result = compute_beat_coverage(content, moves, core_event, min_coverage, warn_coverage,
-                                   chapter_type, priorities, loose)
-    if result["verdict"] in ("skip", "skip_chapter_type", "skip_priority"):
+                                   chapter_type, priorities, loose, far_beats)
+    if result["verdict"] in ("skip", "skip_chapter_type", "skip_priority", "skip_far"):
         logger.info("[BeatGate] %s（%s）", result["verdict"],
                     "无计划拍" if result["verdict"] == "skip"
                     else "对话/过渡章不卡fail" if result["verdict"] == "skip_chapter_type"
-                    else "全部P2节点不计分母")
+                    else "全部P2节点不计分母" if result["verdict"] == "skip_priority"
+                    else "全部远期节点不计分母(S3.6)")
     else:
         logger.info("[BeatGate] 覆盖率=%.2f verdict=%s 章型=%s 漏写拍=%d",
                     result["coverage"], result["verdict"], chapter_type, len(result["missing"]))

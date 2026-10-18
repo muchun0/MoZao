@@ -430,6 +430,33 @@ class ChapterWriter:
             logger.warning("固定风格锚获取失败（降级跳过，不阻塞生成）", exc_info=True)
         return "\n".join(parts)
 
+    def _far_outline_beats(self, chapter_no: int) -> list[str] | None:
+        """REQ-超长篇攻坚 S3.6 远期大纲粗粒度：返回距当前 > outline_far_skip 的远期大纲
+        节点名集合，供 beat_gate 从判定分母排除（方向约束、不逐拍兑现）。
+
+        取大纲 key_nodes（全局关键节点，带 chapter_no）中 chapter_no 距当前超过窗口的
+        节点名；无大纲/读取失败返回 None（调用方按"无远期节点"处理，行为兼容默认关）。
+        """
+        try:
+            outline = self.store.load_outline()
+            far_skip = max(0, int(getattr(self.cfg, "outline_far_skip", 30) or 30))
+            names: list[str] = []
+            for kn in getattr(outline, "key_nodes", None) or []:
+                kch = int(getattr(kn, "chapter_no", 0) or 0)
+                if kch <= 0 or int(chapter_no or 0) <= 0:
+                    continue
+                if abs(int(chapter_no) - kch) > far_skip:
+                    nm = str(getattr(kn, "kind", "") or "").strip()
+                    if nm:
+                        names.append(nm)
+                    desc = str(getattr(kn, "description", "") or "").strip()
+                    if desc:
+                        names.append(desc)
+            return names or None
+        except Exception:
+            logger.warning("远期大纲节点获取失败（降级跳过，不阻塞生成）", exc_info=True)
+            return None
+
     def _user_memory_block(self) -> str:
         """用户级记忆库：跨书偏好/纪律/文风锚注入块（REQ-用户级记忆库，软约束）。
 
@@ -991,11 +1018,17 @@ class ChapterWriter:
                 _ctype = detect_chapter_type(content, plan_moves) \
                     if getattr(self.cfg, "beat_chapter_type", True) else "剧情"
                 _priorities = None  # 大纲节点分级数据后续接入；未提供默认全 P1 向后兼容
+                # REQ S3.6 远期大纲粗粒度：开启时，距当前 > outline_far_skip 的远期大纲节点
+                # 从 beat_gate 判定分母排除（方向约束，不要求逐拍兑现；默认关不改变行为）
+                _far = None
+                if getattr(self.cfg, "outline_rolling_detail", False):
+                    _far = self._far_outline_beats(chapter_no)
                 _bg = assess_chapter(
                     content, plan_moves, plan_core_event,
                     min_coverage=float(getattr(self.cfg, "beat_gate_min_coverage", 0.6)),
                     warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
                     chapter_type=_ctype, priorities=_priorities, loose=_loose,
+                    far_beats=_far,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
                 # REQ S3.1：章末承诺台账（beat_gate 后确定性落账，供下章补偿块消费）

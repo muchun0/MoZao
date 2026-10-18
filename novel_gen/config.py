@@ -60,6 +60,9 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "user_memory", True, "用户级记忆库（跨书创作偏好继承）：从用户全部作品蒸馏偏好/跨书纪律/文风锚，新书创建与生成时自动继承注入；False=关闭（不蒸馏不记录）"),
     FeatureFlag("memory", "user_memory_inject_top", 5, "用户级跨书纪律注入 Top-N 条数：按次数×跨书数排序取前 N 条注入正文 prompt"),
     FeatureFlag("memory", "reader_ledger", True, "读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）：写章时注入读者已知/在等/误认、临期/超时伏笔收束提醒、爽点节奏缺口提示；False=全部关闭（不读不写不注入）"),
+    FeatureFlag("memory", "ledger_stalled", True, "伏笔 stalled 状态（超长篇攻坚 S1.4）：埋后超 N 章仍无推进（未到回收窗口）标记 stalled 并注入提醒，防长文伏笔冷却；False=不标不提醒"),
+    FeatureFlag("memory", "ledger_stall_after", 8, "伏笔 stalled 判定阈值（超长篇攻坚 S1.4）：埋后超 N 章无推进即标记 stalled；0=关闭"),
+    FeatureFlag("memory", "foreshadow_semantic_check", False, "伏笔语义双路回收判定（超长篇攻坚 S1.4）：字面命中之外的语义推进低频 LLM 核对（默认关，省成本；开启后按 state_extract_frequency 降频）；True=开启"),
     FeatureFlag("memory", "foreshadow_lead", 3, "伏笔临期窗口：距 reveal_ch 提前 N 章开始注入'本章应开始收束该伏笔'（REQ-reader-ledger）"),
     FeatureFlag("memory", "foreshadow_original_text", True, "伏笔原文片段存档（超长篇攻坚 S1.1）：埋设章落盘时确定性抽 1-3 句关键句存 original_excerpt（≤150 token/条），due_soon/overdue 章随收束提醒注入原文块；False=不抽不注入（向后兼容）"),
     FeatureFlag("memory", "chapter_commit", True, "章节原子提交+投影一致性（REQ-借鉴webnovel A/B）：每章收尾把章后入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕、同章幂等，并写 projection_log 供一致性体检；False=回退原分散调用（行为不变）"),
@@ -288,6 +291,9 @@ class NovelConfig:
     user_memory: bool = feature_default("user_memory")                                 # 用户级记忆库（跨书创作偏好继承）：新书创建与生成时继承注入
     user_memory_inject_top: int = feature_default("user_memory_inject_top")            # 用户级跨书纪律注入 Top-N 条数
     reader_ledger: bool = feature_default("reader_ledger")                             # 读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）
+    ledger_stalled: bool = feature_default("ledger_stalled")                            # 伏笔 stalled 状态（S1.4）：超 N 章无推进标记并提醒
+    ledger_stall_after: int = feature_default("ledger_stall_after")                     # 伏笔 stalled 判定阈值（S1.4）：埋后超 N 章无推进
+    foreshadow_semantic_check: bool = feature_default("foreshadow_semantic_check")      # 伏笔语义双路回收判定（S1.4）：低频 LLM 语义核对（默认关）
     foreshadow_lead: int = feature_default("foreshadow_lead")                          # 伏笔临期窗口：距 reveal_ch 提前 N 章开始收束提醒
     foreshadow_original_text: bool = feature_default("foreshadow_original_text")        # 伏笔原文片段存档（S1.1）：埋设章抽原文句，回收章注入
     chapter_commit: bool = feature_default("chapter_commit")                           # 章节原子提交+投影一致性（REQ-借鉴webnovel）：每章收尾统一提交 + projection_log

@@ -81,6 +81,32 @@ def _extract_excerpt(content: str, fs, max_chars: int = 150) -> str:
     return "；".join(sents[:3])[:max_chars]
 
 
+def semantic_foreshadow_check(llm, name: str, content: str, buried_ch: int,
+                              reveal_ch: int, current_ch: int) -> dict:
+    """REQ-超长篇攻坚 S1.4 语义双路：字面未命中的伏笔，用 LLM 判定正文是否语义推进了它。
+
+    只在字面命中（name/content 子串）之外、且本章处于伏笔推进窗口（埋后至回收前）时调用，
+    每次 300-500 token，默认关（foreshadow_semantic_check=False 时调用方不触发）。
+    返回 {"name":.., "semantic_progress": bool, "reason":..}；
+    异常/解析失败 → semantic_progress=False（降级不误标，留痕）。
+    """
+    try:
+        prompt = (
+            f"判断以下正文是否【语义推进】了伏笔「{name}」（埋于第{buried_ch}章、计划第"
+            f"{reveal_ch}章回收，当前第{current_ch}章）。推进=正文出现了该伏笔线索的递进"
+            f"（加线索/部分兑现/触发关联事件/角色提及），即使没有出现原文措辞。\n"
+            f"只输出 JSON：{{\"semantic_progress\": true|false, \"reason\": \"简短理由\"}}\n"
+            f"正文如下：\n{content[:2000]}"
+        )
+        out = llm.chat_json("你是叙事连贯性审校，判断伏笔是否被语义推进。", prompt)
+        progress = bool((out or {}).get("semantic_progress"))
+        reason = str((out or {}).get("reason", ""))
+        return {"name": name, "semantic_progress": progress, "reason": reason}
+    except Exception:
+        logger.exception("伏笔语义核对失败（降级不误标）: %s", name)
+        return {"name": name, "semantic_progress": False, "reason": ""}
+
+
 class ReaderLedger:
     """读者体验层叙事账本门面：写章注入 + 章末状态推进。"""
 
@@ -101,6 +127,30 @@ class ReaderLedger:
             return max(1, int(getattr(self.cfg, "foreshadow_lead", 3) or 3))
         except Exception:
             return 3
+
+    @property
+    def _stall_after(self) -> int:
+        """S1.4：伏笔 stalled 判定阈值——埋后超 N 章无推进即标记。"""
+        try:
+            return max(0, int(getattr(self.cfg, "ledger_stall_after", 8) or 8))
+        except Exception:
+            return 8
+
+    @property
+    def _stalled_enabled(self) -> bool:
+        """S1.4：伏笔 stalled 状态开关（默认开，防长文伏笔冷却）。"""
+        try:
+            return bool(getattr(self.cfg, "ledger_stalled", True))
+        except Exception:
+            return True
+
+    @property
+    def _semantic_check(self) -> bool:
+        """S1.4：伏笔语义双路开关（默认关，省成本）。"""
+        try:
+            return bool(getattr(self.cfg, "foreshadow_semantic_check", False))
+        except Exception:
+            return False
 
     # ---------------- 写章注入 ----------------
     def inject_block(self, chapter_no: int) -> str:
@@ -186,7 +236,8 @@ class ReaderLedger:
         items = self._commitment_items(world, n)
         due = [i for i in items if i["state"] == "due_soon"]
         over = [i for i in items if i["state"] == "overdue"]
-        if not (due or over):
+        stalled = [i for i in items if i["state"] == "stalled"]
+        if not (due or over or stalled):
             return ""
         lead = self._lead
         lines: list[str] = []
@@ -196,6 +247,9 @@ class ReaderLedger:
         for i in over[:6]:
             lines.append(f"- 伏笔「{i['name']}」已超过计划回收章{i['reveal_ch']}仍未回收，"
                          f"本章必须兑现，或显式推迟回收章")
+        for i in stalled[:4]:
+            lines.append(f"- 伏笔「{i['name']}」已埋 {n - int(i['buried_ch'] or 0)} 章仍无实质推进，"
+                         f"本章应安排一次推进（加线索/触发/呼应），勿让其冷却成弃笔")
         block = "【伏笔承诺·收束提醒】\n" + "\n".join(lines)
         open_text = (self.cfg is not None
                      and bool(getattr(self.cfg, "foreshadow_original_text", True)))
@@ -242,7 +296,13 @@ class ReaderLedger:
             elif reveal - lead <= n < reveal:
                 state = "due_soon"
             else:
-                state = "planted"
+                # REQ-超长篇攻坚 S1.4：planted 且埋后超 stall_after 章仍无推进、又不在
+                # 回收窗口 → stalled（防长文伏笔冷却；ledger_stalled=False 时保持 planted）
+                stall_after = self._stall_after
+                stalled = (self._stalled_enabled and stall_after > 0
+                           and (n - buried) >= stall_after
+                           and (reveal - lead) > n)
+                state = "stalled" if stalled else "planted"
             # REQ-超长篇攻坚 S1.1：原文关键句——优先取账本持久化，其次 ForeshadowItem.original_excerpt
             excerpt = (prev.get("original_excerpt") or ""
                        or getattr(fs, "original_excerpt", "") or "").strip()

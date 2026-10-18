@@ -609,6 +609,44 @@ class ChapterWriter:
             logger.exception("挂账镜头注入失败（降级不注入）")
         return "\n\n".join(parts) if parts else ""
 
+    # P1-4 BeatGate 正向供给（REQ-门禁质检正向影响 P1-4）：missing 拍「不仅列漏了，
+    # 还给往哪写」——零 LLM 规则模板，把上章未兑现拍转成下一章的推进方向示范。
+    _BEAT_POSITIVE_DIRS = (
+        "让主角主动采取行动去达成该目标，让行动成为情节推进的引擎",
+        "安排一个障碍或对抗，把缺口转成张力与冲突",
+        "通过关键对话或旁白自然引出该信息，避免信息硬塞",
+        "让前文埋下的伏笔在此处呼应兑现，形成闭环",
+    )
+
+    def _beat_positive_hints(self, missing) -> str:
+        """把 missing 拍清单转成「可往哪个方向写」的示范块（空 → 空串）。"""
+        if not missing:
+            return ""
+        lines = []
+        for i, m in enumerate(missing[:4]):
+            m = str(m).strip()
+            if not m:
+                continue
+            d = self._BEAT_POSITIVE_DIRS[i % len(self._BEAT_POSITIVE_DIRS)]
+            lines.append(f"「{m}」→ 可往：{d}")
+        if not lines:
+            return ""
+        return ("【上章未兑现拍的推进方向（本章生成时优先兑现，避免欠账）】\n"
+                + "\n".join(lines))
+
+    def _beat_positive_block(self, chapter_no: int) -> str:
+        """读上一章 beat_gate 的 positive_hints，注入本章生成（空/关闭/异常 → 空串）。"""
+        if not getattr(self.cfg, "beat_positive_supply", True):
+            return ""
+        try:
+            _bg_all = self.store.load_beat_gate()
+            _prev = _bg_all.get(str(int(chapter_no) - 1)) or {}
+            hints = _prev.get("positive_hints") or ""
+            return hints if isinstance(hints, str) else ""
+        except Exception:
+            logger.exception("beat 正向供给注入失败（降级跳过）")
+            return ""
+
     def _next_chapter_exempt_type(self, chapter_no: int) -> str:
         """S3.3 L2 章型豁免：读大纲本章 tag，命中高潮/战斗/对话等 → 返回章型名（挂账镜头豁免）。
 
@@ -822,6 +860,15 @@ class ChapterWriter:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _sug
         except Exception:
             logger.exception("建议指令库注入失败（降级跳过，不阻塞写章；编辑建议未携带）")
+
+        # P1-4 BeatGate 正向供给注入（上章未兑现拍的推进方向示范）。
+        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _bp = self._beat_positive_block(chapter_no)
+            if _bp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _bp
+        except Exception:
+            logger.exception("beat 正向供给注入失败（降级跳过，不阻塞写章）")
 
         # 注入用户锁定的内容作为硬约束
         try:
@@ -1146,6 +1193,16 @@ class ChapterWriter:
                     far_beats=_far,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
+                # P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往
+                # 哪个方向写」的示范指引（零 LLM 规则模板），并入 beat_gate 记录供下一章
+                # 生成时注入兑现。受 beat_positive_supply 开关控制；失败静默不阻塞。
+                if getattr(self.cfg, "beat_positive_supply", True):
+                    try:
+                        _miss = _bg.get("missing") or []
+                        _bg["positive_hints"] = self._beat_positive_hints(_miss)
+                        self.store.save_beat_gate(chapter_no, _bg)
+                    except Exception:
+                        logger.exception("beat 正向示范写入失败（降级跳过）")
                 # REQ S3.4 fail 章 LLM 二级复核：仅 beat_gate=fail 且开关 beat_fail_judge
                 # 开时，跑 1 次 pointwise judge 确认"未兑现清单"真实存在（防 beat_gate 误报），
                 # 返回未兑现清单才进 L3 定点重写。默认关（启用待人工标注集验证一致率>80%）。

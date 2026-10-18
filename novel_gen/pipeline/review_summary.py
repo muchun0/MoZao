@@ -26,6 +26,30 @@ def build_review_summary(items: list, verify_issues: list) -> dict:
     for it in verify_issues:
         k = int(it.get("chapter", 0))
         verify_by_chapter[k] = verify_by_chapter.get(k, 0) + 1
+    # 进度盘色带（与 Admin 质量报表四色一致）：未过=红 / 追更欲>=4=绿 / 自动重写=黄 / 通过=灰
+    chapter_status = []
+    for r in items:
+        qc = r.get("quality_check") or {}
+        ch = int(r.get("chapter", 0))
+        passed = bool(qc.get("passed"))
+        hook = qc.get("hook_score")
+        auto = bool(r.get("auto_revised"))
+        if not passed:
+            color = "red"
+        elif hook is not None and float(hook) >= 4:
+            color = "green"
+        elif auto:
+            color = "yellow"
+        else:
+            color = "gray"
+        chapter_status.append({
+            "chapter": ch,
+            "score": qc.get("score"),
+            "passed": passed,
+            "auto_revised": auto,
+            "hook_score": hook,
+            "color": color,
+        })
     return {
         "chapter_count": len(items),
         "issue_total": issue_total,
@@ -33,4 +57,5 @@ def build_review_summary(items: list, verify_issues: list) -> dict:
         "score_avg": score_avg,
         "verify_issue_total": len(verify_issues),
         "verify_by_chapter": verify_by_chapter,
+        "chapter_status": chapter_status,
     }

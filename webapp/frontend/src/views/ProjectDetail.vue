@@ -87,6 +87,7 @@
                     <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
                     <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
                     <span>{{ it.detail }}</span>
+                    <el-button size="small" link type="warning" @click="appealIssue(it)">申诉</el-button>
                   </div>
                   <div v-if="(v.quality.issues || []).length > 8" class="ver-issue-more">… 其余 {{ v.quality.issues.length - 8 }} 条见版本质检记录</div>
                 </div>
@@ -304,7 +305,7 @@
 import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, regenerateChapters, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, getChapterVersions, selectChapterVersion, deleteChapterVersion, importOutline, expandSelection } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, getChapterVersions, selectChapterVersion, deleteChapterVersion, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -452,6 +453,24 @@ function fmtVerTime(ts) {
   const d = new Date(ts * 1000)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+// P2-3 申诉撤销：对某条质检/合规判罚发起申诉（误判兜底）
+async function appealIssue(it) {
+  const issueType = it.type || ''
+  const label = issueType || '质检问题'
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `针对「${issueType || it.detail || '该问题'}」申诉：请简要说明为什么这是误判或可接受。`,
+      `申诉 · ${label}`,
+      { type: 'warning', inputPlaceholder: '例如：此段是战斗场景中的正常描写，非违规', confirmButtonText: '提交申诉', cancelButtonText: '取消', inputValidator: (v) => (v && v.trim() ? true : '请填写申诉理由') }
+    )
+    await appealChapterIssue(pid, versionsNo.value, { reason: value.trim(), issue_type: issueType })
+    ElMessage.success('申诉已提交，将计入误判复核')
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel' || e?.action === 'cancel') return
+    ElMessage.error(e?.response?.data?.detail || '申诉提交失败')
+  }
+}
+
 async function openVersions(c) {
   versionsNo.value = c.no
   versionList.value = []

@@ -1589,6 +1589,7 @@ class QualityChecker:
                 "quality_check": {
                     "passed": bool(result.get("passed")),
                     "score": int(result.get("score", 0)),
+                    "hook_score": result.get("hook_score"),   # P0-5 追更欲（进度盘绿色分支）
                     "checked_at": time.time(),
                 },
             })

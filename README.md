@@ -137,7 +137,7 @@ docker compose down -v        # 停止并清空全部数据（慎用！）
 - **镜像**：基于 `python:3.13-slim`，内置中文字体（Noto CJK，封面绘制必须）、时区（Asia/Shanghai）、健康检查
 - **数据持久化**：`projects`（中间产物）/ `output`（成品）/ `logs` / `data`（MySQL 数据）命名卷
 - **密钥安全**：`.env` 被 `.dockerignore` 排除、**不写入镜像**，通过 compose 的 `env_file` 从宿主机注入；`run_web.py` 遵循"环境变量优先"
-- **访问**：默认映射宿主 `8000` 端口（`ports` 左侧可改）；生产环境可加 Caddy 反代 + HTTPS（参考 `deploy/Caddyfile`）；首次注册用户自动成为站长
+- **访问**：默认映射宿主 `8000` 端口（`ports` 左侧可改）；生产环境用 nginx 反代 + HTTPS（服务器配置 `/etc/nginx/conf.d/mozao.conf`，反代 `127.0.0.1:8000`，证书 Let's Encrypt 自动续期）；首次注册用户自动成为站长
 - **静态文件 / 封面 / 大纲上传** 均为纯 Python 实现，无外部系统服务依赖
 
 > 注意：构建需服务器可访问 Docker Hub / PyPI（Dockerfile 已用清华 PyPI 源加速）。国内云服务器拉取 `python:3.13-slim` 基础镜像慢时，可给 Docker 配置镜像加速器。
@@ -517,7 +517,7 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 浏览器打开 `http://<服务器IP>:8000`，**首个注册用户自动成为站长**。
 
-> 默认 `ports` 只绑定 `127.0.0.1`（`127.0.0.1:8000:8000`，安全默认）。需要公网访问时，改 `docker-compose.yml` 为 `8000:8000`，或加 Caddy 反代 + HTTPS（参考 `deploy/Caddyfile`）。
+> 默认 `ports` 只绑定 `127.0.0.1`（`127.0.0.1:8000:8000`，安全默认）。需要公网访问时，改 `docker-compose.yml` 为 `8000:8000`，或加 nginx 反代 + HTTPS（服务器 nginx 配置 `/etc/nginx/conf.d/mozao.conf` 反代 `127.0.0.1:8000`，证书由 Let's Encrypt 自动续期）。
 
 ### 4. BYOK：用户自带 API Key
 

@@ -202,7 +202,7 @@
 4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。
 5. 不确定某文件干什么 → 先查 `docs/filemap.md`；涉及历史决策 → 查 `docs/decisions.md`。
 
-## 8. 超长篇生成攻坚（第一批 + 第二批已合入 devtest）
+## 8. 超长篇生成攻坚（第一批 + 第二批 + 二期已合入 devtest）
 
 > 需求来源：`docs/REQ-超长篇生成攻坚.md`。治长文四大天花板：记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸。开关默认值以 `novel_gen/config.py` 为准，双锚默认全关（避免放大 AI 特征）。
 
@@ -221,12 +221,18 @@
 - **伏笔原文存档（S1.1）**：`store/schemas.py ForeshadowItem.original_excerpt`；`pipeline/reader_ledger.py` `_archive_foreshadow_excerpts`（埋设章落盘时抽原文句）、`_foreshadow_block` 附【到期伏笔原文】。
 - **周期再锚定（S2.2）**：`stages.py` `ChapterWriter._rolling_style_anchor(chapter_no)`（`chapter_no%style_reanchor_every==0` 时读 `BookMemory.good_block(top_n=3, max_chars=900)` 注入 system 前段）。
 - **漂移检测（S2.4-L1）**：`pipeline/ai_taste.py` `style_drift_metrics`（句长均值/cv/TTR/填充词占比/明喻密度）+ `drift_score`，纯确定性每章可跑，供与前期章基线对比。
+- **伏笔 stalled + 语义双路（S1.4）**：`reader_ledger.py` 状态机新增 `stalled`（planted 且埋后超 `ledger_stall_after` 章无推进、不在回收窗口 → 注入"冷却"提醒，防长文伏笔弃笔）；模块级 `semantic_foreshadow_check`（字面未命中时 LLM 判语义推进，默认关省成本）。
+- **固定锚双轨（S2.3）**：`stages.py` `_fixed_style_anchor`（开头 1-2 章原文 + 个人旧稿作风格原点，永不替换，默认关防放大 AI 特征）；整章/场景两路径滚动锚+固定锚双轨合并注入。
+- **L3 风格裁判（S2.5）**：`manager.py` `_run_verify`（每 verify_every 章）末尾接 `_style_judge_l3`——LLM 比对最近章 vs 风格原点输出六维差异，漂移维度≥阈值写 verify_issues（触发再锚定信号）。
+- **远期大纲粗粒度（S3.6）**：`beat_gate.py` `compute_beat_coverage/assess_chapter` 增 `far_beats` 参数，远期节点不计 fail 分母（全远期 verdict=skip_far）；`stages.py` `_far_outline_beats` 从 key_nodes 取距当前>窗口节点，`outline_rolling_detail` 默认关。
+- **fail 章二级复核（S3.4）**：`stages.py` `_beat_fail_judge`（仅 beat_gate=fail 且开关开时 1 次 pointwise judge，anti-length、judge 异模型族，确认未兑现才进 L3）；模块级 `_parse_json_obj` 健壮 JSON 解析（REQ 11.7）。默认关（启用待人工标注集验证>80%）。
 
 ### 8.3 开关清单
 
 - 第一批：`beat_loose_match`/`beat_chapter_type`/`beat_node_priority`/`pending_commitments` = True；`teardown_style_anchor`/`personal_style_anchor` = False（双锚默认关）。
 - 第二批：`json_schema_output`/`prefix_cache_aligned`/`foreshadow_original_text`/`style_anchor_rolling`/`style_drift_check` = True；`style_reanchor_every` = 5（0=关）；`state_extract_frequency` = 5（原 3）。
+- 二期：`ledger_stalled`/`style_judge_l3` = True（默认开）；`ledger_stall_after` = 8；`style_judge_drift_threshold` = 2；`foreshadow_semantic_check`/`fixed_style_anchor`/`outline_rolling_detail`/`beat_fail_judge` = False（默认关，启用条件见 §8.4）。
 
-### 8.4 二期项（顺延）
+### 8.4 二期项（已开发，部分默认关）
 
-S3.4（fail 章 LLM 复核，需人工标注集验证>80% 后开）/ S2.3（滚动锚固定+滚动双轨）/ S2.5（L3 LLM 裁判）/ S3.6（远期大纲）/ S1.4（语义双路回收判定）；S4.2（小模型静态路由）/ S4.4（润色分层）待各自 A/B 验证后另开。
+二期全部开发并合 devtest：S1.4（语义双路回收判定，stalled 默认开、语义核对默认关）/ S2.3（固定锚双轨，默认关）/ S2.5（L3 裁判，默认开）/ S3.6（远期大纲，默认关）/ S3.4（fail 章 judge，默认关——启用待自建 20-50 章人工标注集验证一致率>80%）；滚动细化大纲生成（S3.6 近窗分批细化）为后续项；S4.2（小模型静态路由）/ S4.4（润色分层）待各自 A/B 验证后另开。

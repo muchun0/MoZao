@@ -157,6 +157,50 @@
         <el-button size="small" @click="loadLogs">刷新</el-button>
         <pre class="log-view">{{ logs }}</pre>
       </el-tab-pane>
+
+      <!-- 系统设置（生成引擎开关） -->
+      <el-tab-pane label="系统设置" name="config">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+          title="生成引擎开关全局生效：以表中数据为准，保存后对所有项目生成实时生效（无需发版）；项目 config.json 快照不会被改写。" />
+        <el-tabs v-model="configModule">
+          <el-tab-pane v-for="g in configGroups" :key="g.module" :label="moduleLabel(g.module)" :name="g.module">
+            <el-table :data="g.items" stripe size="small">
+              <el-table-column prop="label" label="开关" width="200" show-overflow-tooltip />
+              <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
+              <el-table-column label="当前值" width="220">
+                <template #default="{ row }">
+                  <el-switch v-if="row.config_type === 'bool'" v-model="row._val" @change="markDirty(row)" />
+                  <el-input-number v-else-if="row.config_type === 'int'" v-model="row._val" :step="1" :min="0" controls-position="right" style="width:150px" @change="markDirty(row)" />
+                  <el-input-number v-else-if="row.config_type === 'float'" v-model="row._val" :step="0.1" :min="0" controls-position="right" style="width:150px" @change="markDirty(row)" />
+                  <el-select v-else-if="row.config_type === 'select'" v-model="row._val" style="width:150px" @change="markDirty(row)">
+                    <el-option v-for="o in row.options || []" :key="o" :label="o" :value="o" />
+                  </el-select>
+                  <el-input v-else v-model="row._val" size="small" style="width:150px" @change="markDirty(row)" />
+                </template>
+              </el-table-column>
+              <el-table-column label="默认" width="90">
+                <template #default="{ row }"><span class="muted">{{ fmtDefault(row) }}</span></template>
+              </el-table-column>
+              <el-table-column label="最近修改" width="120">
+                <template #default="{ row }">
+                  <span class="muted" v-if="row.updated_by">{{ row.updated_by }}<br>{{ row.updated_at }}</span>
+                  <span class="muted" v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row._dirty" type="warning" size="small">未保存</el-tag>
+                  <el-tag v-else type="success" size="small">已同步</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div style="margin-top:12px">
+              <el-button type="primary" :disabled="!dirtyCount(g.module)" @click="saveGroup(g.module)">保存本组（{{ dirtyCount(g.module) }} 项）</el-button>
+              <el-button :disabled="!dirtyCount(g.module)" @click="loadConfig">放弃修改</el-button>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 充值弹窗 -->
@@ -239,6 +283,60 @@ const agentUser = ref(null)
 
 const skillDialog = ref(false)
 const skillForm = ref({ name: '', role: '', description: '', prompt_append: '', stage_list: [] })
+
+// 系统设置（生成引擎开关）
+const configGroups = ref([])
+const configModule = ref('memory')
+const MODULE_LABELS = { memory: '记忆与一致性', writing: '正文生成', review: '审校质检', guard: '成本防护' }
+const moduleLabel = m => MODULE_LABELS[m] || m
+
+function fmtDefault(row) {
+  const d = row.default
+  if (typeof d === 'boolean') return d ? '开' : '关'
+  if (d !== null && typeof d === 'object') return JSON.stringify(d)
+  return d ?? '-'
+}
+
+function normVal(row) {
+  if (row.config_type === 'bool') return row.value === 'true'
+  if (row.config_type === 'int' || row.config_type === 'float') return Number(row.value)
+  if (row.config_type === 'json') { try { return JSON.parse(row.value) } catch { return {} } }
+  return row.value
+}
+
+async function loadConfig() {
+  try {
+    const r = await adminApi.getConfig()
+    configGroups.value = (r.groups || []).map(g => ({
+      ...g,
+      items: (g.items || []).map(it => ({ ...it, _val: normVal(it), _dirty: false })),
+    }))
+  } catch (e) { ElMessage.error('开关加载失败：' + (e?.response?.data?.detail || e.message)) }
+}
+
+function markDirty(row) { row._dirty = true }
+function dirtyCount(mod) {
+  return (configGroups.value.find(g => g.module === mod)?.items || []).filter(i => i._dirty).length
+}
+
+function serVal(row) {
+  if (row.config_type === 'bool') return row._val ? 'true' : 'false'
+  if (row.config_type === 'int' || row.config_type === 'float') return String(row._val)
+  if (row.config_type === 'json') return JSON.stringify(row._val)
+  return String(row._val ?? '')
+}
+
+async function saveGroup(mod) {
+  const g = configGroups.value.find(x => x.module === mod)
+  if (!g) return
+  const items = g.items.filter(i => i._dirty).map(i => ({ key: i.key, value: serVal(i) }))
+  if (!items.length) return
+  try {
+    const r = await adminApi.updateConfig(items)
+    ElMessage.success(`已保存 ${r.updated || items.length} 项开关，全局生效`)
+    await loadConfig()
+  } catch (e) { ElMessage.error('保存失败：' + (e?.response?.data?.detail || e.message)) }
+}
 
 const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }
 const stageLabel = s => {
@@ -340,6 +438,7 @@ onMounted(() => {
   adminApi.listTransactions().then(r => { transactions.value = r.transactions || [] }).catch(() => {})
   loadSkills()
   loadLogs()
+  loadConfig()
 })
 </script>
 

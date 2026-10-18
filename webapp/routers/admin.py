@@ -2,6 +2,90 @@
 """admin路由（第三批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from ..db import config as cfg_db  # noqa: F401  系统开关配置数据层
+
+from pydantic import BaseModel
+
+
+class ConfigUpdateItem(BaseModel):
+    key: str
+    value: str = ""
+
+
+class ConfigUpdateReq(BaseModel):
+    items: list[ConfigUpdateItem] = []
+
+
+# 后台开关范围约束（key → (min, max)；None=不设限）。未命中此表则不设范围限制。
+_RANGE_RULES: dict[str, tuple[int | float | None, int | float | None]] = {
+    "memory_window": (0, None),
+    "memory_direct_read_chapters": (0, None),
+    "memory_direct_read_chars": (0, None),
+    "state_extract_frequency": (1, None),
+    "book_memory_top_n": (1, None),
+    "user_memory_inject_top": (1, None),
+    "ledger_stall_after": (0, None),
+    "foreshadow_lead": (0, None),
+    "style_reanchor_every": (0, None),
+    "style_drift_threshold": (0, 100),
+    "style_judge_drift_threshold": (1, None),
+    "consistency_llm_every": (1, None),
+    "verify_every": (1, None),
+    "outline_far_skip": (1, None),
+    "stage_gate_retries": (1, None),
+    "ai_taste_threshold": (0, 100),
+    "beat_gate_min_coverage": (0.0, 1.0),
+    "beat_gate_warn_coverage": (0.0, 1.0),
+    "max_loops": (1, None),
+    "max_tokens": (1000, None),
+}
+
+
+def _validate_config_items(items: list[ConfigUpdateItem]) -> list[dict]:
+    """校验并标准化配置更新项（路由层 HTTP 输入校验，§11.2 不写业务规则进 db 层）。
+
+    规则：key 白名单（必须在 FEATURE_FLAGS 注册表）+ 类型严格转换 + RANGE_RULES 范围
+    + select 枚举。非法项抛 HTTPException(400)；返回 [{key, value}] 标准化存储串。
+    """
+    from novel_gen.config import FEATURE_FLAGS
+
+    flags = {f.key: f for f in FEATURE_FLAGS}
+    validated: list[dict] = []
+    for it in items:
+        key = (it.key or "").strip()
+        f = flags.get(key)
+        if f is None:
+            raise HTTPException(status_code=400, detail=f"未知开关: {key}")
+        ctype = "select" if key in cfg_db.SELECT_ENUMS else cfg_db.flag_type(f.default)
+        try:
+            value = cfg_db.coerce_config_type(ctype, it.value)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=f"开关 {key} 值类型不正确（应为 {ctype}）: {it.value!r}",
+            )
+        if ctype == "json":
+            if not isinstance(value, dict):
+                raise HTTPException(status_code=400, detail=f"开关 {key} 应为 JSON 对象")
+            for k, v in value.items():
+                if not isinstance(v, (int, float)) or v < 0:
+                    raise HTTPException(status_code=400,
+                                        detail=f"开关 {key} 的 {k} 应为非负数字")
+        rng = _RANGE_RULES.get(key)
+        if rng:
+            lo, hi = rng
+            if lo is not None and value < lo:
+                raise HTTPException(status_code=400, detail=f"开关 {key} 不能小于 {lo}")
+            if hi is not None and value > hi:
+                raise HTTPException(status_code=400, detail=f"开关 {key} 不能大于 {hi}")
+        if ctype == "select" and key in cfg_db.SELECT_ENUMS:
+            if str(value) not in cfg_db.SELECT_ENUMS[key]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"开关 {key} 取值必须为 {'/'.join(cfg_db.SELECT_ENUMS[key])}",
+                )
+        validated.append({"key": key, "value": cfg_db.json_default(value)})
+    return validated
 
 @app.post("/api/admin/login")
 def admin_login(req: LoginReq, request: Request):
@@ -224,3 +308,47 @@ def admin_handle_refund(request_id: int, req: RefundHandleReq,
     logger.info("退款处理: request_id=%d action=%s by_admin=%s note=%s",
                 request_id, req.action, user["username"], req.admin_note)
     return {"ok": True, "message": why}
+
+
+@app.get("/api/admin/config")
+def admin_config_list(user: dict = Depends(_require_admin)):
+    """开关列表（REQ-后台开关管理）：按模块分组，含当前值/代码默认值/类型/说明/修改信息。"""
+    from novel_gen.config import FEATURE_FLAGS
+
+    rows = cfg_db.list_configs()
+    defaults = {f.key: f.default for f in FEATURE_FLAGS}
+    groups = []
+    for m in cfg_db.FLAG_MODULES:
+        items = []
+        for r in rows:
+            if r["config_group"] != m:
+                continue
+            items.append({
+                "key": r["config_key"],
+                "label": r["label"],
+                "description": r["description"],
+                "config_type": r["config_type"],
+                "value": r["config_value"],
+                "default": defaults.get(r["config_key"]),
+                "updated_by": r["updated_by"],
+                "updated_at": r["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
+                if r["updated_at"] else None,
+                "options": cfg_db.SELECT_ENUMS.get(r["config_key"]) or None,
+            })
+        groups.append({"module": m, "items": items})
+    return {"groups": groups, "total": len(rows)}
+
+
+@app.put("/api/admin/config")
+def admin_config_update(req: ConfigUpdateReq, user: dict = Depends(_require_admin)):
+    """批量保存（REQ-后台开关管理）：key 白名单 + 类型/范围/枚举校验 → 入库 → 审计。
+
+    以表中数据为准：保存后对所有项目生成实时生效（内存态覆盖），config.json 快照不动。
+    """
+    if not req.items:
+        return {"ok": True, "updated": 0}
+    validated = _validate_config_items(req.items)
+    updated = cfg_db.update_configs(validated, user["username"])
+    logger.info("后台开关保存: by=%s updated=%d keys=%s", user["username"], updated,
+                ",".join(v["key"] for v in validated))
+    return {"ok": True, "updated": updated}

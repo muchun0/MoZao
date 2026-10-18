@@ -334,6 +334,35 @@ _AGENT_TRACE = """CREATE TABLE IF NOT EXISTS agent_trace (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
+# 后台开关管理（REQ-后台开关管理）：全局开关唯一权威源。
+# 以表中数据为准：新增开关由 seed_feature_flags 幂等自动入表（默认值），
+# 项目 config.json 快照不迁移、不改写（覆盖仅在 webapp 内存态生效）。
+_SYS_CONFIG = """CREATE TABLE IF NOT EXISTS sys_config (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    config_key VARCHAR(128) NOT NULL,
+    config_value VARCHAR(1024) NOT NULL DEFAULT '',
+    config_group VARCHAR(64) NOT NULL,
+    config_type VARCHAR(16) NOT NULL,
+    label VARCHAR(128) NOT NULL,
+    description VARCHAR(1024),
+    is_system TINYINT NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    updated_by VARCHAR(64),
+    UNIQUE KEY uk_config_key (config_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+_SYS_CONFIG_LOG = """CREATE TABLE IF NOT EXISTS sys_config_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    config_key VARCHAR(128) NOT NULL,
+    old_value VARCHAR(1024),
+    new_value VARCHAR(1024),
+    operator VARCHAR(64) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_log_key (config_key),
+    KEY idx_log_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
 
 def init_db() -> None:
     # 延迟导入：避免 base <-> 业务子模块的循环依赖；
@@ -341,10 +370,12 @@ def init_db() -> None:
     from .style_roles import _seed_style_roles
     from .teardowns import _ensure_teardown_user_id
     from .users import _make_invite_code
+    from .config import seed_feature_flags
 
     with _connect() as conn:
         for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
-                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED):
+                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
+                    _SYS_CONFIG, _SYS_CONFIG_LOG):
             conn.execute(ddl)
         _ensure_teardown_user_id()
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
@@ -437,3 +468,8 @@ def init_db() -> None:
             _seed_style_roles()
         except Exception as e:
             logger.warning("风格角色种子化跳过（不影响启动）: %s", e)
+        # 全局开关种子化（幂等：注册表全量同步进 sys_config，新增开关自动入表）
+        try:
+            seed_feature_flags()
+        except Exception as e:
+            logger.warning("sys_config 开关种子化跳过（不影响启动）: %s", e)

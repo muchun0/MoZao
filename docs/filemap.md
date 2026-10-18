@@ -93,9 +93,9 @@
 | 路径 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
-| `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照，接入全部生成入口）+ `_distill_user_memory`（书级→用户级蒸馏，生成 finally 触发） |
+| `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照，接入全部生成入口）+ `_distill_user_memory`（书级→用户级蒸馏，生成 finally 触发）；**REQ-后台开关管理** `_apply_global_overrides`（sys_config 表为准内存态覆盖，_open_pipeline 内注入，config.json 快照不动） |
 | `user_memory.py` | **用户级记忆库服务**（跨书创作偏好继承）：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像/跨书纪律/个人文风锚/stats），`record_project_signals`/`record_edits`/`distill`/`build_snapshot`/`summary`/`clear`，全部写路径零额外 LLM |
-| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口；**P0-5（2026-10-18）** `_aggregate_quality` 增 `chapter_status` 每章色块聚合——红=未过/绿=hook≥4/黄=自动重写/灰=通过，`quality_report` 查询带出 step_name 供解析章号） |
+| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移；**REQ-后台开关管理** 新增 `sys_config`/`sys_config_log` 表 + init_db 挂 seed）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口；**P0-5（2026-10-18）** `_aggregate_quality` 增 `chapter_status` 每章色块聚合——红=未过/绿=hook≥4/黄=自动重写/灰=通过，`quality_report` 查询带出 step_name 供解析章号）；**`config.py`（REQ-后台开关管理）** FEATURE_FLAGS→`sys_config` 幂等种子同步（新增开关自动入表）/`sys_config_log` 审计/`coerce_config_type` 类型转换/`flag_type`/`json_default`/`SELECT_ENUMS` 枚举/`list_configs`/`update_configs` |
 | `secret_encrypt.py` | BYOK Key Fernet 加密（`enc:v1:` 前缀） |
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
 | `referral.py` | 代理参数（AGENT_DISCOUNT/COMMISSION_RATE/COMMISSION_BASE/REFERRAL_BONUS） |
@@ -114,7 +114,7 @@
 | `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记；**三期产品化** `/chapters/{no}/scene-inspect`（F2 场景体检）、`/chapters/{no}/chain-of-thought`（F4 计划-产出-校验聚合）、`/continue-branches`（F3 三分支候选）、`/apply-branch`（F3 草稿预览落盘，不改正文）；**REQ-章节版本化（2026-10-16）** `rewrite` 返回 `version`、`regenerate_from` 改方案 a（不再删 no 及之后章节，改为从 no 追加候选版本、旧版保留用户逐章选择）、`edit_chapter` 追加 `source=user` 版本、新增 `GET /chapters/{no}/versions` 与 `POST /chapters/{no}/versions/{v}/select`；**2026-10-17 版本质量** `rewrite` 改为以实际 HEAD 重算 kept_previous 并返回 HEAD 内容 + `candidate_version`（kept_previous 时新稿版本号）、新增 `DELETE /chapters/{no}/versions/{v}`（selected 不可删） |
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
 | `routers/projects_generation.py` | 生成控制（启动/停止/重跑） |
-| `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表） |
+| `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表；**REQ-后台开关管理** `GET/PUT /api/admin/config` 生成引擎开关管理：key 白名单 + 类型/范围/select 枚举校验 + 审计，`_RANGE_RULES` 范围表、`_validate_config_items` 校验纯函数） |
 
 ## webapp/frontend/src/（Vue3 前端源码）
 
@@ -125,12 +125,12 @@
 | `stores/auth.js` | 登录态 Pinia store |
 | `stores/project.js` | 当前项目 Pinia store |
 | `api/request.js` | axios 封装（token 注入/错误处理） |
-| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款） |
+| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口） |
 | `views/Login.vue` | 登录/注册页 |
 | `views/ProjectList.vue` | 书案（作品列表/搜索/筛选） |
 | `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制） |
 | `views/Workspace.vue` | 用户工作台（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
-| `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
+| `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab**：memory/writing/review/guard 分组渲染 94 开关，改动项高亮、按组保存、展示默认值/修改人/时间） |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |
 | `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |

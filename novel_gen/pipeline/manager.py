@@ -405,6 +405,15 @@ class NovelPipeline:
         self._trace_step("编辑质检开始")
         review = self.editor.review(self.cfg, outline, research_block)
         self.store.save_editor_review(review.to_dict())
+        # P1-3 建议指令库：把审稿建议/优先动作按手法分类沉淀进 book_memory.suggestion_lib，
+        # 写章生成时注入复用（受 suggestion_lib 开关控制；失败静默降级不阻塞）。
+        if getattr(self.cfg, "suggestion_lib", True):
+            try:
+                from .book_memory import BookMemory
+                _mem = BookMemory(self.store, self.cfg)
+                _mem.record_suggestions(list(review.suggestions) + list(review.priority_actions))
+            except Exception:
+                logger.warning("编辑建议沉淀指令库失败（降级跳过，不影响审稿）", exc_info=True)
         if not silent:
             verdict = "通过" if review.passed else "需修正"
             print(f"[编辑质检] {verdict}｜评分 {review.score}/10｜问题 {len(review.issues)} 条")

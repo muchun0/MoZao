@@ -812,6 +812,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("反思笔记注入失败（降级跳过，不阻塞写章；反思先验缺失）")
 
+        # P1-3 建议指令库注入（编辑审稿沉淀的正向写作手法指令，择优采用）。
+        # 场景与整章两条写章路径都吃到；空库/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _smem = self._memory()
+            if _smem is not None and getattr(self.cfg, "suggestion_lib", True):
+                _sug = _smem.suggestion_block()
+                if _sug:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _sug
+        except Exception:
+            logger.exception("建议指令库注入失败（降级跳过，不阻塞写章；编辑建议未携带）")
+
         # 注入用户锁定的内容作为硬约束
         try:
             lock_path = self.store.dir / "lock.json"

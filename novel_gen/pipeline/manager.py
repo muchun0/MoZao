@@ -58,6 +58,12 @@ class NovelPipeline:
         self.store = store
         self.llm = llm
         self.trace = trace
+        # REQ-超长篇攻坚 S4.3：JSON 输出约束开关注入 LLM 客户端——chat_json 时 provider 支持则
+        # 传 response_format json_object，消除状态抽取/质检的解析重试。
+        try:
+            llm.json_schema_output = bool(cfg.json_schema_output)
+        except Exception:
+            pass
         # 模块1/2：把全链路埋点与成本防护挂到 LLM 客户端——LLM 层模板方法
         # 自动覆盖所有调用（正文/大纲/审校/校验/重试），调用方零改动。
         if trace is not None:

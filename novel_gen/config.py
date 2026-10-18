@@ -51,7 +51,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "chapter_state_llm", True, "是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则，零 LLM 成本）"),
     FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
     FeatureFlag("memory", "scene_state_mode", "auto", "场景间状态抽取模式（REQ-token优化 P0-1）：auto=高质量模式 LLM/普通模式确定性正则；llm=全部 LLM；deterministic=全部确定性正则（零 LLM）"),
-    FeatureFlag("memory", "state_extract_frequency", 3, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章"),
+    FeatureFlag("memory", "state_extract_frequency", 5, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4；超长篇攻坚 S4.3 3→5）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章"),
     FeatureFlag("memory", "setting_cards", True, "分章设定卡索引（REQ-token优化 P1-1）：world 后确定性构建 setting_cards.json，按章只注入相关设定子集，构建失败回退全量注入"),
     FeatureFlag("memory", "scene_delta_inject", True, "场景 prompt 分层注入（REQ-token优化 P1-2）：首场景注入全量记忆，后续场景只注入增量块（已推进状态+人物卡子集+场景大纲），降重复输入"),
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
@@ -109,6 +109,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("guard", "input_check", True, "输入注入检测"),
     FeatureFlag("guard", "output_check", True, "输出基础合规校验"),
     FeatureFlag("guard", "quality_check", True, "章级 ReaderAgent 结果自校验（agent_guard.quality_check）"),
+    FeatureFlag("guard", "json_schema_output", True, "JSON 输出约束（超长篇攻坚 S4.3）：chat_json 时 provider 支持则传 response_format json_object，消除解析重试；provider 不支持自动降级 parse_tip 路径"),
+    FeatureFlag("guard", "prefix_cache_aligned", True, "前缀缓存对齐（超长篇攻坚 S4.1）：提示词稳定前缀（system+固定设定+风格锚）前置、变化内容置后，使跨调用前缀逐字节一致以命中 DeepSeek 前缀缓存价；并埋 cache_hit 验证命中率"),
 ]
 
 
@@ -326,6 +328,8 @@ class NovelConfig:
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
+    json_schema_output: bool = feature_default("json_schema_output")  # JSON 输出约束（S4.3）：chat_json 传 response_format json_object，provider 支持时
+    prefix_cache_aligned: bool = feature_default("prefix_cache_aligned")  # 前缀缓存对齐（S4.1）：稳定前缀前置 + cache_hit 埋点
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property

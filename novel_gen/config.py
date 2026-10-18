@@ -67,6 +67,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
+    FeatureFlag("writing", "style_drift_check", True, "L1 确定性漂移检测（超长篇攻坚 S2.4）：每章量化句长波动系数/口头禅/词汇多样性 TTR/比喻密度，输出漂移分供与前期章基线对比，治几十万字后文风漂移；False=关闭"),
     FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
     FeatureFlag("writing", "character_depth", True, "人物立体化：角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度"),
     FeatureFlag("writing", "fanqie_style", True, "番茄节奏：黄金三章 + 爽点闭环 + 断章 + 移动端排版"),
@@ -261,6 +262,7 @@ class NovelConfig:
     de_ai: bool = feature_default("de_ai")                       # 正文生成时注入去AI味写作约束
     style_reanchor_every: int = feature_default("style_reanchor_every")    # 周期轻量再锚定（S2.2）：每 N 章注入滚动风格锚；0=关
     style_anchor_rolling: bool = feature_default("style_anchor_rolling")    # 滚动风格锚（S2.2）：用 book_memory goods 高分片段作滚动风格源
+    style_drift_check: bool = feature_default("style_drift_check")            # L1 漂移检测（S2.4）：每章量化句长波动/TTR/口头禅/比喻密度
     anti_similarity: bool = feature_default("anti_similarity")   # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
     character_depth: bool = feature_default("character_depth")   # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
     fanqie_style: bool = feature_default("fanqie_style")         # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系

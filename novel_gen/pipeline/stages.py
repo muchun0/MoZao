@@ -470,22 +470,51 @@ class ChapterWriter:
         return ""
 
     def _pending_compensation_block(self, chapter_no: int) -> str:
-        """REQ-超长篇生成攻坚 S3.1：上章漏兑现节点补偿块（软约束·硬承诺）。
+        """REQ-超长篇生成攻坚 S3.1 + S3.3：上章漏兑现节点补偿块 + 连续漏兑现挂账镜头。
 
-        读上章承诺台账，若有漏兑现节点则生成补偿块，下章写章 prompt 前段注入；
-        无漏兑现 / 开关关 / 无台账 / 异常 → 空串（不注入，零 token）。仿章末钩子块
-        拼进 memory_context，自动覆盖场景/整章/回退整章三条写章链路。
+        L1：读上章承诺台账，有漏兑现节点则生成补偿块（S3.1，0 成本）；
+        L2：扫描最近 3 章台账，连续 ≥2 章漏兑现的节点生成"挂账镜头"（S3.3，0 成本；
+            下章为高潮/战斗等豁免章型时不强加）。
+        无漏兑现 / 开关关 / 无台账 / 异常 → 空串（不注入，零 token）。拼进 memory_context，
+        自动覆盖场景/整章/回退整章三条写章链路。
         """
         if not getattr(self.cfg, "pending_commitments", True):
             return ""
+        parts: list[str] = []
         try:
             prev = self.store.prev_pending_commitments(chapter_no)
-            if not prev:
-                return ""
-            from .pending_commitments import compensation_block
-            return compensation_block(prev)
+            if prev:
+                from .pending_commitments import compensation_block
+                cb = compensation_block(prev)
+                if cb:
+                    parts.append(cb)
         except Exception:
             logger.exception("上章承诺补偿块注入失败（降级不注入）")
+        try:
+            from .pending_commitments import l2_hangover_block
+            lb = l2_hangover_block(self.store, chapter_no,
+                                   current_chapter_type=self._next_chapter_exempt_type(chapter_no))
+            if lb:
+                parts.append(lb)
+        except Exception:
+            logger.exception("挂账镜头注入失败（降级不注入）")
+        return "\n\n".join(parts) if parts else ""
+
+    def _next_chapter_exempt_type(self, chapter_no: int) -> str:
+        """S3.3 L2 章型豁免：读大纲本章 tag，命中高潮/战斗/对话等 → 返回章型名（挂账镜头豁免）。
+
+        大纲无该章 tag / 无大纲 → 返回空（不强豁免，仍按连续漏兑现注入）。
+        """
+        try:
+            outline = self.store.load_outline()
+            for p in (getattr(outline, "chapters", None) or []):
+                if int(getattr(p, "no", 0) or 0) == int(chapter_no):
+                    tag = str(getattr(p, "tag", "") or "")
+                    for t in ("对话", "过渡", "情绪", "高潮", "战斗"):
+                        if t in tag:
+                            return t
+        except Exception:
+            pass
         return ""
 
     def _sys(self, system: str) -> str:

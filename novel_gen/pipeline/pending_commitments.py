@@ -70,3 +70,48 @@ def compensation_block(prev_ledger: dict | None, limit: int = _COMPENSATE_LIMIT)
     extra = f"（其余 {len(missed) - limit} 个后续章节处理）" if len(missed) > limit else ""
     return (f"【上章未兑现节点补偿】上一章承诺但未兑现的剧情节点：{items}{extra}。"
             f"本章前半段必须优先兑现这些节点，不得遗漏或跳过。")
+
+
+#: 挂账镜头豁免章型（连续漏兑现的节点在这些类型章不强加 200-400 字镜头，防误伤打断节奏）
+_HANGOVER_EXEMPT_TYPES = ("对话", "过渡", "情绪", "高潮", "战斗")
+
+
+def l2_hangover_block(store, chapter_no: int, current_chapter_type: str = "",
+                      window: int = 3, min_miss: int = 2,
+                      limit: int = _COMPENSATE_LIMIT) -> str:
+    """REQ-超长篇攻坚 S3.3 L2：连续漏兑现节点 → 下章挂账镜头。
+
+    扫描最近 window 章承诺台账，找漏兑现次数 ≥ min_miss 的节点（同一节点多章未兑现 =
+    大纲承诺持续衰减），生成"挂账镜头"块：下章 scene_plan 前半段须安排 200-400 字
+    兑现镜头正面推进。current_chapter_type 命中豁免章型（对话/过渡/情绪/高潮/战斗）
+    时返回空串（防误伤、防打断节奏）。无连续漏兑现 → 空串（零 token 不注入）。
+    复用 store.load_pending_commitments（唯一权威源），异常降级空串。
+    """
+    try:
+        data = store.load_pending_commitments() if store else {}
+    except Exception:
+        return ""
+    if not data or not isinstance(data, dict):
+        return ""
+    chs = sorted(int(k) for k in data
+                 if str(k).isdigit() and int(k) < int(chapter_no))
+    recent = chs[-window:]
+    if not recent:
+        return ""
+    counts: dict[str, int] = {}
+    for c in recent:
+        ledger = data.get(str(c)) or {}
+        missed = list(ledger.get("missed") or ledger.get("must_carry_to_next") or [])
+        for b in missed:
+            b = str(b).strip()
+            if b:
+                counts[b] = counts.get(b, 0) + 1
+    target = [b for b, n in counts.items() if n >= min_miss]
+    if not target:
+        return ""
+    if current_chapter_type in _HANGOVER_EXEMPT_TYPES:
+        return ""
+    items = "、".join(f"《{b}》" for b in target[:limit])
+    return (f"【连续未兑现节点·挂账镜头】节点 {items} 已连续漏兑现 {min_miss}+ 章。"
+            f"本章 scene_plan 前半段必须安排 200-400 字的兑现镜头，正面推进这些节点，"
+            f"不得再次跳过或仅口头提及。")

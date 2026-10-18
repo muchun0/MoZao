@@ -78,6 +78,7 @@ def _empty() -> dict:
         "goods": {"samples": []},
         "compliance_educated": [],   # P0-2：本书已注入过首次合规教育的 rule_category 列表
         "hook_streak": {"current": 0, "max": 0, "freeze_used": False},  # P0-5 追更欲连续达标
+        "reflections": [],           # P1-1 Reflexion：重写 >=2 轮仍未通过后 LLM 写的反思笔记
     }
 
 
@@ -420,6 +421,41 @@ class BookMemory:
                 st["current"] = 0
         self.save()
         return dict(st)
+
+    # ---------- 反思账本（P1-1 Reflexion）----------
+    # 重写 >=2 轮仍未通过 → LLM 用一句话写「错在哪、下次怎么写对」入账；
+    # 后续章生成时注入为先验（正反馈闭环：反复失败不是静默吞掉，而是转成下一章的先验）。
+    _REFLEXION_CAP = 8   # 只保留最近 N 条反思（防账本无限膨胀）
+
+    def record_reflection(self, chapter_no: int, note: str) -> bool:
+        """P1-1：把一句反思笔记入账（失败/空文本静默返回 False，不阻塞主流程）。"""
+        note = (note or "").strip()
+        if not self.enabled or not note:
+            return False
+        data = self.load()
+        refs = data.setdefault("reflections", [])
+        refs.append({"chapter": int(chapter_no or 0), "note": note})
+        data["reflections"] = refs[-self._REFLEXION_CAP:]
+        self.save()
+        return True
+
+    def reflection_block(self, chapter_no: int, max_n: int = 2) -> str:
+        """P1-1 注入块：取当前章之前最近的反思笔记作先验（空账本/关闭 → 空串）。
+
+        章节顺序生成：chapter_no 章生成时会读到 chapter<=chapter_no 的历史教训，
+        让「上一章反复没写对的地方」直接带到下一章，避免同一类错误跨章复发。
+        """
+        if not self.enabled:
+            return ""
+        refs = (self.load().get("reflections") or [])
+        cur = int(chapter_no or 0)
+        near = [r for r in refs if int(r.get("chapter", 0)) <= cur]
+        near = near[-max(1, int(max_n or 1)):]
+        lines = [f"第{r.get('chapter')}章教训：{r.get('note')}" for r in near
+                 if (r.get("note") or "").strip()]
+        if not lines:
+            return ""
+        return "【本作反思笔记（此前章节反复未过的教训，避免重蹈）】\n" + "\n".join(lines)
 
 
     # ---------- good 账本（REQ-写作正向引导 5.6：踩坑 + 正向样例双账本）----------

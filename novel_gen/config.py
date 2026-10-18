@@ -135,6 +135,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "style_homogeneity_check", True, "P0-4 手法/句式层同质度度量：跨章某类手法/句式使用率持续上升时产出软提示 issue 并降该类注入权重（防古德哈特）；False=关闭同质度检测"),
     FeatureFlag("review", "hook_positive_anchor", True, "P0-5 追更欲正向锚：hook>=4 的章片段入 good 示范池 + hook_streak 账本累计；False=关闭正向锚与 streak"),
     FeatureFlag("review", "hook_streak_freeze", True, "P0-5 streak 容错：连续达标中断时允许 1 次 freeze（不重置）；False=断签即重置"),
+    FeatureFlag("review", "reflexion_note", True, "P1-1 Reflexion 反思笔记：重写 >=2 轮仍未通过时，让 LLM 写一句「错在哪、下次怎么写对」存入 book_memory.reflections，后续章生成注入为先验；False=关闭反思入账（仅记录失败不留反思）"),
 ]
 
 
@@ -363,6 +364,7 @@ class NovelConfig:
     style_homogeneity_check: bool = feature_default("style_homogeneity_check")    # P0-4 手法/句式同质度
     hook_positive_anchor: bool = feature_default("hook_positive_anchor")          # P0-5 追更欲正向锚+streak
     hook_streak_freeze: bool = feature_default("hook_streak_freeze")              # P0-5 streak 容错
+    reflexion_note: bool = feature_default("reflexion_note")                      # P1-1 Reflexion 反思笔记
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

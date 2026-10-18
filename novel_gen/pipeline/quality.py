@@ -114,6 +114,35 @@ class QualityChecker:
         except Exception:
             pass
 
+    def _record_reflection(self, chapter_no: int, content: str, result: dict) -> None:
+        """P1-1 Reflexion：让 LLM 用一句话反思「错在哪、下次怎么写对」，存入 book_memory。
+
+        只在重写 >=2 轮仍未通过时触发（问题顽固才值得反思）；一次 LLM 调用走 revise
+        场景成本账（受 guard 约束）。失败静默降级并留日志，不阻塞重写主流程（§11.6）。
+        """
+        try:
+            issues = result.get("issues") or []
+            issue_text = "; ".join(
+                f"{it.get('type','')}:{(it.get('detail','') or '')[:60]}"
+                for it in issues[:3])
+            prompt = (
+                "你是资深网文编辑。本章质检未通过且已自动重写两轮仍未解决，"
+                "需要沉淀一条可复用的写作教训。请用一句中文（≤60字）写反思笔记，"
+                "格式必须为：错在哪：……；下次怎么写对：……。不要引号、不要序号、不要分点。"
+                f"\n本章片段开头：{content[:200]}"
+                + (f"\n待解决问题：{issue_text}" if issue_text else "")
+            )
+            if self.guard is not None:
+                self.guard.enter_scene("revise")
+            raw = self.llm.chat(
+                "你只输出一句中文反思笔记，其余不输出。",
+                prompt, temperature=0.3, max_tokens=200)
+            note = (raw or "").strip()
+            if note and self.memory is not None:
+                self.memory.record_reflection(chapter_no, note)
+        except Exception:
+            logger.warning("Reflexion 反思入账失败（降级跳过，不阻塞重写）", exc_info=True)
+
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, summary: str, silent: bool = False,
                        baseline: dict | None = None,
@@ -243,6 +272,12 @@ class QualityChecker:
             if not silent:
                 print(f"  [自校验] 第{chapter_no}章重写未消除问题，回退到最优版本"
                       f"（{len(issues)} 个问题，{len(content)} 字）")
+
+        # P1-1 Reflexion：重写 >=2 轮仍未通过 → LLM 写一句反思入账（下次生成携带为先验）。
+        # 受 reflexion_note 开关 + AgentGuard 成本账约束；失败静默降级不阻塞（§11.6 留日志）。
+        if (getattr(self.cfg, "reflexion_note", True) and self.memory is not None
+                and rewrite_rounds >= 2 and not result["passed"]):
+            self._record_reflection(chapter_no, content, result)
 
         # 结果落库（review.json 兼容既有格式，P2-4：记录实际是否触发重写）
         self._save_review(chapter_no, issues, result, auto_revised=rewritten_occurred)

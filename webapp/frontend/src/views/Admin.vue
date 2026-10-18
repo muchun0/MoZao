@@ -117,6 +117,21 @@
             <el-progress v-for="(n, k) in (qualityReport.report.score_buckets||{})" :key="k" :percentage="pct(n)" :format="() => `${k}：${n} 章`" :stroke-width="14" style="margin-bottom:8px" />
           </el-card>
           <el-card style="margin-top:10px">
+            <template #header>
+              <b>每章状态（进度盘）</b>
+              <span class="muted" style="font-size:12px;font-weight:normal;margin-left:8px">红=未过 / 绿=追更欲高分(hook≥4) / 黄=自动重写 / 灰=通过</span>
+            </template>
+            <div v-if="(qualityReport.report.chapter_status||[]).length" class="progress-dots">
+              <el-tooltip v-for="c in qualityReport.report.chapter_status" :key="c.chapter" placement="top" effect="dark">
+                <template #content>
+                  第{{ c.chapter }}章 · 质检分 {{ c.score }}{{ c.passed ? ' · 通过' : ' · 未过' }}{{ c.auto_revised ? ' · 自动重写' : '' }}{{ c.hook_score != null ? ' · 追更欲 ' + c.hook_score : '' }}
+                </template>
+                <span class="dot" :class="'dot-' + (c.color || 'gray')">{{ c.chapter }}</span>
+              </el-tooltip>
+            </div>
+            <div v-else class="muted">暂无每章质检数据（需质量校验留痕）</div>
+          </el-card>
+          <el-card style="margin-top:10px">
             <template #header><b>问题类型 TopN</b></template>
             <div v-if="(qualityReport.report.issue_top_types||[]).length">
               <el-tag v-for="it in qualityReport.report.issue_top_types" :key="it[0]" type="warning" style="margin:0 6px 6px 0">{{ it[0] }} × {{ it[1] }}</el-tag>
@@ -335,4 +350,10 @@ onMounted(() => {
 .stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
 .log-view { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; max-height: 500px; overflow-y: auto; font-size: 12px; }
 .muted { color: #909399; font-size: 13px; }
+.progress-dots { display: flex; flex-wrap: wrap; gap: 4px; }
+.dot { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 4px; border-radius: 4px; font-size: 11px; color: #fff; cursor: default; }
+.dot-red { background: #f56c6c; }
+.dot-green { background: #67c23a; }
+.dot-yellow { background: #e6a23c; }
+.dot-gray { background: #909399; }
 </style>

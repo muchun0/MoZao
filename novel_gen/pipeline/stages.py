@@ -801,6 +801,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("good 账本注入失败（降级跳过，不阻塞写章；但 good 质感引导缺失）")
 
+        # P1-1 Reflexion 反思笔记注入（此前章节反复未过的教训，作为写本/下章的先验）。
+        # 场景与整章两条写章路径都吃到；空账本/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _rmem = self._memory()
+            if _rmem is not None:
+                _ref = _rmem.reflection_block(chapter_no)
+                if _ref:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _ref
+        except Exception:
+            logger.exception("反思笔记注入失败（降级跳过，不阻塞写章；反思先验缺失）")
+
         # 注入用户锁定的内容作为硬约束
         try:
             lock_path = self.store.dir / "lock.json"

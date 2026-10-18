@@ -139,6 +139,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "enhance_pass", False, "P1-2 StageGate 正向增强旁路：质检通过(无大改)但仍有 warn 级问题或追更欲未满时，可选触发一次 LLM 增强润色(钩子更强/爽点更密/伏笔呼应)，复检通过且分数不降才采纳，否则保留原稿；受 AgentGuard 成本账约束(与重写共用 revise 限额)；默认关控成本，开启才增强"),
     FeatureFlag("review", "suggestion_lib", True, "P1-3 EditorReviewer 建议指令库：编辑审稿建议按手法分类(对话/战斗/情绪/环境/叙事)沉淀进 book_memory.suggestion_lib，写章生成时注入复用；False=建议仅审稿时展示，不入库不注入"),
     FeatureFlag("review", "beat_positive_supply", True, "P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往哪个方向写」的示范指引(零LLM规则模板)存入 beat_gate，下一章生成时注入兑现；False=beat_gate 仅负向报漏不供给方向"),
+    FeatureFlag("review", "repetition_direction", True, "P2-1 RepetitionDetector 正向替换供给：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让模型知道往哪走；False=重写仅禁重复不给新方向"),
 ]
 
 
@@ -371,6 +372,7 @@ class NovelConfig:
     enhance_pass: bool = feature_default("enhance_pass")                          # P1-2 StageGate 增强旁路
     suggestion_lib: bool = feature_default("suggestion_lib")                      # P1-3 建议指令库
     beat_positive_supply: bool = feature_default("beat_positive_supply")          # P1-4 BeatGate 正向供给
+    repetition_direction: bool = feature_default("repetition_direction")          # P2-1 重复正向替换供给
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

@@ -195,7 +195,7 @@
 - 服务器：阿里云实例 `i-bp14oxtecrth3wbq6thc`，目录 `/opt/novel-gen`，`docker compose`（`mysql-mozao` + `novel-gen` 两个容器）。
 - 前端多阶段构建：Dockerfile 第一阶段 `node:20-alpine` 内 `npm ci && npm run build`，第二阶段拷 dist 进 Python 镜像（`python:3.13-slim`，内置 Noto CJK 字体、Asia/Shanghai）。**本地无需 build、dist 不入库**。
 - 数据卷：`projects`（中间产物）/ `output`（成品）/ `logs` / `data`（MySQL 数据，`NOVEL_DB_PATH=/data/novel_web.db` 由环境变量控制，容器实际走 mysql-mozao 服务）。
-- 反代：Caddy（`deploy/Caddyfile`，域名 https://mozao.click）。
+- 反代：nginx（服务器 `/etc/nginx/conf.d/mozao.conf`，反代 `127.0.0.1:8000`，HTTP 80 跳 HTTPS 301；域名 https://mozao.click，证书 Let's Encrypt 经 certbot 自动续期）。
 - 发版：`git archive master` → workbench upload → 解压 → `docker compose up -d --build`。详见 `AGENTS.md` §5。
 
 ## 7. 改代码前的指引（防迷路）

@@ -255,6 +255,7 @@ D:\PythonProjects\DouBao\
 | HTTPS | Let's Encrypt（到期 2026-12-17，自动续期） |
 | 服务目录 | /opt/novel-gen |
 | 容器 | mysql-mozao + novel-gen（docker compose） |
+| 反代 | nginx（配置 `/etc/nginx/conf.d/mozao.conf`：80→443 跳转 + 反代 `127.0.0.1:8000`，域名 mozao.click/www.mozao.click） |
 
 ### 发版流程
 

@@ -282,7 +282,7 @@ def admin_settings(user: dict = Depends(_require_admin)):
 @app.get("/api/admin/logs")
 def admin_logs(lines: int = 200, user: dict = Depends(_require_admin)):
     """读取系统日志尾部（供站长在后台排查问题）。"""
-    from .logger import LOG_FILE, read_logs
+    from ..logger import LOG_FILE, read_logs
     data = read_logs(lines)
     return {"logs": data, "log_file": str(LOG_FILE)}
 

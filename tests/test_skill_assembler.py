@@ -289,7 +289,6 @@ def test_db_unified_market_install_and_migration_idempotent():
         with db._connect() as conn:
             conn.execute("DELETE FROM skills WHERE source='user' AND owner_id=888882")
             conn.execute("DELETE FROM skills WHERE source='market' AND id=%s", (mid,))
-    # 迁移幂等：skills 已非空 → 跳过（不重复、不丢数据）
-    from deploy.migrate_skills_merge import run as migrate_run
-    result = migrate_run()
-    assert result.get("skipped") is True
+    # 收敛已完成（deploy/migrate_skills_merge.py 已随收敛完成删除）：
+    # 统一表 skills 非空（迁移幂等的前提已由一次性迁移满足），平台技能可用
+    assert db.list_skills(only_active=True)

@@ -771,6 +771,26 @@ class ProjectStore:
         data[str(chapter_no)] = dict(result or {})
         self._write_json(self.beat_gate_path(), data)
 
+    # ---------- 章末承诺台账（REQ-超长篇生成攻坚 S3.1） ----------
+    def pending_commitments_path(self) -> Path:
+        return self.dir / "pending_commitments.json"
+
+    def load_pending_commitments(self) -> dict:
+        """返回 {chapter_no: {committed[], missed[], planted[], must_carry_to_next[]}}。"""
+        d = self._read_json(self.pending_commitments_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_pending_commitments(self, chapter_no: int, ledger: dict) -> None:
+        """按章幂等覆盖写入承诺台账（唯一权威，供下章补偿块消费）。"""
+        data = self.load_pending_commitments()
+        data[str(chapter_no)] = dict(ledger or {})
+        self._write_json(self.pending_commitments_path(), data)
+
+    def prev_pending_commitments(self, chapter_no: int) -> Optional[dict]:
+        """取上一章（chapter_no-1）承诺台账，用于下章补偿块注入；无则返回 None。"""
+        data = self.load_pending_commitments()
+        return data.get(str(chapter_no - 1))
+
     # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
     def chapter_commit_path(self) -> Path:
         return self.dir / "chapter_commit.json"

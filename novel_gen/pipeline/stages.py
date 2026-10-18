@@ -362,14 +362,22 @@ class ChapterWriter:
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
-        首次读取后缓存；文件缺失/读取失败返回空串（调用方不注入，行为降级安全）。"""
+        首次读取后缓存；文件缺失/读取失败返回空串（调用方不注入，行为降级安全）。
+        S2.1 双锚开关治理：题材锚开关 `teardown_style_anchor` 默认关，关时一律不注入
+        （2026-10-14 朱雀归因实测为独立负面变量）。"""
+        if not getattr(self.cfg, "teardown_style_anchor", False):
+            return ""
         if self._anchor_loaded is None:
             self._anchor_loaded = self.store.load_teardown_style_anchor()
         return self._anchor_loaded
 
     def _personal_anchor(self) -> str:
         """REQ-双锚风格锚定：懒提取个人旧稿锚（用户人工编辑过的章节片段）。
-        无人工编辑章返回空串（调用方不注入）；提取失败静默返回空串（不阻塞生成）。"""
+        无人工编辑章返回空串（调用方不注入）；提取失败静默返回空串（不阻塞生成）。
+        S2.1 双锚开关治理：个人旧稿锚开关 `personal_style_anchor` 默认关，关时一律不注入
+        （个人锚无条件注入可能放大模板化表达，需显式开启）。"""
+        if not getattr(self.cfg, "personal_style_anchor", False):
+            return ""
         if self._personal_loaded is None:
             try:
                 self._personal_loaded = extract_personal_anchor(self.store.list_chapters())
@@ -438,6 +446,25 @@ class ChapterWriter:
                     return render_block(c.get("design") or {})
         except Exception:
             logger.exception("章级设计卡渲染失败（降级不注入）")
+        return ""
+
+    def _pending_compensation_block(self, chapter_no: int) -> str:
+        """REQ-超长篇生成攻坚 S3.1：上章漏兑现节点补偿块（软约束·硬承诺）。
+
+        读上章承诺台账，若有漏兑现节点则生成补偿块，下章写章 prompt 前段注入；
+        无漏兑现 / 开关关 / 无台账 / 异常 → 空串（不注入，零 token）。仿章末钩子块
+        拼进 memory_context，自动覆盖场景/整章/回退整章三条写章链路。
+        """
+        if not getattr(self.cfg, "pending_commitments", True):
+            return ""
+        try:
+            prev = self.store.prev_pending_commitments(chapter_no)
+            if not prev:
+                return ""
+            from .pending_commitments import compensation_block
+            return compensation_block(prev)
+        except Exception:
+            logger.exception("上章承诺补偿块注入失败（降级不注入）")
         return ""
 
     def _sys(self, system: str) -> str:
@@ -530,6 +557,15 @@ class ChapterWriter:
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
         )
         prev_tail = self._prev_tail(chapter_no)
+
+        # REQ S1.3 注入位置工程：到期必兑现的补偿块放 prompt 最前部（Lost in the Middle
+        # ——关键指令放首部，避免被中部大段设定/摘要淹没）；无漏兑现则空串（零 token）。
+        try:
+            _comp_block = self._pending_compensation_block(chapter_no)
+            if _comp_block:
+                memory_context = memory_context + "\n\n" + _comp_block if memory_context else _comp_block
+        except Exception:
+            logger.exception("上章承诺补偿块注入失败（降级跳过）")
 
         # 注入时间线提示
         plan_core_event = ""
@@ -865,13 +901,24 @@ class ChapterWriter:
         # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。
         try:
             if getattr(self.cfg, "beat_gate", False):
-                from .beat_gate import assess_chapter
+                from .beat_gate import assess_chapter, detect_chapter_type
+                # REQ S3.2：章型白名单（对话/过渡章不卡 fail）+ loose 匹配 + 节点分级
+                _loose = bool(getattr(self.cfg, "beat_loose_match", True))
+                _ctype = detect_chapter_type(content, plan_moves) \
+                    if getattr(self.cfg, "beat_chapter_type", True) else "剧情"
+                _priorities = None  # 大纲节点分级数据后续接入；未提供默认全 P1 向后兼容
                 _bg = assess_chapter(
                     content, plan_moves, plan_core_event,
                     min_coverage=float(getattr(self.cfg, "beat_gate_min_coverage", 0.6)),
                     warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
+                    chapter_type=_ctype, priorities=_priorities, loose=_loose,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
+                # REQ S3.1：章末承诺台账（beat_gate 后确定性落账，供下章补偿块消费）
+                if getattr(self.cfg, "pending_commitments", True):
+                    from .pending_commitments import build_commitment_ledger
+                    _ledger = build_commitment_ledger(_bg, chapter_no)
+                    self.store.save_pending_commitments(chapter_no, _ledger)
         except Exception:
             logger.exception("[BeatGate] 覆盖评估失败（降级不阻塞）: ch=%d", chapter_no)
         # P0-10 机制状态账本：本章末死亡次数/蚀化值确定性入记忆（零 LLM，失败静默）。

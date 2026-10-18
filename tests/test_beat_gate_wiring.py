@@ -61,6 +61,31 @@ def test_write_writes_beat_gate(store_with_outline):
     assert bg is not None, "beat_gate.json 未写入（接线失败）"
     assert bg["verdict"] in ("pass", "warn", "fail")
     assert bg["coverage"] is not None
+    # REQ S3.1：write() 后承诺台账同样落盘（接线到主链路）
+    assert store.load_pending_commitments().get("1") is not None
+
+
+@pytest.mark.p1
+def test_pending_commitments_wiring_and_compensation(store_with_outline):
+    """S3.1 接线：write() 落承诺台账；补偿块方法从上一章台账生成漏兑现补偿。"""
+    store = store_with_outline
+    cfg = store.load_config()
+    cfg.scene_split = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    body = ("陆沉在墟口拾荒时遭遇灰卒，被咬喉致死。随后他复活过来，"
+            "拿起铁锤砸碎了灰卒的核心。") * 60 + "【摘要】摘要"
+    llm.chat.return_value = body
+    writer = ChapterWriter(cfg, llm, store, Memory(store, 5))
+    writer.write(1, "第一章", "目标", None, silent=True)
+    ledger = store.load_pending_commitments().get("1")
+    assert ledger is not None, "承诺台账未落盘（S3.1 接线失败）"
+    assert "committed" in ledger and "must_carry_to_next" in ledger
+    # 补偿块：手工造一条含漏兑现的上一章台账 → 第2章补偿块非空
+    store.save_pending_commitments(1, dict(ledger, missed=["主角逃出灰雾"], must_carry_to_next=["主角逃出灰雾"]))
+    comp = writer._pending_compensation_block(2)
+    assert "上章未兑现节点补偿" in comp and "主角逃出灰雾" in comp
 
 
 @pytest.mark.p1

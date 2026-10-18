@@ -945,8 +945,11 @@ class NovelPipeline:
             return
         target_words = max(self.cfg.chapter_words, 500)
         # REQ-双锚风格锚定：循环外提取个人旧稿锚（有 user_edited 章才非空）+ 题材锚
-        personal_anchor = extract_personal_anchor(self.store.list_chapters())
-        teardown_anchor = self.store.load_teardown_style_anchor()
+        # S2.1 双锚开关治理：双锚开关默认全关——关时传空串不注入（默认路径零变化）
+        personal_anchor = extract_personal_anchor(self.store.list_chapters()) \
+            if getattr(self.cfg, "personal_style_anchor", False) else ""
+        teardown_anchor = self.store.load_teardown_style_anchor() \
+            if getattr(self.cfg, "teardown_style_anchor", False) else ""
         for ch in chapters:
             if len(ch.content) >= target_words:
                 if not silent:

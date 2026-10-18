@@ -76,6 +76,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "chapter_design", True, "章级设计卡（REQ-chapter-design 一期）：从大纲章级 conflict/emotion + 世界观 conflict_matrix 确定性派生逐章设计卡（冲突核心与升级阶梯/情绪落点/出场角色关系/对白功能），写章前幂等生成并注入正文 prompt 作正向创作指引；False=不生成不注入"),
     FeatureFlag("writing", "polish_hq_only", True, "整章润色仅高质量模式启用（REQ-token优化 P0-3：普通模式跳过润色，省整章输入+输出；False=普通模式也润色）"),
     FeatureFlag("writing", "teardown_style_anchor", False, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）；2026-10-14 朱雀归因实测为独立负面变量（无锚18.25% vs 有锚55.01% AI特征），决策默认关闭"),
+    FeatureFlag("writing", "personal_style_anchor", False, "个人旧稿文风锚（REQ-双锚风格锚定 + 超长篇攻坚 S2.1）：有 user_edited 人工修订章节时抽取其风格注入（弱约束）；默认关闭（个人锚无条件注入会引入作者风格但可能放大模板化表达，需显式开启）"),
     FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
@@ -94,6 +95,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
     FeatureFlag("review", "beat_gate_min_coverage", 0.6, "Beat 覆盖度通过阈值（三期 F1）：覆盖率≥此值=pass"),
     FeatureFlag("review", "beat_gate_warn_coverage", 0.4, "Beat 覆盖度警告阈值（三期 F1）：覆盖率<此值=fail，[warn,min)=warn"),
+    FeatureFlag("review", "beat_loose_match", True, "Beat loose 匹配（REQ-超长篇生成攻坚 S3.2）：覆盖判定时先做去标点/空白归一再匹配，缓解近义改写/标点差异导致的假阴性"),
+    FeatureFlag("review", "beat_chapter_type", True, "Beat 章型白名单（REQ-超长篇生成攻坚 S3.2）：正文确定性判定章型（对话/情绪/过渡），对话/情绪章自动降阈值或 skip，治'对话章 0% 被误判 fail'的误伤"),
+    FeatureFlag("review", "beat_node_priority", True, "Beat 节点分级（REQ-超长篇生成攻坚 S3.2）：大纲节点 P0/P1/P2 分级，覆盖率分母只算 P0+P1（P2 氛围节点不计入，防'非关键节点拉低覆盖'误伤）；未提供分级数据时默认全 P1 向后兼容"),
+    FeatureFlag("review", "pending_commitments", True, "章末承诺台账（REQ-超长篇生成攻坚 S3.1）：beat_gate 后确定性生成四类清单（已兑现/漏兑现/新埋/下章必补）落 pending_commitments.json，下章 chapter_design 注入补偿块；False=不读不写不注入"),
     FeatureFlag("review", "scene_inspector", True, "场景体检开关（三期 F2）：对已生成章节做字数/事件推进/重演/承接/钩子确定性体检并给修复建议"),
     FeatureFlag("review", "chain_of_thought", True, "思维链可视化开关（三期 F4）：聚合计划-产出-校验三段产物为只读视图"),
     FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
@@ -295,6 +300,7 @@ class NovelConfig:
     chapter_design: bool = feature_default("chapter_design")        # 章级设计卡（REQ-chapter-design 一期）：确定性派生逐章设计卡注入正文 prompt
     polish_hq_only: bool = feature_default("polish_hq_only")        # 整章润色仅高质量模式（REQ-token优化 P0-3）
     teardown_style_anchor: bool = feature_default("teardown_style_anchor")  # 拆书库题材文风锚：写手阶段注入同题材爆款文风与手法（REQ-双锚风格锚定）
+    personal_style_anchor: bool = feature_default("personal_style_anchor")  # 个人旧稿文风锚：有 user_edited 章则抽取其风格注入（S2.1 默认关）
     payoff_quota: bool = feature_default("payoff_quota")                    # 爽点配额：按题材校验章级节奏，未达成注入写章提示（REQ-reader-ledger）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
@@ -311,6 +317,10 @@ class NovelConfig:
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值
     beat_gate_warn_coverage: float = feature_default("beat_gate_warn_coverage") # F1 警告阈值
+    beat_loose_match: bool = feature_default("beat_loose_match")     # F1 覆盖判定前做去标点归一（S3.2）
+    beat_chapter_type: bool = feature_default("beat_chapter_type")   # F1 章型白名单：对话/情绪章降阈值或 skip（S3.2）
+    beat_node_priority: bool = feature_default("beat_node_priority") # F1 节点分级：P2 不计入覆盖率分母（S3.2）
+    pending_commitments: bool = feature_default("pending_commitments") # 章末承诺台账：漏兑现节点下章补偿注入（S3.1）
     scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
     chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写

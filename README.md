@@ -544,6 +544,10 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-18**：第二十七次部署（服务器代码 = master **e54383f**，**已上线**）——**第二十五/二十六/二十七次合并（门禁/质检正向影响改造 P0/P1/P2 + 前端交互收尾）+ 运维清理（删除一次性脚本 / 管理端日志修复 / Caddy→nginx）一次部署覆盖全部内容**：
+  - 上线内容：① 第二十五次合并 P0-1~P0-5 三层正向闭环（合规红线=删旧稿重写不落盘 / 首次教育分级 / 质检诊断回喂 / good 转正+多样性治理 / 追更欲正向锚+streak+进度盘）；② 第二十六次合并 P1/P2 全链路（Reflexion 反思笔记 / StageGate 增强旁路 / 建议指令库 / BeatGate 正向供给 / scene_inspector 闭环 / 重复正向替换供给 / SPC 控制图+变异测试防刷数 / 申诉撤销+误判率）；③ 第二十七次合并（P1-3-B 多版本候选 / P2-3 前端申诉按钮 / 进度盘同步全书质检视图）；④ 运维清理：删除技能收敛与 SQLite 迁移一次性脚本（deploy/*.py）、修复管理端系统日志 500（admin.py logger 导入路径 . → ..）、反代文档 Caddy 改 nginx、新增 `tests/test_admin_logs.py`。
+  - 回归：p0/p1 全量 **509 pytest 全绿**。部署：git archive master 打包 → workbench upload → 解压 /opt/novel-gen → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+
 - **2026-10-18**：第二十五次合并（devtest → master，**96bb478，未部署**）——**门禁/质检正向影响改造 P0-1~P0-5（feat/req-positive-gating）**：把门禁/质检从「负向查错-打回」升级为「三层正向闭环」（生成前预防 / 生成中引导 / 生成后反馈）。依据《门禁质检正向影响调研报告_2026-10-18.md》（跨行业 6 领域收敛的 5+1 类正向模式）：
   - **P0-1 合规红线 = 删旧稿重写不落盘**：合规命中（`safety._COMPLIANCE_RULE_CAT` 9 词表 → 露骨色情描写/危险行为教唆/未成年人性化 3 大类）强制 `_rewrite_whole(skip_original=True)` 整章全新重写；最终稿仍违规 → `compliance_rejected=True`，stages 有健康旧版保留旧版、无旧版整体不落盘/不入版本库；best 择优与兜底排除合规稿。新增 `pipeline/compliance.py`（has_compliance / compliance_categories / compliance_education_block）。
   - **P0-2 首次教育分级**：`basic_content_check_structured` 结构化合规校验（issue 带 rule_category/rule_phrase）；`compliance_education_block` 指向内容不指向人（M6 文化层），book_memory `mark_compliance_educated` 本书内首次去重。

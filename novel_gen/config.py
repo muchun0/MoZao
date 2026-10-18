@@ -125,6 +125,16 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("guard", "quality_check", True, "章级 ReaderAgent 结果自校验（agent_guard.quality_check）"),
     FeatureFlag("guard", "json_schema_output", True, "JSON 输出约束（超长篇攻坚 S4.3）：chat_json 时 provider 支持则传 response_format json_object，消除解析重试；provider 不支持自动降级 parse_tip 路径"),
     FeatureFlag("guard", "prefix_cache_aligned", True, "前缀缓存对齐（超长篇攻坚 S4.1）：提示词稳定前缀（system+固定设定+风格锚）前置、变化内容置后，使跨调用前缀逐字节一致以命中 DeepSeek 前缀缓存价；并埋 cache_hit 验证命中率"),
+    # ---- 门禁质检正向影响（REQ-门禁质检正向影响）：负向检查→正向闭环 ----
+    FeatureFlag("review", "compliance_clean_rewrite", True, "P0-1 合规红线删旧稿重写：合规命中（basic_content_check 9 条硬词表）时强制整章重写、prompt 不携带【当前正文】、best 择优跳过合规稿、无健康旧版时不落盘；False=回落现有定点重写/落盘行为"),
+    FeatureFlag("review", "compliance_education", True, "P0-2 合规首次教育：本书内某 rule_category 首次命中时，重写 prompt 注入「该内容违反平台合规要求+如何正面改写」教育块（重复命中只重写不重复教育）；False=仅删旧稿重写不教育"),
+    FeatureFlag("review", "diag_feedback", True, "P0-3 质检诊断回喂：issue 补 fix_suggestion/expected_gain，重写 prompt 用带建议的 issue_block（reask 非盲重写）；False=回退旧 issue_block 格式（仅 type+detail）"),
+    FeatureFlag("review", "good_pool_layer", True, "P0-4 good 账本分层入账：通过即入账（记录层无条件），注入层分示范池(demo)/候选池(cand)；hook>=4 或 score>=85 入 demo；False=回落原「score>=85 且无大改」门槛"),
+    FeatureFlag("review", "good_src_isolation", True, "P0-4 good 来源隔离：外部/用户样例直接入 demo，本作自产片段只作风格锚且 demo 中限量；False=不区分来源"),
+    FeatureFlag("review", "good_rotate", True, "P0-4 good 采样轮换：每类在近窗口内按 index 轮换选取 + 跨章相似度控制，防永远锁最近几章导致套路重复；False=回落原「每类取最新」"),
+    FeatureFlag("review", "style_homogeneity_check", True, "P0-4 手法/句式层同质度度量：跨章某类手法/句式使用率持续上升时产出软提示 issue 并降该类注入权重（防古德哈特）；False=关闭同质度检测"),
+    FeatureFlag("review", "hook_positive_anchor", True, "P0-5 追更欲正向锚：hook>=4 的章片段入 good 示范池 + hook_streak 账本累计；False=关闭正向锚与 streak"),
+    FeatureFlag("review", "hook_streak_freeze", True, "P0-5 streak 容错：连续达标中断时允许 1 次 freeze（不重置）；False=断签即重置"),
 ]
 
 
@@ -343,6 +353,16 @@ class NovelConfig:
     outline_far_skip: int = feature_default("outline_far_skip")                # 远期大纲窗口阈值（S3.6）：距当前章>N 视为远期排除
     beat_fail_judge: bool = feature_default("beat_fail_judge")                 # fail 章 LLM 二级复核（S3.4）：确认未兑现清单防误报，默认关
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
+    # ---- 门禁质检正向影响（REQ-门禁质检正向影响，默认见 FEATURE_FLAGS）----
+    compliance_clean_rewrite: bool = feature_default("compliance_clean_rewrite")  # P0-1 合规删旧稿重写
+    compliance_education: bool = feature_default("compliance_education")          # P0-2 合规首次教育
+    diag_feedback: bool = feature_default("diag_feedback")                        # P0-3 质检诊断回喂
+    good_pool_layer: bool = feature_default("good_pool_layer")                    # P0-4 good 分层入账
+    good_src_isolation: bool = feature_default("good_src_isolation")              # P0-4 good 来源隔离
+    good_rotate: bool = feature_default("good_rotate")                            # P0-4 good 采样轮换
+    style_homogeneity_check: bool = feature_default("style_homogeneity_check")    # P0-4 手法/句式同质度
+    hook_positive_anchor: bool = feature_default("hook_positive_anchor")          # P0-5 追更欲正向锚+streak
+    hook_streak_freeze: bool = feature_default("hook_streak_freeze")              # P0-5 streak 容错
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

@@ -612,12 +612,29 @@ def test_record_good_high_score_chapter(store):
     assert all(int(s["src_ch"]) == 1 for s in samples)
 
 
-def test_record_good_ignores_low_score_or_big_issue(store):
+def test_record_good_pool_layer_ingest(store):
+    """P0-4 分层入账（good_pool_layer 开）：记录层无条件沉淀 + 注入层 demo/cand 分层。
+    - score 84（<85）无大改 → 入 cand（非 demo）；
+    - score 90 无大改 → 入 demo；
+    - 有大改（任意 score）→ 一律不入账。
+    """
     mem = _memory(store)
-    assert mem.record_good(1, _good_text(), 84, []) == 0
-    assert mem.record_good(2, _good_text(), 90,
+    n1 = mem.record_good(1, _good_text(), 84, [])
+    assert n1 > 0  # 84<85 无大改 → 通过即入账（P0-4 记录层无条件沉淀）
+    s1 = mem.load()["goods"]["samples"]
+    assert s1 and all(s["level"] == "cand" and s["src_type"] == "book" for s in s1)
+    assert mem.record_good(2, _good_text(), 90, []) > 0
+    assert mem.record_good(3, _good_text(), 90,
                            [{"type": "机制数字-方向违规", "level": "大改"}]) == 0
-    assert mem.load()["goods"]["samples"] == []
+    samples = mem.load()["goods"]["samples"]
+    assert len(samples) > 0
+    # 第3章（大改）未入账；demo 池仅第2章（90分）、cand 池仅第1章（84分）
+    assert all(int(s["src_ch"]) in (1, 2) for s in samples)
+    demo = [s for s in samples if s["level"] == "demo"]
+    cand = [s for s in samples if s["level"] == "cand"]
+    assert demo and cand
+    assert all(int(s["src_ch"]) == 2 for s in demo)
+    assert all(int(s["src_ch"]) == 1 for s in cand)
 
 
 def test_record_good_per_chapter_dedupe_and_capacity(store):

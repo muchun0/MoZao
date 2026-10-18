@@ -821,6 +821,44 @@ class ProjectStore:
         data[str(chapter_no)] = dict(metric or {})
         self._write_json(self.quality_metrics_path(), data)
 
+    # ---------- 申诉撤销 / 误判率指标（P2-3） ----------
+    def appeals_path(self) -> Path:
+        return self.dir / "appeals.json"
+
+    def load_appeals(self) -> list:
+        """返回申诉列表 [{id, chapter, issue_type, reason, status, created_at},...]。"""
+        d = self._read_json(self.appeals_path(), [])
+        return d if isinstance(d, list) else []
+
+    def save_appeal(self, appeal: dict) -> None:
+        """追加一条申诉（id 由调用方生成）；写后立即回读。"""
+        data = self.load_appeals()
+        data.append(dict(appeal or {}))
+        self._write_json(self.appeals_path(), data)
+
+    def mark_appeal_overturned(self, appeal_id: str) -> bool:
+        """撤销一条申诉（误判兜底）：status -> overturned。返回是否找到并修改。"""
+        data = self.load_appeals()
+        changed = False
+        for it in data:
+            if str(it.get("id")) == str(appeal_id):
+                it["status"] = "overturned"
+                changed = True
+        if changed:
+            self._write_json(self.appeals_path(), data)
+        return changed
+
+    def misjudge_rate(self) -> dict:
+        """误判率指标：overturned/total（申诉撤销即认定为一次误判）。无申诉返回 0。"""
+        data = self.load_appeals()
+        total = len(data)
+        overturned = sum(1 for it in data if it.get("status") == "overturned")
+        return {
+            "appeals": total,
+            "overturned": overturned,
+            "rate": round(overturned / total, 3) if total else 0.0,
+        }
+
     # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
     def chapter_commit_path(self) -> Path:
         return self.dir / "chapter_commit.json"

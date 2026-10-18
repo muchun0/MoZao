@@ -22,7 +22,7 @@
         <el-input v-model="form.base_url" placeholder="留空用默认，如 https://api.deepseek.com/v1" />
       </el-form-item>
       <el-form-item label="模型名">
-        <el-input v-model="form.model" placeholder="留空用默认，如 deepseek-chat" />
+        <el-input v-model="form.model" placeholder="留空用默认，如 deepseek-flash" />
       </el-form-item>
     </el-form>
     <template #footer>

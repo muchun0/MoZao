@@ -24,6 +24,7 @@ from .skills import *  # noqa: F401,F403
 from .style_roles import *  # noqa: F401,F403
 from .teardowns import *  # noqa: F401,F403
 from .traces import *  # noqa: F401,F403
+from .config import *  # noqa: F401,F403
 
 # 模块加载时初始化（建表 + 老数据补全 + 风格角色种子化）。
 # 必须在全部子模块导入完成之后调用：init_db 内部延迟导入的

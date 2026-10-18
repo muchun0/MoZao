@@ -105,6 +105,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "outline_far_skip", 30, "远期大纲窗口阈值（超长篇攻坚 S3.6）：距当前章>N 的节点视为远期，beat_gate 判定时排除"),
     FeatureFlag("review", "beat_fail_judge", False, "fail 章 LLM 二级复核（超长篇攻坚 S3.4）：仅对 beat_gate=fail 章跑 1 次 pointwise judge 确认未兑现清单（anti-length、judge 异模型族），防误报；返回未兑现清单才进 L3 定点重写；默认 False（启用待自建 20-50 章人工标注集验证一致率>80%）"),
     FeatureFlag("review", "editor_diff_revise", True, "编辑质检修正改 diff 式（REQ-token优化 P1-6）：只输出需改字段，Python 合并回大纲，不重吐全大纲 JSON"),
+    FeatureFlag("review", "outline_multi_candidate", True, "P1-3-B 编辑质检多版本候选：审稿未通过时生成 2-3 个不同侧重(结构/人物/钩子)的修订候选存 store，由用户挑选(Sudowrite 式)，而非自动采用单一 diff；False=保持自动修正"),
     # ---- 三期：Beat 覆盖度门禁 / 场景体检 / 思维链可视化（产品化）----
     FeatureFlag("review", "beat_gate", True, "Beat 覆盖度门禁（三期 F1）：正文生成后自检对章计划（大纲 core_event/character_moves）拍序列的覆盖率，分级记录到 beat_gate.json（检测+提示，不独立重生成）"),
     FeatureFlag("review", "beat_gate_min_coverage", 0.6, "Beat 覆盖度通过阈值（三期 F1）：覆盖率≥此值=pass"),
@@ -135,6 +136,11 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "style_homogeneity_check", True, "P0-4 手法/句式层同质度度量：跨章某类手法/句式使用率持续上升时产出软提示 issue 并降该类注入权重（防古德哈特）；False=关闭同质度检测"),
     FeatureFlag("review", "hook_positive_anchor", True, "P0-5 追更欲正向锚：hook>=4 的章片段入 good 示范池 + hook_streak 账本累计；False=关闭正向锚与 streak"),
     FeatureFlag("review", "hook_streak_freeze", True, "P0-5 streak 容错：连续达标中断时允许 1 次 freeze（不重置）；False=断签即重置"),
+    FeatureFlag("review", "reflexion_note", True, "P1-1 Reflexion 反思笔记：重写 >=2 轮仍未通过时，让 LLM 写一句「错在哪、下次怎么写对」存入 book_memory.reflections，后续章生成注入为先验；False=关闭反思入账（仅记录失败不留反思）"),
+    FeatureFlag("review", "enhance_pass", False, "P1-2 StageGate 正向增强旁路：质检通过(无大改)但仍有 warn 级问题或追更欲未满时，可选触发一次 LLM 增强润色(钩子更强/爽点更密/伏笔呼应)，复检通过且分数不降才采纳，否则保留原稿；受 AgentGuard 成本账约束(与重写共用 revise 限额)；默认关控成本，开启才增强"),
+    FeatureFlag("review", "suggestion_lib", True, "P1-3 EditorReviewer 建议指令库：编辑审稿建议按手法分类(对话/战斗/情绪/环境/叙事)沉淀进 book_memory.suggestion_lib，写章生成时注入复用；False=建议仅审稿时展示，不入库不注入"),
+    FeatureFlag("review", "beat_positive_supply", True, "P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往哪个方向写」的示范指引(零LLM规则模板)存入 beat_gate，下一章生成时注入兑现；False=beat_gate 仅负向报漏不供给方向"),
+    FeatureFlag("review", "repetition_direction", True, "P2-1 RepetitionDetector 正向替换供给：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让模型知道往哪走；False=重写仅禁重复不给新方向"),
 ]
 
 
@@ -179,7 +185,8 @@ def _coerce_feature(raw, default):
 # 各 Provider 的默认模型与默认 base_url（OpenAI 兼容协议）
 PROVIDER_DEFAULTS: dict[str, dict] = {
     "deepseek": {
-        "model": "deepseek-chat",
+        # 2026-10-18：deepseek-chat 已由官方停用（2026-07-24 弃用），当前模型名为 deepseek-flash（DeepSeek-V4.1-Flash-1017）
+        "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com",
         "env_key": "DEEPSEEK_API_KEY",
     },
@@ -353,6 +360,7 @@ class NovelConfig:
     outline_far_skip: int = feature_default("outline_far_skip")                # 远期大纲窗口阈值（S3.6）：距当前章>N 视为远期排除
     beat_fail_judge: bool = feature_default("beat_fail_judge")                 # fail 章 LLM 二级复核（S3.4）：确认未兑现清单防误报，默认关
     editor_diff_revise: bool = feature_default("editor_diff_revise") # 编辑质检 diff 式修正（REQ-token优化 P1-6）
+    outline_multi_candidate: bool = feature_default("outline_multi_candidate")  # P1-3-B 多版本候选
     # ---- 门禁质检正向影响（REQ-门禁质检正向影响，默认见 FEATURE_FLAGS）----
     compliance_clean_rewrite: bool = feature_default("compliance_clean_rewrite")  # P0-1 合规删旧稿重写
     compliance_education: bool = feature_default("compliance_education")          # P0-2 合规首次教育
@@ -363,6 +371,11 @@ class NovelConfig:
     style_homogeneity_check: bool = feature_default("style_homogeneity_check")    # P0-4 手法/句式同质度
     hook_positive_anchor: bool = feature_default("hook_positive_anchor")          # P0-5 追更欲正向锚+streak
     hook_streak_freeze: bool = feature_default("hook_streak_freeze")              # P0-5 streak 容错
+    reflexion_note: bool = feature_default("reflexion_note")                      # P1-1 Reflexion 反思笔记
+    enhance_pass: bool = feature_default("enhance_pass")                          # P1-2 StageGate 增强旁路
+    suggestion_lib: bool = feature_default("suggestion_lib")                      # P1-3 建议指令库
+    beat_positive_supply: bool = feature_default("beat_positive_supply")          # P1-4 BeatGate 正向供给
+    repetition_direction: bool = feature_default("repetition_direction")          # P2-1 重复正向替换供给
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

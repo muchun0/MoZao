@@ -93,10 +93,10 @@
 | 文件 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
-| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照 `user_memory_snapshot.json`，webapp 写 / novel_gen 读，幂等+失败降级，接入全部生成入口）与 `_distill_user_memory`（书级→用户级蒸馏，生成完成/批量 finally 触发，幂等） |
+| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照 `user_memory_snapshot.json`，webapp 写 / novel_gen 读，幂等+失败降级，接入全部生成入口）与 `_distill_user_memory`（书级→用户级蒸馏，生成完成/批量 finally 触发，幂等）；**后台开关管理** `_apply_global_overrides`（sys_config 表为准 → 内存态覆盖 cfg 顶层/agent_guard 子项/scene_limits，`_open_pipeline` 内 load_config 之后注入，DB 异常降级留痕） |
 | `user_memory.py` | **用户级记忆库服务（跨书创作偏好继承）**：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像 preferences/跨书纪律 disciplines/个人文风锚 style_anchors/stats），`record_project_signals`（新书显式输入，按项目幂等）、`record_edits`（人工修订跨书锚，上限 30）、`distill`（书级 pitfalls/taste 蒸馏，全量重算式幂等）、`build_snapshot`（题材匹配过滤+上限裁剪→注入快照）、`summary/clear`；全部写路径零额外 LLM |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -120,7 +120,7 @@
 | `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记 |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
-| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4） |
+| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（94 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 
 > 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
 
@@ -131,7 +131,7 @@
 | `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools` 按域分文件 |
 | `router/index.js` | 路由表（登录/书案/详情/后台） |
 | `stores/` | Pinia：`auth.js`（登录态）、`project.js`（当前项目） |
-| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本） |
+| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab：按 memory/writing/review/guard 分组渲染 94 个生成引擎开关（switch/input-number/select/input），保存即全局生效**） |
 | `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`layouts/MainLayout` |
 | `style.css` | 全局样式（深夜书房 × AI 工坊视觉语言） |
 
@@ -160,6 +160,7 @@
 | `refund_requests` | 退款申请与处理 |
 | `skills` | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限/信任；platform=管理员可信、user/market=用户可写（拼 system 前清洗）；含 role/applicable_stages/version/downloads/market_id；旧 `writing_skills`/`user_skills`/`skill_market` 保留不 DROP（迁移回退） |
 | `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
+| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（94 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
 | `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险 |
 
 ## 4. 关键数据流
@@ -187,6 +188,7 @@
 | 输入/输出防护（模块3） | API 输入注入检测（命中 400）+ 拼 system 前清洗（custom_prompt/skill/用户技能）+ 输出基础合规校验 | 防 Prompt 注入篡改系统约束；正常创作输入零误报 |
 | 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace | 减少人工返工；异常降级不阻塞 |
 | 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
+| 全局开关覆盖（后台管理） | `FEATURE_FLAGS` 注册表 = 默认值唯一事实来源；`init_db` seed 幂等同步进 `sys_config`（新增开关自动入表）；`_open_pipeline` 内 `_apply_global_overrides` 以表为准内存态覆盖 cfg（顶层/agent_guard/scene_limits），**config.json 项目快照不迁移不改写**；DB 异常降级走快照/默认并留痕 | 运行时开关收敛到管理后台、以表中数据为准；新增开关历史项目零迁移统一生效（用户核心动机） |
 
 ## 6. 部署架构
 

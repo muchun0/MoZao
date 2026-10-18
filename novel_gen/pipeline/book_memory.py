@@ -78,6 +78,8 @@ def _empty() -> dict:
         "goods": {"samples": []},
         "compliance_educated": [],   # P0-2：本书已注入过首次合规教育的 rule_category 列表
         "hook_streak": {"current": 0, "max": 0, "freeze_used": False},  # P0-5 追更欲连续达标
+        "reflections": [],           # P1-1 Reflexion：重写 >=2 轮仍未通过后 LLM 写的反思笔记
+        "suggestion_lib": {},        # P1-3 EditorReviewer 建议指令库：{category: [建议,...]}（按手法分类沉淀）
     }
 
 
@@ -420,6 +422,100 @@ class BookMemory:
                 st["current"] = 0
         self.save()
         return dict(st)
+
+    # ---------- 反思账本（P1-1 Reflexion）----------
+    # 重写 >=2 轮仍未通过 → LLM 用一句话写「错在哪、下次怎么写对」入账；
+    # 后续章生成时注入为先验（正反馈闭环：反复失败不是静默吞掉，而是转成下一章的先验）。
+    _REFLEXION_CAP = 8   # 只保留最近 N 条反思（防账本无限膨胀）
+
+    def record_reflection(self, chapter_no: int, note: str) -> bool:
+        """P1-1：把一句反思笔记入账（失败/空文本静默返回 False，不阻塞主流程）。"""
+        note = (note or "").strip()
+        if not self.enabled or not note:
+            return False
+        data = self.load()
+        refs = data.setdefault("reflections", [])
+        refs.append({"chapter": int(chapter_no or 0), "note": note})
+        data["reflections"] = refs[-self._REFLEXION_CAP:]
+        self.save()
+        return True
+
+    def reflection_block(self, chapter_no: int, max_n: int = 2) -> str:
+        """P1-1 注入块：取当前章之前最近的反思笔记作先验（空账本/关闭 → 空串）。
+
+        章节顺序生成：chapter_no 章生成时会读到 chapter<=chapter_no 的历史教训，
+        让「上一章反复没写对的地方」直接带到下一章，避免同一类错误跨章复发。
+        """
+        if not self.enabled:
+            return ""
+        refs = (self.load().get("reflections") or [])
+        cur = int(chapter_no or 0)
+        near = [r for r in refs if int(r.get("chapter", 0)) <= cur]
+        near = near[-max(1, int(max_n or 1)):]
+        lines = [f"第{r.get('chapter')}章教训：{r.get('note')}" for r in near
+                 if (r.get("note") or "").strip()]
+        if not lines:
+            return ""
+        return "【本作反思笔记（此前章节反复未过的教训，避免重蹈）】\n" + "\n".join(lines)
+
+
+    # ---------- 建议指令库（P1-3 EditorReviewer 建议沉淀）----------
+    # 把「编辑审稿的建议/优先动作」从 LLM 自由文本沉淀为按手法分类的正向指令库，
+    # 写章生成时注入——建议不再是「审稿时的一次性展示」，而是「后续写作的复用指令」。
+    # 分类框架复用 good 账本的 _GOOD_CATS（对话-潜台词 / 战斗-动作链 / 情绪-白描+点破 /
+    # 环境-物象白描 / 叙事-节奏），零额外 LLM，确定性关键词分类。
+    _SUGGEST_CAP = 20   # 每类指令库上限（防膨胀）
+
+    def record_suggestions(self, texts: list) -> int:
+        """把 EditorReview.suggestions/priority_actions 按手法分类沉淀进指令库。
+        去重；空文本/关闭 → 0；返回实际入账条数。"""
+        if not self.enabled:
+            return 0
+        data = self.load()
+        lib = data.setdefault("suggestion_lib", {})
+        n = 0
+        for t in texts or []:
+            t = (t or "").strip()
+            if not t:
+                continue
+            cat = self._classify_suggestion(t)
+            bucket = lib.setdefault(cat, [])
+            if t not in bucket:
+                bucket.append(t)
+                lib[cat] = bucket[-self._SUGGEST_CAP:]
+                n += 1
+        if n:
+            self.save()
+        return n
+
+    def _classify_suggestion(self, text: str) -> str:
+        """按手法关键词把一条建议归类到 _GOOD_CATS 之一（fallback 叙事-节奏）。"""
+        kw_map = {
+            "对话-潜台词": ("潜台词", "对白", "台词", "言外", "对话", "口是心非", "弦外之音"),
+            "战斗-动作链": ("战斗", "打斗", "动作", "招式", "搏杀", "交锋", "打戏"),
+            "情绪-白描+点破": ("情绪", "情感", "白描", "点破", "内心", "心理", "感受", "心境"),
+            "环境-物象白描": ("环境", "景物", "物象", "场景", "氛围", "画面", "物"),
+        }
+        for cat, kws in kw_map.items():
+            if any(k in text for k in kws):
+                return cat
+        return "叙事-节奏"
+
+    def suggestion_block(self, max_cats: int = 2) -> str:
+        """P1-3 注入块：从指令库取前几个分类各 1 条正向建议（带类别标签）。空库 → 空串。"""
+        if not self.enabled:
+            return ""
+        lib = self.load().get("suggestion_lib") or {}
+        parts = []
+        for cat in self._GOOD_CATS:
+            bucket = lib.get(cat) or []
+            if bucket:
+                parts.append(f"[{cat}] {bucket[0]}")
+            if len(parts) >= max(1, int(max_cats or 1)):
+                break
+        if not parts:
+            return ""
+        return "【本作编辑建议（正向写作手法指令，择优采用，勿生硬照搬）】\n" + "\n".join(parts)
 
 
     # ---------- good 账本（REQ-写作正向引导 5.6：踩坑 + 正向样例双账本）----------

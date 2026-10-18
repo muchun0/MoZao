@@ -100,6 +100,20 @@
             <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
               <span v-if="reviewSummary.score_avg">｜平均质检分 {{ reviewSummary.score_avg }}/100</span>
             </div>
+            <!-- P0-5/P1：进度盘色带（与 Admin 质量报表一致：未过红/追更>=4绿/自动重写黄/通过灰） -->
+            <div v-if="(reviewSummary.chapter_status||[]).length" class="progress-strip">
+              <div class="progress-dots">
+                <span v-for="s in reviewSummary.chapter_status" :key="s.chapter" class="dot"
+                      :class="'dot-' + (s.color||'gray')"
+                      :title="`第${s.chapter}章 质检${s.score ?? '—'}分${s.passed?' ✓':' ✗'}${s.hook_score!=null?` 追更${s.hook_score}/5`:''}${s.auto_revised?' 自动重写':''}`"></span>
+              </div>
+              <div class="progress-legend">
+                <span><i class="dot dot-red"></i>未过</span>
+                <span><i class="dot dot-green"></i>追更≥4</span>
+                <span><i class="dot dot-yellow"></i>自动重写</span>
+                <span><i class="dot dot-gray"></i>通过</span>
+              </div>
+            </div>
             <div v-if="Object.keys(reviewSummary.issue_by_type||{}).length" class="summary-line">
               问题类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
             </div>
@@ -477,6 +491,14 @@ onUnmounted(stopBatchPolling)
 .tag-score { background: #ecf5ff; color: #409eff; padding: 0 6px; border-radius: 3px; font-size: 11px; }
 .summary-box { background: #eef2ff; border: 1px solid #d8e0ff; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
 .summary-line { margin-top: 4px; color: #33415c; }
+.progress-strip { margin-top: 8px; padding: 6px 8px; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; }
+.progress-dots { display: flex; flex-wrap: wrap; gap: 4px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+.dot-red { background: #f56c6c; }
+.dot-green { background: #67c23a; }
+.dot-yellow { background: #e6a23c; }
+.dot-gray { background: #c0c4cc; }
+.progress-legend { display: flex; gap: 12px; margin-top: 6px; font-size: 12px; color: #909399; }
 .verify-block { margin-top: 8px; }
 .final-review-box { background: #f0f9eb; border: 1px solid #d4ecc9; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
 .review-issue { font-size: 12px; color: #606266; padding: 2px 0; line-height: 1.5; }

@@ -59,3 +59,27 @@ def test_summary_no_score():
     assert s["score_avg"] == 90.0
     s2 = build_review_summary([{"chapter": 1, "issues": []}], [])
     assert s2["score_avg"] is None
+
+
+@pytest.mark.p2
+def test_chapter_status_colors():
+    """进度盘色带四色（P0-5/P1）：未过=红 / 追更>=4=绿 / 自动重写=黄 / 通过=灰。"""
+    items = [
+        {"chapter": 1, "issues": [], "quality_check": {"score": 60, "passed": False}},          # 未过 → 红
+        {"chapter": 2, "issues": [], "quality_check": {"score": 88, "passed": True, "hook_score": 4}},  # 追更4 → 绿
+        {"chapter": 3, "auto_revised": True, "issues": [], "quality_check": {"score": 80, "passed": True}},  # 自动重写 → 黄
+        {"chapter": 4, "issues": [], "quality_check": {"score": 85, "passed": True}},              # 通过 → 灰
+    ]
+    s = build_review_summary(items, [])
+    cs = s["chapter_status"]
+    assert len(cs) == 4
+    assert [c["color"] for c in cs] == ["red", "green", "yellow", "gray"]
+    assert cs[0]["chapter"] == 1 and cs[0]["passed"] is False
+    assert cs[1]["hook_score"] == 4
+    assert cs[3]["score"] == 85
+
+
+@pytest.mark.p2
+def test_chapter_status_empty():
+    s = build_review_summary([], [])
+    assert s["chapter_status"] == []

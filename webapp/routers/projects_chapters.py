@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """projects_chapters路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
+from fastapi import Body  # P2-3 申诉接口 body（core 未导出）
 from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
@@ -474,12 +475,60 @@ def scene_inspect_chapter(project_id: str, no: int, user: dict = Depends(_requir
     cfg = store.load_config()
     if not getattr(cfg, "scene_inspector", True):
         raise HTTPException(status_code=400, detail="场景体检已关闭")
-    from novel_gen.pipeline.scene_inspector import inspect_chapter
+    from novel_gen.pipeline.scene_inspector import inspect_chapter, collect_suggestions
     report = inspect_chapter(store, no, target_words=int(getattr(cfg, "chapter_words", 0) or 0))
+    # P1-5 读时体检 → 生成反馈闭环：把 bad/warn 维度的建议沉淀进 store，
+    # 下一章生成时自动携带（失败静默，不阻塞体检展示）。
+    try:
+        store.save_inspector_suggestions(no, collect_suggestions(report))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("场景体检建议落盘失败（降级，仅展示不闭环）", exc_info=True)
     # 附带 beat 覆盖门禁结果（F1 落盘产物）
     bg = store.load_beat_gate().get(str(no))
     report["beat_gate"] = bg
     return report
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/appeal")
+def appeal_quality(project_id: str, no: int,
+                   reason: str = Body(..., description="申诉理由"),
+                   issue_type: str = Body("", description="被申诉的质检问题类型"),
+                   user: dict = Depends(_require_user)):
+    """P2-3 申诉撤销：用户对某章质检/合规判罚发起申诉（误判兜底）。
+
+    申诉沉淀进 store.appeals.json；合规词表命中=疑似可能误报，作者可据此申诉。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    aid = f"a{int(time.time() * 1000)}{no}"
+    store.save_appeal({
+        "id": aid, "chapter": no,
+        "issue_type": (issue_type or "").strip(),
+        "reason": (reason or "").strip(),
+        "status": "pending", "created_at": int(time.time()),
+    })
+    return {"appeal_id": aid, "status": "pending"}
+
+
+@app.post("/api/projects/{project_id}/appeals/{appeal_id}/overturn")
+def overturn_appeal(project_id: str, appeal_id: str,
+                    user: dict = Depends(_require_user)):
+    """P2-3 申诉撤销：把一条申诉标记为撤销（overturned），计入误判率。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    ok = store.mark_appeal_overturned(appeal_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="申诉不存在")
+    return {"overturned": True, "misjudge": store.misjudge_rate()}
+
+
+@app.get("/api/projects/{project_id}/appeals")
+def list_appeals(project_id: str, user: dict = Depends(_require_user)):
+    """P2-3 申诉列表 + 误判率指标（只读）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    return {"appeals": store.load_appeals(), "misjudge": store.misjudge_rate()}
 
 
 @app.get("/api/projects/{project_id}/chapters/{no}/chain-of-thought")

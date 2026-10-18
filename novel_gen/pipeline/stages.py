@@ -609,6 +609,60 @@ class ChapterWriter:
             logger.exception("挂账镜头注入失败（降级不注入）")
         return "\n\n".join(parts) if parts else ""
 
+    # P1-4 BeatGate 正向供给（REQ-门禁质检正向影响 P1-4）：missing 拍「不仅列漏了，
+    # 还给往哪写」——零 LLM 规则模板，把上章未兑现拍转成下一章的推进方向示范。
+    _BEAT_POSITIVE_DIRS = (
+        "让主角主动采取行动去达成该目标，让行动成为情节推进的引擎",
+        "安排一个障碍或对抗，把缺口转成张力与冲突",
+        "通过关键对话或旁白自然引出该信息，避免信息硬塞",
+        "让前文埋下的伏笔在此处呼应兑现，形成闭环",
+    )
+
+    def _beat_positive_hints(self, missing) -> str:
+        """把 missing 拍清单转成「可往哪个方向写」的示范块（空 → 空串）。"""
+        if not missing:
+            return ""
+        lines = []
+        for i, m in enumerate(missing[:4]):
+            m = str(m).strip()
+            if not m:
+                continue
+            d = self._BEAT_POSITIVE_DIRS[i % len(self._BEAT_POSITIVE_DIRS)]
+            lines.append(f"「{m}」→ 可往：{d}")
+        if not lines:
+            return ""
+        return ("【上章未兑现拍的推进方向（本章生成时优先兑现，避免欠账）】\n"
+                + "\n".join(lines))
+
+    def _beat_positive_block(self, chapter_no: int) -> str:
+        """读上一章 beat_gate 的 positive_hints，注入本章生成（空/关闭/异常 → 空串）。"""
+        if not getattr(self.cfg, "beat_positive_supply", True):
+            return ""
+        try:
+            _bg_all = self.store.load_beat_gate()
+            _prev = _bg_all.get(str(int(chapter_no) - 1)) or {}
+            hints = _prev.get("positive_hints") or ""
+            return hints if isinstance(hints, str) else ""
+        except Exception:
+            logger.exception("beat 正向供给注入失败（降级跳过）")
+            return ""
+
+    def _inspector_block(self, chapter_no: int) -> str:
+        """P1-5 场景体检建议闭环：读上一章体检沉淀的 bad/warn 建议，注入本章生成。
+        空/关闭/异常 → 空串（降级安全，不阻塞写章）。"""
+        if not getattr(self.cfg, "scene_inspector", True):
+            return ""
+        try:
+            _sug = self.store.load_inspector_suggestions().get(str(int(chapter_no) - 1)) or []
+            _sug = [str(s) for s in _sug if str(s).strip()]
+            if not _sug:
+                return ""
+            lines = "\n".join(f"- {s}" for s in _sug[:4])
+            return "【上一章场景体检的改进建议（本章写作时规避或落实）】\n" + lines
+        except Exception:
+            logger.exception("场景体检建议注入失败（降级跳过）")
+            return ""
+
     def _next_chapter_exempt_type(self, chapter_no: int) -> str:
         """S3.3 L2 章型豁免：读大纲本章 tag，命中高潮/战斗/对话等 → 返回章型名（挂账镜头豁免）。
 
@@ -800,6 +854,46 @@ class ChapterWriter:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _good
         except Exception:
             logger.exception("good 账本注入失败（降级跳过，不阻塞写章；但 good 质感引导缺失）")
+
+        # P1-1 Reflexion 反思笔记注入（此前章节反复未过的教训，作为写本/下章的先验）。
+        # 场景与整章两条写章路径都吃到；空账本/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _rmem = self._memory()
+            if _rmem is not None:
+                _ref = _rmem.reflection_block(chapter_no)
+                if _ref:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _ref
+        except Exception:
+            logger.exception("反思笔记注入失败（降级跳过，不阻塞写章；反思先验缺失）")
+
+        # P1-3 建议指令库注入（编辑审稿沉淀的正向写作手法指令，择优采用）。
+        # 场景与整章两条写章路径都吃到；空库/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _smem = self._memory()
+            if _smem is not None and getattr(self.cfg, "suggestion_lib", True):
+                _sug = _smem.suggestion_block()
+                if _sug:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _sug
+        except Exception:
+            logger.exception("建议指令库注入失败（降级跳过，不阻塞写章；编辑建议未携带）")
+
+        # P1-4 BeatGate 正向供给注入（上章未兑现拍的推进方向示范）。
+        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _bp = self._beat_positive_block(chapter_no)
+            if _bp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _bp
+        except Exception:
+            logger.exception("beat 正向供给注入失败（降级跳过，不阻塞写章）")
+
+        # P1-5 场景体检建议闭环注入（上一章体检沉淀的改进建议）。
+        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
+        try:
+            _insp = self._inspector_block(chapter_no)
+            if _insp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _insp
+        except Exception:
+            logger.exception("场景体检建议注入失败（降级跳过，不阻塞写章）")
 
         # 注入用户锁定的内容作为硬约束
         try:
@@ -1009,6 +1103,20 @@ class ChapterWriter:
         # → 落盘新稿（ensure_quality 重写后的最优候选），宁要新稿 2 个问题不要
         # 旧版幻觉行。
         kept_previous = False
+        # P1-2 StageGate 增强旁路：质检通过(无大改)但仍有 warn 级问题或追更欲未满时，
+        # 可选触发一次 LLM 增强润色（钩子更强/爽点更密/伏笔呼应）。受 enhance_pass 开关 +
+        # AgentGuard 成本账约束；增强稿复检不过/分数不降则保留原稿，失败静默降级留日志。
+        if qc_passed and getattr(self.cfg, "enhance_pass", False) and isinstance(_qc, dict):
+            try:
+                _enh = self._enhance_pass(chapter_no, plan_title, plan_goal, content, summary,
+                                          _qc, qc, baseline=_bl or None,
+                                          core_event=plan_core_event or None)
+                if _enh is not None:
+                    content, summary = _enh
+                    if not silent:
+                        print(f"  [增强旁路] 第{chapter_no}章质检通过后触发增强润色，已采纳增强稿")
+            except Exception:
+                logger.exception("增强润色旁路失败（降级跳过，保留原稿）")
         # P0-1 合规红线：最终稿含合规命中 → 该章整体拒绝落盘（除非有健康旧版可保留）。
         compliance_rejected = bool(_qc.get("compliance_rejected")) if isinstance(_qc, dict) else False
         if not qc_passed:
@@ -1110,6 +1218,16 @@ class ChapterWriter:
                     far_beats=_far,
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
+                # P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往
+                # 哪个方向写」的示范指引（零 LLM 规则模板），并入 beat_gate 记录供下一章
+                # 生成时注入兑现。受 beat_positive_supply 开关控制；失败静默不阻塞。
+                if getattr(self.cfg, "beat_positive_supply", True):
+                    try:
+                        _miss = _bg.get("missing") or []
+                        _bg["positive_hints"] = self._beat_positive_hints(_miss)
+                        self.store.save_beat_gate(chapter_no, _bg)
+                    except Exception:
+                        logger.exception("beat 正向示范写入失败（降级跳过）")
                 # REQ S3.4 fail 章 LLM 二级复核：仅 beat_gate=fail 且开关 beat_fail_judge
                 # 开时，跑 1 次 pointwise judge 确认"未兑现清单"真实存在（防 beat_gate 误报），
                 # 返回未兑现清单才进 L3 定点重写。默认关（启用待人工标注集验证一致率>80%）。
@@ -1187,6 +1305,55 @@ class ChapterWriter:
             tail = f"｜摘要：{summary}" if summary else "｜（未生成摘要）"
             print(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
         return chapter
+
+
+    def _enhance_pass(self, chapter_no, plan_title, plan_goal, content, summary,
+                      qc_result: dict, qc, baseline=None, core_event=None):
+        """P1-2 StageGate 增强润色旁路（REQ-门禁质检正向影响 P1-2）。
+
+        质检【通过】但仍有提升空间（存在 warn 级「中改」问题，或追更欲 hook<4）时，
+        对正文做一次 LLM 增强润色（钩子更强/爽点更密/伏笔呼应），复检(check)通过且
+        分数不降才采纳，否则返回 None 保留原稿（达标不是终点，而是「被推进」的绿灯）。
+
+        - 受 enhance_pass 开关（默认关）+ AgentGuard 成本账约束（与重写共用 revise 场景）；
+        - 失败/复检不过/长度不足 → None（§11.6 降级留日志，不阻塞、不回退原稿）。
+        """
+        issues = qc_result.get("issues") or []
+        has_warn = any((it.get("level") or "") == "中改" for it in issues)
+        hook = qc_result.get("hook_score")
+        if not has_warn and (hook is None or int(hook) >= 4):
+            return None  # 无增强空间
+        focus = [f"{it.get('type', '')}:{(it.get('detail', '') or '')[:60]}"
+                 for it in issues if (it.get("level") or "") == "中改"]
+        if hook is not None and int(hook) < 4:
+            focus.append("追更欲偏低：强化章末钩子与伏笔呼应")
+        try:
+            if self.guard is not None:
+                self.guard.enter_scene("revise")
+            raw = self.llm.chat(
+                "你只输出增强润色后的完整章节正文，其余不输出。",
+                "你是资深网文编辑。这篇章节质检【已通过】，但仍有提升空间。"
+                "请在不推翻原结构、不改变剧情的前提下做增强润色："
+                "强化章末钩子、加密爽点密度、加强伏笔呼应。"
+                f"\n增强重点：{'；'.join(focus[:3])}"
+                f"\n\n当前正文：\n{content}",
+                temperature=0.5, max_tokens=4000)
+        except Exception:
+            logger.exception("增强润色 LLM 失败（降级跳过，保留原稿）")
+            return None
+        enhanced = (raw or "").strip()
+        if not enhanced or len(enhanced) <= len(content) * 0.5:
+            return None  # 增强无效（空/截断）
+        # 复检：通过且分数不降才采纳
+        try:
+            nres = qc.check(chapter_no, plan_title, plan_goal, enhanced, summary,
+                            baseline=baseline, core_event=core_event)
+            if not nres.get("passed") or nres.get("score", 0) < int(qc_result.get("score", 0) or 0):
+                return None
+        except Exception:
+            logger.exception("增强润色复检失败（降级跳过，保留原稿）")
+            return None
+        return enhanced, summary
 
 
     def _polish_blocks(self, sys_p: str, user_p: str, text: str) -> str:

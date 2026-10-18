@@ -114,6 +114,35 @@ class QualityChecker:
         except Exception:
             pass
 
+    def _record_reflection(self, chapter_no: int, content: str, result: dict) -> None:
+        """P1-1 Reflexion：让 LLM 用一句话反思「错在哪、下次怎么写对」，存入 book_memory。
+
+        只在重写 >=2 轮仍未通过时触发（问题顽固才值得反思）；一次 LLM 调用走 revise
+        场景成本账（受 guard 约束）。失败静默降级并留日志，不阻塞重写主流程（§11.6）。
+        """
+        try:
+            issues = result.get("issues") or []
+            issue_text = "; ".join(
+                f"{it.get('type','')}:{(it.get('detail','') or '')[:60]}"
+                for it in issues[:3])
+            prompt = (
+                "你是资深网文编辑。本章质检未通过且已自动重写两轮仍未解决，"
+                "需要沉淀一条可复用的写作教训。请用一句中文（≤60字）写反思笔记，"
+                "格式必须为：错在哪：……；下次怎么写对：……。不要引号、不要序号、不要分点。"
+                f"\n本章片段开头：{content[:200]}"
+                + (f"\n待解决问题：{issue_text}" if issue_text else "")
+            )
+            if self.guard is not None:
+                self.guard.enter_scene("revise")
+            raw = self.llm.chat(
+                "你只输出一句中文反思笔记，其余不输出。",
+                prompt, temperature=0.3, max_tokens=200)
+            note = (raw or "").strip()
+            if note and self.memory is not None:
+                self.memory.record_reflection(chapter_no, note)
+        except Exception:
+            logger.warning("Reflexion 反思入账失败（降级跳过，不阻塞重写）", exc_info=True)
+
     def ensure_quality(self, chapter_no: int, plan_title: str, plan_goal: str,
                        content: str, summary: str, silent: bool = False,
                        baseline: dict | None = None,
@@ -244,6 +273,12 @@ class QualityChecker:
                 print(f"  [自校验] 第{chapter_no}章重写未消除问题，回退到最优版本"
                       f"（{len(issues)} 个问题，{len(content)} 字）")
 
+        # P1-1 Reflexion：重写 >=2 轮仍未通过 → LLM 写一句反思入账（下次生成携带为先验）。
+        # 受 reflexion_note 开关 + AgentGuard 成本账约束；失败静默降级不阻塞（§11.6 留日志）。
+        if (getattr(self.cfg, "reflexion_note", True) and self.memory is not None
+                and rewrite_rounds >= 2 and not result["passed"]):
+            self._record_reflection(chapter_no, content, result)
+
         # 结果落库（review.json 兼容既有格式，P2-4：记录实际是否触发重写）
         self._save_review(chapter_no, issues, result, auto_revised=rewritten_occurred)
         # 结果入 trace（模块1 快照，P2-4：extra 带 score/issue_count/auto_revised 供报表聚合）
@@ -258,6 +293,16 @@ class QualityChecker:
         result["compliance_rejected"] = bool(
             has_compliance(result.get("issues") or [])
         )
+        # P2-2 SPC 控制图数据采集：每章落一次通过/重写轮数/合规命中指标，
+        # 供管理端画控制图检测「质量骤降」信号。失败静默（降级不阻塞写章）。
+        try:
+            self.store.save_quality_metric(chapter_no, {
+                "passed_once": bool(rewrite_rounds == 0 and result.get("passed")),
+                "rewrite_rounds": int(rewrite_rounds),
+                "compliance_hit": bool(result["compliance_rejected"]),
+            })
+        except Exception:
+            pass
         return Chapter(no=chapter_no, title=plan_title, content=content,
                        summary=summary, goal=plan_goal), result
 
@@ -1285,6 +1330,13 @@ class QualityChecker:
                 "10. 每个事件的结束状态（面板数字/蚀痕位置/伤势）必须比上一事件结束时有增量变化，"
                 "禁止两事件结束时间一状态\n\n"
             ) if has_event_dup else ""
+            # P2-1 正向替换供给：重复类问题命中时，除「每事件只写一遍」禁令外，
+            # 注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让重写知道「往哪走」。
+            direction_block = (
+                self._repetition_direction_block(chapter_no)
+                if has_event_dup and getattr(self.cfg, "repetition_direction", True)
+                else ""
+            )
             mem_block = self._memory_block(issues, chapter_no)
             # REQ-写作正向引导 5.3：权威当前值注入重写（与生成路径同口径——重写
             # 必须按账本权威值修数字，禁止模型自由发挥）
@@ -1324,6 +1376,7 @@ class QualityChecker:
                 f"7. 输出格式：先输出正文，正文结束后另起一行输出【摘要】加 1-2 句剧情摘要；"
                 f"摘要必须写本章最终结算后的面板状态（如'死亡次数减至 1/3'）\n"
                 + dedup_block
+                + direction_block
                 + "\n【硬性要求：重写即整体替换】\n"
                   "只输出一个单一完整连贯的新版正文。严禁保留原文段落再追加新写法"
                   "（多稿拼接）；严禁把同一场景/事件换措辞、换地点、换细节写多遍后"
@@ -1340,6 +1393,45 @@ class QualityChecker:
             return (text or "").strip()
         except Exception:
             return ""
+
+    def _repetition_direction_block(self, chapter_no: int) -> str:
+        """P2-1 正向替换供给：重复类问题命中重写时，注入「新方向候选」。
+
+        从 store 读未兑现承诺（pending_commitments 上一章 missed/must_carry）、
+        本章场景设计（chapter_design 的推进方向），组装「不要重复旧情节，
+        往这些未兑现/未推进的方向写」块。零 LLM，失败静默 → 空串。
+        """
+        parts: list[str] = []
+        try:
+            _pc = self.store.load_pending_commitments()
+            _prev = _pc.get(str(int(chapter_no) - 1)) or {}
+            for _key, _label in (("missed", "未兑现承诺"), ("must_carry_to_next", "需带到下一章")):
+                _vals = _prev.get(_key) or []
+                _vals = [str(v) for v in _vals if str(v).strip()]
+                if _vals:
+                    parts.append(f"{_label}：{'、'.join(_vals[:3])}")
+        except Exception:
+            pass
+        try:
+            _cd = self.store.load_chapter_design()
+            if isinstance(_cd, dict):
+                for _ch in (_cd.get("chapters") or []):
+                    if not isinstance(_ch, dict) or int(_ch.get("no") or 0) != int(chapter_no):
+                        continue
+                    _d = _ch.get("design") or {}
+                    for _f in ("conflict", "goal"):
+                        _v = _d.get(_f)
+                        if _v:
+                            parts.append(f"本章可推进方向：{_v}")
+                            break
+                    break
+        except Exception:
+            pass
+        if not parts:
+            return ""
+        body = "\n".join(f"- {p}" for p in parts[:4])
+        return ("【重写的新方向候选（不要重复旧情节，往这些未兑现/未推进的方向写）】\n"
+                + body + "\n")
 
     def _clean_rewrite_block(self, chapter_no: int, issues: list[dict],
                              content: str, skip_original: bool) -> str:
@@ -1497,6 +1589,7 @@ class QualityChecker:
                 "quality_check": {
                     "passed": bool(result.get("passed")),
                     "score": int(result.get("score", 0)),
+                    "hook_score": result.get("hook_score"),   # P0-5 追更欲（进度盘绿色分支）
                     "checked_at": time.time(),
                 },
             })

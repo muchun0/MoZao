@@ -68,6 +68,10 @@ class OpenAICompatibleClient(LLMClient):
             # REQ-超长篇攻坚 S4.3：JSON 输出约束——provider 支持 response_format 时强制 json_object
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
+            # 2026-10-18：DeepSeek V4 系列思考模式默认开启，推理 token 按输出价计费且挤占
+            # max_tokens 预算（正文可能被截短）；写作流水线无需推理过程，显式关闭。
+            if self.provider == "deepseek":
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[

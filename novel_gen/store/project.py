@@ -290,6 +290,35 @@ class ProjectStore:
         d = self._read_json(self.outline_path(), None)
         return Outline.from_dict(d) if d else None
 
+    # ---------- P1-3-B 大纲修订候选（多版本，供用户挑选） ----------
+    def outline_candidates_path(self) -> Path:
+        return self.dir / "outline_candidates.json"
+
+    def save_outline_candidates(self, candidates: list) -> None:
+        """保存大纲修订候选列表（Outline 对象或 dict 均可），供用户挑选。"""
+        data = []
+        for c in candidates or []:
+            data.append(c.to_dict() if hasattr(c, "to_dict") else dict(c))
+        self._write_json(self.outline_candidates_path(), {"candidates": data})
+
+    def load_outline_candidates(self) -> list:
+        """返回候选大纲 dict 列表；无 → []。"""
+        d = self._read_json(self.outline_candidates_path(), None)
+        if not isinstance(d, dict) or not isinstance(d.get("candidates"), list):
+            return []
+        return [c for c in d["candidates"] if isinstance(c, dict)]
+
+    def apply_outline_candidate(self, index: int) -> Optional[Outline]:
+        """把第 index 个候选设为当前大纲（save_outline）。越界/异常 → None。"""
+        candidates = self.load_outline_candidates()
+        if not 0 <= int(index) < len(candidates):
+            return None
+        outline = Outline.from_dict(candidates[int(index)])
+        if outline is None:
+            return None
+        self.save_outline(outline)
+        return outline
+
     # ---------- 编辑审阅结果 ----------
     def editor_review_path(self) -> Path:
         return self.dir / "editor_review.json"
@@ -790,6 +819,74 @@ class ProjectStore:
         """取上一章（chapter_no-1）承诺台账，用于下章补偿块注入；无则返回 None。"""
         data = self.load_pending_commitments()
         return data.get(str(chapter_no - 1))
+
+    # ---------- 场景体检建议（P1-5 读时体检 → 生成反馈闭环） ----------
+    def inspector_suggestions_path(self) -> Path:
+        return self.dir / "inspector_suggestions.json"
+
+    def load_inspector_suggestions(self) -> dict:
+        """返回 {chapter_no: [建议,...]}（bad/warn 维度的非空 suggestion）。"""
+        d = self._read_json(self.inspector_suggestions_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_inspector_suggestions(self, chapter_no: int, suggestions: list) -> None:
+        """按章覆盖写入体检建议（该章唯一权威；供下一章生成注入闭环）。"""
+        data = self.load_inspector_suggestions()
+        data[str(chapter_no)] = [s for s in (suggestions or []) if str(s).strip()]
+        self._write_json(self.inspector_suggestions_path(), data)
+
+    # ---------- 质量指标采集（P2-2 SPC 控制图数据源） ----------
+    def quality_metrics_path(self) -> Path:
+        return self.dir / "quality_metrics.json"
+
+    def load_quality_metrics(self) -> dict:
+        """返回 {chapter_no: {passed_once, rewrite_rounds, compliance_hit, checked_at}}。"""
+        d = self._read_json(self.quality_metrics_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_quality_metric(self, chapter_no: int, metric: dict) -> None:
+        """按章覆盖写入质检指标（该章唯一权威；供 SPC 控制图聚合）。"""
+        data = self.load_quality_metrics()
+        data[str(chapter_no)] = dict(metric or {})
+        self._write_json(self.quality_metrics_path(), data)
+
+    # ---------- 申诉撤销 / 误判率指标（P2-3） ----------
+    def appeals_path(self) -> Path:
+        return self.dir / "appeals.json"
+
+    def load_appeals(self) -> list:
+        """返回申诉列表 [{id, chapter, issue_type, reason, status, created_at},...]。"""
+        d = self._read_json(self.appeals_path(), [])
+        return d if isinstance(d, list) else []
+
+    def save_appeal(self, appeal: dict) -> None:
+        """追加一条申诉（id 由调用方生成）；写后立即回读。"""
+        data = self.load_appeals()
+        data.append(dict(appeal or {}))
+        self._write_json(self.appeals_path(), data)
+
+    def mark_appeal_overturned(self, appeal_id: str) -> bool:
+        """撤销一条申诉（误判兜底）：status -> overturned。返回是否找到并修改。"""
+        data = self.load_appeals()
+        changed = False
+        for it in data:
+            if str(it.get("id")) == str(appeal_id):
+                it["status"] = "overturned"
+                changed = True
+        if changed:
+            self._write_json(self.appeals_path(), data)
+        return changed
+
+    def misjudge_rate(self) -> dict:
+        """误判率指标：overturned/total（申诉撤销即认定为一次误判）。无申诉返回 0。"""
+        data = self.load_appeals()
+        total = len(data)
+        overturned = sum(1 for it in data if it.get("status") == "overturned")
+        return {
+            "appeals": total,
+            "overturned": overturned,
+            "rate": round(overturned / total, 3) if total else 0.0,
+        }
 
     # ---------- 章节原子提交 + 投影一致性（REQ-借鉴webnovel A/B） ----------
     def chapter_commit_path(self) -> Path:

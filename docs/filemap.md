@@ -19,9 +19,9 @@
 | `.env` | 环境变量（API Key/SMTP/DB，**不入库**） |
 | `.llm_encrypt.key` | BYOK 加密密钥（**不入库**） |
 | `启动小说生成器.bat` | Windows 一键启动 |
-| `deploy/` | 部署辅助：`insert_skills_133.sql`、`migrate_skills_merge.py`（技能表统一迁移）、`sync_skills_library.py`（skills_library 蒸馏同步到统一 skills 表）；反代由服务器 nginx 承担（`/etc/nginx/conf.d/mozao.conf`），仓库内不再维护反代配置 |
+| `deploy/` | 部署辅助：`insert_skills_133.sql`（历史技能种子）；反代由服务器 nginx 承担（`/etc/nginx/conf.d/mozao.conf`），仓库内不再维护反代配置 |
 | `tests/` | pytest 测试（647+ 用例，mock provider 离线跑通；含三期 `test_beat_gate.py`/`test_beat_gate_wiring.py`/`test_scene_inspector.py`） |
-| `skills_library/` | 写作技能库：`genre-research`/`hot-novels`/`style-references`/`writing-techniques` + 技能蒸馏文档（`INDEX.md` 有目录）；`style-references` 种子化进 style_roles，`writing-techniques` 由 `deploy/sync_skills_library.py` 蒸馏为平台技能 |
+| `skills_library/` | 写作技能库：`style-references`（style_roles 种子化运行时依赖，Dockerfile COPY 进镜像）/`writing-techniques`（已蒸馏为平台技能入库）+ 技能蒸馏文档（`INDEX.md` 有目录）；不再有仓库内蒸馏脚本（收敛已执行完成） |
 | `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
 | `_*.py`（`_extract_routes`/`_split_server`/`_smoke_*` 等） | 一次性开发脚本（路由对比/拆分/冒烟），非运行路径 |

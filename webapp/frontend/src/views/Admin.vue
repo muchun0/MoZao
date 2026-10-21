@@ -287,7 +287,7 @@ const skillForm = ref({ name: '', role: '', description: '', prompt_append: '', 
 // 系统设置（生成引擎开关）
 const configGroups = ref([])
 const configModule = ref('memory')
-const MODULE_LABELS = { memory: '记忆与一致性', writing: '正文生成', review: '审校质检', guard: '成本防护' }
+const MODULE_LABELS = { memory: '记忆与一致性', writing: '正文生成', review: '审校质检', guard: '成本防护', assistant: '小墨AI' }
 const moduleLabel = m => MODULE_LABELS[m] || m
 
 function fmtDefault(row) {

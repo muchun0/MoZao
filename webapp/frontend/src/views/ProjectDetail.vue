@@ -248,6 +248,11 @@
         </el-empty>
       </el-tab-pane>
 
+      <el-tab-pane label="小墨AI" name="assistant">
+        <AssistantPanel :project-id="pid" :chapters="chapters" :current-ch="currentCh"
+                        @locate="locateChapter" />
+      </el-tab-pane>
+
       <el-tab-pane label="工具" name="tools">
         <ToolsPanel :pid="pid" />
       </el-tab-pane>
@@ -310,6 +315,7 @@ import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
+import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
@@ -653,6 +659,13 @@ async function openChapter(c) {
     editContent.value = res.content || ''
     currentContent.value = editContent.value.replace(/\n/g, '<br>')
   } catch { currentContent.value = '内容加载失败' }
+}
+
+// 小墨AI「定位到第 X 章」：切回章节 tab 并打开阅读器
+function locateChapter(no) {
+  const ch = chapters.value.find(c => Number(c.no) === Number(no))
+  if (ch) { tab.value = 'chapters'; openChapter(ch) }
+  else ElMessage.warning(`第 ${no} 章还未生成`)
 }
 
 function startEdit() {

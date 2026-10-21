@@ -28,6 +28,7 @@
 | 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分）；**生成质量升级 P0-P2**：前文直读/人物动态状态/全书质量汇总（P0）、行动表先行/场景级下沉/Lorebook 裁剪/AI痕迹评分（P1）、动态模块随机化/风格范文锚定/全书终审/质量指标报表（P2），见 §4 生成质量升级；**正文去机械感（REQ-写作正向引导，2026-10-15）**：提示词从"禁令驱动"改"正向引导"（场景规则 23→10 条）、演七分说三分（白描为主+情绪顶点直白点破）、机制数字降为"背景参考·按需自然呈现"（2026-10-17 机制数字软提示与通用化：方向改读设定账本派生注册表支持加点/升级等非死亡型机制、校验端机制数字问题小改给改稿建议不重写不阻塞）、AI 腔词表改警示+密度意识、卷→章→场景三级目标传导（卷卡）、踩坑+正向样例双账本（good 账本：高分章/用户修订好片段自动学习并注入"参考质感非内容来源"） |
 | 创作设计与读者体验 | **章级设计卡（chapter_design）**：从章级 conflict/emotion + 冲突矩阵派生逐章 A1–A7 设计卡注入写章（零 LLM）；**读者认知账本（reader_ledger）**：读者已知/在等/被误导三态 + 伏笔临期/超时/回收状态机 + 爽点节奏配额，写章注入读者视角约束（零 LLM） |
 | 产品化工具（工具面板） | **场景体检**：对已生成章节做字数/事件推进/情节重演/章首承接/章末钩子 5 维度确定性体检并给修复建议（对标 Sudowrite Scene Inspector）；**三分支续写**：一次生成 3 方向（冲突升级/埋伏笔/转折）续写候选，选一条复制使用（预览模式不自动改正文）；**生成过程（思维链）**：只读展示本章「计划→产出→校验」链条；**Beat 覆盖度门禁**：正文对大纲逐拍覆盖率自检（绿/黄/红标） |
+| 小墨AI（项目页写作对话） | **REQ-小墨AI 一期**：项目页「小墨AI」tab 对话（章节评估 `chapter_eval` / 改稿建议 `revision_advice`），只读项目产物（review/chapter_design/book_memory/ai_taste），不写正文、不改稿、不扣费（一期不限次）；确定性卡片（质检扣分/问题清单/版本对比/正向实测）+ 会话历史 + 定位跳章 |
 | 封面 | 硅基流动 Tongyi-MAI/Z-Image-Turbo 一体封面；每本限 5 次 |
 | 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆；**章节版本化**（REQ-章节版本化，git 式多版本保留）：重写/重生成追加新版本、旧版保留，阅读器「版本」弹窗逐章选择/回退最优版本（`GET /chapters/{no}/versions`、`POST /chapters/{no}/versions/{v}/select`）；**2026-10-17 版本质量扩展**：每次生成（含自动质检重写稿）都入版本库，弹窗每版显示质检分/改稿建议明细，支持删除非当前版本，未被用户操作时默认展示质检最高分一版（`DELETE /chapters/{no}/versions/{v}`） | Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用）；技能与风格角色管理入口已从项目工具面板迁至**用户工作台**（/workspace） |
 | 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
@@ -127,7 +128,7 @@ D:\PythonProjects\DouBao\
 
 ## 3. API 接口
 
-详见同目录 **API.md**（90 个路由，按系统/账号/我的/Skills/项目/站长后台分组，含鉴权说明）。
+详见同目录 **API.md**（按系统/账号/我的/Skills/项目/小墨AI/站长后台分组，含鉴权说明）。当前 10 个路由模块共 106 条 API 路径；小墨AI 5 条写作对话路由见 `webapp/routers/assistant.py`。前端请求统一走 `webapp/frontend/src/api/`（新增 `assistant.js`）。
 
 ---
 
@@ -155,6 +156,14 @@ D:\PythonProjects\DouBao\
 
 - 单章重写 + 从某章重生成，共用 10 次/项目/日
 - 用户手写章节（source=user）保护，不可 rewrite
+
+### 小墨AI 写作对话（REQ-小墨AI 一期，2026-10-21）
+
+- 定位：项目页写作对话，模式 `chapter_eval`（章节评估）/ `revision_advice`（改稿建议）；**只读**项目产物，不写正文、不改稿、不扣费（`assistant_quota_enabled=False` 一期不限次）
+- 上下文：四层组装（system 人设+Bible / 事实块 / 最近 N 轮对话 / 本次提问），按 `context_token_limit` 固定档位裁剪、正文保留头尾
+- 会话落库 MySQL `conversations`/`messages`，项目产物仍是评估事实唯一来源；LLM 调用以 `scene=assistant` 落 `agent_trace`
+- 口径红线：质检分只称「质检扣分（缺陷分）」；正向卡只给实测值 vs 阈值（阈值 import 自 `pipeline/ai_taste.py`），不合成质量分；未接入检测项明示缺口
+- `assistant_require_user_key` 默认 True：未配置 BYOK 直接 400 提示去「模型设置」，不消耗平台额度；LLM 失败只落 user 消息（degraded）并返回 200，不留空壳回复
 
 ### 成本防护（agent_guard）
 
@@ -213,6 +222,7 @@ D:\PythonProjects\DouBao\
 | style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
 | book_teardown | id, genre, title, summary, content(JSON), source_project, source_type(research/seed/manual), user_id, view_count, status（爆款拆书库） |
 | agent_trace | id, trace_id, user_id, project_id, event, payload(JSON), created_at（全链路快照，质量报表聚合底座 P2-4） |
+| conversations / messages | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id, user_id, title, mode, created_at/updated_at）与 `messages`（conversation_id, role, content, extra JSON：卡片/token/章节号/降级标记）；只存对话，项目产物仍是评估事实来源 |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头；**章节版本化**：`chapters/<no>.json` 为当前选中版本，历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引（每章上限 15、HEAD 不淘汰），`load_chapter`/`list_chapters` 读当前选中版本（对外行为不变）
 - `init_db()` 启动时自动建表 + 增量迁移

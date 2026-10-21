@@ -72,3 +72,6 @@ draft_*_folder/
 # Claude Code 规则（local only，与 AGENTS.md 同策略）
 CLAUDE.md
 
+# 项目级 AI 技能（local only，不入库，避免上传 GitHub）
+.trae/skills/
+

@@ -141,6 +141,14 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "suggestion_lib", True, "P1-3 EditorReviewer 建议指令库：编辑审稿建议按手法分类(对话/战斗/情绪/环境/叙事)沉淀进 book_memory.suggestion_lib，写章生成时注入复用；False=建议仅审稿时展示，不入库不注入"),
     FeatureFlag("review", "beat_positive_supply", True, "P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往哪个方向写」的示范指引(零LLM规则模板)存入 beat_gate，下一章生成时注入兑现；False=beat_gate 仅负向报漏不供给方向"),
     FeatureFlag("review", "repetition_direction", True, "P2-1 RepetitionDetector 正向替换供给：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让模型知道往哪走；False=重写仅禁重复不给新方向"),
+    # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期，只读诊断，不改稿不扣费）----
+    FeatureFlag("assistant", "assistant_enabled", True, "小墨AI 总开关：项目页写作对话（章节评估/改稿建议），关闭后前后端入口隐藏"),
+    FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
+    FeatureFlag("assistant", "assistant_context_token_limit", 20000, "小墨AI 单轮输入 token 估算上限，超出按固定顺序裁剪（不拒绝）"),
+    FeatureFlag("assistant", "assistant_history_turns", 6, "小墨AI 上下文保留最近 N 轮对话（层3 对话窗口）"),
+    FeatureFlag("assistant", "assistant_quota_enabled", False, "小墨AI 次数/计费开关（一期不生效，仅预留接入点）"),
+    FeatureFlag("assistant", "assistant_require_user_key", True,
+                "小墨AI 仅允许用户自带 Key（关闭平台 Key 兜底；未配置时直接提示去配置）"),
 ]
 
 
@@ -391,6 +399,13 @@ class NovelConfig:
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     json_schema_output: bool = feature_default("json_schema_output")  # JSON 输出约束（S4.3）：chat_json 传 response_format json_object，provider 支持时
     prefix_cache_aligned: bool = feature_default("prefix_cache_aligned")  # 前缀缓存对齐（S4.1）：稳定前缀前置 + cache_hit 埋点
+    # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期；后台可覆盖）----
+    assistant_enabled: bool = feature_default("assistant_enabled")                      # 小墨AI 总开关
+    assistant_max_tokens: int = feature_default("assistant_max_tokens")                # 单次回复最大 token
+    assistant_context_token_limit: int = feature_default("assistant_context_token_limit")  # 单轮输入 token 估算上限
+    assistant_history_turns: int = feature_default("assistant_history_turns")          # 上下文保留最近 N 轮
+    assistant_quota_enabled: bool = feature_default("assistant_quota_enabled")          # 配额开关（一期不生效）
+    assistant_require_user_key: bool = feature_default("assistant_require_user_key")    # 仅用用户自带 Key
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property

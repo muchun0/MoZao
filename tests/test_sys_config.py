@@ -327,9 +327,10 @@ def test_admin_required():
         r = c.get("/api/admin/config", headers={"Authorization": f"Bearer {atoken}"})
         assert r.status_code == 200
         body = r.json()
-        assert body["total"] == 94
+        from novel_gen.config import FEATURE_FLAGS
+        assert body["total"] == len(FEATURE_FLAGS)   # 注册表全量入表
         mods = {g["module"] for g in body["groups"]}
-        assert mods == {"memory", "writing", "review", "guard"}
+        assert mods == {f.module for f in FEATURE_FLAGS}
         # 校验 400 路径（管理员 + 非法 key）
         r2 = c.put("/api/admin/config", json={"items": [{"key": "hax", "value": "1"}]},
                    headers={"Authorization": f"Bearer {atoken}"})

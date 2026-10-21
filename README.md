@@ -544,6 +544,12 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-21**：第二十八次部署（服务器代码 = master，**已上线**）——**小墨AI 一期（REQ-小墨AI v1.3 / TECH-小墨AI v1.1，feat/req-assistant-mvp）**：项目页新增「小墨AI」写作对话，只读项目产物、不写正文、不改稿、不扣费（一期不限次）。
+  - 上线内容：① 服务层 `webapp/assistant/`——`prompt.py`（读 `agents/prompts/assistant.md`，mtime 缓存+降级）、`context.py`（四层上下文：人设+Bible / 事实块 / 对话窗口 / 提问，按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分 / 问题清单 / 版本对比 / 正向实测）、`service.py`（输入三闸→章节解析→组装→LLM→失败降级→输出合规→落库）；② 数据层 `conversations`/`messages` 建表 + 会话 CRUD/消息分页/最近 N 轮；③ 路由 `routers/assistant.py` 5 条（`_require_user` + 项目归属 + 会话归属）；④ 开关 assistant 模块 6 项（含 `assistant_require_user_key` 默认开：未配 BYOK 直接 400 提示去「模型设置」，不消耗平台额度；`assistant_quota_enabled=False` 一期不限次）；全局开关覆盖抽取 `webapp/config_overrides.py`，生成链路与小墨AI 共用；⑤ 前端「小墨AI」tab（会话/模式/章节/卡片/定位跳章）。
+  - 口径红线：review score 只称「质检扣分（缺陷分）」；正向卡只给实测值 vs 阈值（阈值 import 自 `pipeline/ai_taste.py`，单一事实来源），不合成任何质量分；`writer.md` 写作方向仅作背景参考、非评价判据；未接入确定性检测的指标卡片明示缺口。
+  - 回归：P0/P1 相关 **91 pytest 全绿**（含 assistant 4 个测试文件）；`npm run build` 通过，dist 引用一致（`index-CFQxeOIJ.js`）。
+  - 部署：`git archive master` 打包 → workbench upload → 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+
 - **2026-10-18**：第二十七次部署（服务器代码 = master **e54383f**，**已上线**）——**第二十五/二十六/二十七次合并（门禁/质检正向影响改造 P0/P1/P2 + 前端交互收尾）+ 运维清理（删除一次性脚本 / 管理端日志修复 / Caddy→nginx）一次部署覆盖全部内容**：
   - 上线内容：① 第二十五次合并 P0-1~P0-5 三层正向闭环（合规红线=删旧稿重写不落盘 / 首次教育分级 / 质检诊断回喂 / good 转正+多样性治理 / 追更欲正向锚+streak+进度盘）；② 第二十六次合并 P1/P2 全链路（Reflexion 反思笔记 / StageGate 增强旁路 / 建议指令库 / BeatGate 正向供给 / scene_inspector 闭环 / 重复正向替换供给 / SPC 控制图+变异测试防刷数 / 申诉撤销+误判率）；③ 第二十七次合并（P1-3-B 多版本候选 / P2-3 前端申诉按钮 / 进度盘同步全书质检视图）；④ 运维清理：删除技能收敛与 SQLite 迁移一次性脚本（deploy/*.py）、修复管理端系统日志 500（admin.py logger 导入路径 . → ..）、反代文档 Caddy 改 nginx、新增 `tests/test_admin_logs.py`。
   - 回归：p0/p1 全量 **509 pytest 全绿**。部署：git archive master 打包 → workbench upload → 解压 /opt/novel-gen → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。

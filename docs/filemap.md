@@ -20,7 +20,7 @@
 | `.llm_encrypt.key` | BYOK 加密密钥（**不入库**） |
 | `启动小说生成器.bat` | Windows 一键启动 |
 | `deploy/` | 部署辅助：`insert_skills_133.sql`（历史技能种子）；反代由服务器 nginx 承担（`/etc/nginx/conf.d/mozao.conf`），仓库内不再维护反代配置 |
-| `tests/` | pytest 测试（647+ 用例，mock provider 离线跑通；含三期 `test_beat_gate.py`/`test_beat_gate_wiring.py`/`test_scene_inspector.py`） |
+| `tests/` | pytest 测试（700+ 用例，mock provider 离线跑通；含三期 `test_beat_gate.py`/`test_beat_gate_wiring.py`/`test_scene_inspector.py`；**小墨AI** `test_assistant_context.py`/`test_assistant_cards.py`/`test_assistant_service.py`，P1） |
 | `skills_library/` | 写作技能库：`style-references`（style_roles 种子化运行时依赖，Dockerfile COPY 进镜像）/`writing-techniques`（已蒸馏为平台技能入库）+ 技能蒸馏文档（`INDEX.md` 有目录）；不再有仓库内蒸馏脚本（收敛已执行完成） |
 | `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
@@ -31,7 +31,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `config.py` | 配置加载（YAML + 环境变量补 Key）、题材/字数/Provider 校验；**功能开关注册表 `FEATURE_FLAGS`**（默认值唯一来源，按 memory/writing/review/guard 模块分组，`python -m novel_gen.config` 可查看清单） |
+| `config.py` | 配置加载（YAML + 环境变量补 Key）、题材/字数/Provider 校验；**功能开关注册表 `FEATURE_FLAGS`**（默认值唯一来源，按 memory/writing/review/guard/assistant 模块分组共 100 项，`python -m novel_gen.config` 可查看清单） |
 | `llm/base.py` | LLM Provider 抽象基类（chat 模板方法：自动埋点 + 成本防护挂载） |
 | `llm/factory.py` | Provider 工厂（deepseek/doubao/openai/mock） |
 | `llm/usage.py` | Token 用量统计（模块1/2：累计 + 最近一次调用） |
@@ -52,7 +52,7 @@
 | `pipeline/agents/opening.py` `ending.py` | **P1 专项 Agent**：开篇 Agent（前三章强开篇 core_event/goal 设计）/ 结局 Agent（终局设计卡写入 world.ending_card）；architect 分别于 run_outline/run_world 编排 |
 | `pipeline/agents/dialogue.py` | **P2 对白 Agent**：聚合人物 speech_style 生成对话风格指南写回 world.dialogue_guideline，architect.run_world 编排，memory 强约束区注入（确定性聚合、零 LLM） |
 | `pipeline/agents/pacing.py` | 节奏与伏笔 Agent：推导关键节点/分卷节奏/伏笔回收闭环；**P2** plan_outline 额外聚合全本情绪曲线卡（Outline.emotion_curve，零 LLM） |
-| `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**） |
+| `pipeline/agents/prompts/*.md` | 各角色专属提示词（**改角色行为改这里**）；含小墨AI `assistant.md`（对话人设/事实纪律/输出格式/写作方向仅作背景参考） |
 | `pipeline/memory.py` | 长文一致性：设定库 + 最近 N 章摘要回填 + L4.5 近章正文直读（P0-1，默认 1200 字）+ L1.5 人物状态注入（P0-2）+ L1.6 世界状态承接（REQ-章内自洽：上一章机制数字/生死/物品/时间/事实）+ 配角动机卡注入 + **分章设定卡子集注入**（REQ-token优化 P1-1：按章只注入命中人物/生物/地点/势力/伏笔；空列表=命中无项不注入、索引缺失/关闭回退全量；强约束区永不裁剪）+ **P1 物品/等级/结局卡进强约束区**；**P2 术语统一卡/对话风格进强约束区** |
 | `pipeline/setting_cards.py` | **分章设定卡索引**（REQ-token优化 P1-1，纯 Python 前置确定性）：world 后构建 `setting_cards.json`，出场人物用 `memory.predict_appearing_chars` 预测，生物/地点/势力/伏笔按「名称直判+关键词包含」匹配；失败/关闭静默降级全量注入 |
 | `pipeline/chapter_design.py` | **章级设计卡派生器**（REQ-chapter-design 一期，纯 Python 前置确定性，零 LLM）：从章级 conflict/emotion/goal/core_event/character_moves/cliffhanger + `World.conflict_matrix` 派生逐章 A1–A7 设计卡（冲突核心与升级阶梯/关键转折/情绪落点/出场角色+戏份+开放关系模板/对白功能），落 `chapter_design.json`；`render_block` 渲染写手注入块；`reconcile_event_ledger` 事件应发生 vs 已消费对账（弱覆盖，只 warning 不阻断） |
@@ -94,8 +94,10 @@
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
 | `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照，接入全部生成入口）+ `_distill_user_memory`（书级→用户级蒸馏，生成 finally 触发）；**REQ-后台开关管理** `_apply_global_overrides`（sys_config 表为准内存态覆盖，_open_pipeline 内注入，config.json 快照不动） |
+| `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 读 `sys_config` 实时值覆盖 NovelConfig（顶层 + agent_guard 标量/scene_limits），DB 异常回退默认并 logger 留痕；生成链路与小墨AI 对话共用（`core._apply_global_overrides` 保留同名入口） |
 | `user_memory.py` | **用户级记忆库服务**（跨书创作偏好继承）：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像/跨书纪律/个人文风锚/stats），`record_project_signals`/`record_edits`/`distill`/`build_snapshot`/`summary`/`clear`，全部写路径零额外 LLM |
-| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移；**REQ-后台开关管理** 新增 `sys_config`/`sys_config_log` 表 + init_db 挂 seed）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口；**P0-5（2026-10-18）** `_aggregate_quality` 增 `chapter_status` 每章色块聚合——红=未过/绿=hook≥4/黄=自动重写/灰=通过，`quality_report` 查询带出 step_name 供解析章号）；**`config.py`（REQ-后台开关管理）** FEATURE_FLAGS→`sys_config` 幂等种子同步（新增开关自动入表）/`sys_config_log` 审计/`coerce_config_type` 类型转换/`flag_type`/`json_default`/`SELECT_ENUMS` 枚举/`list_configs`/`update_configs` |
+| `assistant/` | **小墨AI（REQ-小墨AI 一期，项目页写作对话）**：`prompt.py` 读取 `novel_gen/pipeline/agents/prompts/assistant.md`（mtime 缓存 + 内置降级 + warning）；`context.py` 只读项目产物组装四层上下文（人设+Bible / 事实块 / 对话窗口 / 提问），token 预算按固定档位裁剪、正文头尾保留；`cards.py` 确定性卡片（质检扣分/问题清单按大中小改排序/版本对比/正向实测），阈值全部 import 自 `pipeline/ai_taste.py`，缺口（破折号密度/面板数字）明示；`service.py` 编排（输入校验 → 章节解析 → 组装 → LLM 调用 → 失败降级留痕 → 输出合规 → 落库） |
+| `db/` | **MySQL 数据层包**（拆分自原 db.py 1409 行）：`__init__.py` 统一 re-export + 末尾 init_db()；`base.py` 连接池/事务/表结构 DDL（style_roles.reference_text、skills 系列表 applicable_stages、统一表 `skills` 幂等迁移；**REQ-后台开关管理** 新增 `sys_config`/`sys_config_log` 表 + init_db 挂 seed；**小墨AI** 新增 `conversations`/`messages` 表）；`users.py` 用户/密码/代理返佣/认证/会话/余额/管理统计；`projects.py` 项目归属/退款；`skills.py` 技能域（**统一读写 `skills` 表**，platform/user/market 三源 + applicable_stages/version/market_id 透传，旧表保留不回写）；`style_roles.py` 风格角色/挂载/种子化（挂载技能经 `skills` 表按 source 解析）；`teardowns.py` 拆书库；`assistant.py` 小墨AI 会话/消息（会话 CRUD + 消息追加/分页/最近 N 轮，SQL 参数化）；`traces.py` agent_trace 全链路快照（MysqlTraceSink 落库/按 trace·project·user 查询/聚合统计 + P2-4 `_aggregate_quality` 纯函数与 `quality_report` 报表接口；**P0-5（2026-10-18）** `_aggregate_quality` 增 `chapter_status` 每章色块聚合——红=未过/绿=hook≥4/黄=自动重写/灰=通过，`quality_report` 查询带出 step_name 供解析章号）；**`config.py`（REQ-后台开关管理）** FEATURE_FLAGS→`sys_config` 幂等种子同步（新增开关自动入表）/`sys_config_log` 审计/`coerce_config_type` 类型转换/`flag_type`/`json_default`/`SELECT_ENUMS` 枚举/`list_configs`/`update_configs`，`FLAG_MODULES` 含 assistant |
 | `secret_encrypt.py` | BYOK Key Fernet 加密（`enc:v1:` 前缀） |
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
 | `referral.py` | 代理参数（AGENT_DISCOUNT/COMMISSION_RATE/COMMISSION_BASE/REFERRAL_BONUS） |
@@ -115,6 +117,7 @@
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
 | `routers/projects_generation.py` | 生成控制（启动/停止/重跑） |
 | `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表；**REQ-后台开关管理** `GET/PUT /api/admin/config` 生成引擎开关管理：key 白名单 + 类型/范围/select 枚举校验 + 审计，`_RANGE_RULES` 范围表、`_validate_config_items` 校验纯函数） |
+| `routers/assistant.py` | **小墨AI（REQ-小墨AI 一期）**：`POST/GET /api/projects/{id}/assistant/conversations`（建/列）、`GET .../conversations/{cid}`（详情+消息分页）、`POST .../conversations/{cid}/messages`（发消息，同步返回回复+卡片）、`DELETE .../conversations/{cid}`；全部 `_require_user` + `_check_project_access` + 会话归属校验 |
 
 ## webapp/frontend/src/（Vue3 前端源码）
 
@@ -125,12 +128,14 @@
 | `stores/auth.js` | 登录态 Pinia store |
 | `stores/project.js` | 当前项目 Pinia store |
 | `api/request.js` | axios 封装（token 注入/错误处理） |
-| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口） |
+| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` `assistant.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口；assistant.js：小墨AI 会话/消息 5 个接口） |
 | `views/Login.vue` | 登录/注册页 |
 | `views/ProjectList.vue` | 书案（作品列表/搜索/筛选） |
-| `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制） |
+| `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制；**新增「小墨AI」tab**，透传 projectId/章节列表/当前章，接收 `locate` 事件切章打开阅读器） |
 | `views/Workspace.vue` | 用户工作台（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
-| `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab**：memory/writing/review/guard 分组渲染 94 开关，改动项高亮、按组保存、展示默认值/修改人/时间） |
+| `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab**：memory/writing/review/guard/assistant 分组渲染 100 开关，改动项高亮、按组保存、展示默认值/修改人/时间） |
+| `components/assistant/AssistantPanel.vue` | **小墨AI 面板（REQ-小墨AI 一期）**：会话列表/新建/删除、模式切换（章节评估/改稿建议）、章节选择、消息区（卡片渲染/降级提示/token 用量）、Ctrl+Enter 发送、「定位到第 N 章」 |
+| `components/assistant/AssistantCard.vue` | 确定性卡片渲染：质检扣分（缺陷分口径）/问题清单/版本对比/正向实测（达标标签+阈值+缺口声明），不合成评分 |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |
 | `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |

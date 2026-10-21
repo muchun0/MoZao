@@ -185,6 +185,31 @@ CREATE TABLE IF NOT EXISTS refund_requests (
     handled_at DOUBLE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
+# ---- 小墨AI 对话（REQ-小墨AI 一期）：会话 + 消息（唯一新增持久化）----
+_CONVERSATIONS = """
+CREATE TABLE IF NOT EXISTS conversations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    project_id VARCHAR(200) NOT NULL,
+    user_id INT NOT NULL,
+    title VARCHAR(200) NOT NULL DEFAULT '',
+    mode VARCHAR(32) NOT NULL DEFAULT 'chapter_eval',
+    created_at DOUBLE NOT NULL,
+    updated_at DOUBLE NOT NULL,
+    KEY idx_conv_project (project_id),
+    KEY idx_conv_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+_MESSAGES = """
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    conversation_id BIGINT NOT NULL,
+    role VARCHAR(16) NOT NULL,
+    content MEDIUMTEXT NOT NULL,
+    extra JSON NULL,
+    created_at DOUBLE NOT NULL,
+    KEY idx_msg_conv (conversation_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
 
 
 _SKILLS = """CREATE TABLE IF NOT EXISTS writing_skills (
@@ -375,7 +400,7 @@ def init_db() -> None:
     with _connect() as conn:
         for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
                     _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
-                    _SYS_CONFIG, _SYS_CONFIG_LOG):
+                    _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES):
             conn.execute(ddl)
         _ensure_teardown_user_id()
         # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）

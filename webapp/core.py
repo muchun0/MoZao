@@ -54,6 +54,7 @@ from . import db
 from . import mailer
 from . import verify_code
 from . import teardown_lib
+from .config_overrides import apply_global_overrides
 from .user_memory import UserMemoryService
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
@@ -357,31 +358,10 @@ def _project_use_user_llm(store: ProjectStore) -> bool:
 def _apply_global_overrides(cfg: NovelConfig) -> None:
     """把 sys_config 后台全局覆盖合并进 cfg（内存态，不落盘，REQ-后台开关管理）。
 
-    以表中数据为准：表里有的键一律覆盖——NovelConfig 顶层字段（含 guard 的
-    json_schema_output / prefix_cache_aligned）、cfg.agent_guard 标量子项
-    （enabled/max_loops/max_tokens/input_check/output_check/quality_check）、
-    agent_guard.scene_limits（JSON 整段）。DB 读取/解析失败回退项目快照/注册表默认，
-    logger 留痕不阻塞生成（§11.6 降级纪律）。
+    实现已抽到 webapp/config_overrides.py，供生成链路与小墨AI 对话共用；
+    此处保留同名入口（既有调用与测试不变）。
     """
-    try:
-        from .db.config import (AGENT_GUARD_JSON, AGENT_GUARD_SCALAR,
-                                coerce_config_type, list_configs)
-        overrides = {r["config_key"]: r for r in list_configs()}
-    except Exception:
-        logger.exception("读取全局开关覆盖失败，本次生成使用项目快照默认值")
-        return
-    for key, row in overrides.items():
-        try:
-            value = coerce_config_type(row["config_type"], row["config_value"])
-        except Exception:
-            logger.warning("全局开关 %s 值非法已跳过: %r", key, row["config_value"])
-            continue
-        if key == AGENT_GUARD_JSON:
-            cfg.agent_guard.scene_limits = value
-        elif key in AGENT_GUARD_SCALAR:
-            setattr(cfg.agent_guard, key, value)
-        elif hasattr(cfg, key):
-            setattr(cfg, key, value)
+    apply_global_overrides(cfg)
 
 
 def _open_pipeline(store: ProjectStore, trace_id: str = "") -> NovelPipeline:

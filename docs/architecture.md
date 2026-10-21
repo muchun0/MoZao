@@ -95,8 +95,10 @@
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
 | `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照 `user_memory_snapshot.json`，webapp 写 / novel_gen 读，幂等+失败降级，接入全部生成入口）与 `_distill_user_memory`（书级→用户级蒸馏，生成完成/批量 finally 触发，幂等）；**后台开关管理** `_apply_global_overrides`（sys_config 表为准 → 内存态覆盖 cfg 顶层/agent_guard 子项/scene_limits，`_open_pipeline` 内 load_config 之后注入，DB 异常降级留痕） |
 | `user_memory.py` | **用户级记忆库服务（跨书创作偏好继承）**：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像 preferences/跨书纪律 disciplines/个人文风锚 style_anchors/stats），`record_project_signals`（新书显式输入，按项目幂等）、`record_edits`（人工修订跨书锚，上限 30）、`distill`（书级 pitfalls/taste 蒸馏，全量重算式幂等）、`build_snapshot`（题材匹配过滤+上限裁剪→注入快照）、`summary/clear`；全部写路径零额外 LLM |
+| `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 把 `sys_config` 实时值合并进 `NovelConfig`（顶层字段 + agent_guard 标量 + scene_limits），DB 异常回退快照/默认并 logger 留痕；生成链路（`core._open_pipeline`）与小墨AI 对话（`assistant/service.py`）共用，避免同一逻辑两处维护 |
+| `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装四层上下文：system 人设+Bible / 层2 事实块 / 层3 对话窗口 / 层4 提问；按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 组装 → LLM → 失败降级 → 输出合规 → 落库） |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -106,7 +108,7 @@
 | `logger.py` | 统一日志（`logs/app.log`，5MB 轮转 ×3） |
 | `admin_cli.py` | 站长命令行管理（users/balance/recharge/agent/...） |
 
-### 2.4 webapp/routers/（9 个路由模块，共 96 路由）
+### 2.4 webapp/routers/（10 个路由模块，共 106 条 API 路径）
 
 | 模块 | 域 | 说明 |
 |---|---|---|
@@ -120,7 +122,8 @@
 | `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记 |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
-| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（94 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
+| `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
+| `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 
 > 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
 
@@ -128,11 +131,11 @@
 
 | 目录 | 职责 |
 |---|---|
-| `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools` 按域分文件 |
+| `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools/assistant` 按域分文件 |
 | `router/index.js` | 路由表（登录/书案/详情/后台） |
 | `stores/` | Pinia：`auth.js`（登录态）、`project.js`（当前项目） |
-| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab：按 memory/writing/review/guard 分组渲染 94 个生成引擎开关（switch/input-number/select/input），保存即全局生效**） |
-| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`layouts/MainLayout` |
+| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器；**新增「小墨AI」tab**） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab：按 memory/writing/review/guard/assistant 分组渲染 100 个生成引擎开关（switch/input-number/select/input），保存即全局生效**） |
+| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`assistant/AssistantPanel`（小墨AI 会话列表+消息区+模式/章节切换+定位跳章）、`assistant/AssistantCard`（确定性卡片渲染）、`layouts/MainLayout` |
 | `style.css` | 全局样式（深夜书房 × AI 工坊视觉语言） |
 
 ## 3. 核心类与接口（改代码先看这里）
@@ -160,8 +163,9 @@
 | `refund_requests` | 退款申请与处理 |
 | `skills` | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限/信任；platform=管理员可信、user/market=用户可写（拼 system 前清洗）；含 role/applicable_stages/version/downloads/market_id；旧 `writing_skills`/`user_skills`/`skill_market` 保留不 DROP（迁移回退） |
 | `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
-| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（94 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
-| `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险 |
+| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（100 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
+| `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险；小墨AI 调用以 `scene=assistant` 落表 |
+| `conversations` / `messages` | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id/user_id/title/mode/时间）与 `messages`（conversation_id/role/content/extra JSON：卡片、token、章节号、降级标记）；项目产物仍是评估事实来源，会话表只存对话 |
 
 ## 4. 关键数据流
 
@@ -172,6 +176,8 @@
 **断点续传**：任何阶段中断，重启后 `_resume_interrupted_tasks` 扫描残留 `task.json` → 重新打开 pipeline → 逐阶段检查产物文件存在性 → 只补缺失部分（幂等）。
 
 **导出**：`projects/<id>/output/` 生成 TXT/EPUB/DOCX + 封面 PNG（限 5 次），同时拷到全局 `output/`。
+
+**小墨AI 对话**：前端 `POST /api/projects/{id}/assistant/conversations/{cid}/messages` → 鉴权/归属校验 → 输入三闸（空/超长/注入）→ 只读项目产物组装上下文（`review.json`/`chapter_design.json`/`book_memory.json`/`chapters/<no>.json`/config）→ `create_llm`（BYOK 优先，`scene=assistant` 落 `agent_trace`）→ 输出合规校验 → 确定性卡片 → `messages` 落两条（user/assistant）；LLM 失败只落 user 并返回 200 降级提示。
 
 ## 5. 关键机制（为什么这么设计）
 

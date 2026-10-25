@@ -40,6 +40,13 @@ def regenerate_volume(project_id: str, vol_no: int, user: dict = Depends(_requir
                 ch.title = str(new_chs[i].get("title", ch.title))
                 ch.goal = str(new_chs[i].get("goal", ch.goal))
         store.save_outline(outline)
+        # v2 计费：分卷（卷简介 + 卷内章节规划）是一个独立产物，产出即结算一次
+        _settle_product(store, "volume", str(vol_no),
+                        {"name": vol.name, "intro": vol.intro,
+                         "chapters": [{"title": c.title, "goal": c.goal} for c in targets]},
+                        mode=_settle_billing_mode(store),
+                        hq=bool(getattr(cfg, "high_quality_mode", False)),
+                        project_id=project_id)
         logger.info("分卷重生成: project=%s vol=%d", project_id, vol_no)
         return {"ok": True, "intro": vol.intro, "chapters": [{"no": c.no, "title": c.title, "goal": c.goal} for c in targets]}
     except Exception as e:
@@ -128,6 +135,11 @@ def regen_world(project_id: str, user: dict = Depends(_require_user)):
                 except Exception:
                     pass
                 pipeline.run_world()
+                # v2 计费：世界观按产物结算一次（成功产出才计费；失败恢复旧版不结算）
+                _settle_product(store, "world", "all", store.load_world(),
+                                mode=_settle_billing_mode(store),
+                                hq=bool(getattr(store.load_config(), "high_quality_mode", False)),
+                                project_id=project_id)
             except Exception as e:
                 handle.error = str(e)
                 logger.exception("重生成世界观失败: project=%s", project_id)

@@ -49,9 +49,11 @@ from novel_gen.store.schemas import (
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.utils.paths import get_output_dir, get_projects_dir
 from novel_gen.store.project import ProjectStore, _safe_name
+from novel_gen.store.wordcount import count_words
 
 from . import db
 from . import mailer
+from . import settle_ledger
 from . import verify_code
 from . import teardown_lib
 from .config_overrides import apply_global_overrides
@@ -653,147 +655,85 @@ def _compute_settle(store: ProjectStore) -> dict:
     }
 
 
-def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
-    """每生成完一章后增量结算：按该章新增 AI 字数实时扣费。
+def _settle_billing_mode(store: ProjectStore) -> str:
+    """计费模式：自备 Key → `user_llm`（平台不扣费）；否则 `platform`（按生成字数扣费）。"""
+    return settle_ledger.billing_mode_of(_project_use_user_llm(store))
 
-    与整批结束的 _settle_price 幂等互补（settle.json 已存在时整批跳过，不会双扣）。
-    资金安全（P0）：**先落盘结算基线再扣费**——宁可漏扣（站长后台补偿），
-    也不允许"扣费成功但 settle.json 未写"的崩溃窗口导致重启后重复扣费。
-    返回 (should_stop, 原因)；平台付费项目余额耗尽时停止生成，
-    自备 Key（BYOK）项目平台不扣费，余额为 0 也不停止。
+
+def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
+    """生成中断判定（v2 口径下本函数不再扣费，仅保留停止信号契约）。
+
+    历史背景：旧实现在此按「全书累计 AI 字数差」增量扣费，重写同章不增加累计字数
+    ⇒ 天然免费，与「每个产物版本都计费」冲突。TECH-Agent用户化与版本化 §4.4 起改为
+    「版本提交点结算」：扣费由 `settle_ledger.settle_version` 完成，本函数只回答
+    「是否该停止」——平台付费项目余额 ≤ 0 停止；自备 Key（BYOK）项目永不因平台余额停止。
+
+    Returns:
+        (should_stop, 原因)；不停止时原因为空串。
     """
     try:
         project_id = store.dir.name
         uid = db.project_owner(project_id)
         if uid is None:
             return False, ""
-        title = store.load_config().effective_title()
-        calc = _compute_settle(store)
-        ai_words, billable_words = calc["ai_words"], calc["billable_words"]
-        target_ai_words = calc["target_ai_words"]
-
-        sp = store.dir / "settle.json"
-        settled_ai, settled_price = 0, 0.0
-        if sp.exists():
-            try:
-                old = json.loads(sp.read_text(encoding="utf-8"))
-                settled_ai = int(old.get("settled_ai_words", 0) or 0)
-                settled_price = float(old.get("settled_price", 0.0) or 0.0)
-            except Exception:
-                settled_ai, settled_price = 0, 0.0
-
-        # 已结算基线按封顶口径换算，避免 target 变更导致多扣
-        prev_b = min(settled_ai, target_ai_words) if target_ai_words > 0 else settled_ai
-        billable_new = max(0, billable_words - prev_b)
-
-        if billable_new > 0 and not calc["use_user_llm"]:
-            price = round_money(agent_price(price_for(billable_new, high_quality=calc["hq"]),
-                                            calc["discount"]))
-            bal = float(db.get_user(uid)["balance"])
-            actual = min(bal, price)
-            new_settled_price = round_money(settled_price + actual)
-            # P0：先落盘结算基线（含本次实扣金额），再扣费；崩溃后重跑按基线跳过，不重扣
-            sp.write_text(json.dumps({
-                "settled_ai_words": ai_words,
-                "settled_price": new_settled_price,
-                "target_ai_words": target_ai_words,
-                "status": "incremental",
-            }, ensure_ascii=False), encoding="utf-8")
-            if actual > 0:
-                db.change_balance(uid, -actual,
-                                  f"《{title}》章节增量结算：{billable_new} 字，扣 {actual:.2f} 元")
-                try:
-                    _grant_consume_commission(uid, project_id, actual, title)
-                except Exception:
-                    pass
-            settled_price = new_settled_price
-        else:
-            # 无新增或 BYOK：仅推进基线（幂等），不扣费
-            sp.write_text(json.dumps({
-                "settled_ai_words": ai_words,
-                "settled_price": settled_price,
-                "target_ai_words": target_ai_words,
-                "status": "incremental",
-            }, ensure_ascii=False), encoding="utf-8")
-        try:
-            db.update_project_price(project_id, settled_price)
-        except Exception:
-            pass
+        if _project_use_user_llm(store):
+            return False, ""
         new_bal = float(db.get_user(uid)["balance"])
-        # 自备 Key（BYOK）项目平台不扣费，平台余额为 0 也不应中断生成
-        if new_bal <= 0 and not calc["use_user_llm"]:
-            return True, f"余额已耗尽（扣费后余额 {new_bal:.2f} 元），已停止生成。充值后可从断点继续。"
+        if new_bal <= 0:
+            return True, f"余额已耗尽（当前余额 {new_bal:.2f} 元），已停止生成。充值后可从断点继续。"
         return False, ""
     except Exception:
-        logger.exception("增量结算异常: project=%s", store.dir.name)
+        logger.exception("生成中断判定异常: project=%s", store.dir.name)
         return False, ""
-def _settle_price(store: ProjectStore) -> None:
-    """生成完成后整批结算兜底（仅当从未走增量结算时生效，幂等）。
 
-    ai_words = 全书当前总字数 - 用户手写原字数；未产生 AI 文字不收费；
-    settle.json 已存在（增量结算已落盘）则跳过，不会双扣；
-    余额不足扣到 0 并记录 debt.json。消费返佣在结算足额扣费时发放。
+
+def _settle_product(store: ProjectStore, kind: str, key: str, payload, *,
+                    mode: str, hq: bool, project_id: str) -> Optional[dict]:
+    """按产物结算一次（同内容不重复收费）。失败只留痕，不阻断生成主链路。"""
+    try:
+        data = payload if isinstance(payload, dict) else payload.to_dict()
+        words = count_words(kind, data)
+        digest = settle_ledger.content_digest(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return settle_ledger.settle_product(store, kind, key, words, mode=mode, hq=hq,
+                                            project_id=project_id, content_sha=digest)
+    except Exception:
+        logger.exception("产物结算失败（不阻断生成）: project=%s kind=%s key=%s",
+                         project_id, kind, key)
+        return None
+
+
+def _settle_price(store: ProjectStore) -> None:
+    """存量项目兜底结算（v2 账本上线后只对历史项目执行一次）。
+
+    1. 已有 v2 账本 → 直接返回（结算由版本提交点负责，绝不重扣）；
+    2. 有 v1 `settle.json` → 迁移为 v2（`settled_ai_words/settled_price` 转 legacy 基线，
+       迁移过程不扣费）；
+    3. 两者均无 → 按旧口径算一次（沿用 `target_ai_words` 封顶仅此一处生效），
+       走 `settle_legacy` 扣费并落 v2 账本，此后该项目的结算全部走版本账本。
     """
     try:
         project_id = store.dir.name
-        sp = store.dir / "settle.json"
-        if sp.exists():
+        raw = settle_ledger.read_raw(store)
+        if raw is not None:
+            if raw.get("mode") != settle_ledger.LEDGER_MODE:
+                settle_ledger.migrate_v1(store)
             return
-        uid = db.project_owner(project_id)
-        if uid is None:
-            sp.write_text(json.dumps({"mode": "skip"}), encoding="utf-8")
+        if db.project_owner(project_id) is None:
             return
-        title = store.load_config().effective_title()
         calc = _compute_settle(store)
-        ai_words, billable_words = calc["ai_words"], calc["billable_words"]
-        final_price = calc["price"]
-        if ai_words <= 0:
-            # 未真正生成任何 AI 文字：不收费
-            db.update_project_price(project_id, 0.0)
-            sp.write_text(json.dumps({"ai_words": 0, "final_price": 0.0}), encoding="utf-8")
-            return
-        # 用户自配 key：平台未花 LLM 钱，不扣费
-        if calc["use_user_llm"]:
-            db.update_project_price(project_id, 0.0)
-            sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": 0,
-                                      "final_price": 0.0, "mode": "user_llm_free"}),
-                          encoding="utf-8")
-            return
-        # P0 修复：先落盘幂等标记再扣费。崩溃/异常时 settle.json 已存在，
-        # 重启后不再重复扣费；宁可漏扣（站长后台补偿）也不重复扣。
-        sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": calc["target_ai_words"],
-                                  "final_price": final_price,
-                                  "hq": calc["hq"], "status": "charging"}), encoding="utf-8")
-        bal = db.get_user(uid)["balance"]
-        if bal >= final_price:
-            db.change_balance(uid, -final_price,
-                              f"《{title}》生成结算：AI 生成 {ai_words} 字（计费 {billable_words} 字），扣费 {final_price:.2f} 元")
-            try:
-                _grant_consume_commission(uid, project_id, final_price, title)
-            except Exception:
-                pass
-        else:
-            short = round_money(final_price - bal)
-            if bal > 0:
-                db.change_balance(uid, -bal,
-                                  f"《{title}》生成结算：AI 生成 {ai_words} 字，余额不足仅扣 {bal:.2f} 元")
-            store.dir.joinpath("debt.json").write_text(
-                json.dumps({"owe": short, "ai_words": ai_words, "final_price": final_price}),
-                encoding="utf-8")
-            logger.warning("结算扣费余额不足: uid=%d project=%s final=%.2f bal=%.2f 欠费=%.2f",
-                           uid, project_id, final_price, bal, short)
-        db.update_project_price(project_id, final_price)
-        sp.write_text(json.dumps({"ai_words": ai_words, "billable_words": billable_words,
-                                  "target_ai_words": calc["target_ai_words"],
-                                  "final_price": final_price,
-                                  "hq": calc["hq"], "status": "done"}),
-                      encoding="utf-8")
-        logger.info("结算完成: project=%s ai_words=%d billable=%d target=%d final=%.2f balance=%.2f",
-                    project_id, ai_words, billable_words, calc["target_ai_words"], final_price,
-                    db.get_user(uid)["balance"])
+        mode = _settle_billing_mode(store)
+        # 无 AI 文字或自备 Key：不扣费（仍落账本，避免后续重复走旧口径）
+        price = 0.0 if (calc["ai_words"] <= 0 or calc["use_user_llm"]) else calc["price"]
+        result = settle_ledger.settle_legacy(
+            store, ai_words=calc["ai_words"], due_words=calc["billable_words"],
+            price=price, mode=mode, project_id=project_id)
+        logger.info("存量结算完成: project=%s ai_words=%d billable=%d price=%.2f charged=%.2f mode=%s",
+                    project_id, calc["ai_words"], calc["billable_words"], price,
+                    result.get("charged", 0.0), mode)
     except Exception:
-        logger.exception("结算异常: project=%s", store.dir.name)
+        logger.exception("存量结算异常: project=%s", store.dir.name)
+
+
 def _inject_teardown_material(store: ProjectStore, cfg) -> None:
     """P0-3 拆书库回流：调研前把同题材爆款拆书条目格式化为纯文本写入 store，
     供 ResearchEngine 读取并入调研素材（保持 novel_gen 不依赖 webapp 的分层）。
@@ -931,6 +871,9 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
                 store.dir.name, cfg.effective_title(), trace_id)
     try:
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        project_id = store.dir.name
+        mode = _settle_billing_mode(store)
+        hq = bool(getattr(cfg, "high_quality_mode", False))
         # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
         _inject_teardown_material(store, cfg)
         # REQ-双锚风格锚定：拆书库题材文风锚（写手阶段消费，失败降级）
@@ -943,12 +886,18 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         if handle.stop_event.is_set():
             return
         pipeline.run_outline()
+        # v2 计费：大纲是一个独立产物版本，产出即结算一次（同内容重复不重复收费）
+        _settle_product(store, "outline", "all", pipeline.store.load_outline(),
+                        mode=mode, hq=hq, project_id=project_id)
         if handle.stop_event.is_set():
             return
         pipeline.run_editor_review()
         if handle.stop_event.is_set():
             return
         pipeline.run_world()
+        # v2 计费：世界观同样按产物版本结算一次（与大纲是两个不同产物）
+        _settle_product(store, "world", "all", pipeline.store.load_world(),
+                        mode=mode, hq=hq, project_id=project_id)
         if handle.stop_event.is_set():
             return
         # 标记阶段完成
@@ -1006,6 +955,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 store.dir.name, cfg.effective_title(), start_from, trace_id)
     try:
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        project_id = store.dir.name
+        mode = _settle_billing_mode(store)
+        hq = bool(getattr(cfg, "high_quality_mode", False))
         # REQ-双锚风格锚定：所有生成入口统一注入题材锚（start_from>0 从第 N 章重生成、
         # 复用大纲继续生成也生效；重复注入幂等，失败静默降级）
         _inject_teardown_style_anchor(store, cfg)
@@ -1029,6 +981,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                     return
             if not has_outline:
                 pipeline.run_outline()
+                # v2 计费：新建大纲是一个独立产物版本，产出即结算一次
+                _settle_product(store, "outline", "all", pipeline.store.load_outline(),
+                                mode=mode, hq=hq, project_id=project_id)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=outline", store.dir.name)
                     return
@@ -1040,6 +995,9 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             existing_world = store.load_world()
             if not (existing_world and (existing_world.world_view or existing_world.characters)):
                 pipeline.run_world()
+                # v2 计费：新建世界观是一个独立产物版本，产出即结算一次
+                _settle_product(store, "world", "all", pipeline.store.load_world(),
+                                mode=mode, hq=hq, project_id=project_id)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=world", store.dir.name)
                     return
@@ -1063,9 +1021,13 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why
-                logger.warning("余额耗尽停止: project=%s 第 %d 章后 %s", store.dir.name, no, why)
+                logger.warning("余额耗尽停止: project=%s 第 %d 章前 %s", store.dir.name, no, why)
                 break
+            # v2 计费：写前快照版本集合，写后只结算本次新增版本（幂等不重扣）
+            prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
             pipeline.write_chapter(no, silent=False)
+            settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
+                                                  hq=hq, project_id=project_id)
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why
@@ -1125,8 +1087,10 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
 
 
 def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) -> None:
-    """批量生成章节线程：指定起始/结束章逐章生成，结束后整批结算。
+    """批量生成章节线程：指定起始/结束章逐章生成。
 
+    v2 口径下每写完一章即按「新增版本」结算一次（批量 N 章 = N 次结算），
+    收尾的 `_settle_price` 仅对从未结算过的历史项目做一次兜底（有账本则 no-op）。
     独立成模块级函数，便于启动重拾复用（task.json 记录 start/end）。
     """
     import uuid
@@ -1136,6 +1100,8 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
     try:
         cfg = store.load_config()
         pipeline = _open_pipeline(store, trace_id=trace_id)
+        mode = _settle_billing_mode(store)
+        hq = bool(getattr(cfg, "high_quality_mode", False))
         outline = store.load_outline()
         research = store.load_research()
         # 用户级记忆库：跨书偏好/纪律/文风锚注入项目快照（批量入口，失败降级）
@@ -1147,8 +1113,12 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
                 logger.info("批量生成跳过锁定章节: project=%s no=%d", project_id, no)
                 continue
             plan = outline.chapters[no - 1]
+            # v2 计费：写前快照版本集合，写后只结算本次新增版本（批量 N 章 = N 次结算）
+            prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
             pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
                                           is_final=(no == len(outline.chapters)))
+            settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
+                                                  hq=hq, project_id=project_id)
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why
@@ -1296,7 +1266,7 @@ class OutlineSaveReq(BaseModel):
     volumes: list[OutlineVolumeReq] = []
 
 
-REGEN_DAILY_LIMIT = 10  # 每项目每日重生成次数上限（重生成免费，防滥用）
+REGEN_DAILY_LIMIT = 10  # 每项目每日重生成次数上限（防滥用调用；计费已按版本字数结算）
 
 
 def _regen_limit_path(store: ProjectStore) -> Path:
@@ -1304,7 +1274,7 @@ def _regen_limit_path(store: ProjectStore) -> Path:
 
 
 def _check_regen_limit(store: ProjectStore, project_id: str) -> None:
-    """重生成免费，但每项目每日限 10 次（防滥用）。超限返回 429。"""
+    """重生成调用上限（防滥用，与计费解耦）：每项目每日 10 次，超限返回 429。"""
     p = _regen_limit_path(store)
     today = datetime.now().strftime("%Y-%m-%d")
     data = {}

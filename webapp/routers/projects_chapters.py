@@ -34,6 +34,10 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     plan = outline.chapters[no - 1]
     prev_ch = store.load_chapter(no)  # 重写前的旧版（方案4：质检未通过时保留）
     prev_content = prev_ch.content if prev_ch is not None else ""
+    mode = _settle_billing_mode(store)
+    hq = bool(getattr(store.load_config(), "high_quality_mode", False))
+    # v2 计费：写前快照版本集合，写后只结算本次新增版本（候选版本同样计费）
+    prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
     try:
         pipeline = _open_pipeline(store)
         research = store.load_research()
@@ -48,6 +52,9 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     except Exception as e:
         logger.exception("单章重写失败: project=%s no=%d", project_id, no)
         raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+
+    settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
+                                          hq=hq, project_id=project_id)
 
     # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖。
     # 注意：若该章未被用户管理，store 保存后会自动选分（首次生成默认展示质检评分

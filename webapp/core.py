@@ -659,7 +659,8 @@ def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
     与整批结束的 _settle_price 幂等互补（settle.json 已存在时整批跳过，不会双扣）。
     资金安全（P0）：**先落盘结算基线再扣费**——宁可漏扣（站长后台补偿），
     也不允许"扣费成功但 settle.json 未写"的崩溃窗口导致重启后重复扣费。
-    返回 (should_stop, 原因)；余额耗尽时停止生成。
+    返回 (should_stop, 原因)；平台付费项目余额耗尽时停止生成，
+    自备 Key（BYOK）项目平台不扣费，余额为 0 也不停止。
     """
     try:
         project_id = store.dir.name
@@ -719,7 +720,8 @@ def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
         except Exception:
             pass
         new_bal = float(db.get_user(uid)["balance"])
-        if new_bal <= 0:
+        # 自备 Key（BYOK）项目平台不扣费，平台余额为 0 也不应中断生成
+        if new_bal <= 0 and not calc["use_user_llm"]:
             return True, f"余额已耗尽（扣费后余额 {new_bal:.2f} 元），已停止生成。充值后可从断点继续。"
         return False, ""
     except Exception:

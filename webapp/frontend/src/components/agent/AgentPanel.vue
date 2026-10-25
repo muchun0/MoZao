@@ -151,7 +151,7 @@
 // Agent 工作区（TECH-Agent用户化与版本化 §10.2，阶段 1C）：
 // 左侧角色导航（5 个可独立触发的 agent）+ 右侧当前角色工作区（人设版本/参数/补充指令/运行停止/预估金额）。
 // 计费模式与余额常驻左栏底部；平台模式余额 ≤0 时禁用运行并引导充值。
-// 旧「生成/重生成」按钮（平台通道）保留在 ProjectDetail 顶部，本面板是新增的自助通道。
+// ProjectDetail 顶部的「生成/重生成」按钮与本面板同为 UI 快捷入口，统一走 POST /agent-runs 单轨（旧生成接口已删除，见 TECH §4.0 决策变更）。
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance } from '../../api/project'

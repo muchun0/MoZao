@@ -44,7 +44,7 @@ def test_feature_default_unknown_key_raises():
 
 def test_feature_modules_grouping():
     mods = feature_modules()
-    assert mods == ["memory", "writing", "review", "guard", "assistant"]
+    assert mods == ["memory", "writing", "review", "guard", "assistant", "version"]
     for f in list_feature_flags("memory"):
         assert f.module == "memory"
     assert list_feature_flags("guard")  # guard 子项注册存在

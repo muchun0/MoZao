@@ -16,7 +16,7 @@ from typing import Any
 from .base import _connect, logger
 
 # 后台展示分组顺序（与 novel_gen.config.FEATURE_FLAGS.module 对齐）
-FLAG_MODULES: tuple[str, ...] = ("memory", "writing", "review", "guard", "assistant")
+FLAG_MODULES: tuple[str, ...] = ("memory", "writing", "review", "guard", "assistant", "version")
 
 # select 枚举白名单（唯一事实来源：seed 类型推导与路由层校验共用）。
 # key → 可选值列表；此类开关注册表 default 为 str，但后台渲染为下拉框。

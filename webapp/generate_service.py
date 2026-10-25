@@ -33,6 +33,7 @@ from novel_gen.store.wordcount import count_words
 from . import agent_prompts
 from . import db
 from . import settle_ledger
+from . import teardown_lib
 from .logger import get_logger
 from .pricing import price_for
 from .referral import agent_price, round_money
@@ -391,6 +392,35 @@ def _find_run_by_task(store: ProjectStore, task_id: str) -> dict | None:
 
 # ---------- 后台线程主函数 ----------
 
+def _apply_pre_run_injections(store: ProjectStore, cfg, uid: int | None) -> None:
+    """所有 Agent run 统一执行的预生成注入（旧路径 core._run_outline_only/_run_generation 原有逻辑）。
+
+    - 双锚风格锚定（题材文风锚）；
+    - 用户级记忆库（跨书偏好/纪律/文风锚）。
+    失败一律降级（只记日志），不阻断生成。
+    """
+    from . import core
+
+    try:
+        core._inject_teardown_style_anchor(store, cfg)
+    except Exception:
+        logger.exception("风格锚注入失败（降级）: project=%s", store.dir.name)
+    if uid is not None:
+        try:
+            core._inject_user_memory(store, cfg, uid)
+        except Exception:
+            logger.exception("用户记忆注入失败（降级）: project=%s", store.dir.name)
+
+
+def _sink_research_safe(store: ProjectStore) -> None:
+    """调研成果沉淀到拆书库（失败静默，绝不阻塞生成）。"""
+    try:
+        report = store.load_research()
+        teardown_lib.sink_research(report, store.dir.name)
+    except Exception:
+        logger.exception("拆书库沉淀失败（降级）: project=%s", store.dir.name)
+
+
 def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
                     user_prompt: str, skill_ids: tuple, task_id: str, run_id: str) -> None:
     """run 生命周期：begin_run → 分发执行 → 收尾结算 → 侧写留痕 → 清任务释放槽。"""
@@ -407,8 +437,11 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
     store.begin_run(ctx)
     try:
         cfg = store.load_config()
-        mode = settle_ledger.billing_mode_of(_has_user_llm(db.project_owner(project_id)))
+        uid = db.project_owner(project_id)
+        mode = settle_ledger.billing_mode_of(_has_user_llm(uid))
         hq = bool(getattr(cfg, "high_quality_mode", False))
+        # 统一预运行注入：风格锚 + 用户记忆（旧路径 core._run_outline_only/_run_generation 原有逻辑）
+        _apply_pre_run_injections(store, cfg, uid)
         # 人设 + user_prompt 注入（内存态，不落盘；sanitize 属阶段 4）
         prompt_text, prompt_version, prompt_sha256 = agent_prompts.get_prompt_meta(store, agent)
         pipeline = core._open_pipeline(store, trace_id=trace_id)
@@ -510,11 +543,18 @@ def _record_settle(result: dict | None, words: int, outputs: list[dict],
 
 def _exec_researcher(store: ProjectStore, pipeline, handle) -> None:
     """题材调研：删旧 research.json 重跑（researcher.run 有复用短路）。"""
+    from . import core
+
     research_path = store.dir / "research.json"
     old = research_path.read_text(encoding="utf-8") if research_path.exists() else None
     try:
         research_path.unlink(missing_ok=True)
+        try:
+            core._inject_teardown_material(store, store.load_config())
+        except Exception:
+            logger.exception("拆书库素材注入失败（降级）: project=%s", store.dir.name)
         result = pipeline.run_research(silent=True)
+        _sink_research_safe(store)
         if result is None:
             raise RuntimeError("调研未产出（扩写模式下调研不适用）")
     except Exception:
@@ -525,7 +565,7 @@ def _exec_researcher(store: ProjectStore, pipeline, handle) -> None:
 
 def _exec_outline(store: ProjectStore, pipeline, handle, billing: dict,
                   outputs: list[dict], entries: list[dict]) -> None:
-    """大纲：删旧 outline/editor_review → run_outline + run_editor_review → 收尾提交结算。"""
+    """大纲：删旧 outline/editor_review → 调研素材注入 → run_outline(含 research) + editor_review → 沉淀调研 → 收尾提交结算。"""
     from . import core
 
     outline_path = store.dir / "outline.json"
@@ -535,7 +575,12 @@ def _exec_outline(store: ProjectStore, pipeline, handle, billing: dict,
     try:
         outline_path.unlink(missing_ok=True)
         review_path.unlink(missing_ok=True)
+        try:
+            core._inject_teardown_material(store, store.load_config())
+        except Exception:
+            logger.exception("拆书库素材注入失败（降级）: project=%s", store.dir.name)
         pipeline.run_outline(silent=True)
+        _sink_research_safe(store)
         if handle.stop_event.is_set():
             return
         pipeline.run_editor_review(silent=True)
@@ -554,7 +599,7 @@ def _exec_outline(store: ProjectStore, pipeline, handle, billing: dict,
 
 def _exec_world(store: ProjectStore, pipeline, handle, billing: dict,
                 outputs: list[dict], entries: list[dict]) -> None:
-    """世界观：删 world.json 重跑（同 regen_world 模式），失败恢复旧 world。"""
+    """世界观：删 world.json → 调研素材注入 → run_world（内部按需跑 research）→ 沉淀调研 → 收尾提交结算，失败恢复旧 world。"""
     from . import core
 
     old_world = None
@@ -564,7 +609,12 @@ def _exec_world(store: ProjectStore, pipeline, handle, billing: dict,
         old_world = None
     try:
         store.world_path().unlink(missing_ok=True)
+        try:
+            core._inject_teardown_material(store, store.load_config())
+        except Exception:
+            logger.exception("拆书库素材注入失败（降级）: project=%s", store.dir.name)
         pipeline.run_world(silent=True)
+        _sink_research_safe(store)
         r = core._commit_and_settle(store, "world", store.load_world(),
                                     mode=billing["mode"], hq=billing["hq"],
                                     project_id=billing["project_id"])

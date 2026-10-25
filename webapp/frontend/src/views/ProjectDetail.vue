@@ -286,8 +286,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, startGenerate, regenerateChapters, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun } from '../api/project'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -408,26 +408,21 @@ async function regenChapter(c) {
   try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
   try {
-    const res = await rewriteChapter(pid, c.no)
-    const verTxt = res.version ? `，v${res.version}` : ''
-    // P0-3：质检未通过不再静默交付——明确红标提示，用户可人工改稿或再次重写
-    if (res.kept_previous) {
-      const cvTxt = res.candidate_version ? `，重写稿已保留为 v${res.candidate_version}` : ''
-      ElMessage.warning(`第${c.no}章已重写但质检未通过，已保留上一版正文${verTxt}${cvTxt}；可在「版本」弹窗查看新稿质检问题并选择/删除`)
-    } else if (res.quality && !res.quality.passed) {
-      ElMessage.warning(`第${c.no}章已重新生成（${res.words}字${verTxt}），但质检未通过（score=${res.quality.score}，${res.quality.issue_count}个问题），请人工检查后再编辑`)
-    } else {
-      ElMessage.success(`第${c.no}章已重新生成（${res.words}字${verTxt}）`)
-    }
-    loadChapters()
+    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } })
+    ElMessage.success(`已开始重新生成第${c.no}章`)
+    // 单章重写走轻量轮询：只等本项目运行结束，不触发全局进度条
+    await new Promise((resolve) => {
+      const t = setInterval(async () => {
+        try {
+          const s = await getStatus(pid)
+          if (!s.running) { clearInterval(t); resolve(s) }
+        } catch {}
+      }, 2000)
+    })
+    await loadChapters()
+    ElMessage.success(`第${c.no}章已重新生成`)
   } catch (e) {
-    // 超时 ≠ 失败：重写 3 轮 LLM 调用可能超过 10 分钟前端等待，但后端会继续跑完落盘
-    if (e?.code === 'ECONNABORTED' || (e?.message || '').includes('timeout')) {
-      ElMessage.warning('重生成耗时较长，本次请求已超时；后端仍在处理，请稍后刷新页面查看最新内容')
-      setTimeout(loadChapters, 3000)
-    } else {
-      ElMessage.error('重生成失败')
-    }
+    ElMessage.error(e?.response?.data?.detail || '重生成失败')
   } finally { regenNo.value = 0 }
 }
 
@@ -543,7 +538,7 @@ async function checkStatus() {
   } catch {}
 }
 
-function startPolling() {
+function startPolling(onDone) {
   if (!genStartTs) genStartTs = Date.now()
   if (pollTimer) clearInterval(pollTimer)
   let lastDone = -1
@@ -571,7 +566,9 @@ function startPolling() {
         if (s.error) {
           ElMessage.error('生成失败：' + s.error)
         } else {
-          await refreshAfterGen()
+          // 可选链式回调（如大纲完成后自动生成世界观）：返回 true 表示已接管后续流程，跳过默认刷新
+          const chained = onDone ? await onDone(s) : false
+          if (!chained) await refreshAfterGen()
         }
       }
     } catch {}
@@ -704,22 +701,48 @@ async function saveEdit() {
 }
 
 async function runOutline() {
-  try { await genOutline(pid); ElMessage.success('已开始生成大纲与世界观，完成后可在「大纲」「人物/世界观」查看/编辑'); beginGenUI('正在启动大纲生成…'); startPolling() }
-  catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
+  try {
+    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    ElMessage.success('已开始生成大纲，完成后将自动生成世界观')
+    beginGenUI('正在生成大纲…')
+    // 大纲完成后若无世界观则自动链式生成世界观
+    startPolling(async () => {
+      try {
+        const w = await getWorld(pid)
+        if (!w || !w.world_view) {
+          await startAgentRun(pid, { agent: 'architect.world', params: {} })
+          ElMessage.success('大纲已完成，正在生成世界观…')
+          beginGenUI('正在生成世界观…')
+          startPolling() // 世界观完成后走默认刷新
+          return true // 已接管后续，跳过本次默认刷新
+        }
+      } catch (e) { ElMessage.error(e?.response?.data?.detail || '世界观启动失败') }
+      return false
+    })
+  } catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
 }
 async function doRegenOutline() {
   try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
-  try { await regenOutline(pid); ElMessage.success('已开始重生成大纲'); beginGenUI('正在启动重生成大纲…'); startPolling(); loadSnapshots() }
-  catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  try {
+    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    ElMessage.success('已开始重生成大纲')
+    beginGenUI('正在重生成大纲…')
+    startPolling()
+    loadSnapshots()
+  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function doRegenWorld() {
   try { await ElMessageBox.confirm('重生成世界观会覆盖现有世界设定，已锁定内容不受影响。继续？', '重生成世界观', { type: 'warning' }) } catch { return }
-  try { await regenWorld(pid); ElMessage.success('已开始重生成世界观'); beginGenUI('正在启动重生成世界观…'); startPolling() }
-  catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  try {
+    await startAgentRun(pid, { agent: 'architect.world', params: {} })
+    ElMessage.success('已开始重生成世界观')
+    beginGenUI('正在重生成世界观…')
+    startPolling()
+  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function startGen() {
   try {
-    await startGenerate(pid, {})
+    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'all' } })
     ElMessage.success('已开始生成')
     beginGenUI('正在启动写作…')
     startPolling()
@@ -731,7 +754,7 @@ async function startGen() {
 async function regenAllChapters() {
   try { await ElMessageBox.confirm('将重新生成全部章节正文（保留大纲/世界观，已锁定章节自动跳过，未锁定章节内容将被覆盖）。继续？', '重新生成全部章节', { type: 'warning' }) } catch { return }
   try {
-    await regenerateChapters(pid)
+    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'all' } })
     ElMessage.success('已开始重新生成全部章节')
     beginGenUI('正在启动整本重写…')
     startPolling()

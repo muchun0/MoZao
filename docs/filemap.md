@@ -119,8 +119,8 @@
 | `routers/skills.py` | 平台技能/技能市场 |
 | `routers/style_roles.py` | 风格角色 + 技能挂载（reference_text 透传） |
 | `routers/projects_base.py` | 项目 CRUD/退费/归档/克隆/删除/下载（建书快照 style_role_reference；**用户级记忆**：建书 `record_project_signals`+继承快照） |
-| `routers/projects_outline.py` | 三级大纲/快照/重生成 |
-| `routers/projects_chapters.py` | 章节/审校/扩写/批量（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记；**三期产品化** `/chapters/{no}/scene-inspect`（F2 场景体检）、`/chapters/{no}/chain-of-thought`（F4 计划-产出-校验聚合）、`/continue-branches`（F3 三分支候选）、`/apply-branch`（F3 草稿预览落盘，不改正文）；**REQ-章节版本化（2026-10-16）** `rewrite` 返回 `version`、`regenerate_from` 改方案 a（不再删 no 及之后章节，改为从 no 追加候选版本、旧版保留用户逐章选择）、`edit_chapter` 追加 `source=user` 版本、新增 `GET /chapters/{no}/versions` 与 `POST /chapters/{no}/versions/{v}/select`；**2026-10-17 版本质量** `rewrite` 改为以实际 HEAD 重算 kept_previous 并返回 HEAD 内容 + `candidate_version`（kept_previous 时新稿版本号）、新增 `DELETE /chapters/{no}/versions/{v}`（selected 不可删） |
+| `routers/projects_outline.py` | 三级大纲/快照/差异（`/outline/regenerate` 已删除，统一走 agent-runs `architect.outline`） |
+| `routers/projects_chapters.py` | 章节/审校/扩写（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记；**三期产品化** `/chapters/{no}/scene-inspect`（F2 场景体检）、`/chapters/{no}/chain-of-thought`（F4 计划-产出-校验聚合）、`/continue-branches`（F3 三分支候选）、`/apply-branch`（F3 草稿预览落盘，不改正文）；**REQ-章节版本化（2026-10-16）** `edit_chapter` 追加 `source=user` 版本、`GET /chapters/{no}/versions` 与 `POST /chapters/{no}/versions/{v}/select`、`DELETE /chapters/{no}/versions/{v}`（selected 不可删）；~~`rewrite`/`regenerate_from`/`chapters/batch` 已删除~~，统一走 agent-runs（`writer.chapter` scope=single/range/all） |
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
 | `routers/projects_generation.py` | 生成控制（启动/停止/重跑）；**阶段1B（2026-10-25）** `POST /api/projects/{id}/agent-runs`（202 统一触发）+ `GET .../agent-runs/{task_id}`（四态查询），业务全在 generate_service；**阶段1C（2026-10-25）** `POST .../agent-runs/{task_id}/stop`（停止）+ `GET/PUT .../agent-prompts[/{agent}]`（人设不可变版本读取/保存） |
 | `routers/projects_versions.py` | **产物版本 API（阶段1C，2026-10-25）**：outline/world 的 `GET /products/{kind}/versions`（含每版计费金额）、`POST .../versions/{v}/select`（受控回滚）、`GET .../rollback-impact`（回滚影响范围：受影响章节/regenerate_from/滞后派生视图）；kind 白名单 outline/world，chapter 版本仍走 projects_chapters |
@@ -149,7 +149,7 @@
 | `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |
 | `components/outline/OutlineEditor.vue` | 三级大纲编辑器（拖拽）；**阶段1C** apply 候选成功后 `emit('open-versions')` 跳版本列表并提示候选版本同样计费 |
 | `components/VersionDialog.vue` | **统一版本弹窗（阶段1C，2026-10-25）**：chapter（质检分/问题列表/申诉）与 outline/world（每版扣费金额、选择前弹回滚影响范围确认）共用；从 ProjectDetail 迁出章节版本逻辑 |
-| `components/agent/AgentPanel.vue` | **Agent 面板（阶段1C，2026-10-25）**：5 角色卡片（人设版本 tag/编辑人设/参数区/user_prompt/运行停止/预估金额）+ 计费模式标识（user_llm/platform）+ 平台余额 ≤0 禁用引导充值；轮询 getAgentRun 直至终态 |
+| `components/agent/AgentPanel.vue` | **Agent 面板（阶段1C，2026-10-25）**：两栏工作区——左栏角色导航（5 角色，选中金线标记）+ 计费模式/余额（平台模式 ≤0 禁用引导充值），右栏当前角色工作区（人设版本 tag/编辑人设/参数区/user_prompt/运行停止/预估金额），技能挂载折叠区；轮询 getAgentRun 直至终态 |
 | `components/agent/SkillPicker.vue` | **技能多选器（阶段1C）**：按 role 分组展示平台技能，挂载上限 5，显示单技能注入字数 |
 | `components/world/CharacterGraph.vue` | 人物关系图 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |

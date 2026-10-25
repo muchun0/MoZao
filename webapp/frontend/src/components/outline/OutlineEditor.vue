@@ -122,8 +122,9 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import draggable from 'vuedraggable'
-import { getOutline, saveOutline as saveOutlineApi, regenerateVolume,
+import { getOutline, saveOutline as saveOutlineApi,
          getOutlineCandidates, applyOutlineCandidate } from '../../api/novel'
+import { startAgentRun, getStatus } from '../../api/project'
 import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -144,8 +145,17 @@ async function regenVolume(vol) {
   } catch { return }
   regeningVol.value = vol.no
   try {
-    await regenerateVolume(props.pid, vol.no)
-    ElMessage.success('本卷已重新生成，请刷新查看')
+    await startAgentRun(props.pid, { agent: 'architect.volume', params: { vol_no: vol.no } })
+    ElMessage.success('已开始重生成本卷，完成后自动刷新')
+    // 轮询等待生成结束后刷新大纲
+    await new Promise((resolve) => {
+      const t = setInterval(async () => {
+        try {
+          const s = await getStatus(props.pid)
+          if (!s.running) { clearInterval(t); resolve(s) }
+        } catch {}
+      }, 2000)
+    })
     emit('saved')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '重生成失败')

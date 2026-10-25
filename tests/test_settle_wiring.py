@@ -2,7 +2,7 @@
 """阶段 0.5 计费接线冒烟（P0）：验证真实调用链确实产出结算条目。
 
 背景：`settle_ledger.py` 单测绿不代表接线生效（AGENTS §11.2「建了能力却没接线」是历史坑）。
-本文件用假 pipeline 走**真实的** `core._run_generation` / `rewrite_chapter` 代码路径，
+本文件用假 pipeline 走**真实的** `core._run_generation` / `generate_service._run_agent_task` 代码路径，
 只桩掉 LLM、管道内部推进与鉴权，断言 `settle.json` 里确实出现 outline / world / chapter
 条目，且金额符合「按版本按字数」口径。不连 MySQL、不发网络请求。
 
@@ -141,9 +141,9 @@ def test_generation_settles_outline_world_and_chapter(tmp_path, wallet, wired, m
 
 
 @pytest.mark.p0
-def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, monkeypatch):
-    """同章重写 → 只结算新增的 v2，首版不重复扣。"""
-    from webapp.routers import projects_chapters as chapters_mod
+def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, wired, monkeypatch):
+    """同章重写（writer.chapter scope=single）→ 只结算新增的 v2，首版不重复扣。"""
+    from webapp import generate_service as gs
 
     store = _new_store(tmp_path)
     store.save_outline(Outline(
@@ -160,21 +160,18 @@ def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, monkeypatch)
 
     class _FakeRewritePipeline:
         def __init__(self):
+            self.cfg = store.load_config()
             self.chapter_writer = _FakeWriter()
 
-        def _update_chapter_state(self, no, silent=True):
-            pass
-
-    monkeypatch.setattr(chapters_mod, "_open_pipeline",
+    monkeypatch.setattr(server, "_open_pipeline",
                         lambda s, trace_id="": _FakeRewritePipeline())
-    monkeypatch.setattr(chapters_mod, "_check_project_access", lambda pid, u: None)
-    monkeypatch.setattr(chapters_mod, "_find_project", lambda pid: store)
-    monkeypatch.setattr(chapters_mod, "_assert_not_locked", lambda *a, **k: None)
-    monkeypatch.setattr(chapters_mod, "_check_regen_limit", lambda *a, **k: None)
 
-    res = chapters_mod.rewrite_chapter(store.dir.name, 1, user={"id": 1, "username": "u"})
+    handle = server._RunHandle()
+    gs._run_agent_task(store, handle, "writer.chapter",
+                       {"scope": "single", "ch_no": 1},
+                       "", (), "task_rw1", "run_rw1")
 
-    assert res["no"] == 1
+    assert not handle.error, f"重写不应报错: {handle.error}"
     entries = _entries(store)
     assert "chapter:1:v2" in entries          # 本次重写新增版本已结算
     assert "chapter:1:v1" not in entries      # 首版不在本次结算范围内（不重复扣）

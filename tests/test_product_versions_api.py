@@ -205,30 +205,3 @@ def test_stop_agent_run(store, routed, cleanup_runs):
     assert body["stopped"] is True
     assert handle.stop_event.is_set()
     core._RUNS.pop(pid, None)
-
-
-# ---------- rewrite 槽位收敛（§11.2） ----------
-
-@pytest.mark.p1
-def test_rewrite_conflict_when_slot_held(store, routed, monkeypatch, cleanup_runs):
-    """rewrite 已走 _acquire_slot：项目槽位被占时同步重写返回 409（此前只检查不注册）。"""
-    from novel_gen.store.schemas import Chapter, ChapterPlan, Outline
-
-    store.save_outline(Outline(title="测试书", intro="简介",
-                               chapters=[ChapterPlan(no=1, title="第1章", goal="目标")]))
-    store.save_chapter(Chapter(no=1, title="第1章", content="正文" * 300))
-    monkeypatch.setattr(pc, "_assert_not_locked", lambda *a, **k: None)
-    monkeypatch.setattr(pc, "_check_regen_limit", lambda *a, **k: None)
-
-    pid = store.dir.name
-    handle = core._acquire_slot(pid)
-    handle.thread = threading.Thread(target=threading.Event().wait, args=(30,), daemon=True)
-    handle.thread.start()
-    try:
-        with pytest.raises(HTTPException) as ei:
-            pc.rewrite_chapter(pid, 1, {"id": 1})
-        assert ei.value.status_code == 409
-    finally:
-        handle.stop_event.set()
-        core._GEN_SEMAPHORE.release()
-        core._RUNS.pop(pid, None)

@@ -96,39 +96,6 @@ def outline_diff(project_id: str, user: dict = Depends(_require_user)):
     return {"changed": changed, "removed": removed}
 
 
-@app.post("/api/projects/{project_id}/outline/regenerate")
-def regen_outline(project_id: str, user: dict = Depends(_require_user)):
-    """重新生成大纲：删除旧大纲，重新跑 outline 阶段。"""
-    _check_project_access(project_id, user)
-    store = _find_project(project_id)
-    _assert_not_locked(store, "outline")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-        handle = _RunHandle()
-        _RUNS[project_id] = handle
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise HTTPException(status_code=429, detail="系统繁忙")
-    try:
-        # 删除旧大纲文件（而非写空壳）：否则 run_outline 检测到"已有大纲对象"会直接复用，永不重新生成
-        _op = store.outline_path()
-        if _op.exists():
-            _backup_outline(store, "重生成前")  # 覆盖前自动备份上一版（一键还原）
-            _op.unlink()
-        logger.info("重生成大纲启动: project=%s user=%s", project_id, user["username"])
-        t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
-        handle.thread = t
-        t.start()
-    except Exception:
-        logger.exception("重生成大纲启动失败: project=%s", project_id)
-        _GEN_SEMAPHORE.release()
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise
-    return {"started": True}
-
 
 def _snap_display(name: str) -> str:
     """把快照文件名转成可读时间文案：

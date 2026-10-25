@@ -1311,34 +1311,6 @@ class OutlineSaveReq(BaseModel):
     volumes: list[OutlineVolumeReq] = []
 
 
-REGEN_DAILY_LIMIT = 10  # 每项目每日重生成次数上限（防滥用调用；计费已按版本字数结算）
-
-
-def _regen_limit_path(store: ProjectStore) -> Path:
-    return store.dir / "regen_count.json"
-
-
-def _check_regen_limit(store: ProjectStore, project_id: str) -> None:
-    """重生成调用上限（防滥用，与计费解耦）：每项目每日 10 次，超限返回 429。"""
-    p = _regen_limit_path(store)
-    today = datetime.now().strftime("%Y-%m-%d")
-    data = {}
-    try:
-        if p.exists():
-            data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
-    cnt = int(data.get(today, 0))
-    if cnt >= REGEN_DAILY_LIMIT:
-        raise HTTPException(status_code=429,
-                            detail=f"今日该项目重生成次数已达上限（{REGEN_DAILY_LIMIT} 次/日），请明天再试")
-    data[today] = cnt + 1
-    try:
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        logger.warning("重生成计数写入失败: project=%s", project_id)
-
-
 def _outline_diff(outline, store: ProjectStore) -> tuple[list[int], list[int]]:
     """返回 (changed, removed)：
     changed = 已生成章节中，标题/目标与当前大纲不一致的章节号（大纲编辑后需要重生成的候选）

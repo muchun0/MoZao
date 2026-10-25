@@ -1,70 +1,135 @@
 <template>
-  <div class="agent-panel">
-    <!-- 计费模式标识（TECH §10.2：不再按是否配置 Key 分流，所有用户可见） -->
-    <el-alert :closable="false" class="billing-banner" :type="billingMode === 'platform' ? 'warning' : 'success'">
-      <template #title>
-        <template v-if="billingMode === 'user_llm'">自备 Key · 平台不扣费（使用您自己的模型额度）</template>
-        <template v-else>平台计费 · 按 AI 实际生成字数扣费（普通 2 元/万字，高质量 3 元/万字；候选/重写版本同样计费），当前余额 ¥{{ balance.toFixed(2) }}</template>
-      </template>
-    </el-alert>
-    <div v-if="billingMode === 'platform' && balance <= 0" class="balance-block">
-      <span>余额不足，Agent 生成入口已禁用。</span>
-      <el-button size="small" type="primary" @click="$emit('recharge')">去充值</el-button>
-    </div>
-
-    <SkillPicker v-model="skillIds" class="panel-skills" />
-
-    <div class="agent-cards">
-      <div v-for="a in AGENTS" :key="a.key" class="agent-card">
-        <div class="agent-head">
-          <span class="agent-name">{{ a.name }}</span>
-          <el-tag size="small" type="info">{{ promptVersion(a.key) }}</el-tag>
-          <el-button size="small" link type="primary" @click="openPromptEditor(a)">编辑人设</el-button>
-        </div>
-        <div class="agent-desc">{{ a.desc }}</div>
-
-        <!-- writer.chapter 参数：scope 三态（§4.1 params schema） -->
-        <template v-if="a.key === 'writer.chapter'">
-          <el-radio-group v-model="chapterScope" size="small" class="agent-params">
-            <el-radio-button value="all">全部未完成章</el-radio-button>
-            <el-radio-button value="single">单章</el-radio-button>
-            <el-radio-button value="range">区间</el-radio-button>
-          </el-radio-group>
-          <div v-if="chapterScope === 'single'" class="agent-params">
-            第 <el-input-number v-model="chNo" :min="1" size="small" /> 章
-          </div>
-          <div v-else-if="chapterScope === 'range'" class="agent-params">
-            第 <el-input-number v-model="fromCh" :min="1" size="small" /> 章 至
-            第 <el-input-number v-model="toCh" :min="fromCh" size="small" /> 章（可留空到末尾）
-            <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">到末尾</el-checkbox>
-          </div>
-        </template>
-        <div v-else-if="a.key === 'architect.volume'" class="agent-params">
-          分卷号 <el-input-number v-model="volNo" :min="1" size="small" />
-        </div>
-
-        <el-input
-          v-model="userPrompts[a.key]"
-          type="textarea" :rows="2" maxlength="2000" show-word-limit
-          placeholder="补充指令（可选）：本次生成的额外要求，如「加强冲突」「节奏加快」"
-          class="agent-prompt"
-        />
-
-        <div class="agent-actions">
-          <template v-if="running && runningAgent === a.key">
-            <el-button size="small" type="danger" @click="stopRun">停止</el-button>
-            <span class="agent-status">运行中…</span>
-          </template>
-          <el-button
-            v-else
-            size="small" type="primary"
-            :disabled="entryDisabled"
-            @click="startRun(a.key)"
-          >运行</el-button>
-          <span v-if="estimates[a.key] > 0" class="agent-est">预估 ¥{{ estimates[a.key].toFixed(2) }}</span>
-        </div>
+  <div class="agent-workspace">
+    <!-- 左栏：角色导航 + 计费环境（原横贯顶部的告警条收敛到这里，减少视觉噪音） -->
+    <aside class="agent-rail">
+      <div class="rail-title">角色</div>
+      <div class="rail-list" role="tablist" aria-label="Agent 角色">
+        <button
+          v-for="a in AGENTS"
+          :key="a.key"
+          type="button"
+          role="tab"
+          :aria-selected="a.key === selectedAgent"
+          class="rail-item"
+          :class="{ active: a.key === selectedAgent }"
+          @click="selectedAgent = a.key"
+        >
+          <span class="rail-item-main">
+            <span class="rail-name">{{ a.name }}</span>
+            <span class="rail-version">{{ versionShort(a.key) }}</span>
+          </span>
+          <span class="rail-desc">{{ a.desc }}</span>
+          <span v-if="isRunningAgent(a.key)" class="rail-running">
+            <span class="pulse" />运行中
+          </span>
+        </button>
       </div>
-    </div>
+
+      <div class="rail-billing">
+        <div class="billing-line">
+          <span class="billing-dot" :class="billingMode" />
+          <span>{{ billingMode === 'user_llm' ? '自备 Key · 平台不扣费' : '平台计费' }}</span>
+        </div>
+        <div class="billing-detail">
+          {{ billingMode === 'user_llm'
+            ? '使用您自己的模型额度，产物仍按版本记账'
+            : '按 AI 实际生成字数结算：普通 2 元/万字 · 高质量 3 元/万字；候选/重写版本同样计费' }}
+        </div>
+        <template v-if="billingMode === 'platform'">
+          <div class="billing-balance" :class="{ danger: balance <= 0 }">
+            <span>余额 ¥{{ balance.toFixed(2) }}</span>
+            <el-button v-if="balance <= 0" size="small" type="primary" link @click="$emit('recharge')">去充值</el-button>
+          </div>
+          <div v-if="balance <= 0" class="billing-warn">余额不足，运行入口已禁用</div>
+        </template>
+      </div>
+    </aside>
+
+    <!-- 右栏：当前角色工作区（一次只展开一个角色，参数/指令/运行收敛到这里） -->
+    <section class="agent-stage">
+      <transition name="stage" mode="out-in">
+        <div :key="currentAgent.key" class="stage-body">
+          <header class="stage-head">
+            <div class="stage-title">
+              <h3>{{ currentAgent.name }}</h3>
+              <el-tag size="small" type="info" effect="plain">{{ promptVersion(currentAgent.key) }}</el-tag>
+            </div>
+            <div class="stage-head-actions">
+              <span v-if="isRunningAgent(currentAgent.key)" class="stage-running"><span class="pulse" />运行中</span>
+              <el-button size="small" link type="primary" @click="openPromptEditor(currentAgent)">编辑人设</el-button>
+            </div>
+          </header>
+          <p class="stage-desc">{{ currentAgent.desc }}</p>
+
+          <!-- writer.chapter 参数：scope 三态（§4.1 params schema） -->
+          <div v-if="currentAgent.key === 'writer.chapter'" class="stage-field">
+            <div class="field-label">生成范围</div>
+            <el-radio-group v-model="chapterScope" size="small">
+              <el-radio-button value="all">全部未完成章</el-radio-button>
+              <el-radio-button value="single">单章</el-radio-button>
+              <el-radio-button value="range">区间</el-radio-button>
+            </el-radio-group>
+            <div v-if="chapterScope === 'single'" class="field-row">
+              <span>第</span>
+              <el-input-number v-model="chNo" :min="1" size="small" controls-position="right" />
+              <span>章</span>
+            </div>
+            <div v-else-if="chapterScope === 'range'" class="field-row">
+              <span>第</span>
+              <el-input-number v-model="fromCh" :min="1" size="small" controls-position="right" />
+              <span>章 至</span>
+              <el-input-number v-model="toCh" :min="fromCh" size="small" controls-position="right" />
+              <span>章</span>
+              <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">到末尾</el-checkbox>
+            </div>
+          </div>
+
+          <div v-else-if="currentAgent.key === 'architect.volume'" class="stage-field">
+            <div class="field-label">分卷号</div>
+            <el-input-number v-model="volNo" :min="1" size="small" controls-position="right" />
+          </div>
+
+          <div class="stage-field">
+            <div class="field-label">补充指令<span class="field-optional">可选</span></div>
+            <el-input
+              v-model="userPrompts[currentAgent.key]"
+              type="textarea" :rows="3" maxlength="2000" show-word-limit
+              placeholder="本次生成的额外要求，如「加强冲突」「节奏加快」"
+            />
+          </div>
+
+          <div class="stage-actions">
+            <template v-if="isRunningAgent(currentAgent.key)">
+              <el-button type="danger" @click="stopRun">停止运行</el-button>
+              <span class="action-hint">已完成部分保留，未完成章节不提交</span>
+            </template>
+            <template v-else>
+              <el-button type="primary" :disabled="entryDisabled" @click="startRun(currentAgent.key)">
+                运行 {{ currentAgent.name }}
+              </el-button>
+              <span v-if="estimates[currentAgent.key] > 0" class="action-hint">
+                预估 ¥{{ estimates[currentAgent.key].toFixed(2) }}（按实际生成字数结算）
+              </span>
+              <span v-else-if="running" class="action-hint">「{{ runningAgentName }}」运行中，结束后可再次运行</span>
+              <span v-else-if="billingMode === 'platform' && balance <= 0" class="action-hint danger">余额不足，请先充值</span>
+            </template>
+          </div>
+
+          <!-- 技能挂载：默认折叠，避免长期占据首屏 -->
+          <div class="stage-skills">
+            <button type="button" class="skills-toggle" :aria-expanded="skillsOpen" @click="skillsOpen = !skillsOpen">
+              <span>挂载写作技能</span>
+              <span class="skills-count">{{ skillIds.length }}/5</span>
+              <span class="skills-chevron" :class="{ open: skillsOpen }">▾</span>
+            </button>
+            <div v-show="skillsOpen" class="skills-body">
+              <p class="skills-hint">技能注入该角色 system 提示词，对全部角色运行生效</p>
+              <SkillPicker v-model="skillIds" />
+            </div>
+          </div>
+        </div>
+      </transition>
+    </section>
 
     <!-- 人设编辑对话框：保存即新建不可变版本（author=user） -->
     <el-dialog v-model="promptDialog" :title="`编辑人设 · ${editingAgentName}`" width="640px">
@@ -83,9 +148,9 @@
 </template>
 
 <script setup>
-// Agent 卡片面板（TECH-Agent用户化与版本化 §10.2，阶段 1C）：
-// 5 个可独立触发的 agent 卡片（人设编辑/参数/补充指令/运行/停止/进度轮询）+
-// 计费模式标识与预估金额 + 平台模式余额 ≤0 禁用引导充值。
+// Agent 工作区（TECH-Agent用户化与版本化 §10.2，阶段 1C）：
+// 左侧角色导航（5 个可独立触发的 agent）+ 右侧当前角色工作区（人设版本/参数/补充指令/运行停止/预估金额）。
+// 计费模式与余额常驻左栏底部；平台模式余额 ≤0 时禁用运行并引导充值。
 // 旧「生成/重生成」按钮（平台通道）保留在 ProjectDetail 顶部，本面板是新增的自助通道。
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -106,6 +171,10 @@ const AGENTS = [
   { key: 'writer.chapter', name: '章节写手', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
 ]
 
+// ---------- 角色选择 ----------
+const selectedAgent = ref(AGENTS[0].key)
+const currentAgent = computed(() => AGENTS.find((a) => a.key === selectedAgent.value) || AGENTS[0])
+
 // ---------- 计费模式 / 余额 ----------
 const billingMode = ref('platform')
 const balance = ref(0)
@@ -115,9 +184,15 @@ const prompts = ref({})
 function promptVersion(agent) {
   return prompts.value[agent]?.version || `${agent}@v1`
 }
+// 左栏只显示版本号本身（v1/v2），完整 agent@v 版本标识留给右栏标签
+function versionShort(agent) {
+  const matched = /@v(\d+)$/.exec(promptVersion(agent))
+  return matched ? `v${matched[1]}` : promptVersion(agent)
+}
 
 // ---------- 运行参数 ----------
 const skillIds = ref([])
+const skillsOpen = ref(false)
 const chapterScope = ref('all')
 const chNo = ref(1)
 const fromCh = ref(1)
@@ -135,6 +210,12 @@ const pollTimer = ref(null)
 
 const entryDisabled = computed(() =>
   running.value || (billingMode.value === 'platform' && balance.value <= 0))
+const runningAgentName = computed(() =>
+  AGENTS.find((a) => a.key === runningAgent.value)?.name || '')
+
+function isRunningAgent(agent) {
+  return running.value && runningAgent.value === agent
+}
 
 function buildParams(agent) {
   if (agent === 'writer.chapter') {
@@ -260,7 +341,8 @@ async function loadPrompts() {
 async function refreshBilling() {
   try {
     const me = await getBalance()
-    balance.value = Number(me?.balance ?? 0)
+    // /api/me 返回 { user: {...} }，余额在 user 下；直接读顶层会得到 undefined→0，误判余额不足
+    balance.value = Number(me?.user?.balance ?? 0)
   } catch { /* 降级：余额展示保持旧值 */ }
   try {
     const llm = await getMyLlm()
@@ -276,30 +358,168 @@ onBeforeUnmount(stopPolling)
 </script>
 
 <style scoped>
-.agent-panel { padding: 4px 0; }
-.billing-banner { margin-bottom: 10px; }
-.balance-block {
+/* 两栏工作区：左导航 + 右工作区；与「小墨AI」面板同为侧栏式布局，保持一致的信息结构 */
+.agent-workspace {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 0 28px;
+  max-width: 1080px;
+  padding-top: 6px;
+}
+
+/* ---------- 左栏：角色导航（列表而非卡片，选中态用金线标记） ---------- */
+.agent-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 24px;
+  border-right: 1px solid var(--card-line);
+}
+.rail-title { font-size: 12px; color: var(--muted); letter-spacing: .08em; }
+.rail-list { display: flex; flex-direction: column; gap: 2px; }
+.rail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.rail-item:hover { background: rgba(35, 47, 85, .05); }
+.rail-item.active { background: var(--indigo-soft); border-left-color: var(--gold); }
+.rail-item-main { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rail-name { font-size: 14px; font-weight: 600; }
+.rail-version { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rail-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.rail-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
+
+/* ---------- 计费环境：常驻左栏底部，替代原先横贯顶部的告警条 ---------- */
+.rail-billing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--card-line);
+}
+.billing-line { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-soft); }
+.billing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); flex-shrink: 0; }
+.billing-dot.user_llm { background: var(--ok); }
+.billing-detail { font-size: 11px; line-height: 1.55; color: var(--muted); }
+.billing-balance {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  color: var(--el-color-danger);
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.billing-balance.danger { color: var(--danger); }
+.billing-warn { font-size: 11px; color: var(--danger); }
+
+/* ---------- 右栏：当前角色工作区 ---------- */
+.agent-stage { min-width: 0; padding-top: 2px; }
+.stage-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.stage-title { display: flex; align-items: center; gap: 10px; }
+.stage-title h3 { font-family: var(--serif); font-size: 19px; font-weight: 600; }
+.stage-head-actions { display: flex; align-items: center; gap: 10px; }
+.stage-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
+.stage-desc { max-width: 620px; margin: 6px 0 22px; font-size: 13px; color: var(--ink-soft); }
+.stage-field { margin-bottom: 18px; }
+.field-label { margin-bottom: 7px; font-size: 12px; color: var(--muted); }
+.field-optional { margin-left: 6px; font-size: 11px; color: #b9bdc9; }
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
   font-size: 13px;
+  color: var(--ink-soft);
 }
-.panel-skills { margin-bottom: 14px; }
-.agent-cards { display: flex; flex-direction: column; gap: 10px; }
-.agent-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 12px;
+.stage-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.action-hint { font-size: 12px; color: var(--muted); }
+.action-hint.danger { color: var(--danger); }
+
+/* ---------- 技能挂载：默认折叠，避免长期占据首屏 ---------- */
+.stage-skills { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--card-line); }
+.skills-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
 }
-.agent-head { display: flex; align-items: center; gap: 8px; }
-.agent-name { font-weight: 600; }
-.agent-desc { color: var(--el-text-color-secondary); font-size: 12px; margin: 4px 0 8px; }
-.agent-params { margin-bottom: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.agent-prompt { margin-bottom: 8px; }
-.agent-actions { display: flex; align-items: center; gap: 10px; }
-.agent-status { color: var(--el-color-primary); font-size: 12px; }
-.agent-est { color: var(--el-color-warning); font-size: 12px; }
+.skills-count { font-size: 12px; color: var(--muted); }
+.skills-chevron {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  transition: transform .18s ease;
+}
+.skills-chevron.open { transform: rotate(180deg); }
+.skills-body { margin-top: 10px; }
+.skills-hint { margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+
+/* 角色切换只做 140ms 位移淡入：提示层级变化，不制造噪声 */
+.stage-enter-active, .stage-leave-active { transition: opacity .14s ease, transform .14s ease; }
+.stage-enter-from { opacity: 0; transform: translateY(4px); }
+.stage-leave-to { opacity: 0; }
+
+.pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: agent-pulse 1.4s ease-in-out infinite;
+}
+@keyframes agent-pulse {
+  0%, 100% { opacity: .35; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
 .prompt-tip { margin-bottom: 10px; }
+
+@media (max-width: 860px) {
+  .agent-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .agent-rail {
+    padding-right: 0;
+    padding-bottom: 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--card-line);
+  }
+  .rail-list { flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .rail-item { flex: 0 0 auto; width: 172px; }
+  .rail-desc { -webkit-line-clamp: 1; }
+  .rail-billing { margin-top: 0; }
+  .agent-stage { padding-top: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
+  .stage-enter-active, .stage-leave-active { transition: none; }
+}
 </style>

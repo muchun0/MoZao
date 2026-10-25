@@ -21,7 +21,7 @@
 from .core import *  # noqa: F401,F403  触发 app 创建与核心状态初始化
 from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       assistant, projects_base, projects_outline, projects_chapters,
-                      projects_world, projects_generation)  # noqa: F401  触发路由注册
+                      projects_world, projects_generation, projects_versions)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

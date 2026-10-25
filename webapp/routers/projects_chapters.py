@@ -26,89 +26,91 @@ def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     if store.load_chapter(no).source == "user":
         raise HTTPException(status_code=400, detail="该章为用户手写内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
     _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需重生成请先解锁")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
     _check_regen_limit(store, project_id)
-
-    plan = outline.chapters[no - 1]
-    prev_ch = store.load_chapter(no)  # 重写前的旧版（方案4：质检未通过时保留）
-    prev_content = prev_ch.content if prev_ch is not None else ""
-    mode = _settle_billing_mode(store)
-    hq = bool(getattr(store.load_config(), "high_quality_mode", False))
-    # v2 计费：写前快照版本集合，写后只结算本次新增版本（候选版本同样计费）
-    prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
+    # 1C（TECH §11.2）：同步重写也注册生成槽位，杜绝与后台生成任务并发写版本库；
+    # 此前只检查不注册，重写数分钟内 _RUNS 无本项目，另一生成任务可并发启动
+    _rewrite_handle = _acquire_slot(project_id)
     try:
-        pipeline = _open_pipeline(store)
-        research = store.load_research()
-        # 大改风控：重写时自动加载 world + memory + verify_issues 作为硬约束
-        chapter = pipeline.chapter_writer.write(
-            no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
-        # 章末状态落盘（章间账本）：与写章循环一致，否则重写后账本不更新
+        plan = outline.chapters[no - 1]
+        prev_ch = store.load_chapter(no)  # 重写前的旧版（方案4：质检未通过时保留）
+        prev_content = prev_ch.content if prev_ch is not None else ""
+        mode = _settle_billing_mode(store)
+        hq = bool(getattr(store.load_config(), "high_quality_mode", False))
+        # v2 计费：写前快照版本集合，写后只结算本次新增版本（候选版本同样计费）
+        prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
         try:
-            pipeline._update_chapter_state(no, silent=True)
+            pipeline = _open_pipeline(store)
+            research = store.load_research()
+            # 大改风控：重写时自动加载 world + memory + verify_issues 作为硬约束
+            chapter = pipeline.chapter_writer.write(
+                no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
+            # 章末状态落盘（章间账本）：与写章循环一致，否则重写后账本不更新
+            try:
+                pipeline._update_chapter_state(no, silent=True)
+            except Exception:
+                logger.warning("重写后章末状态抽取失败（忽略）: no=%d", no)
+        except Exception as e:
+            logger.exception("单章重写失败: project=%s no=%d", project_id, no)
+            raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+
+        settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
+                                              hq=hq, project_id=project_id)
+
+        # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖。
+        # 注意：若该章未被用户管理，store 保存后会自动选分（首次生成默认展示质检评分
+        # 最高的一版），HEAD 可能是旧高分版或本轮新稿——以实际 HEAD 为准计算 kept_previous
+        # 并返回 HEAD 内容，保证前端展示与后端选中一致。
+        try:
+            head = store.load_chapter(no)
         except Exception:
-            logger.warning("重写后章末状态抽取失败（忽略）: no=%d", no)
-    except Exception as e:
-        logger.exception("单章重写失败: project=%s no=%d", project_id, no)
-        raise HTTPException(status_code=500, detail=f"重写失败：{e}")
+            head = chapter
+        kept_previous = bool(prev_content) and head is not None and head.content == prev_content
+        if head is not None:
+            chapter = head
 
-    settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
-                                          hq=hq, project_id=project_id)
-
-    # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖。
-    # 注意：若该章未被用户管理，store 保存后会自动选分（首次生成默认展示质检评分
-    # 最高的一版），HEAD 可能是旧高分版或本轮新稿——以实际 HEAD 为准计算 kept_previous
-    # 并返回 HEAD 内容，保证前端展示与后端选中一致。
-    try:
-        head = store.load_chapter(no)
-    except Exception:
-        head = chapter
-    kept_previous = bool(prev_content) and head is not None and head.content == prev_content
-    if head is not None:
-        chapter = head
-
-    logger.info("章节重写: uid=%d project=%s no=%d words=%d",
-                user["id"], project_id, no, len(chapter.content))
-    should_stop, stop_reason = _settle_incremental(store)
-    # P0-3：附上该章质检结果（review.json 最新记录），前端据此显示
-    # "本章质检未通过（score=0）"红标——检出≠修好也绝不再静默交付
-    quality = {}
-    try:
-        review_path = store.dir / "review.json"
-        if review_path.exists():
-            import json as _json
-            for r in reversed(_json.loads(review_path.read_text(encoding="utf-8"))):
-                if r.get("chapter") == no:
-                    qc = r.get("quality_check") or {}
-                    quality = {
-                        "passed": bool(qc.get("passed", True)),
-                        "score": int(qc.get("score", 100)),
-                        "issue_count": len(r.get("issues") or []),
-                        "auto_revised": bool(r.get("auto_revised", False)),
-                    }
-                    break
-    except Exception:
-        pass
-    # REQ-章节版本化：返回该章当前选中版本号（重写/质检重写已自动追加新版本；
-    # kept_previous 内容未变则不追加，version 保持原选中版本）
-    _version = 0
-    _candidate_version = 0
-    try:
-        for _v in store.list_versions(chapter.no):
-            if _v.get("selected"):
-                _version = _v.get("v") or 0
-            elif _v.get("source") == "rewrite" and (_v.get("v") or 0) > _candidate_version:
-                # kept_previous 时本轮重写新稿以候选版本入库（不顶替选中），
-                # 返回其版本号供前端提示"新版本已保留，可在版本列表查看/选择"
-                _candidate_version = _v.get("v") or 0
-    except Exception:
+        logger.info("章节重写: uid=%d project=%s no=%d words=%d",
+                    user["id"], project_id, no, len(chapter.content))
+        should_stop, stop_reason = _settle_incremental(store)
+        # P0-3：附上该章质检结果（review.json 最新记录），前端据此显示
+        # "本章质检未通过（score=0）"红标——检出≠修好也绝不再静默交付
+        quality = {}
+        try:
+            review_path = store.dir / "review.json"
+            if review_path.exists():
+                import json as _json
+                for r in reversed(_json.loads(review_path.read_text(encoding="utf-8"))):
+                    if r.get("chapter") == no:
+                        qc = r.get("quality_check") or {}
+                        quality = {
+                            "passed": bool(qc.get("passed", True)),
+                            "score": int(qc.get("score", 100)),
+                            "issue_count": len(r.get("issues") or []),
+                            "auto_revised": bool(r.get("auto_revised", False)),
+                        }
+                        break
+        except Exception:
+            pass
+        # REQ-章节版本化：返回该章当前选中版本号（重写/质检重写已自动追加新版本；
+        # kept_previous 内容未变则不追加，version 保持原选中版本）
         _version = 0
-    return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
-            "summary": chapter.summary, "words": len(chapter.content),
-            "balance_warning": stop_reason if should_stop else "",
-            "quality": quality, "kept_previous": kept_previous, "version": _version,
-            "candidate_version": _candidate_version}
+        _candidate_version = 0
+        try:
+            for _v in store.list_versions(chapter.no):
+                if _v.get("selected"):
+                    _version = _v.get("v") or 0
+                elif _v.get("source") == "rewrite" and (_v.get("v") or 0) > _candidate_version:
+                    # kept_previous 时本轮重写新稿以候选版本入库（不顶替选中），
+                    # 返回其版本号供前端提示"新版本已保留，可在版本列表查看/选择"
+                    _candidate_version = _v.get("v") or 0
+        except Exception:
+            _version = 0
+        return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
+                "summary": chapter.summary, "words": len(chapter.content),
+                "balance_warning": stop_reason if should_stop else "",
+                "quality": quality, "kept_previous": kept_previous, "version": _version,
+                "candidate_version": _candidate_version}
+    finally:
+        _release_slot(project_id)
 
 
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")

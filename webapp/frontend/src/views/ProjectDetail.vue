@@ -66,47 +66,13 @@
           </div>
         </div>
         <el-empty v-else description="暂无章节" />
-        <el-dialog v-model="versionsDialog" :title="`章节版本 · 第${versionsNo}章`" width="560px">
-          <div class="ver-list">
-            <div v-for="v in versionList" :key="v.v" class="ver-item" :class="{ active: v.selected }">
-              <div class="ver-main">
-                <div class="ver-info">
-                  <span class="ver-no">v{{ v.v }}</span>
-                  <el-tag size="small" :type="v.selected ? 'success' : 'info'">{{ v.selected ? '当前' : sourceText(v.source) }}</el-tag>
-                  <el-tag v-if="v.quality && v.quality.score !== undefined && v.quality.score !== null"
-                          size="small" :type="v.quality.passed ? 'success' : 'danger'">
-                    质检 {{ v.quality.score }}{{ v.quality.passed ? ' ✓' : ' ✗' }}
-                  </el-tag>
-                  <el-tag v-if="v.quality && v.quality.auto_revised" size="small" type="warning">自动改</el-tag>
-                  <span class="ver-words">{{ v.words }}字</span>
-                  <span class="ver-ts">{{ fmtVerTime(v.ts) }}</span>
-                </div>
-                <div v-if="v.quality && (v.quality.issues || []).length" class="ver-issues">
-                  <div class="ver-issues-head">改稿建议（{{ v.quality.issue_count || v.quality.issues.length }} 处）</div>
-                  <div v-for="(it, i) in v.quality.issues.slice(0, 8)" :key="i" class="ver-issue">
-                    <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
-                    <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
-                    <span>{{ it.detail }}</span>
-                    <el-button size="small" link type="warning" @click="appealIssue(it)">申诉</el-button>
-                  </div>
-                  <div v-if="(v.quality.issues || []).length > 8" class="ver-issue-more">… 其余 {{ v.quality.issues.length - 8 }} 条见版本质检记录</div>
-                </div>
-                <div v-else class="ver-noq">该版本无质检问题记录</div>
-              </div>
-              <div class="ver-actions">
-                <el-button size="small" link :type="v.selected ? '' : 'primary'" :disabled="v.selected"
-                           @click="selectVersion(v.v)">{{ v.selected ? '使用中' : '选择/回退' }}</el-button>
-                <el-button v-if="!v.selected" size="small" link type="danger" @click="deleteVersion(v.v)">删除</el-button>
-              </div>
-            </div>
-            <el-empty v-if="!versionList.length" description="暂无历史版本（重写/重生成会自动保留多版本）" />
-          </div>
-          <div class="ver-tip">每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。</div>
-        </el-dialog>
       </el-tab-pane>
 
       <el-tab-pane label="大纲" name="outline">
-        <OutlineEditor :key="outlineReloadKey" :pid="pid" @saved="loadAll" />
+        <div class="product-bar">
+          <el-button size="small" type="primary" link @click="openProductVersions('outline')">大纲版本</el-button>
+        </div>
+        <OutlineEditor :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
       </el-tab-pane>
 
       <el-tab-pane label="人物/世界观" name="world">
@@ -115,6 +81,7 @@
           <div class="world-edit-head">
             <h4 style="margin:0">世界观</h4>
             <div>
+              <el-button size="small" type="primary" link @click="openProductVersions('world')">世界观版本</el-button>
               <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="toggleLock('world_view', '', !isWorldLocked)">
                 {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
               </el-button>
@@ -253,10 +220,20 @@
                         @locate="locateChapter" />
       </el-tab-pane>
 
+      <el-tab-pane label="Agent" name="agent">
+        <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" />
+      </el-tab-pane>
+
       <el-tab-pane label="工具" name="tools">
         <ToolsPanel :pid="pid" />
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 统一版本弹窗（阶段 1C）：chapter/outline/world 共用 -->
+    <VersionDialog v-model="versionsDialog" :pid="pid" :kind="versionsKind" :chapter-no="versionsNo"
+                   @changed="onVersionChanged" @appeal="appealIssue" />
+
+    <RechargeDialog ref="rechargeRef" />
 
     <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh" @closed="hideSelFloat">
       <template #header>
@@ -310,12 +287,15 @@
 import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, startGenerate, regenerateChapters, cancelGenerate, getStatus, downloadProject } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, getChapterVersions, selectChapterVersion, deleteChapterVersion, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, genOutline, regenOutline, regenWorld, rewriteChapter, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import CharacterGraph from '../components/world/CharacterGraph.vue'
 import AssistantPanel from '../components/assistant/AssistantPanel.vue'
+import AgentPanel from '../components/agent/AgentPanel.vue'
+import VersionDialog from '../components/VersionDialog.vue'
+import RechargeDialog from '../components/RechargeDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
@@ -335,7 +315,8 @@ const lock = ref({})
 // REQ-章节版本化：版本选择弹窗状态
 const versionsDialog = ref(false)
 const versionsNo = ref(0)
-const versionList = ref([])
+const versionsKind = ref('chapter')  // 阶段 1C：统一版本弹窗的当前产物类型（chapter/outline/world）
+const rechargeRef = ref(null)
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
 // 导致 outlineReady 翻转、v-else 按钮组整体消失。用 hadOutline 保住按钮组（生成中置灰而非隐藏）。
@@ -450,16 +431,8 @@ async function regenChapter(c) {
   } finally { regenNo.value = 0 }
 }
 
-// REQ-章节版本化：版本选择
-function sourceText(src) {
-  return { ai: 'AI生成', user: '人工编辑', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
-}
-function fmtVerTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts * 1000)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-// P2-3 申诉撤销：对某条质检/合规判罚发起申诉（误判兜底）
+// 版本弹窗（阶段 1C）：列表/选择/删除/影响范围统一收敛到 components/VersionDialog.vue，
+// 本页只保留打开入口与申诉回调（P2-3 申诉撤销：对某条质检/合规判罚发起申诉，误判兜底）
 async function appealIssue(it) {
   const issueType = it.type || ''
   const label = issueType || '质检问题'
@@ -477,42 +450,20 @@ async function appealIssue(it) {
   }
 }
 
-async function openVersions(c) {
+function openVersions(c) {
+  versionsKind.value = 'chapter'
   versionsNo.value = c.no
-  versionList.value = []
   versionsDialog.value = true
-  try {
-    const res = await getChapterVersions(pid, c.no)
-    versionList.value = res.versions || []
-  } catch (e) {
-    ElMessage.error('加载章节版本失败')
-    versionsDialog.value = false
-  }
 }
-async function selectVersion(v) {
-  try {
-    await ElMessageBox.confirm(`确定回退到第${versionsNo.value}章的 v${v} 版本？当前选中将切换为该版本。`, '切换版本', { type: 'warning' })
-  } catch { return }
-  try {
-    const res = await selectChapterVersion(pid, versionsNo.value, v)
-    ElMessage.success(`已切换到 v${v}（${res.words}字）`)
-    versionList.value = (await getChapterVersions(pid, versionsNo.value)).versions || []
-    loadChapters()
-  } catch (e) {
-    ElMessage.error(e?.message || '切换版本失败')
-  }
+function openProductVersions(kind) {
+  versionsKind.value = kind
+  versionsNo.value = 0
+  versionsDialog.value = true
 }
-async function deleteVersion(v) {
-  try {
-    await ElMessageBox.confirm(`确定删除第${versionsNo.value}章的 v${v} 版本？删除后不可恢复。`, '删除版本', { type: 'warning' })
-  } catch { return }
-  try {
-    const res = await deleteChapterVersion(pid, versionsNo.value, v)
-    versionList.value = res.versions || []
-    ElMessage.success(`已删除 v${v}`)
-  } catch (e) {
-    ElMessage.error(e?.message || '删除版本失败')
-  }
+function onVersionChanged() {
+  loadChapters()
+  if (versionsKind.value === 'outline') outlineReloadKey.value++
+  if (versionsKind.value === 'world') loadAll()
 }
 function addCharacter() {
   worldDraft.value.characters.push({ name: "", role: "", desc: "", appearance: "", personality: "", desire: "", wound: "", arc: "", speech_style: "", relations: "" })
@@ -916,25 +867,7 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-list { display: flex; flex-direction: column; gap: 8px; }
 .ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }
 .ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }
-.ver-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
-.ver-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #e4e7ed; border-radius: 8px; }
-.ver-item.active { border-color: #67c23a; background: #f0f9eb; }
-.ver-main { flex: 1; min-width: 0; }
-.ver-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ver-no { font-weight: 600; font-size: 14px; }
-.ver-words { color: #909399; font-size: 12px; }
-.ver-ts { color: #909399; font-size: 12px; }
-.ver-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex-shrink: 0; }
-.ver-issues { margin-top: 8px; padding: 8px 10px; background: #fdf6ec; border: 1px solid #faecd8; border-radius: 6px; }
-.ver-issues-head { font-size: 12px; font-weight: 600; color: #b88230; margin-bottom: 4px; }
-.ver-issue { font-size: 12px; color: #606266; line-height: 1.6; margin-top: 2px; }
-.ver-issue .lv-big { color: #f56c6c; font-weight: 600; margin-right: 4px; }
-.ver-issue .lv-mid { color: #e6a23c; font-weight: 600; margin-right: 4px; }
-.ver-issue .lv-small { color: #909399; margin-right: 4px; }
-.ver-issue-type { color: #409eff; margin-right: 4px; }
-.ver-issue-more { font-size: 12px; color: #909399; margin-top: 4px; }
-.ver-noq { margin-top: 6px; font-size: 12px; color: #c0c4cc; }
-.ver-tip { margin-top: 12px; color: #909399; font-size: 12px; line-height: 1.6; }
+.product-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .ch-item:hover { background: #f5f7fa; }
 .ch-no { color: #909399; font-size: 13px; width: 60px; }
 .ch-title { flex: 1; }

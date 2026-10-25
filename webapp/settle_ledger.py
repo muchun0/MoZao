@@ -46,6 +46,7 @@ __all__ = [
     "settle_version",
     "should_stop_now",
     "snapshot_chapter_versions",
+    "version_charge_map",
 ]
 
 logger = get_logger("settle_ledger")
@@ -461,3 +462,30 @@ def _record_debt(store, entry_key: str, words: int, due: float, charged: float) 
                        store.dir.name, entry_key, due, charged, owe)
     except Exception:
         logger.exception("欠费记录写入失败: project=%s entry=%s", store.dir.name, entry_key)
+
+
+# ---------- 版本金额反查（阶段 1C：版本弹窗展示每版计费字数与金额，TECH §10.2） ----------
+
+def version_charge_map(store, kind: str, key: str) -> dict[int, dict]:
+    """按版本号反查结算金额：{v: {charged, due, mode}}。
+
+    幂等键格式 `{kind}:{key}:v{v}`（§4.4.2），章节/大纲/世界观产物通用；
+    无账本或无对应条目返回空表——只读查询，任何异常都不抛给上层（展示降级为不显示金额）。
+    """
+    prefix = f"{kind}:{key}:v"
+    out: dict[int, dict] = {}
+    try:
+        ledger = load_ledger(store)
+        for entry_key, entry in (ledger.get("entries") or {}).items():
+            if not isinstance(entry, dict) or not str(entry_key).startswith(prefix):
+                continue
+            v = _entry_version(str(entry_key))
+            if v < 1:  # 版本号从 1 起；解析失败（0）跳过
+                continue
+            out[v] = {"charged": float(entry.get("charged") or 0.0),
+                      "due": float(entry.get("due") or 0.0),
+                      "mode": str(entry.get("mode") or "")}
+    except Exception:
+        logger.exception("版本金额反查失败（降级为空表）: project=%s kind=%s key=%s",
+                         store.dir.name, kind, key)
+    return out

@@ -128,7 +128,7 @@ import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({ pid: String })
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved', 'open-versions'])
 
 const outlineTitle = ref('')
 const outlineIntro = ref('')
@@ -202,9 +202,11 @@ async function applyCandidate(i) {
   applying.value = i
   try {
     await applyOutlineCandidate(props.pid, i)
-    ElMessage.success('已采用该候选大纲')
+    ElMessage.success('已采用该候选大纲（候选版本同样计费，可在大纲版本中查看）')
     candidates.value = []
     emit('saved')
+    // TECH §10.2：apply 候选后跳转版本列表，让用户看到新版本与计费记录
+    emit('open-versions')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '采用失败')
   } finally { applying.value = -1 }

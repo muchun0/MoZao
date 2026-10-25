@@ -29,3 +29,12 @@ export const overturnAppeal = (pid, appealId) => request.post(`/projects/${pid}/
 export const regenWorld = (pid) => request.post(`/projects/${pid}/world/regenerate`)
 export const importOutline = (pid, data) => request.post(`/projects/${pid}/outline/import`, data)
 export const expandSelection = (pid, data) => request.post(`/projects/${pid}/expand-selection`, data)
+
+// 产物级版本库（阶段 1C，TECH §10.1）：outline/world 版本列表 / 受控回滚 / 回滚影响范围
+export const getProductVersions = (pid, kind) => request.get(`/projects/${pid}/products/${kind}/versions`)
+export const selectProductVersion = (pid, kind, v) => request.post(`/projects/${pid}/products/${kind}/versions/${v}/select`)
+export const getRollbackImpact = (pid, kind, v) => request.get(`/projects/${pid}/products/${kind}/rollback-impact`, { params: { v } })
+
+// Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
+export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)
+export const saveAgentPrompt = (pid, agent, text) => request.put(`/projects/${pid}/agent-prompts/${agent}`, { text })

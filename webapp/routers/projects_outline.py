@@ -74,7 +74,8 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
         volumes=volumes,
         chapters=chapters,
     )
-    store.save_outline(new_outline)
+    # 用户编辑大纲 = 一次用户提交（source="user" 置 user_managed；版本化关闭时只写 HEAD）
+    store.save_outline(new_outline, commit=True, source="user")
 
     changed, removed = _outline_diff(new_outline, store)
     logger.info("大纲编辑: uid=%d project=%s chapters=%d→%d changed=%s removed=%s",
@@ -208,5 +209,6 @@ def restore_outline_snapshot(project_id: str, snap_name: str, user: dict = Depen
     data = json.loads(snap_file.read_text(encoding="utf-8"))
     from novel_gen.store.schemas import Outline
     outline = Outline.from_dict(data)
-    store.save_outline(outline)
+    # 快照恢复同样是用户主动选择，记为用户提交版本
+    store.save_outline(outline, commit=True, source="user")
     return {"ok": True, "chapters": len(outline.chapters)}

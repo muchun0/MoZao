@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 项目存储层：把一次「写书任务」落盘为一个目录，实现断点续传与成果沉淀。
 
@@ -269,9 +269,44 @@ class ProjectStore:
     def outline_path(self) -> Path:
         return self.dir / "outline.json"
 
-    def save_outline(self, outline: Outline) -> None:
+    def _feature_value(self, key: str):
+        """轻量读取本项目 config.json 中的功能开关值（缺省用 FEATURE_FLAGS 注册表默认值）。
+
+        供存储层内部判断开关（如 versioned_product）；比 load_config() 便宜，
+        不构造 NovelConfig 对象。
+        """
+        from ..config import _coerce_feature, feature_default
+        d = self._read_json(self.config_path(), {})
+        return _coerce_feature(d.get(key), feature_default(key))
+
+    def versioned_enabled(self) -> bool:
+        """版本化门面总开关（TECH-Agent用户化与版本化 阶段1A）：False 时 outline/world
+        不建版本库、save_chapter 走原实现、恢复 outline_snapshots 自动快照（紧急回退）。
+        公开方法：webapp 结算层（`_commit_and_settle`）也需读同一开关。"""
+        return bool(self._feature_value("versioned_product"))
+
+    def save_outline(self, outline: Outline, *, commit: bool = False, source: str = "ai") -> Optional[int]:
+        """保存大纲 HEAD；返回新建版本号（无版本库/内容未变/未提交 → None）。
+
+        - `commit=False`（默认）：只写 HEAD 不建版本——管线中间落盘点用（§3.10
+          「一次 run = 一次 commit」，版本由 run 收尾统一 `commit_head` 提交）；
+        - `commit=True`：经版本化门面建版本（用户编辑 / apply 候选等独立提交点）；
+          内容签名与 HEAD 相同 → 幂等返回 None；
+        - 存量项目首次提交：旧 HEAD 存 v1(legacy)、新内容 v2（§3.5）；
+        - 旧 `outline_snapshots/` 自动快照仅在新版本库关闭（versioned_product=False）时
+          继续写（避免两套版本体系并存，§3.1）；存量快照目录只读保留。
+        """
+        if commit and self.versioned_enabled():
+            from .versioned import VersionedProduct
+            return VersionedProduct(self, "outline").commit("all", outline.to_dict(), source=source)
         self._write_json(self.outline_path(), outline.to_dict())
-        # 自动快照：每次保存备份到 snapshots/，保留最近20个版本
+        if not self.versioned_enabled():
+            self._auto_snapshot_outline(outline)
+        return None
+
+    def _auto_snapshot_outline(self, outline: Outline) -> None:
+        """旧版自动快照（versioned_product=False 回退路径专用）：每次保存备份到
+        outline_snapshots/，保留最近 20 个版本。失败静默（快照不是关键链路）。"""
         try:
             import time, json, glob, os
             snap_dir = self.dir / "outline_snapshots"
@@ -309,14 +344,18 @@ class ProjectStore:
         return [c for c in d["candidates"] if isinstance(c, dict)]
 
     def apply_outline_candidate(self, index: int) -> Optional[Outline]:
-        """把第 index 个候选设为当前大纲（save_outline）。越界/异常 → None。"""
+        """把第 index 个候选设为当前大纲。越界/异常 → None。
+
+        apply = 一次 `source="user"` 提交（§3.5/§3.10）：版本化开启时建版本
+        （用户行为，`words=0` 不计费——候选生成成本已在 run 内结算）。
+        """
         candidates = self.load_outline_candidates()
         if not 0 <= int(index) < len(candidates):
             return None
         outline = Outline.from_dict(candidates[int(index)])
         if outline is None:
             return None
-        self.save_outline(outline)
+        self.save_outline(outline, commit=True, source="user")
         return outline
 
     # ---------- 编辑审阅结果 ----------
@@ -333,8 +372,18 @@ class ProjectStore:
     def world_path(self) -> Path:
         return self.dir / "world.json"
 
-    def save_world(self, world: World) -> None:
+    def save_world(self, world: World, *, commit: bool = False, source: str = "ai") -> Optional[int]:
+        """保存世界观 HEAD；返回新建版本号（无版本库/内容未变/未提交 → None）。
+
+        语义同 `save_outline`：`commit=False` 只写 HEAD（管线中间落盘），
+        `commit=True` 经版本化门面建版本（用户编辑等独立提交点）；
+        存量项目首次提交：旧 HEAD 存 v1(legacy)、新内容 v2（§3.5）。
+        """
+        if commit and self.versioned_enabled():
+            from .versioned import VersionedProduct
+            return VersionedProduct(self, "world").commit("all", world.to_dict(), source=source)
         self._write_json(self.world_path(), world.to_dict())
+        return None
 
     def load_world(self) -> Optional[World]:
         d = self._read_json(self.world_path(), None)
@@ -387,7 +436,26 @@ class ProjectStore:
                      version_limit: Optional[int] = None,
                      quality: Optional[dict] = None,
                      promote: bool = True) -> Optional[int]:
-        """章节正文版本化保存（REQ-章节版本化 + 版本质量/自动选分扩展）。
+        """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
+
+        `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
+        门面（统一三类产物版本库）；`False` → 走 `_save_chapter_legacy` 原实现（紧急回退）。
+        对外签名与行为语义不变，详见 `_save_chapter_legacy` docstring。
+        """
+        if self.versioned_enabled():
+            from .versioned import VersionedProduct
+            return VersionedProduct(self, "chapter").commit(
+                str(chapter.no), chapter.to_dict(),
+                source=source or getattr(chapter, "source", "ai") or "ai",
+                quality=quality, promote=promote, limit=version_limit)
+        return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
+                                         quality=quality, promote=promote)
+
+    def _save_chapter_legacy(self, chapter: Chapter, source: Optional[str] = None,
+                             version_limit: Optional[int] = None,
+                             quality: Optional[dict] = None,
+                             promote: bool = True) -> Optional[int]:
+        """原章节版本化实现（仅 `versioned_product=False` 回退路径使用）。
 
         - `chapters/<no>.json` = 当前选中版本（HEAD），`load_chapter`/`list_chapters` 照常读；
         - 历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引；
@@ -495,52 +563,24 @@ class ProjectStore:
             self._write_json(self.chapter_path(no), ch.to_dict())
         return best_v
 
-    def delete_version(self, no: int, ver: int) -> bool:
-        """删除该章指定历史版本（当前选中 selected 不可删；HEAD 是 selected 的副本不删）。
+    def _chapter_facade(self):
+        """章节产物门面（阶段 1A：delete/load/select/list 与两条保存路径共用同一存储格式，
+        故读写委托不分开关——flag-off 写出的版本库同样可被门面读取）。"""
+        from .versioned import VersionedProduct
+        return VersionedProduct(self, "chapter")
 
-        删除版本存档文件 + 索引项。返回是否删除成功。
-        """
-        index = self.load_chapter_versions()
-        rec = index.get(str(no))
-        if not isinstance(rec, dict):
-            return False
-        versions = [v for v in rec.get("versions", []) if isinstance(v, int)]
-        if ver not in versions:
-            return False
-        if ver == rec.get("selected"):
-            return False  # 当前使用中版本不可删
-        p = self.chapter_version_path(no, ver)
-        if p.exists():
-            p.unlink()
-        versions.remove(ver)
-        rec["versions"] = versions
-        rec["history"] = [h for h in (rec.get("history") or [])
-                          if not (isinstance(h, dict) and h.get("v") == ver)]
-        index[str(no)] = rec
-        self.save_chapter_versions(index)
-        return True
+    def delete_version(self, no: int, ver: int) -> bool:
+        """删除该章指定历史版本（当前选中 selected 不可删；HEAD 是 selected 的副本不删）。"""
+        return self._chapter_facade().delete(str(no), ver)
 
     def load_chapter_version(self, no: int, ver: int) -> Optional[Chapter]:
-        d = self._read_json(self.chapter_version_path(no, ver), None)
+        d = self._chapter_facade().load_version(str(no), ver)
         return Chapter.from_dict(d) if d else None
 
     def select_version(self, no: int, ver: int) -> Optional[Chapter]:
-        """回退/选中某版本：把 v{ver} 复制回 HEAD（chapters/<no>.json）并更新 selected。
-
-        用户手动选择 → 置 user_managed=True（此后自动选分不再覆盖用户选择）。
-        """
-        ch = self.load_chapter_version(no, ver)
-        if ch is None:
-            return None
-        index = self.load_chapter_versions()
-        rec = index.get(str(no))
-        if isinstance(rec, dict) and ver in (rec.get("versions") or []):
-            rec["selected"] = ver
-            rec["user_managed"] = True
-            index[str(no)] = rec
-            self.save_chapter_versions(index)
-        self._write_json(self.chapter_path(no), ch.to_dict())
-        return ch
+        """回退/选中某版本：把 v{ver} 复制回 HEAD 并更新 selected；置 user_managed。"""
+        d = self._chapter_facade().select(str(no), ver)
+        return Chapter.from_dict(d) if d else None
 
     def list_versions(self, no: int) -> list[dict]:
         """返回该章版本列表（升序），每项 {v, selected, source, ts, words, quality}。
@@ -548,25 +588,7 @@ class ProjectStore:
         quality = 该版本生成时的质检结果（passed/score/issue_count/auto_revised/issues），
         无质检记录的版本（legacy 等）为 None。
         """
-        index = self.load_chapter_versions()
-        rec = index.get(str(no)) or {}
-        versions = [v for v in (rec.get("versions") or []) if isinstance(v, int)]
-        selected = rec.get("selected")
-        history = {h.get("v"): h for h in (rec.get("history") or [])
-                   if isinstance(h, dict)}
-        out: list[dict] = []
-        for v in sorted(versions):
-            ch = self.load_chapter_version(no, v)
-            h = history.get(v) or {}
-            out.append({
-                "v": v,
-                "selected": (v == selected),
-                "source": h.get("source", ""),
-                "ts": h.get("ts"),
-                "words": len(ch.content) if ch else 0,
-                "quality": h.get("quality"),
-            })
-        return out
+        return self._chapter_facade().list(str(no))
 
     def load_chapter(self, no: int) -> Optional[Chapter]:
         d = self._read_json(self.chapter_path(no), None)

@@ -702,6 +702,36 @@ def _settle_product(store: ProjectStore, kind: str, key: str, payload, *,
         return None
 
 
+def _commit_and_settle(store: ProjectStore, kind: str, payload, *,
+                       mode: str, hq: bool, project_id: str,
+                       source: str = "ai") -> Optional[dict]:
+    """run 收尾统一提交产物版本并按真实版本号结算（TECH-Agent用户化与版本化 §3.10）。
+
+    - `versioned_product=True`：`commit_head` 把当前 HEAD 存档为一个版本（与最新存档同内容
+      幂等返回 None），仅当产生新版本才 `settle_version`——一次 run 一次提交一次结算；
+    - `False`：回退 `_settle_product`（内容 sha 幂等口径，行为与阶段 0.5 一致）。
+    失败只留痕，不阻断生成主链路。
+    """
+    try:
+        data = payload if isinstance(payload, dict) else payload.to_dict()
+        if not store.versioned_enabled():
+            return _settle_product(store, kind, "all", data, mode=mode, hq=hq,
+                                   project_id=project_id)
+        from novel_gen.store.versioned import VersionedProduct
+        v = VersionedProduct(store, kind).commit_head("all", source=source)
+        if v is None:
+            return None  # 与最新存档内容一致（幂等），不重复结算
+        words = count_words(kind, data)
+        digest = settle_ledger.content_digest(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return settle_ledger.settle_version(store, kind, "all", v, words,
+                                            mode=mode, hq=hq, project_id=project_id,
+                                            content_sha=digest)
+    except Exception:
+        logger.exception("产物提交结算失败（不阻断生成）: project=%s kind=%s",
+                         project_id, kind)
+        return None
+
+
 def _settle_price(store: ProjectStore) -> None:
     """存量项目兜底结算（v2 账本上线后只对历史项目执行一次）。
 
@@ -886,18 +916,18 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         if handle.stop_event.is_set():
             return
         pipeline.run_outline()
-        # v2 计费：大纲是一个独立产物版本，产出即结算一次（同内容重复不重复收费）
-        _settle_product(store, "outline", "all", pipeline.store.load_outline(),
-                        mode=mode, hq=hq, project_id=project_id)
         if handle.stop_event.is_set():
             return
         pipeline.run_editor_review()
         if handle.stop_event.is_set():
             return
+        # v2 计费：大纲在编辑评审定稿后统一提交版本并结算（一次 run 一次提交，§3.10）
+        _commit_and_settle(store, "outline", pipeline.store.load_outline(),
+                           mode=mode, hq=hq, project_id=project_id)
         pipeline.run_world()
-        # v2 计费：世界观同样按产物版本结算一次（与大纲是两个不同产物）
-        _settle_product(store, "world", "all", pipeline.store.load_world(),
-                        mode=mode, hq=hq, project_id=project_id)
+        # v2 计费：世界观同样按产物版本提交并结算（与大纲是两个不同产物）
+        _commit_and_settle(store, "world", pipeline.store.load_world(),
+                           mode=mode, hq=hq, project_id=project_id)
         if handle.stop_event.is_set():
             return
         # 标记阶段完成
@@ -981,9 +1011,6 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                     return
             if not has_outline:
                 pipeline.run_outline()
-                # v2 计费：新建大纲是一个独立产物版本，产出即结算一次
-                _settle_product(store, "outline", "all", pipeline.store.load_outline(),
-                                mode=mode, hq=hq, project_id=project_id)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=outline", store.dir.name)
                     return
@@ -991,13 +1018,16 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=editor_review", store.dir.name)
                     return
+                # v2 计费：大纲在编辑评审定稿后统一提交版本并结算（一次 run 一次提交，§3.10）
+                _commit_and_settle(store, "outline", pipeline.store.load_outline(),
+                                   mode=mode, hq=hq, project_id=project_id)
             # 世界观：有则复用，没有则生成
             existing_world = store.load_world()
             if not (existing_world and (existing_world.world_view or existing_world.characters)):
                 pipeline.run_world()
-                # v2 计费：新建世界观是一个独立产物版本，产出即结算一次
-                _settle_product(store, "world", "all", pipeline.store.load_world(),
-                                mode=mode, hq=hq, project_id=project_id)
+                # v2 计费：新建世界观是一个独立产物版本，提交并结算一次
+                _commit_and_settle(store, "world", pipeline.store.load_world(),
+                                   mode=mode, hq=hq, project_id=project_id)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=world", store.dir.name)
                     return

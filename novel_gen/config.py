@@ -149,6 +149,16 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("assistant", "assistant_quota_enabled", False, "小墨AI 次数/计费开关（一期不生效，仅预留接入点）"),
     FeatureFlag("assistant", "assistant_require_user_key", True,
                 "小墨AI 仅允许用户自带 Key（关闭平台 Key 兜底；未配置时直接提示去配置）"),
+    # ---- version：产物版本化（TECH-Agent用户化与版本化 阶段1A）----
+    FeatureFlag("version", "versioned_product", True,
+                "版本化门面总开关（阶段1A）：True=outline/world 建真实版本库、save_chapter 走 "
+                "VersionedProduct 门面；False=紧急回退（save_chapter 走原实现、outline/world "
+                "不建版本库、恢复 outline_snapshots 自动快照）"),
+    FeatureFlag("version", "version_limit_chapter", 15,
+                "每章版本上限（超出淘汰最旧，跳过 selected/HEAD）"),
+    FeatureFlag("version", "version_limit_outline", 5,
+                "大纲版本上限（单版可达数百 KB，5 版覆盖回滚需求）"),
+    FeatureFlag("version", "version_limit_world", 5, "世界观版本上限（同大纲）"),
 ]
 
 
@@ -406,6 +416,11 @@ class NovelConfig:
     assistant_history_turns: int = feature_default("assistant_history_turns")          # 上下文保留最近 N 轮
     assistant_quota_enabled: bool = feature_default("assistant_quota_enabled")          # 配额开关（一期不生效）
     assistant_require_user_key: bool = feature_default("assistant_require_user_key")    # 仅用用户自带 Key
+    # ---- version：产物版本化（阶段1A）----
+    versioned_product: bool = feature_default("versioned_product")           # 版本化门面总开关
+    version_limit_chapter: int = feature_default("version_limit_chapter")    # 每章版本上限
+    version_limit_outline: int = feature_default("version_limit_outline")    # 大纲版本上限
+    version_limit_world: int = feature_default("version_limit_world")        # 世界观版本上限
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property

@@ -108,6 +108,7 @@ class _RunHandle:
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
+        self.task_id: str = ""  # agent_run 任务 id（task.json 关联，重启后沿用）
 
 
 _RUNS: dict[str, _RunHandle] = {}
@@ -541,6 +542,20 @@ def _resume_interrupted_tasks() -> None:
             elif kind == "batch":
                 target = _run_batch
                 args = (store, handle, int(meta.get("start", 1) or 1), int(meta.get("end", 1) or 1))
+            elif kind == "agent_run":
+                # Agent 统一触发（TECH §4.1）：沿用原 task_id/run_id 重拾
+                try:
+                    from . import generate_service
+                    generate_service.resume_agent_run(store, handle, meta)
+                    resumed += 1
+                    logger.info("启动重拾任务: project=%s kind=%s", project_id, kind)
+                except Exception:
+                    logger.exception("agent_run 重拾失败: project=%s", project_id)
+                    _clear_task(store)
+                    _GEN_SEMAPHORE.release()
+                    with _LOCK:
+                        _RUNS.pop(project_id, None)
+                continue
             else:
                 _clear_task(store)
                 _GEN_SEMAPHORE.release()

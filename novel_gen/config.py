@@ -159,6 +159,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("version", "version_limit_outline", 5,
                 "大纲版本上限（单版可达数百 KB，5 版覆盖回滚需求）"),
     FeatureFlag("version", "version_limit_world", 5, "世界观版本上限（同大纲）"),
+    FeatureFlag("version", "unified_generate", True,
+                "Agent 统一触发入口全局紧急回退开关（TECH-Agent用户化与版本化 阶段1B，评审 I-12）："
+                "True=开放 /api/projects/{id}/agent-runs；False=全站 503（sys_config 后台一键回退，"
+                "不做单项目灰度）"),
 ]
 
 
@@ -421,6 +425,7 @@ class NovelConfig:
     version_limit_chapter: int = feature_default("version_limit_chapter")    # 每章版本上限
     version_limit_outline: int = feature_default("version_limit_outline")    # 大纲版本上限
     version_limit_world: int = feature_default("version_limit_world")        # 世界观版本上限
+    unified_generate: bool = feature_default("unified_generate")             # Agent 统一入口全局回退开关（阶段1B）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property

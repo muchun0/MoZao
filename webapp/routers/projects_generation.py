@@ -2,6 +2,29 @@
 """projects_generation路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from .. import generate_service  # noqa: F401  Agent 统一触发入口（阶段1B；不依赖 core，无循环 import）
+
+
+@app.post("/api/projects/{project_id}/agent-runs", status_code=202)
+def start_agent_run(project_id: str, req: generate_service.AgentRunReq,
+                    user: dict = Depends(_require_user)):
+    """Agent 统一触发入口（TECH §4.1，阶段 1B）：守卫 → 占槽 → task.json → 后台线程。
+
+    全局紧急回退开关 unified_generate=False 时整体 503（评审 I-12）。
+    """
+    _check_project_access(project_id, user)
+    generate_service.assert_unified_generate_enabled()
+    store = _find_project(project_id)
+    return generate_service.start_agent_run(store, req, user)
+
+
+@app.get("/api/projects/{project_id}/agent-runs/{task_id}")
+def get_agent_run(project_id: str, task_id: str, user: dict = Depends(_require_user)):
+    """Agent run 状态查询：running / resumed / done|stopped|failed / 404（I-6 四态状态机）。"""
+    _check_project_access(project_id, user)
+    generate_service.assert_unified_generate_enabled()
+    store = _find_project(project_id)
+    return generate_service.get_agent_run(store, task_id)
 
 
 @app.post("/api/projects/{project_id}/volumes/{vol_no}/regenerate")

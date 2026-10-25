@@ -317,9 +317,10 @@ def settle_chapter_versions(store, no: int, before: set[int], *,
         if words <= 0:
             logger.warning("章节版本无正文，跳过结算: project=%s no=%d v=%d", project_id, no, v)
             continue
-        results.append(settle_version(store, "chapter", str(no), v, words, mode=mode,
-                                      hq=hq, project_id=project_id,
-                                      content_sha=content_digest(content)))
+        results.append({**settle_version(store, "chapter", str(no), v, words, mode=mode,
+                                         hq=hq, project_id=project_id,
+                                         content_sha=content_digest(content)),
+                        "words": words})
     return results
 
 

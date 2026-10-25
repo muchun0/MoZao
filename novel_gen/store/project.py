@@ -1030,6 +1030,23 @@ class ProjectStore:
         final_out.write_text(content, encoding="utf-8")
         return final_out
 
+    # ---------- Agent run 上下文（TECH §3.9 方案 A） ----------
+    def begin_run(self, ctx) -> None:
+        """开始一次 agent run：挂显式上下文到本实例（非线程局部）。
+
+        单个 store 实例同一时刻只属于一个 run（生成槽位已保证项目级互斥），
+        故存实例属性即可；ctx 为 run_context.RunContext。
+        """
+        self._run_context = ctx
+
+    def current_run(self):
+        """返回当前 run 上下文；无 run 时返回 None（调用方降级不中断）。"""
+        return getattr(self, "_run_context", None)
+
+    def end_run(self) -> None:
+        """结束 run：清上下文（幂等，重复调用安全）。"""
+        self._run_context = None
+
     # ---------- 工具 ----------
     @staticmethod
     def _write_json(path: Path, data) -> None:

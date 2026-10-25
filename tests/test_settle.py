@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""结算逻辑单元测试（webapp/core.py _compute_settle / _settle_incremental / _settle_price）。
+"""结算逻辑单元测试（webapp/core.py `_compute_settle` / `_settle_incremental` / `_settle_price`）。
 
 用真实 ProjectStore（临时目录）+ monkeypatch 掉 db 层，不触碰真实资金。
-覆盖：统一计算口径、计费封顶、用户手写字数扣除、增量结算幂等、
-P0 资金安全（结算基线先落盘再扣费，崩溃后不重扣）、BYOK 免费。
+
+v2 口径（TECH-Agent用户化与版本化 §4.4）后本文件聚焦：
+- `_compute_settle` 旧口径计算（仅存量项目兜底仍在用，故保留覆盖）；
+- `_settle_incremental` 只做停止判定、不再扣费；
+- `_settle_price` 只对「无任何账本」的历史项目兜底结算一次。
+版本级结算见 test_settle_per_version.py / test_settle_migration.py。
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from novel_gen.store.project import ProjectStore
 from novel_gen.store.schemas import Chapter
 # 第三批拆分：结算逻辑位于 webapp/core.py（server.py 仅为组装壳）；core.db 即 webapp.db
 from webapp import core as server
+from webapp import settle_ledger
 
 
 @pytest.fixture
@@ -39,6 +44,7 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(server.db, "project_discount", lambda pid: 1.0)
     monkeypatch.setattr(server.db, "get_user", lambda uid: {"id": uid, "balance": 100.0})
     monkeypatch.setattr(server.db, "update_project_price", lambda pid, price: None)
+    monkeypatch.setattr(server.db, "project_price", lambda pid: 0.0)
     monkeypatch.setattr(server, "_project_use_user_llm", lambda s: False)
     monkeypatch.setattr(server, "_grant_consume_commission", lambda *a, **k: None)
 
@@ -49,7 +55,7 @@ def fake_db(monkeypatch):
     return calls
 
 
-# ---------- _compute_settle 统一计算 ----------
+# ---------- _compute_settle 统一计算（存量兜底仍在使用） ----------
 
 def test_compute_settle_basic(store):
     calc = server._compute_settle(store)
@@ -60,7 +66,7 @@ def test_compute_settle_basic(store):
 
 
 def test_compute_settle_cap(store):
-    """AI 多写超过目标字数 → 按目标 AI 字数封顶计费。"""
+    """AI 多写超过目标字数 → 旧口径按目标 AI 字数封顶（仅存量兜底生效）。"""
     for i in range(2, 8):
         store.save_chapter(Chapter(no=i, title=f"第{i}章", content="内容" * 1000))
     calc = server._compute_settle(store)
@@ -79,82 +85,53 @@ def test_compute_settle_user_words(store, fake_db):
     assert calc["billable_words"] == 2000
 
 
-# ---------- _settle_incremental 增量结算 ----------
+# ---------- _settle_incremental：只做停止判定 ----------
 
-def test_incremental_charge_once(store, fake_db):
-    """首次结算扣一次费；无新章节再结算不重复扣。"""
+def test_incremental_does_not_charge_or_write_ledger(store, fake_db):
+    """v2：中断判定不再扣费、不再写 settle.json（结算由版本提交点负责）。"""
     ok, why = server._settle_incremental(store)
     assert ok is False and why == ""
-    assert fake_db["charge"] == [-0.4]
-    sp = json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))
-    assert sp["status"] == "incremental"
-    assert sp["settled_ai_words"] == 2000
-    # 幂等：无新增章节
-    server._settle_incremental(store)
-    assert fake_db["charge"] == [-0.4]
+    assert fake_db["charge"] == []
+    assert not (store.dir / "settle.json").exists()
 
 
-def test_incremental_baseline_written_before_charge(store, fake_db, monkeypatch):
-    """P0 资金安全：结算基线先落盘再扣费——扣费失败后重跑不重扣。"""
-    def _boom(uid, delta, note):
-        raise RuntimeError("charge failed")
-
-    monkeypatch.setattr(server.db, "change_balance", _boom)
-    ok, why = server._settle_incremental(store)
-    assert ok is False
-    sp = store.dir / "settle.json"
-    assert sp.exists(), "扣费前必须已落盘结算基线（宁可漏扣不重扣）"
-    data = json.loads(sp.read_text(encoding="utf-8"))
-    assert data["settled_ai_words"] == 2000
-    # 恢复扣费后重跑：基线已推进，不应再次计费
-    monkeypatch.setattr(server.db, "change_balance",
-                        lambda uid, delta, note: fake_db["charge"].append(delta))
-    server._settle_incremental(store)
-    assert fake_db["charge"] == [], "崩溃重跑不应重复扣费"
-
-
-def test_incremental_balance_exhausted(store, fake_db, monkeypatch):
-    """余额不足以扣到 0 并返回 should_stop。"""
-    bal = {"v": 0.2}
-    monkeypatch.setattr(server.db, "get_user", lambda uid: {"id": uid, "balance": bal["v"]})
-
-    def _charge(uid, delta, note):
-        bal["v"] = round(bal["v"] + delta, 4)
-
-    monkeypatch.setattr(server.db, "change_balance", _charge)
+def test_incremental_zero_balance_stops_for_platform(store, fake_db, monkeypatch):
+    """平台付费项目余额 0 → 返回停止。"""
+    monkeypatch.setattr(server.db, "get_user", lambda uid: {"id": uid, "balance": 0.0})
     ok, why = server._settle_incremental(store)
     assert ok is True
     assert "余额" in why
 
 
-# ---------- _settle_price 整批结算 ----------
+def test_incremental_zero_balance_keeps_byok_running(store, fake_db, monkeypatch):
+    """自备 Key 项目余额 0 → 继续生成（阶段 0 修正）。"""
+    monkeypatch.setattr(server.db, "get_user", lambda uid: {"id": uid, "balance": 0.0})
+    monkeypatch.setattr(server, "_project_use_user_llm", lambda s: True)
+    ok, why = server._settle_incremental(store)
+    assert ok is False and why == ""
+
+
+# ---------- _settle_price：仅存量项目兜底 ----------
+
+def test_settle_price_legacy_charges_once(store, fake_db):
+    """无任何账本的历史项目：兜底结算一次，再调用不重扣。"""
+    server._settle_price(store)
+    assert fake_db["charge"] == [pytest.approx(-0.4, abs=0.01)]
+    ledger = json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))
+    assert ledger["mode"] == settle_ledger.LEDGER_MODE
+    assert ledger["entries"]["legacy:all:v1"]["charged"] == pytest.approx(0.4, abs=0.01)
+    # 已进入 v2：再调用 no-op
+    server._settle_price(store)
+    assert fake_db["charge"] == [pytest.approx(-0.4, abs=0.01)]
+
 
 def test_settle_price_byok_free(store, fake_db, monkeypatch):
-    """BYOK 项目整批结算不扣费。"""
+    """BYOK 项目兜底结算不扣费，但仍落账本（charged=0 供审计）。"""
     monkeypatch.setattr(server, "_project_use_user_llm", lambda s: True)
     server._settle_price(store)
-    sp = json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))
-    assert sp["mode"] == "user_llm_free"
-    assert sp["final_price"] == 0.0
     assert fake_db["charge"] == []
-
-
-def test_settle_price_skip_when_incremental_done(store, fake_db):
-    """增量结算已落盘 → 整批结算跳过，不双扣。"""
-    server._settle_incremental(store)
-    server._settle_price(store)
-    assert fake_db["charge"] == [-0.4]
-
-
-def test_settle_price_idempotent_marker(store, fake_db, monkeypatch):
-    """P0：整批结算先落盘 charging 标记再扣费。"""
-    def _boom(uid, delta, note):
-        raise RuntimeError("charge failed")
-
-    monkeypatch.setattr(server.db, "change_balance", _boom)
-    sp = store.dir / "settle.json"
-    if sp.exists():  # 清掉增量结算基线，走整批路径
-        sp.unlink()
-    server._settle_price(store)
-    data = json.loads(sp.read_text(encoding="utf-8"))
-    assert data["status"] == "charging"
+    ledger = json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))
+    entry = ledger["entries"]["legacy:all:v1"]
+    assert entry["mode"] == "user_llm"
+    assert entry["charged"] == 0.0
+    assert ledger["billed_price"] == 0.0

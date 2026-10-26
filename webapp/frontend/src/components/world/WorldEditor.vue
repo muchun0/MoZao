@@ -20,24 +20,30 @@
         <h4 style="margin:0">人物档案（{{ worldDraft.characters.length }}）</h4>
         <el-button size="small" @click="addCharacter">+ 添加人物</el-button>
       </div>
-      <el-card v-for="(c,i) in worldDraft.characters" :key="i" style="margin-bottom:10px">
-        <div class="char-head">
-          <el-input v-model="c.name" size="small" placeholder="姓名" style="width:140px" />
-          <el-input v-model="c.role" size="small" placeholder="角色（主角/配角/反派…）" style="width:180px;margin-left:8px" />
-          <el-button size="small" :type="isCharLocked(c.name) ? 'success' : 'default'" link @click="$emit('toggle-lock', 'character', c.name, !isCharLocked(c.name))">{{ isCharLocked(c.name) ? '🔒' : '🔓' }}</el-button>
-          <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.characters.splice(i,1)">删除</el-button>
-        </div>
-        <div class="char-fields">
-          <div class="char-row"><span class="char-label">外貌</span><el-input v-model="c.appearance" size="small" /></div>
-          <div class="char-row"><span class="char-label">性格</span><el-input v-model="c.personality" size="small" /></div>
-          <div class="char-row"><span class="char-label">核心欲望</span><el-input v-model="c.desire" size="small" /></div>
-          <div class="char-row"><span class="char-label">软肋</span><el-input v-model="c.wound" size="small" /></div>
-          <div class="char-row"><span class="char-label">弧光</span><el-input v-model="c.arc" size="small" /></div>
-          <div class="char-row"><span class="char-label">说话方式</span><el-input v-model="c.speech_style" size="small" /></div>
-          <div class="char-row"><span class="char-label">关系</span><el-input v-model="c.relations" size="small" /></div>
-          <div class="char-row"><span class="char-label">简介</span><el-input v-model="c.desc" size="small" /></div>
-        </div>
-      </el-card>
+      <el-collapse v-if="worldDraft.characters.length" class="char-collapse">
+        <el-collapse-item v-for="(c,i) in worldDraft.characters" :key="i" :name="i">
+          <template #title>
+            <span class="char-title-name">{{ c.name || '未命名' }}</span>
+            <span class="char-title-role" v-if="c.role">{{ c.role }}</span>
+          </template>
+          <div class="char-head">
+            <el-input v-model="c.name" size="small" placeholder="姓名" style="width:140px" />
+            <el-input v-model="c.role" size="small" placeholder="角色（主角/配角/反派…）" style="width:180px;margin-left:8px" />
+            <el-button size="small" :type="isCharLocked(c.name) ? 'success' : 'default'" link @click="$emit('toggle-lock', 'character', c.name, !isCharLocked(c.name))">{{ isCharLocked(c.name) ? '🔒' : '🔓' }}</el-button>
+            <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.characters.splice(i,1)">删除</el-button>
+          </div>
+          <div class="char-fields">
+            <div class="char-row"><span class="char-label">外貌</span><el-input v-model="c.appearance" size="small" /></div>
+            <div class="char-row"><span class="char-label">性格</span><el-input v-model="c.personality" size="small" /></div>
+            <div class="char-row"><span class="char-label">核心欲望</span><el-input v-model="c.desire" size="small" /></div>
+            <div class="char-row"><span class="char-label">软肋</span><el-input v-model="c.wound" size="small" /></div>
+            <div class="char-row"><span class="char-label">弧光</span><el-input v-model="c.arc" size="small" /></div>
+            <div class="char-row"><span class="char-label">说话方式</span><el-input v-model="c.speech_style" size="small" /></div>
+            <div class="char-row"><span class="char-label">关系</span><el-input v-model="c.relations" size="small" /></div>
+            <div class="char-row"><span class="char-label">简介</span><el-input v-model="c.desc" size="small" /></div>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
 
       <!-- ===== 事前设计卡（折叠收起，默认不展开） ===== -->
       <el-collapse class="world-collapse">
@@ -232,5 +238,27 @@ defineExpose({ reload })
 }
 .world-collapse :deep(.el-collapse-item__content) {
   padding-bottom: 8px;
+}
+
+.char-collapse {
+  border-bottom: none;
+}
+.char-collapse :deep(.el-collapse-item__header) {
+  font-size: 13px;
+  padding-left: 0;
+  height: 36px;
+  line-height: 36px;
+}
+.char-title-name {
+  font-weight: 600;
+  color: var(--ink);
+  margin-right: 10px;
+}
+.char-title-role {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--card-bg);
+  padding: 1px 8px;
+  border-radius: 10px;
 }
 </style>

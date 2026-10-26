@@ -102,6 +102,17 @@
             <template v-if="isRunningAgent(currentAgent.key)">
               <el-button type="danger" @click="stopRun">停止运行</el-button>
               <span class="action-hint">已完成部分保留，未完成章节不提交</span>
+              <!-- U1：运行进度（progress 来自 get_agent_run running 态） -->
+              <div v-if="runProgress" class="run-progress">
+                <el-progress :percentage="runPercent" :stroke-width="6" :show-text="false" />
+                <div class="run-progress-text">
+                  <span>{{ runPhaseText }}</span>
+                  <span v-if="runProgress.chapters_total" class="run-progress-ch">
+                    第 {{ runCurrentText }} / {{ runProgress.chapters_total }} 章
+                  </span>
+                  <span class="run-progress-elapsed">已用 {{ elapsedText }}</span>
+                </div>
+              </div>
             </template>
             <template v-else>
               <el-button type="primary" :disabled="entryDisabled" @click="startRun(currentAgent.key)">
@@ -152,16 +163,16 @@
 // 左侧角色导航（5 个可独立触发的 agent）+ 右侧当前角色工作区（人设版本/参数/补充指令/运行停止/预估金额）。
 // 计费模式与余额常驻左栏底部；平台模式余额 ≤0 时禁用运行并引导充值。
 // ProjectDetail 顶部的「生成/重生成」按钮与本面板同为 UI 快捷入口，统一走 POST /agent-runs 单轨（旧生成接口已删除，见 TECH §4.0 决策变更）。
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance } from '../../api/project'
+import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance, estimateAgentRun } from '../../api/project'
 import { getAgentPrompts, saveAgentPrompt } from '../../api/novel'
 import SkillPicker from './SkillPicker.vue'
 
 const props = defineProps({
   pid: { type: String, required: true },
 })
-const emit = defineEmits(['changed', 'recharge'])
+const emit = defineEmits(['changed', 'recharge', 'started'])
 
 const AGENTS = [
   { key: 'researcher', name: '题材调研', desc: '联网调研题材共性，产出写作建议与参考资料' },
@@ -171,8 +182,8 @@ const AGENTS = [
   { key: 'writer.chapter', name: '章节写手', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
 ]
 
-// ---------- 角色选择 ----------
-const selectedAgent = ref(AGENTS[0].key)
+// ---------- 角色选择（默认聚焦章节写手：正文生成是项目详情页的主操作） ----------
+const selectedAgent = ref('writer.chapter')
 const currentAgent = computed(() => AGENTS.find((a) => a.key === selectedAgent.value) || AGENTS[0])
 
 // ---------- 计费模式 / 余额 ----------
@@ -207,11 +218,46 @@ const running = ref(false)
 const runningAgent = ref('')
 const runningTaskId = ref('')
 const pollTimer = ref(null)
+// U1：running 态进度（chapters_done/total、phase、elapsed）+ 前端计时器
+const runProgress = ref(null)
+const runStartedAt = ref(0)
+const nowTs = ref(Date.now())
+let clockTimer = null
+// U5：轮询连续失败计数（≥3 次才停止，网络抖动不误停）
+const pollFailCount = ref(0)
+// U2：预估金额防抖刷新
+let estTimer = null
 
 const entryDisabled = computed(() =>
   running.value || (billingMode.value === 'platform' && balance.value <= 0))
 const runningAgentName = computed(() =>
   AGENTS.find((a) => a.key === runningAgent.value)?.name || '')
+
+const PHASE_TEXT = {
+  research: '正在调研题材…',
+  outline: '正在生成大纲…',
+  world: '正在构建世界观…',
+  volume: '正在重写卷纲…',
+  chapter: '正在逐章写作…',
+}
+const runPhaseText = computed(() =>
+  PHASE_TEXT[runProgress.value?.phase] || '运行中…')
+const runPercent = computed(() => {
+  const p = runProgress.value
+  if (!p || !p.chapters_total) return 0
+  return Math.min(100, Math.round((p.chapters_done / p.chapters_total) * 100))
+})
+const runCurrentText = computed(() => {
+  const p = runProgress.value
+  if (!p) return 0
+  return p.current_chapter || p.chapters_done || 0
+})
+const elapsedText = computed(() => {
+  if (!runStartedAt.value) return '0秒'
+  const s = Math.floor((nowTs.value - runStartedAt.value) / 1000)
+  if (s <= 0) return '0秒'
+  return s >= 60 ? `${Math.floor(s / 60)}分${s % 60}秒` : `${s}秒`
+})
 
 function isRunningAgent(agent) {
   return running.value && runningAgent.value === agent
@@ -243,11 +289,18 @@ async function startRun(agent) {
     running.value = true
     runningAgent.value = agent
     runningTaskId.value = body.task_id
+    runProgress.value = null
+    runStartedAt.value = body.started_at ? body.started_at * 1000 : Date.now()
+    nowTs.value = Date.now()
+    pollFailCount.value = 0
+    if (!clockTimer) clockTimer = setInterval(() => { nowTs.value = Date.now() }, 1000)
     if (body.billing_mode === 'platform' && body.estimated_price > 0) {
       ElMessage.info(`已启动，预估扣费 ¥${body.estimated_price.toFixed(2)}（按实际生成字数结算）`)
     } else {
       ElMessage.success('已启动')
     }
+    // U1：通知 ProjectDetail 触发全局生成横幅（getStatus 轮询跟随 agent_run 占槽状态）
+    emit('started', { task_id: body.task_id, agent })
     pollTimer.value = setInterval(poll, 2000)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '启动失败')
@@ -257,11 +310,30 @@ async function startRun(agent) {
 async function poll() {
   try {
     const body = await getAgentRun(props.pid, runningTaskId.value)
-    if (body.status === 'running' || body.status === 'resumed') return
+    if (body.status === 'running' || body.status === 'resumed') {
+      // U1：刷新进度（后端 task.json progress + elapsed）；成功轮询清零失败计数
+      if (body.progress) runProgress.value = body.progress
+      if (body.started_at) runStartedAt.value = body.started_at * 1000
+      pollFailCount.value = 0
+      return
+    }
     stopPolling()
     if (body.status === 'done') {
+      // F1：质检未过时保留上一版、新稿为候选——明确提示，不再只报「已重新生成」
+      const chapterFb = (body.outputs || []).filter((o) => o.kind === 'chapter' && o.kept_previous)
       const billed = body.billing?.billed_price
-      ElMessage.success(billed ? `完成，本次扣费 ¥${Number(billed).toFixed(2)}` : '完成')
+      if (chapterFb.length) {
+        const lines = chapterFb.map((o) => {
+          const q = o.quality
+          const score = (q && q.score != null)
+            ? `（质检 ${q.score}${q.passed ? ' 通过' : ' 未过'}）` : ''
+          return `第${o.no}章质检未通过${score}，已保留上一版，新稿存为候选 v${o.candidate_version}，可在版本弹窗查看/切换`
+        })
+        ElMessage.warning(lines.join('；'))
+        if (billed) ElMessage.info(`本次扣费 ¥${Number(billed).toFixed(2)}`)
+      } else {
+        ElMessage.success(billed ? `完成，本次扣费 ¥${Number(billed).toFixed(2)}` : '完成')
+      }
     } else if (body.status === 'stopped') {
       ElMessage.warning(body.error || '已停止（已完成部分保留）')
     } else {
@@ -270,16 +342,26 @@ async function poll() {
     emit('changed')
     refreshBilling()
   } catch {
-    stopPolling()
+    // U5：网络抖动不立即停轮询；连续失败达到阈值才停止并明确提示
+    pollFailCount.value += 1
+    if (pollFailCount.value >= 3) {
+      stopPolling()
+      ElMessage.warning('网络异常，运行状态轮询已中断。请检查网络后刷新页面查看结果。')
+    }
   }
 }
 
 function stopPolling() {
   if (pollTimer.value) clearInterval(pollTimer.value)
   pollTimer.value = null
+  if (clockTimer) clearInterval(clockTimer)
+  clockTimer = null
   running.value = false
   runningAgent.value = ''
   runningTaskId.value = ''
+  runProgress.value = null
+  runStartedAt.value = 0
+  pollFailCount.value = 0
 }
 
 async function stopRun() {
@@ -328,6 +410,26 @@ async function savePrompt() {
   }
 }
 
+// ---------- U2：预估金额随参数变化实时刷新（防抖，避免每次输入都请求） ----------
+async function refreshEstimate() {
+  if (running.value) return
+  const agent = selectedAgent.value
+  try {
+    const body = await estimateAgentRun(props.pid, { agent, params: buildParams(agent) })
+    estimates[agent] = body.estimated_price || 0
+  } catch { /* 参数非法等：保留旧预估值 */ }
+}
+watch(
+  [selectedAgent, chapterScope, chNo, fromCh, toCh, toChOpen, volNo],
+  () => {
+    clearTimeout(estTimer)
+    estTimer = setTimeout(refreshEstimate, 400)
+  },
+)
+
+// ---------- F3：首次使用该入口给一次计费口径提示 ----------
+const BILLING_NOTICE_KEY = 'mozao_agent_billing_notice_v1'
+
 // ---------- 数据加载 ----------
 async function loadPrompts() {
   try {
@@ -353,8 +455,15 @@ async function refreshBilling() {
 onMounted(() => {
   loadPrompts()
   refreshBilling()
+  if (!localStorage.getItem(BILLING_NOTICE_KEY)) {
+    ElMessage.info('提示：重生成与候选版本同样按本次生成字数计费；余额不足时自动停止')
+    localStorage.setItem(BILLING_NOTICE_KEY, '1')
+  }
 })
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  stopPolling()
+  clearTimeout(estTimer)
+})
 </script>
 
 <style scoped>
@@ -456,6 +565,20 @@ onBeforeUnmount(stopPolling)
 .stage-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .action-hint { font-size: 12px; color: var(--muted); }
 .action-hint.danger { color: var(--danger); }
+
+/* ---------- U1：运行进度条（get_agent_run running 态 progress） ---------- */
+.run-progress { width: 100%; max-width: 420px; margin-top: 8px; }
+.run-progress-text {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.run-progress-ch { color: var(--ink-soft); }
 
 /* ---------- 技能挂载：默认折叠，避免长期占据首屏 ---------- */
 .stage-skills { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--card-line); }

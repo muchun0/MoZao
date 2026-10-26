@@ -62,7 +62,10 @@
             <div class="detail-sub">{{ worldDraft.characters[selectedCharIndex].role || '角色' }}</div>
           </div>
           <div class="detail-actions">
-            <el-button size="small" :type="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? 'success' : 'default'" link @click="$emit('toggle-lock', 'character', worldDraft.characters[selectedCharIndex].name, !isCharLocked(worldDraft.characters[selectedCharIndex].name))">
+            <el-button size="small" :type="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? 'success' : 'default'" link
+              :aria-label="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? `解锁角色「${worldDraft.characters[selectedCharIndex].name}」` : `锁定角色「${worldDraft.characters[selectedCharIndex].name}」（锁定后重生成不覆盖）`"
+              :title="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
+              @click="$emit('toggle-lock', 'character', worldDraft.characters[selectedCharIndex].name, !isCharLocked(worldDraft.characters[selectedCharIndex].name))">
               {{ isCharLocked(worldDraft.characters[selectedCharIndex].name) ? '🔒' : '🔓' }}
             </el-button>
             <el-button type="danger" size="small" link @click="removeCharacter(selectedCharIndex)">删除</el-button>
@@ -318,6 +321,13 @@ defineExpose({ reload })
   gap: 20px;
   align-items: stretch;
   margin-bottom: 20px;
+}
+
+/* UX 评审 U6：窄屏单列降级（原两栏在 <900px 会被压得过窄） */
+@media (max-width: 900px) {
+  .world-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .section-title {

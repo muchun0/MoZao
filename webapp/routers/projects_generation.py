@@ -20,6 +20,15 @@ def start_agent_run(project_id: str, req: generate_service.AgentRunReq,
     return generate_service.start_agent_run(store, req, user)
 
 
+@app.post("/api/projects/{project_id}/agent-runs/estimate")
+def estimate_agent_run(project_id: str, req: generate_service.AgentRunReq,
+                       user: dict = Depends(_require_user)):
+    """只读预估（UX 评审 U2）：按当前参数估算本次 run 金额，不占槽、不扣费、不校验余额/锁。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    return generate_service.estimate_agent_price(store, req, user)
+
+
 @app.get("/api/projects/{project_id}/agent-runs/{task_id}")
 def get_agent_run(project_id: str, task_id: str, user: dict = Depends(_require_user)):
     """Agent run 状态查询：running / resumed / done|stopped|failed / 404（I-6 四态状态机）。"""

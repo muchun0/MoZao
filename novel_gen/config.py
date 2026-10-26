@@ -163,6 +163,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
                 "Agent 统一触发入口全局紧急回退开关（TECH-Agent用户化与版本化 阶段1B，评审 I-12）："
                 "True=开放 /api/projects/{id}/agent-runs；False=全站 503（sys_config 后台一键回退，"
                 "不做单项目灰度）"),
+    FeatureFlag("version", "agent_run_daily_limit", 30,
+                "单项目每日 Agent run 启动上限（0=不限）：旧 REGEN_DAILY_LIMIT（每日 10 次免费重写）"
+                "随 9 个旧接口删除后防滥用只剩并发守卫，此开关按日兜底防误触/脚本刷量导致的意外扣费"
+                "（UX 评审 F2）"),
 ]
 
 
@@ -426,6 +430,7 @@ class NovelConfig:
     version_limit_outline: int = feature_default("version_limit_outline")    # 大纲版本上限
     version_limit_world: int = feature_default("version_limit_world")        # 世界观版本上限
     unified_generate: bool = feature_default("unified_generate")             # Agent 统一入口全局回退开关（阶段1B）
+    agent_run_daily_limit: int = feature_default("agent_run_daily_limit")    # 单项目每日 Agent run 上限（0=不限，P2-F2）
     agent_guard: AgentGuardConfig = field(default_factory=AgentGuardConfig)  # 生产级加固配置
 
     @property

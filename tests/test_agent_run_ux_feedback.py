@@ -219,7 +219,7 @@ def _store_5ch_3done(store):
 
 @pytest.mark.p0
 def test_exec_chapters_progress_all_reaches_total(store, byok_db, cleanup_runs):
-    """U1-A：scope=all 补完剩余章 → progress.chapters_done 与 chapters_total 同口径（100%）。"""
+    """U1-A：scope=all 补完剩余章 → chapters_done 与 chapters_total 同口径（100%）。"""
     store = _store_5ch_3done(store)
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
                                chapter_writer=_MockWriterSimple(store))
@@ -232,11 +232,13 @@ def test_exec_chapters_progress_all_reaches_total(store, byok_db, cleanup_runs):
     assert prog["chapters_total"] == 5
     assert prog["chapters_done"] == 5  # baseline 3 + 本次 2 = 全书 5，而非只报本次 2
     assert prog["current_chapter"] == 5
+    assert prog["task_total"] == 2
+    assert prog["task_done"] == 2  # 任务视角：本次补 2 章，0→100%
 
 
 @pytest.mark.p0
 def test_exec_chapters_progress_single_absolute(store, byok_db, cleanup_runs):
-    """U1-A：单章重生成 → 进度为书级绝对完成数（baseline+1），而非恒定 20%。"""
+    """U1-A：单章重生成（未完成章）→ chapters_done 为书级绝对完成数（baseline+1）。"""
     store = _store_5ch_3done(store)
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
                                chapter_writer=_MockWriterSimple(store))
@@ -248,3 +250,41 @@ def test_exec_chapters_progress_single_absolute(store, byok_db, cleanup_runs):
     assert prog["chapters_total"] == 5
     assert prog["chapters_done"] == 4  # 运行前 3 章 + 本次 1 章
     assert prog["current_chapter"] == 4
+    assert prog["task_total"] == 1
+    assert prog["task_done"] == 1  # 单章任务完成 → 100%
+
+
+@pytest.mark.p0
+def test_exec_chapters_progress_regen_existing(store, byok_db, cleanup_runs):
+    """N2：重生成已存在的第 2 章 → chapters_done 不重复计数（仍 3，而非 4）。"""
+    store = _store_5ch_3done(store)
+    pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
+                               chapter_writer=_MockWriterSimple(store))
+    handle = core._RunHandle()
+    gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 2},
+                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      [], [])
+    prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
+    assert prog["chapters_total"] == 5
+    assert prog["chapters_done"] == 3  # 集合并集：done={1,2,3} ∪ written={2} → 3，不虚增 4
+    assert prog["task_total"] == 1
+    assert prog["task_done"] == 1  # 本次任务完成 → 100%
+
+
+@pytest.mark.p0
+def test_exec_chapters_progress_regen_full_book(store, byok_db, cleanup_runs):
+    """N2：全书完成后再重生成 → chapters_done 不超全书（5，而非 6）。"""
+    store = _store_5ch_3done(store)
+    for no in (4, 5):
+        store.save_chapter(Chapter(no=no, title=f"第{no}章", content=f"旧正文{no}" * 300))
+    pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
+                               chapter_writer=_MockWriterSimple(store))
+    handle = core._RunHandle()
+    gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 5},
+                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      [], [])
+    prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
+    assert prog["chapters_total"] == 5
+    assert prog["chapters_done"] == 5  # 并集：done={1..5} ∪ written={5} → 5，不虚增 6
+    assert prog["task_total"] == 1
+    assert prog["task_done"] == 1

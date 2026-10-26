@@ -113,7 +113,8 @@
       </div>
 
       <!-- ===== 事前设计卡（折叠收起，默认不展开） ===== -->
-      <el-collapse class="world-collapse">
+      <div class="world-collapse-wrap">
+        <el-collapse class="world-collapse">
         <el-collapse-item :title="`生物图鉴（${worldDraft.enemies?.length || 0}）`" name="enemies">
           <div class="world-edit-head">
             <el-button size="small" @click="worldDraft.enemies.push({ name:'', form:'', senses:'', behavior:'', kill:'', tier:'' })">+ 添加怪物</el-button>
@@ -204,6 +205,7 @@
           </el-card>
         </el-collapse-item>
       </el-collapse>
+      </div>
     </template>
     <el-empty v-else-if="loaded">
       <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
@@ -471,21 +473,30 @@ defineExpose({ reload })
 }
 
 /* 折叠的事前设计卡 */
+.world-collapse-wrap {
+  background: var(--card);
+  border: 1px solid var(--card-line);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  overflow: hidden;
+}
 .world-collapse {
-  border-top: 1px solid var(--card-line);
+  border-top: none;
 }
 .world-collapse :deep(.el-collapse-item__header) {
   font-size: 13px;
   font-weight: 500;
   color: var(--ink);
-  padding-left: 0;
+  padding-left: 16px;
+  padding-right: 16px;
+  border-bottom: 1px solid var(--card-line);
 }
 .world-collapse :deep(.el-collapse-item__wrap) {
   background: transparent;
   border-bottom: none;
 }
 .world-collapse :deep(.el-collapse-item__content) {
-  padding-bottom: 8px;
+  padding: 12px 16px;
 }
 
 /* 事前设计卡内部通用样式 */

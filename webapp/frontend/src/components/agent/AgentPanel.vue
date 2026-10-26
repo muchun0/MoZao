@@ -104,7 +104,10 @@
               <span class="action-hint">已完成部分保留，未完成章节不提交</span>
               <!-- U1：运行进度（progress 来自 get_agent_run running 态） -->
               <div v-if="runProgress" class="run-progress">
-                <el-progress :percentage="runPercent" :stroke-width="6" :show-text="false" />
+                <!-- N1：非章节类（research/outline/world/volume）无 chapters_total，
+                     用 indeterminate 动画避免「恒 0% 空条」被误读为卡住 -->
+                <el-progress v-if="runProgress.chapters_total" :percentage="runPercent" :stroke-width="6" :show-text="false" />
+                <el-progress v-else :percentage="100" :stroke-width="6" :show-text="false" indeterminate :duration="2" />
                 <div class="run-progress-text">
                   <span>{{ runPhaseText }}</span>
                   <span v-if="runProgress.chapters_total" class="run-progress-ch">
@@ -425,6 +428,8 @@ watch(
     clearTimeout(estTimer)
     estTimer = setTimeout(refreshEstimate, 400)
   },
+  // U1-B：immediate 让首屏就请求预估价，不再等用户改参数才出现
+  { immediate: true },
 )
 
 // ---------- F3：首次使用该入口给一次计费口径提示 ----------

@@ -104,9 +104,9 @@
               <span class="action-hint">已完成部分保留，未完成章节不提交</span>
               <!-- U1：运行进度（progress 来自 get_agent_run running 态） -->
               <div v-if="runProgress" class="run-progress">
-                <!-- N1：非章节类（research/outline/world/volume）无 chapters_total，
-                     用 indeterminate 动画避免「恒 0% 空条」被误读为卡住 -->
-                <el-progress v-if="runProgress.chapters_total" :percentage="runPercent" :stroke-width="6" :show-text="false" />
+                <!-- N2：进度条用任务视角 task_done/task_total（任意 scope 0→100%），
+                     重生成已完成章不虚增；N1：非章节类无 task_total 用 indeterminate 动画 -->
+                <el-progress v-if="runProgress.task_total" :percentage="runPercent" :stroke-width="6" :show-text="false" />
                 <el-progress v-else :percentage="100" :stroke-width="6" :show-text="false" indeterminate :duration="2" />
                 <div class="run-progress-text">
                   <span>{{ runPhaseText }}</span>
@@ -245,10 +245,14 @@ const PHASE_TEXT = {
 }
 const runPhaseText = computed(() =>
   PHASE_TEXT[runProgress.value?.phase] || '运行中…')
+// N2：进度条优先任务视角（task_done/task_total，任意 scope 0→100%）；
+// 兼容旧返回体（无 task_total 时回退书级完成度）
 const runPercent = computed(() => {
   const p = runProgress.value
-  if (!p || !p.chapters_total) return 0
-  return Math.min(100, Math.round((p.chapters_done / p.chapters_total) * 100))
+  if (!p) return 0
+  if (p.task_total) return Math.min(100, Math.round((p.task_done / p.task_total) * 100))
+  if (p.chapters_total) return Math.min(100, Math.round((p.chapters_done / p.chapters_total) * 100))
+  return 0
 })
 const runCurrentText = computed(() => {
   const p = runProgress.value

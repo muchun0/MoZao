@@ -44,6 +44,7 @@ __all__ = [
     "ALLOWED_AGENTS",
     "AgentRunReq",
     "assert_unified_generate_enabled",
+    "estimate_agent_price",
     "get_agent_run",
     "guard_agent_product",
     "guard_balance",
@@ -274,6 +275,97 @@ def _estimated_price(agent: str, params: dict, store: ProjectStore, mode: str) -
     return round_money(agent_price(price_for(words, high_quality=hq), discount))
 
 
+def estimate_agent_price(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
+    """只读预估价（UX 评审 U2）：复用 agent/params 守卫校验，不占槽、不扣费、不校验余额/锁。
+
+    供前端在参数变化时实时刷新预估金额（真实结算仍按产物实际字数）。
+    """
+    uid = db.project_owner(store.dir.name)
+    mode = resolve_billing_mode(uid)
+    guard_agent_product(req.agent)
+    params = guard_params(req.agent, req.params)
+    return {"agent": req.agent, "billing_mode": mode,
+            "estimated_price": _estimated_price(req.agent, params, store, mode)}
+
+
+def _today_start_ts() -> float:
+    """Asia/Shanghai（UTC+8）当日 0 点时间戳，用于每日防滥用计数。"""
+    from datetime import datetime, timedelta, timezone
+
+    tz = timezone(timedelta(hours=8))
+    return datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _runs_today_count(store: ProjectStore) -> int:
+    """统计本日已启动的 run 侧写数（P2-F2 每日上限；侧写超量由 prune 兜底）。"""
+    runs_dir = store.dir / "agent_runs"
+    if not runs_dir.is_dir():
+        return 0
+    today = _today_start_ts()
+    n = 0
+    for p in runs_dir.glob("*.json"):
+        if p.name.endswith(".tmp"):
+            continue
+        try:
+            data = run_files.read_run_file(store.dir, p.stem)
+        except Exception:
+            continue
+        try:
+            if float((data or {}).get("started_at") or 0) >= today:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
+def _agent_run_daily_limit() -> int:
+    """单项目每日 Agent run 启动上限（sys_config 优先，注册表默认兜底；0=不限）。"""
+    try:
+        row = db.get_config("agent_run_daily_limit")
+        if row is not None:
+            try:
+                return int(str(row["config_value"]).strip())
+            except (TypeError, ValueError):
+                logger.warning("agent_run_daily_limit 配置非法，回退默认: %r",
+                               row.get("config_value"))
+    except Exception:
+        logger.exception("agent_run_daily_limit 读取失败（回退默认）")
+    from novel_gen.config import feature_default
+
+    try:
+        return int(feature_default("agent_run_daily_limit"))
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _check_daily_run_limit(store: ProjectStore) -> None:
+    """每日上限检查（P2-F2）：防误触/脚本刷量导致意外扣费；0=不限。"""
+    limit = _agent_run_daily_limit()
+    if limit <= 0:
+        return
+    count = _runs_today_count(store)
+    if count >= limit:
+        logger.info("agent run 每日上限拦截: project=%s count=%d limit=%d",
+                    store.dir.name, count, limit)
+        raise HTTPException(status_code=429,
+                            detail=f"今日已启动 {count} 次生成，已达每日上限（{limit} 次），请明日再试")
+
+
+def _update_task_progress(store: ProjectStore, **kw) -> None:
+    """运行中更新 task.json 的 progress（U1）：失败只留痕，不阻断生成线程。"""
+    p = store.dir / "task.json"
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        prog = dict(meta.get("progress") or {})
+        prog.update(kw)
+        meta["progress"] = prog
+        p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        logger.exception("task.json progress 更新失败（降级）: project=%s", store.dir.name)
+
+
 def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     """统一入口：守卫 → 占槽 → task.json → 起线程 → 202 返回体。"""
     from . import core  # 延迟 import：避免循环引用
@@ -286,6 +378,7 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     guard_locked(store, req.agent, params)
     guard_user_chapter(store, req.agent, params)
     guard_skill_limits(req.skill_ids)
+    _check_daily_run_limit(store)  # P2-F2：单项目每日上限（0=不限）
 
     task_id = uuid.uuid4().hex[:12]
     run_id = uuid.uuid4().hex
@@ -350,15 +443,18 @@ def get_agent_run(store: ProjectStore, task_id: str) -> dict:
         except (json.JSONDecodeError, OSError):
             meta = {}
         if meta.get("kind") == "agent_run" and meta.get("task_id") == task_id:
+            progress = meta.get("progress") or {}
+            elapsed = round(max(0.0, time.time() - float(meta.get("started_at") or time.time())),
+                            1) if meta.get("started_at") else 0.0
+            common = {"task_id": task_id, "agent": meta.get("agent", ""),
+                      "run_id": meta.get("run_id", ""),
+                      "started_at": meta.get("started_at"),
+                      "progress": {**progress, "elapsed": elapsed}}
             handle = core._RUNS.get(store.dir.name)
             if handle is not None and handle.thread is not None and handle.thread.is_alive():
-                return {"task_id": task_id, "status": "running",
-                        "agent": meta.get("agent", ""), "run_id": meta.get("run_id", ""),
-                        "started_at": meta.get("started_at")}
+                return {**common, "status": "running"}
             # task.json 在但线程不在：重启竞态兜底（lifespan 重拾前的瞬时态）
-            return {"task_id": task_id, "status": "resumed",
-                    "agent": meta.get("agent", ""), "run_id": meta.get("run_id", ""),
-                    "started_at": meta.get("started_at")}
+            return {**common, "status": "resumed"}
     run = _find_run_by_task(store, task_id)
     if run is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -545,6 +641,7 @@ def _exec_researcher(store: ProjectStore, pipeline, handle) -> None:
     """题材调研：删旧 research.json 重跑（researcher.run 有复用短路）。"""
     from . import core
 
+    _update_task_progress(store, phase="research")
     research_path = store.dir / "research.json"
     old = research_path.read_text(encoding="utf-8") if research_path.exists() else None
     try:
@@ -568,6 +665,7 @@ def _exec_outline(store: ProjectStore, pipeline, handle, billing: dict,
     """大纲：删旧 outline/editor_review → 调研素材注入 → run_outline(含 research) + editor_review → 沉淀调研 → 收尾提交结算。"""
     from . import core
 
+    _update_task_progress(store, phase="outline")
     outline_path = store.dir / "outline.json"
     review_path = store.dir / "editor_review.json"
     old_outline = outline_path.read_text(encoding="utf-8") if outline_path.exists() else None
@@ -602,6 +700,7 @@ def _exec_world(store: ProjectStore, pipeline, handle, billing: dict,
     """世界观：删 world.json → 调研素材注入 → run_world（内部按需跑 research）→ 沉淀调研 → 收尾提交结算，失败恢复旧 world。"""
     from . import core
 
+    _update_task_progress(store, phase="world")
     old_world = None
     try:
         old_world = store.load_world()
@@ -647,6 +746,7 @@ def _record_product_settle(store: ProjectStore, result: dict | None, kind: str,
 def _exec_volume(store: ProjectStore, pipeline, params: dict, billing: dict,
                  outputs: list[dict], entries: list[dict]) -> None:
     """卷纲：LLM 重写指定卷 intro + 章规划（复用 regenerate_volume 口径），整纲提交一次。"""
+    _update_task_progress(store, phase="volume")
     project_id = billing["project_id"]
     vol_no = params["vol_no"]
     outline = store.load_outline()
@@ -696,9 +796,50 @@ def _exec_volume(store: ProjectStore, pipeline, params: dict, billing: dict,
                         "words": vol_words})
 
 
+def _record_chapter_feedback(store: ProjectStore, no: int, results: list[dict],
+                             outputs: list[dict], entries: list[dict]) -> None:
+    """聚合一章的结算到账目 + 写一条章节反馈到 run 侧写 outputs（F1）。
+
+    反馈语义：
+    - v = 本次快照后新增版本中的最新号（多版本场景取最大 = 最终稿）；
+    - kept_previous = selected 不是该版本 → 质检未过等场景下保留了旧稿，新稿为候选；
+    - quality = 该版本的质检记录（score/passed/issue_count/...），无质检记录为 None。
+    """
+    new_versions: list[int] = []
+    words = 0
+    for r in results:
+        v = None
+        try:
+            v = int(str(r.get("entry", "")).rsplit(":v", 1)[1])
+        except (IndexError, ValueError):
+            pass
+        if v is not None:
+            new_versions.append(v)
+        if r:
+            entries.append({"entry": r.get("entry", ""), "charged": r.get("charged", 0.0),
+                            "words": int(r.get("words") or 0)})
+            words = int(r.get("words") or 0)
+    if not new_versions:
+        return  # 幂等无新增版本：账目已入，无反馈条目
+    latest = max(new_versions)
+    rec = (store.load_chapter_versions() or {}).get(str(no)) or {}
+    selected = rec.get("selected")
+    history = {h.get("v"): h for h in (rec.get("history") or [])
+               if isinstance(h, dict) and h.get("v") is not None}
+    quality = (history.get(latest) or {}).get("quality")
+    kept = selected is not None and selected != latest
+    outputs.append({"kind": "chapter", "key": str(no), "v": latest, "no": no,
+                    "words": words, "quality": quality, "selected": selected,
+                    "kept_previous": bool(kept),
+                    "candidate_version": latest if kept else None})
+
+
 def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing: dict,
                    outputs: list[dict], entries: list[dict]) -> None:
-    """章节：按 scope 循环（快照版本 → 写章 → 结算新增版本），章末判停止/余额。"""
+    """章节：按 scope 循环（快照版本 → 写章 → 结算新增版本），章末判停止/余额。
+    U1：每章写前/写后更新 task.json progress（chapters_done/total/current_chapter）；
+    F1：每章结算后回读版本索引，反馈 quality/kept_previous/candidate_version 进 run 侧写。
+    """
     from . import core
 
     project_id = billing["project_id"]
@@ -716,6 +857,8 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
         done = {c.no for c in store.list_chapters()}
         numbers = [n for n in range(1, total + 1) if n not in done]
     research = store.load_research()
+    _update_task_progress(store, phase="chapter", chapters_total=total, chapters_done=0, current_chapter=0)
+    done_count = 0
     for no in numbers:
         if handle.stop_event.is_set():
             break
@@ -730,18 +873,16 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
             break
         plan = outline.chapters[no - 1]
         prev = settle_ledger.snapshot_chapter_versions(store, no)
+        _update_task_progress(store, chapters_total=total, chapters_done=done_count, current_chapter=no)
         pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
                                       is_final=(no == total))
         results = settle_ledger.settle_chapter_versions(store, no, prev,
                                                         mode=billing["mode"],
                                                         hq=billing["hq"],
                                                         project_id=project_id)
-        for r in results:
-            try:
-                v = int(str(r.get("entry", "")).rsplit(":v", 1)[1])
-            except (IndexError, ValueError):
-                v = None
-            _record_settle(r, int(r.get("words") or 0), outputs, entries, "chapter", str(no), v)
+        _record_chapter_feedback(store, no, results, outputs, entries)
+        done_count += 1
+        _update_task_progress(store, chapters_total=total, chapters_done=done_count, current_chapter=no)
         if settle_ledger.should_stop_now(store, billing["mode"]):
             handle.error = "余额已耗尽，已停止生成。充值后可重新触发。"
             break

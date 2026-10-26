@@ -22,3 +22,5 @@ export const downloadProject = (id, format) => request.get(`/projects/${id}/down
 export const startAgentRun = (id, data) => request.post(`/projects/${id}/agent-runs`, data)
 export const getAgentRun = (id, taskId) => request.get(`/projects/${id}/agent-runs/${taskId}`)
 export const stopAgentRun = (id, taskId) => request.post(`/projects/${id}/agent-runs/${taskId}/stop`)
+// 只读预估（UX 评审 U2）：参数变化时实时刷新预估价，不占槽不扣费
+export const estimateAgentRun = (id, data) => request.post(`/projects/${id}/agent-runs/estimate`, data)

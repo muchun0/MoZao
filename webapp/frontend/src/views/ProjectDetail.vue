@@ -65,6 +65,7 @@
                   <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
                   <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
                   <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
+                    :aria-label="isChLocked(c.no) ? `解锁第${c.no}章` : `锁定第${c.no}章（锁定后重生成不覆盖）`"
                     :title="isChLocked(c.no) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
                     @click="toggleLock('chapter', c.no)">
                     {{ isChLocked(c.no) ? '🔒' : '🔓' }}
@@ -123,7 +124,7 @@
 
         <!-- Agent：生成操作统一入口 -->
         <section v-if="visited.agent" v-show="tab === 'agent'">
-          <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" />
+          <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" @started="onAgentStarted" />
         </section>
 
         <!-- 工具 -->
@@ -197,7 +198,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun } from '../api/project'
+import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun, getAgentRun } from '../api/project'
 import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
@@ -325,19 +326,26 @@ async function regenChapter(c) {
   try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
   try {
-    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } })
+    const body = await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } })
     ElMessage.success(`已开始重新生成第${c.no}章`)
-    // 单章重写走轻量轮询：只等本项目运行结束，不触发全局进度条
-    await new Promise((resolve) => {
+    // 单章重写走 getAgentRun 轮询（running 态带 progress；done 态 outputs 带质检/候选反馈，F1）
+    const s = await new Promise((resolve) => {
       const t = setInterval(async () => {
         try {
-          const s = await getStatus(pid)
-          if (!s.running) { clearInterval(t); resolve(s) }
+          const r = await getAgentRun(pid, body.task_id)
+          if (r.status !== 'running' && r.status !== 'resumed') { clearInterval(t); resolve(r) }
         } catch {}
       }, 2000)
     })
     await loadChapters()
-    ElMessage.success(`第${c.no}章已重新生成`)
+    const fb = (s.outputs || []).find((o) => o.kind === 'chapter' && Number(o.no) === Number(c.no))
+    if (fb && fb.kept_previous) {
+      const q = fb.quality
+      const score = (q && q.score != null) ? `（质检 ${q.score}${q.passed ? ' 通过' : ' 未过'}）` : ''
+      ElMessage.warning(`第${c.no}章质检未通过${score}，已保留上一版，新稿存为候选 v${fb.candidate_version}，可在版本弹窗查看/切换`)
+    } else {
+      ElMessage.success(`第${c.no}章已重新生成`)
+    }
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '重生成失败')
   } finally { regenNo.value = 0 }
@@ -432,7 +440,7 @@ async function checkStatus() {
   } catch {}
 }
 
-function startPolling(onDone) {
+function startPolling(onDone, quiet = false) {
   if (!genStartTs) genStartTs = Date.now()
   if (pollTimer) clearInterval(pollTimer)
   let lastDone = -1
@@ -458,11 +466,11 @@ function startPolling(onDone) {
         clearInterval(pollTimer)
         // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应面板仍是旧空数据
         if (s.error) {
-          ElMessage.error('生成失败：' + s.error)
+          if (!quiet) ElMessage.error('生成失败：' + s.error)
         } else {
           // 可选链式回调（如大纲完成后自动生成世界观）：返回 true 表示已接管后续流程，跳过默认刷新
           const chained = onDone ? await onDone(s) : false
-          if (!chained) await refreshAfterGen()
+          if (!chained) await refreshAfterGen(quiet)
         }
       }
     } catch {}
@@ -470,7 +478,7 @@ function startPolling(onDone) {
 }
 
 // 生成完成后的静默刷新：不弹全屏 loading，只重拉数据并强制重挂大纲编辑器
-async function refreshAfterGen() {
+async function refreshAfterGen(quiet = false) {
   try {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
@@ -480,10 +488,24 @@ async function refreshAfterGen() {
     genDoneCount.value = chapters.value.length
     outlineReloadKey.value++
     loadSnapshots()
-    ElMessage.success('任务已完成，数据已刷新')
+    if (!quiet) ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
     ElMessage.error('数据刷新失败，请手动刷新页面')
   }
+}
+
+// U1：Agent 面板启动运行时联动全局生成横幅（getStatus 跟随同一生成槽位）；
+// quiet 轮询避免与 Agent 面板自身的完成提示重复弹 toast
+const AGENT_GEN_LABEL = {
+  researcher: '正在调研题材',
+  'architect.outline': '正在生成大纲',
+  'architect.world': '正在生成世界观',
+  'architect.volume': '正在重写卷纲',
+  'writer.chapter': '正在逐章写作',
+}
+function onAgentStarted({ agent }) {
+  beginGenUI(AGENT_GEN_LABEL[agent] || '正在生成…')
+  startPolling(null, true)
 }
 
 async function loadChapters() {
@@ -595,7 +617,7 @@ async function saveEdit() {
 async function runOutline() {
   try {
     await startAgentRun(pid, { agent: 'architect.outline', params: {} })
-    ElMessage.success('已开始生成大纲，完成后将自动生成世界观')
+    ElMessage.success('已开始生成大纲，完成后将自动生成世界观（自动生成的世界观同样按字数计费）')
     beginGenUI('正在生成大纲…')
     // 大纲完成后若无世界观则自动链式生成世界观
     startPolling(async () => {
@@ -603,7 +625,7 @@ async function runOutline() {
         const w = await getWorld(pid)
         if (!w || !w.world_view) {
           await startAgentRun(pid, { agent: 'architect.world', params: {} })
-          ElMessage.success('大纲已完成，正在生成世界观…')
+          ElMessage.success('大纲已完成，正在自动生成世界观（按字数计费）…')
           beginGenUI('正在生成世界观…')
           startPolling() // 世界观完成后走默认刷新
           return true // 已接管后续，跳过本次默认刷新
@@ -818,10 +840,10 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-no { color: var(--muted); font-size: 12px; width: 60px; flex-shrink: 0; }
 .ch-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .ch-words { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity .15s ease; }
-.ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; }
+.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+.ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; pointer-events: auto; }
 /* 触屏设备无 hover，操作常驻 */
-@media (hover: none) { .ch-actions { opacity: 1; } }
+@media (hover: none) { .ch-actions { opacity: 1; pointer-events: auto; } }
 
 /* ===== 底部数据条 ===== */
 .pd-footer {

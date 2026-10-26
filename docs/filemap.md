@@ -106,7 +106,7 @@
 | `pricing.py` | 定价（普通 2 元/万字、高质量 3 元/万字、赠金/封面次数） |
 | `settle_ledger.py` | **v2 版本级结算账本（REQ-Agent用户化 阶段 0.5，2026-10-25，P0 资金链路）**：计费单元从「全书累计 AI 字数差 + target 封顶」反转为「一个产物版本一次结算、按该版本实际生成字数」；`settle_version`（幂等键 `{kind}:{key}:v{v}`，重启/重入不双扣）/`settle_product`（outline/world/volume 暂无版本库时的内容摘要+序号自增临时幂等）/`settle_chapter_versions`（写前快照 → 只结算新增版本，`source=user` 不计费、`legacy` 不补扣）/`settle_legacy`（存量兜底一次）/`migrate_v1`（v1 基线只读迁移不重扣）；先原子落账本再扣费（Windows `os.replace` 重试 + 直写回退）、余额不足扣到 0 并记 `debt.json` 不自动补扣、`user_llm` 应扣 0 仍写条目供审计；账本 `settle.json` 上限 500 条按插入顺序淘汰；**阶段1B（2026-10-25）** `settle_chapter_versions` 返回体补 `words` 键（run 侧写 billed_words 准确统计，加键不破坏既有结构） |
 | `agent_prompts.py` | **Agent 人设提示词版本化（REQ-Agent用户化 阶段 1B，2026-10-25）**：`EDITABLE_AGENTS` 白名单（researcher/architect.outline/architect.volume/architect.world/writer.chapter）；`get_prompt_meta`→(text, `<agent>@v<n>`, sha256) 懒快照 v1（author=default，现网无静态 per-agent 模板时用内置职责描述）；`save_user_prompt` 快照 v<n+1>（author=user）；存储 `projects/<id>/agent_prompts/<agent_safe>/{v<n>.md, meta.json}` |
-| `generate_service.py` | **Agent 统一触发入口（REQ-Agent用户化 阶段 1B，2026-10-25）**：`POST /api/projects/{id}/agent-runs`（202）+ `GET .../{task_id}` 四态状态机（running/resumed/done|stopped|failed/not_found，重启沿用 task_id）；守卫群纯函数（访问→计费/余额 402→agent/产物白名单→params→锁定 409→手写章→Skill≤5，判定顺序固定）；`start_agent_run`（守卫→槽位→task.json kind=agent_run→线程）/`resume_agent_run`/`get_agent_run`；执行分发 researcher/outline/world/volume/chapters（删旧产物重跑、失败恢复旧产物、章末 should_stop_now 判定、settle 接 v2 账本）；人设+user_prompt 注入 `pipeline.cfg.custom_prompt` 内存态不落盘；全局紧急回退开关 `unified_generate`（FEATURE_FLAGS 注册→sys_config 覆盖，False→503）；对 core 全部函数内延迟 import 防循环 |
+| `generate_service.py` | **Agent 统一触发入口（REQ-Agent用户化 阶段 1B，2026-10-25）**：`POST /api/projects/{id}/agent-runs`（202）+ `GET .../{task_id}` 四态状态机（running/resumed/done|stopped|failed/not_found，重启沿用 task_id）；守卫群纯函数（访问→计费/余额 402→agent/产物白名单→params→锁定 409→手写章→Skill≤5→**每日上限 429**，判定顺序固定）；`start_agent_run`（守卫→槽位→task.json kind=agent_run→线程）/`resume_agent_run`/`get_agent_run`（**2026-10-26 running/resumed 态返回 `progress`**：phase/chapters_done/chapters_total/current_chapter/elapsed，来自线程内更新的 task.json）；`estimate_agent_price`（**2026-10-26 只读预估接口**，复用守卫不占槽不扣费）；执行分发 researcher/outline/world/volume/chapters（删旧产物重跑、失败恢复旧产物、章末 should_stop_now 判定、settle 接 v2 账本；**2026-10-26 章节输出反馈**：每章结算后回读版本索引，outputs 条目带 quality/kept_previous/candidate_version，质检未过时提示保留上一版）；人设+user_prompt 注入 `pipeline.cfg.custom_prompt` 内存态不落盘；全局紧急回退开关 `unified_generate`（FEATURE_FLAGS 注册→sys_config 覆盖，False→503）；**P2-F2 防滥用**：`agent_run_daily_limit`（默认 30 次/日/项目，0=不限）；对 core 全部函数内延迟 import 防循环 |
 | `referral.py` | 代理参数（AGENT_DISCOUNT/COMMISSION_RATE/COMMISSION_BASE/REFERRAL_BONUS） |
 | `mailer.py` | 邮件（验证码/退款通知） |
 | `verify_code.py` | 邮箱验证码逻辑 |
@@ -122,7 +122,7 @@
 | `routers/projects_outline.py` | 三级大纲/快照/差异（`/outline/regenerate` 已删除，统一走 agent-runs `architect.outline`） |
 | `routers/projects_chapters.py` | 章节/审校/扩写（/review 返回 final_review）；**REQ-双锚** expand-selection 注入风格范文+个人旧稿锚、edit_chapter 落 `user_edited` 人工修订标记；**用户级记忆** edit_chapter 后 `record_edits` 跨书文风锚登记；**三期产品化** `/chapters/{no}/scene-inspect`（F2 场景体检）、`/chapters/{no}/chain-of-thought`（F4 计划-产出-校验聚合）、`/continue-branches`（F3 三分支候选）、`/apply-branch`（F3 草稿预览落盘，不改正文）；**REQ-章节版本化（2026-10-16）** `edit_chapter` 追加 `source=user` 版本、`GET /chapters/{no}/versions` 与 `POST /chapters/{no}/versions/{v}/select`、`DELETE /chapters/{no}/versions/{v}`（selected 不可删）；~~`rewrite`/`regenerate_from`/`chapters/batch` 已删除~~，统一走 agent-runs（`writer.chapter` scope=single/range/all） |
 | `routers/projects_world.py` | 世界观/人物/锁定/调研/伏笔/封面 |
-| `routers/projects_generation.py` | 生成控制（启动/停止/重跑）；**阶段1B（2026-10-25）** `POST /api/projects/{id}/agent-runs`（202 统一触发）+ `GET .../agent-runs/{task_id}`（四态查询），业务全在 generate_service；**阶段1C（2026-10-25）** `POST .../agent-runs/{task_id}/stop`（停止）+ `GET/PUT .../agent-prompts[/{agent}]`（人设不可变版本读取/保存） |
+| `routers/projects_generation.py` | 生成控制（启动/停止/重跑）；**阶段1B（2026-10-25）** `POST /api/projects/{id}/agent-runs`（202 统一触发）+ `GET .../agent-runs/{task_id}`（四态查询），业务全在 generate_service；**阶段1C（2026-10-25）** `POST .../agent-runs/{task_id}/stop`（停止）+ `GET/PUT .../agent-prompts[/{agent}]`（人设不可变版本读取/保存）；**2026-10-26 UX 评审** `POST .../agent-runs/estimate`（只读预估价） |
 | `routers/projects_versions.py` | **产物版本 API（阶段1C，2026-10-25）**：outline/world 的 `GET /products/{kind}/versions`（含每版计费金额）、`POST .../versions/{v}/select`（受控回滚）、`GET .../rollback-impact`（回滚影响范围：受影响章节/regenerate_from/滞后派生视图）；kind 白名单 outline/world，chapter 版本仍走 projects_chapters |
 | `routers/admin.py` | 站长后台（9 板块，含 /api/admin/quality-report 质量报表；**REQ-后台开关管理** `GET/PUT /api/admin/config` 生成引擎开关管理：key 白名单 + 类型/范围/select 枚举校验 + 审计，`_RANGE_RULES` 范围表、`_validate_config_items` 校验纯函数） |
 | `routers/assistant.py` | **小墨AI（REQ-小墨AI 一期）**：`POST/GET /api/projects/{id}/assistant/conversations`（建/列）、`GET .../conversations/{cid}`（详情+消息分页）、`POST .../conversations/{cid}/messages`（发消息，同步返回回复+卡片）、`DELETE .../conversations/{cid}`；全部 `_require_user` + `_check_project_access` + 会话归属校验 |
@@ -139,7 +139,7 @@
 | `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` `assistant.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口；assistant.js：小墨AI 会话/消息 5 个接口） |
 | `views/Login.vue` | 登录/注册页 |
 | `views/ProjectList.vue` | 书案（作品列表/搜索/筛选） |
-| `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制；**新增「小墨AI」tab**，透传 projectId/章节列表/当前章，接收 `locate` 事件切章打开阅读器） |
+| `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制；**2026-10-26 布局重构**：平铺 Tab 改左侧栏导航，生成类操作收敛进「大纲/Agent」页，顶栏仅留导出+状态徽章，生成中升级为全宽横幅，章节行操作 hover 浮出；世界观编辑拆出至 WorldEditor.vue） |
 | `views/Workspace.vue` | 用户工作台（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
 | `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab**：memory/writing/review/guard/assistant 分组渲染 100 开关，改动项高亮、按组保存、展示默认值/修改人/时间） |
 | `components/assistant/AssistantPanel.vue` | **小墨AI 面板（REQ-小墨AI 一期）**：会话列表/新建/删除、模式切换（章节评估/改稿建议）、章节选择、消息区（卡片渲染/降级提示/token 用量）、Ctrl+Enter 发送、「定位到第 N 章」 |
@@ -149,9 +149,11 @@
 | `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |
 | `components/outline/OutlineEditor.vue` | 三级大纲编辑器（拖拽）；**阶段1C** apply 候选成功后 `emit('open-versions')` 跳版本列表并提示候选版本同样计费 |
 | `components/VersionDialog.vue` | **统一版本弹窗（阶段1C，2026-10-25）**：chapter（质检分/问题列表/申诉）与 outline/world（每版扣费金额、选择前弹回滚影响范围确认）共用；从 ProjectDetail 迁出章节版本逻辑 |
-| `components/agent/AgentPanel.vue` | **Agent 面板（阶段1C，2026-10-25）**：两栏工作区——左栏角色导航（5 角色，选中金线标记）+ 计费模式/余额（平台模式 ≤0 禁用引导充值），右栏当前角色工作区（人设版本 tag/编辑人设/参数区/user_prompt/运行停止/预估金额），技能挂载折叠区；轮询 getAgentRun 直至终态 |
+| `components/agent/AgentPanel.vue` | **Agent 面板（阶段1C，2026-10-25）**：两栏工作区——左栏角色导航（5 角色，选中金线标记）+ 计费模式/余额（平台模式 ≤0 禁用引导充值），右栏当前角色工作区（人设版本 tag/编辑人设/参数区/user_prompt/运行停止/预估金额），技能挂载折叠区；轮询 getAgentRun 直至终态；**2026-10-26 UX 评审**：运行中进度条（progress 驱动，阶段文案+章节进度+已用时长）、预估金额参数变化实时刷新（estimate 接口，防抖）、轮询失败≥3 次才停止并提示、首次使用计费口径提示（localStorage 一次性）、完成时质检未过提示保留上一版/候选版本、启动 emit('started') 联动全局横幅 |
 | `components/agent/SkillPicker.vue` | **技能多选器（阶段1C）**：按 role 分组展示平台技能，挂载上限 5，显示单技能注入字数 |
 | `components/world/CharacterGraph.vue` | 人物关系图 |
+| `components/world/WorldEditor.vue` | **世界观编辑面板（2026-10-26 自 ProjectDetail 拆出）**：世界观/人物档案/事前设计卡（生物/地点/势力/机制/时钟/语言禁忌），数据自治（自行加载/保存），锁状态由父组件持有、经 `toggle-lock` 事件变更 |
+| `components/project/ProjectSideNav.vue` | **项目详情左侧栏导航（2026-10-26）**：「内容（章节/大纲/世界观）/ 智能（小墨AI/Agent/工具）」两组，选中金线标记，窄屏降级横向滚动 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |
 | `style.css` | 全局样式（深夜书房视觉语言） |
 | `vite.config.js` / `package.json` | 构建配置/依赖 |

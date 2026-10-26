@@ -121,7 +121,7 @@
 | `projects_outline.py` | 大纲 | 三级大纲/快照/差异（6）；`/outline/regenerate` 已删除，统一走 agent-runs `architect.outline` |
 | `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写（10）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记；`/chapters/{n}/rewrite`、`/regenerate-from/{n}`、`/chapters/batch` 已删除，统一走 agent-runs |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
-| `projects_generation.py` | 生成控制 | **Agent 统一入口（唯一生成通道）**：`POST/GET /agent-runs`、`POST /agent-runs/{task_id}/stop`、`GET/PUT /agent-prompts[/{agent}]`（人设不可变版本）、`/outline/candidates`、`/stop`（8）；业务全在 generate_service；旧生成接口（start/regenerate/rewrite/generate-outline/world-regenerate/volume-regenerate）已全部删除 |
+| `projects_generation.py` | 生成控制 | **Agent 统一入口（唯一生成通道）**：`POST/GET /agent-runs`、`POST /agent-runs/{task_id}/stop`、`POST /agent-runs/estimate`（只读预估价，UX 评审 U2）、`GET/PUT /agent-prompts[/{agent}]`（人设不可变版本）、`/outline/candidates`、`/stop`（9）；业务全在 generate_service；旧生成接口（start/regenerate/rewrite/generate-outline/world-regenerate/volume-regenerate）已全部删除 |
 | `projects_versions.py` | 产物版本 | **阶段1C**：outline/world 版本列表（含每版计费金额）/受控回滚 select/rollback-impact 影响范围（3）；chapter 版本在 projects_chapters |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |

@@ -1,233 +1,144 @@
 <template>
-  <div v-loading="loading">
-    <div class="detail-head">
-      <div>
-        <h2>{{ project?.config?.title || '加载中…' }}</h2>
-        <el-progress v-if="generating" :percentage="genPct" :stroke-width="8" style="width:400px;margin-top:8px"
-          :status="genDone ? 'success' : ''" :indeterminate="!genDone && inPrePhase" :duration="2" />
-        <div v-if="genError" class="gen-error-wrap">
-          <span class="gen-error">{{ genError }}</span>
-          <el-button v-if="resumable && !generating" type="primary" size="small" @click="startGen">继续生成</el-button>
+  <div v-loading="loading" class="pd">
+    <!-- 顶栏：书名 + 元数据 + 状态徽章；生成类操作全部收敛到「Agent / 大纲」页，顶部仅保留导出与取消 -->
+    <header class="pd-head">
+      <div class="pd-head-main">
+        <h2 class="pd-title">{{ project?.config?.title || '加载中…' }}</h2>
+        <div class="pd-meta">
+          <el-tag size="small" :type="bookStatus.type" effect="light">{{ bookStatus.text }}</el-tag>
+          <template v-if="project">
+            <span v-if="project.config?.genre">{{ project.config.genre }}</span>
+            <span v-if="project.config?.total_words">目标 {{ fmtWords(project.config.total_words) }}</span>
+            <span>已写 {{ fmtWords(totalWords) }}</span>
+          </template>
         </div>
-        <span v-else-if="generating && !genDone && genStatus" class="gen-status">{{ genStatus }}</span>
       </div>
-      <div class="step-actions">
-        <el-button v-if="generating && !genDone" @click="cancelGen">取消</el-button>
-        <el-button v-if="!outlineReady && !hadOutline" type="primary" @click="runOutline" :loading="generating && !genDone">
-          {{ generating && !genDone ? '生成中…' : '生成大纲与世界观' }}
-        </el-button>
-        <template v-else>
-          <el-button @click="doRegenOutline" :disabled="generating && !genDone" title="重生成总纲/分卷">重生成大纲</el-button>
-          <el-button @click="doRegenWorld" :disabled="generating && !genDone" title="重生成世界观/人物">重生成世界观</el-button>
-          <el-button @click="openImport" :disabled="generating && !genDone" title="重新导入你写的大纲（覆盖前自动备份）">重新导入大纲</el-button>
-          <el-dropdown trigger="click" @command="onSnapCmd">
-            <el-button :disabled="generating && !genDone">大纲快照 ▾</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
-                <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
-                  还原「{{ sn.display || sn.name }}」（{{ sn.chapters }} 章）
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>          <el-button type="primary" @click="genPhase === 'done' ? regenAllChapters() : startGen()" :disabled="generating && !genDone">
-            {{ generating && !genDone ? '生成中…' : (genPhase === 'done' ? '重新生成' : (genPhase === 'partial' ? '继续生成' : '开始生成')) }}
-          </el-button>
-          <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
-            <el-button :disabled="generating && !genDone" :loading="exporting">导出 ▾</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="txt">TXT 文本</el-dropdown-item>
-                <el-dropdown-item command="epub">EPUB 电子书</el-dropdown-item>
-                <el-dropdown-item command="docx">DOCX Word</el-dropdown-item>
-                <el-dropdown-item command="md">Markdown</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </template>
+      <div class="pd-head-actions">
+        <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
+          <el-button :disabled="genRunning" :loading="exporting">导出 ▾</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="txt">TXT 文本</el-dropdown-item>
+              <el-dropdown-item command="epub">EPUB 电子书</el-dropdown-item>
+              <el-dropdown-item command="docx">DOCX Word</el-dropdown-item>
+              <el-dropdown-item command="md">Markdown</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </header>
+
+    <!-- 生成中横幅：仅生成/出错时出现，全宽承载进度条 + 阶段 + 取消，替代原顶部局部小进度条 -->
+    <div v-if="genRunning || genError" class="gen-banner" :class="{ 'is-error': !genRunning && genError }">
+      <template v-if="genRunning">
+        <div class="gen-banner-top">
+          <span class="pulse" />
+          <span class="gen-banner-status">{{ genStatus || '正在生成…' }}</span>
+          <span class="gen-banner-pct">{{ genPct }}%</span>
+          <el-button size="small" plain @click="cancelGen">取消</el-button>
+        </div>
+        <el-progress :percentage="genPct" :stroke-width="6" :show-text="false"
+          :indeterminate="inPrePhase" :duration="2" />
+      </template>
+      <div v-else class="gen-error-wrap">
+        <span class="gen-error">{{ genError }}</span>
+        <el-button v-if="resumable" type="primary" size="small" @click="startGen">继续生成</el-button>
       </div>
     </div>
 
-    <el-tabs v-model="tab">
-      <el-tab-pane label="章节" name="chapters">
-        <div v-if="chapters.length" class="ch-list">
-          <div v-for="g in groupedChapters" :key="g.key" class="ch-group">
-            <div class="ch-group-title">{{ g.name }}</div>
-            <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
-              <span class="ch-no">第{{ c.no }}章</span>
-              <span class="ch-title">{{ c.title }}</span>
-              <el-tag v-if="c.status" :type="statusType(c.status)" size="small">{{ statusText(c.status) }}</el-tag>
-              <el-button size="small" type="warning" link @click.stop="regenChapter(c)" :loading="regenNo === c.no">重新生成</el-button>
-              <el-button size="small" type="primary" link @click.stop="openVersions(c)">版本</el-button>
-              <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link @click.stop="toggleLock('chapter', c.no)">
-                {{ isChLocked(c.no) ? '🔒已锁' : '🔓锁' }}
+    <!-- 主体：左侧栏导航 + 工作区 -->
+    <div class="pd-body">
+      <ProjectSideNav v-model="tab" :chapter-count="chapters.length" @update:model-value="navTouched = true" />
+
+      <main class="pd-main">
+        <!-- 章节 -->
+        <section v-if="visited.chapters" v-show="tab === 'chapters'">
+          <div v-if="chapters.length" class="ch-list">
+            <div v-for="g in groupedChapters" :key="g.key" class="ch-group">
+              <div class="ch-group-title">{{ g.name }}</div>
+              <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
+                <span class="ch-no">第{{ c.no }}章</span>
+                <span class="ch-title">{{ c.title }}</span>
+                <span class="ch-words">{{ c.words ? fmtWords(c.words) : '未生成' }}</span>
+                <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
+                <div class="ch-actions" @click.stop>
+                  <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
+                  <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
+                  <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
+                    :title="isChLocked(c.no) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
+                    @click="toggleLock('chapter', c.no)">
+                    {{ isChLocked(c.no) ? '🔒' : '🔓' }}
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <el-empty v-else :description="outlineReady ? '大纲已就绪，还没有章节正文' : '还没有章节，需要先生成大纲'">
+            <el-button v-if="outlineReady" type="primary" @click="tab = 'agent'">去 Agent 页生成正文</el-button>
+            <el-button v-else type="primary" @click="tab = 'outline'">去生成大纲</el-button>
+          </el-empty>
+        </section>
+
+        <!-- 大纲：原顶栏的大纲类操作收敛为页内工具条 -->
+        <section v-if="visited.outline" v-show="tab === 'outline'">
+          <div v-if="outlineReady || hadOutline" class="panel-toolbar">
+            <div class="panel-toolbar-left">
+              <el-button size="small" @click="doRegenOutline" :disabled="genRunning" title="重生成总纲/分卷">重生成大纲</el-button>
+              <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动备份）">导入大纲</el-button>
+              <el-dropdown trigger="click" @command="onSnapCmd">
+                <el-button size="small" :disabled="genRunning">大纲快照 ▾</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
+                    <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
+                      还原「{{ sn.display || sn.name }}」（{{ sn.chapters }} 章）
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+            <el-button size="small" type="primary" link @click="openProductVersions('outline')">历史版本</el-button>
+          </div>
+          <el-empty v-if="!outlineReady && !hadOutline" description="还没有大纲。AI 生成或导入你写的都可以">
+            <div class="outline-empty-actions">
+              <el-button type="primary" @click="runOutline" :loading="genRunning">
+                {{ genRunning ? '生成中…' : '生成大纲与世界观' }}
               </el-button>
+              <el-button @click="openImport" :disabled="genRunning">导入我写的大纲</el-button>
             </div>
-          </div>
-        </div>
-        <el-empty v-else description="暂无章节" />
-      </el-tab-pane>
+          </el-empty>
+          <OutlineEditor v-else :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
+        </section>
 
-      <el-tab-pane label="大纲" name="outline">
-        <div class="product-bar">
-          <el-button size="small" type="primary" link @click="openProductVersions('outline')">大纲版本</el-button>
-        </div>
-        <OutlineEditor :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
-      </el-tab-pane>
+        <!-- 世界观 -->
+        <section v-if="visited.world" v-show="tab === 'world'">
+          <WorldEditor ref="worldEditorRef" :pid="pid" :lock="lock"
+            @toggle-lock="toggleLock" @open-versions="openProductVersions" @regen-world="doRegenWorld" />
+        </section>
 
-      <el-tab-pane label="人物/世界观" name="world">
-        <template v-if="world">
-          <CharacterGraph v-if="world.characters?.length" :characters="worldDraft.characters" />
-          <div class="world-edit-head">
-            <h4 style="margin:0">世界观</h4>
-            <div>
-              <el-button size="small" type="primary" link @click="openProductVersions('world')">世界观版本</el-button>
-              <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="toggleLock('world_view', '', !isWorldLocked)">
-                {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
-              </el-button>
-              <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
-            </div>
-          </div>
-          <el-input v-model="worldDraft.world_view" type="textarea" :rows="6" placeholder="描述这个世界的规则、时代背景、核心矛盾、势力格局……" />
-          <div class="world-edit-head" style="margin-top:16px">
-            <h4 style="margin:0">人物档案（{{ worldDraft.characters.length }}）</h4>
-            <el-button size="small" @click="addCharacter">+ 添加人物</el-button>
-          </div>
-          <el-card v-for="(c,i) in worldDraft.characters" :key="i" style="margin-bottom:10px">
-            <div class="char-head">
-              <el-input v-model="c.name" size="small" placeholder="姓名" style="width:140px" />
-              <el-input v-model="c.role" size="small" placeholder="角色（主角/配角/反派…）" style="width:180px;margin-left:8px" />
-              <el-button size="small" :type="isCharLocked(c.name) ? 'success' : 'default'" link @click="toggleLock('character', c.name, !isCharLocked(c.name))">{{ isCharLocked(c.name) ? '🔒' : '🔓' }}</el-button>
-              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.characters.splice(i,1)">删除</el-button>
-            </div>
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">外貌</span><el-input v-model="c.appearance" size="small" /></div>
-              <div class="char-row"><span class="char-label">性格</span><el-input v-model="c.personality" size="small" /></div>
-              <div class="char-row"><span class="char-label">核心欲望</span><el-input v-model="c.desire" size="small" /></div>
-              <div class="char-row"><span class="char-label">软肋</span><el-input v-model="c.wound" size="small" /></div>
-              <div class="char-row"><span class="char-label">弧光</span><el-input v-model="c.arc" size="small" /></div>
-              <div class="char-row"><span class="char-label">说话方式</span><el-input v-model="c.speech_style" size="small" /></div>
-              <div class="char-row"><span class="char-label">关系</span><el-input v-model="c.relations" size="small" /></div>
-              <div class="char-row"><span class="char-label">简介</span><el-input v-model="c.desc" size="small" /></div>
-            </div>
-          </el-card>
+        <!-- 小墨AI -->
+        <section v-if="visited.assistant" v-show="tab === 'assistant'">
+          <AssistantPanel :project-id="pid" :chapters="chapters" :current-ch="currentCh" @locate="locateChapter" />
+        </section>
 
-          <!-- ===== 事前设计卡（REQ-事前设定卡） ===== -->
-          <el-divider content-position="left">事前设计卡（防设定矛盾，正文必须遵守）</el-divider>
+        <!-- Agent：生成操作统一入口 -->
+        <section v-if="visited.agent" v-show="tab === 'agent'">
+          <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" />
+        </section>
 
-          <!-- 生物图鉴 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">生物图鉴（{{ worldDraft.enemies?.length || 0 }}）</h4>
-            <el-button size="small" @click="worldDraft.enemies.push({ name:'', form:'', senses:'', behavior:'', kill:'', tier:'' })">+ 添加怪物</el-button>
-          </div>
-          <el-card v-for="(e,i) in (worldDraft.enemies||[])" :key="'en'+i" style="margin-bottom:10px">
-            <div class="char-head">
-              <el-input v-model="e.name" size="small" placeholder="怪物名（如灰卒）" style="width:140px" />
-              <el-input v-model="e.tier" size="small" placeholder="层级（浅层/精英/首领）" style="width:180px;margin-left:8px" />
-              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.enemies.splice(i,1)">删除</el-button>
-            </div>
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">形态解剖</span><el-input v-model="e.form" size="small" placeholder="写死：有无固定形态、肢体、器官、核心位置" /></div>
-              <div class="char-row"><span class="char-label">感知方式</span><el-input v-model="e.senses" size="small" placeholder="触须振动/视觉/热感（决定能否写视线盲区）" /></div>
-              <div class="char-row"><span class="char-label">行为模式</span><el-input v-model="e.behavior" size="small" placeholder="巡逻/伏击/食腐/对死人反应" /></div>
-              <div class="char-row"><span class="char-label">弱点</span><el-input v-model="e.kill" size="small" placeholder="击杀条件/弱点" /></div>
-            </div>
-          </el-card>
+        <!-- 工具 -->
+        <section v-if="visited.tools" v-show="tab === 'tools'">
+          <ToolsPanel :pid="pid" />
+        </section>
+      </main>
+    </div>
 
-          <!-- 地点卡 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">地点卡（{{ worldDraft.locations?.length || 0 }}）</h4>
-            <el-button size="small" @click="worldDraft.locations.push({ name:'', terrain:'', light:'', sound_smell:'', exits:'', danger:'' })">+ 添加地点</el-button>
-          </div>
-          <el-card v-for="(l,i) in (worldDraft.locations||[])" :key="'loc'+i" style="margin-bottom:10px">
-            <div class="char-head">
-              <el-input v-model="l.name" size="small" placeholder="地点名（如墟内支道）" style="width:160px" />
-              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.locations.splice(i,1)">删除</el-button>
-            </div>
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">地形结构</span><el-input v-model="l.terrain" size="small" /></div>
-              <div class="char-row"><span class="char-label">光线规则</span><el-input v-model="l.light" size="small" placeholder="地下无光/光源/天光在何处（正文不得矛盾）" /></div>
-              <div class="char-row"><span class="char-label">声音气味</span><el-input v-model="l.sound_smell" size="small" /></div>
-              <div class="char-row"><span class="char-label">出口连通</span><el-input v-model="l.exits" size="small" placeholder="哪里是死路/通哪" /></div>
-              <div class="char-row"><span class="char-label">危险来源</span><el-input v-model="l.danger" size="small" /></div>
-            </div>
-          </el-card>
-
-          <!-- 势力卡 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">势力卡（{{ worldDraft.factions?.length || 0 }}）</h4>
-            <el-button size="small" @click="worldDraft.factions.push({ name:'', goal:'', members:'', relation_to_mc:'' })">+ 添加势力</el-button>
-          </div>
-          <el-card v-for="(f,i) in (worldDraft.factions||[])" :key="'fac'+i" style="margin-bottom:10px">
-            <div class="char-head">
-              <el-input v-model="f.name" size="small" placeholder="势力名" style="width:160px" />
-              <el-button type="danger" size="small" link style="margin-left:auto" @click="worldDraft.factions.splice(i,1)">删除</el-button>
-            </div>
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">目标</span><el-input v-model="f.goal" size="small" /></div>
-              <div class="char-row"><span class="char-label">关键成员</span><el-input v-model="f.members" size="small" /></div>
-              <div class="char-row"><span class="char-label">与主角关系</span><el-input v-model="f.relation_to_mc" size="small" /></div>
-            </div>
-          </el-card>
-
-          <!-- 机制初始值 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">机制初始值（数字标准答案）</h4>
-          </div>
-          <el-card style="margin-bottom:10px">
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">旧痕起点</span><el-input v-model="worldDraft.mechanism_baseline.scar_start" size="small" placeholder="如：手腕" /></div>
-              <div class="char-row"><span class="char-label">每死延伸</span><el-input v-model="worldDraft.mechanism_baseline.scar_per_death" size="small" placeholder="如：约一指宽" /></div>
-              <div class="char-row"><span class="char-label">旧痕当前</span><el-input v-model="worldDraft.mechanism_baseline.scar_current" size="small" placeholder="如：累计约二十次死亡" /></div>
-              <div class="char-row"><span class="char-label">终局位置</span><el-input v-model="worldDraft.mechanism_baseline.scar_end" size="small" placeholder="如：蔓延至心脉=蚀化" /></div>
-              <div class="char-row"><span class="char-label">面板格式</span><el-input v-model="worldDraft.mechanism_baseline.panel_format" size="small" placeholder="唯一写法，如：今日可死次数：N/3" /></div>
-              <div class="char-row"><span class="char-label">重置规则</span><el-input v-model="worldDraft.mechanism_baseline.reset_rule" size="small" placeholder="如：每日子时重置为3" /></div>
-            </div>
-          </el-card>
-
-          <!-- 时钟规则 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">时钟规则（每章遵守）</h4>
-          </div>
-          <el-card style="margin-bottom:10px">
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">日周期</span><el-input v-model="worldDraft.clock.day_cycle" size="small" placeholder="何时重置/晨昏/夜色节点" /></div>
-              <div class="char-row"><span class="char-label">路程</span><el-input v-model="worldDraft.clock.travel" size="small" placeholder="关键地点间耗时，如：墟口到铁匠铺约一刻钟" /></div>
-              <div class="char-row"><span class="char-label">光线规则</span><el-input v-model="worldDraft.clock.light_rule" size="small" placeholder="哪里有光哪里没光、何时天色" /></div>
-            </div>
-          </el-card>
-
-          <!-- 语言禁忌 -->
-          <div class="world-edit-head" style="margin-top:8px">
-            <h4 style="margin:0">语言禁忌（{{ worldDraft.style_taboos?.length || 0 }} 条）</h4>
-            <el-button size="small" @click="worldDraft.style_taboos.push('')">+ 添加禁用词</el-button>
-          </div>
-          <el-card style="margin-bottom:10px">
-            <div v-for="(t,i) in (worldDraft.style_taboos||[])" :key="'stb'+i" style="display:flex;margin-bottom:6px">
-              <el-input v-model="worldDraft.style_taboos[i]" size="small" placeholder="禁用词/表达（如：走位、视野CD、刷新）" style="flex:1" />
-              <el-button type="danger" size="small" link @click="worldDraft.style_taboos.splice(i,1)">删除</el-button>
-            </div>
-          </el-card>
-        </template>
-        <el-empty v-else>
-          <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
-          <el-button type="primary" @click="doRegenWorld" :disabled="generating && !genDone">重生成世界观</el-button>
-        </el-empty>
-      </el-tab-pane>
-
-      <el-tab-pane label="小墨AI" name="assistant">
-        <AssistantPanel :project-id="pid" :chapters="chapters" :current-ch="currentCh"
-                        @locate="locateChapter" />
-      </el-tab-pane>
-
-      <el-tab-pane label="Agent" name="agent">
-        <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" />
-      </el-tab-pane>
-
-      <el-tab-pane label="工具" name="tools">
-        <ToolsPanel :pid="pid" />
-      </el-tab-pane>
-    </el-tabs>
+    <!-- 底部数据条：已写字数 / 章节进度 / 质检均分 -->
+    <div class="pd-footer">
+      <span>已写 <b>{{ fmtWords(totalWords) }}</b></span>
+      <span class="dot">·</span>
+      <span>进度 <b>{{ genDoneCount }} / {{ genTotal || '—' }} 章</b></span>
+    </div>
 
     <!-- 统一版本弹窗（阶段 1C）：chapter/outline/world 共用 -->
     <VersionDialog v-model="versionsDialog" :pid="pid" :kind="versionsKind" :chapter-no="versionsNo"
@@ -267,7 +178,7 @@
       </div>
     </teleport>
 
-    <el-dialog v-model="importVisible" title="重新导入大纲" width="560px">
+    <el-dialog v-model="importVisible" title="导入大纲" width="560px">
       <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「大纲快照」中一键还原）。AI 不会改写你的内容。</p>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <input type="file" ref="importFileInput" accept=".txt,.md,.docx" @change="onImportFilePick" />
@@ -284,16 +195,17 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, h } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, saveWorld, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
-import CharacterGraph from '../components/world/CharacterGraph.vue'
+import WorldEditor from '../components/world/WorldEditor.vue'
 import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
+import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -304,14 +216,8 @@ const loading = ref(false)
 const project = ref(null)
 const chapters = ref([])
 const outline = ref(null)
-const world = ref(null)
-const worldDraft = ref({
-  world_view: "", characters: [],
-  enemies: [], locations: [], factions: [],
-  mechanism_baseline: {}, clock: {}, style_taboos: [],
-})
-const worldSaving = ref(false)
 const lock = ref({})
+const worldEditorRef = ref(null)
 // REQ-章节版本化：版本选择弹窗状态
 const versionsDialog = ref(false)
 const versionsNo = ref(0)
@@ -319,22 +225,25 @@ const versionsKind = ref('chapter')  // 阶段 1C：统一版本弹窗的当前�
 const rechargeRef = ref(null)
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
-// 导致 outlineReady 翻转、v-else 按钮组整体消失。用 hadOutline 保住按钮组（生成中置灰而非隐藏）。
+// 导致 outlineReady 翻转、编辑器被空态替换。用 hadOutline 保住工具条与编辑器（生成中置灰而非隐藏）。
 const hadOutline = ref(false)
-const isWorldLocked = computed(() => !!lock.value.world_view)
 const isChLocked = (no) => !!(lock.value.chapter || {})[no]
-const isCharLocked = (name) => !!(lock.value.character || {})[name]
-async function toggleLock(kind, key="", forced) {
+async function toggleLock(kind, key = '', forced) {
   try {
-    const locked = forced !== undefined ? forced : !((lock.value[kind]||{})[key])
+    const locked = forced !== undefined ? forced : !((lock.value[kind] || {})[key])
     await setLock(pid, { kind, key: String(key), locked })
     lock.value = await getLock(pid)
-    ElMessage.success(locked ? "已锁定，重生成时不会覆盖" : "已解锁")
+    ElMessage.success(locked ? '已锁定，重生成时不会覆盖' : '已解锁')
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || "操作失败")
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
   }
 }
 const tab = ref('chapters')
+// 用户是否手动切换过侧栏导航；未手动切换时，loadAll 按数据状态引导默认页（无大纲→大纲页）
+const navTouched = ref(false)
+// 面板懒挂载：首次切到才挂载（保留各面板 onMounted 语义），之后 v-show 保持状态
+const visited = reactive({ chapters: true })
+watch(tab, (t) => { visited[t] = true })
 const readerVisible = ref(false)
 const currentCh = ref(null)
 const currentContent = ref('')
@@ -357,23 +266,31 @@ const outlineReloadKey = ref(0)
 const currentPhase = ref('')
 const PRE_PHASES = ['research', 'outline', 'editor_review', 'world']
 const inPrePhase = computed(() => PRE_PHASES.includes(currentPhase.value))
+// 生成中（未完成）：驱动横幅显示与按钮置灰
+const genRunning = computed(() => generating.value && !genDone.value)
 // 成本防护/异常终止后可断点继续：后端提示含「可从断点继续」时，展示醒目的「继续生成」入口
 const resumable = computed(() =>
   genError.value.includes('可从断点继续') || genError.value.includes('成本防护'))
-// 章节生成进度（总章节数 / 已生成数），驱动主按钮三态：开始生成 → 继续生成 → 重新生成
+// 章节生成进度（总章节数 / 已生成数），驱动顶栏元数据与状态徽章
 const genTotal = ref(0)
 const genDoneCount = ref(0)
-const genPhase = computed(() => {
-  if (generating.value && !genDone.value) return 'running'
-  const total = genTotal.value || (outline.value?.chapters?.length) || 0
-  const done = genDoneCount.value || chapters.value.length || 0
-  if (!total) return 'none'
-  if (done >= total) return 'done'
-  if (done > 0) return 'partial'
-  return 'none'
+const totalWords = computed(() => chapters.value.reduce((sum, c) => sum + (c.words || 0), 0))
+const bookStatus = computed(() => {
+  if (genRunning.value) return { text: '生成中', type: 'warning' }
+  const total = genTotal.value
+  const done = genDoneCount.value
+  if (!total && !done) return { text: '待开始', type: 'info' }
+  if (total && done >= total) return { text: '已完成', type: 'success' }
+  return { text: '进行中', type: 'primary' }
 })
 
-// 点击启动类按钮后立即给出进行中的进度条，不必等 3 秒后轮询
+// 字数格式化：过万用「万字」缩写，保持元数据行紧凑
+function fmtWords(n) {
+  if (!n) return '0 字'
+  return n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, '') + ' 万字' : n + ' 字'
+}
+
+// 点击启动类按钮后立即给出进行中的横幅，不必等 3 秒后轮询
 function beginGenUI(statusText) {
   generating.value = true
   genDone.value = false
@@ -458,29 +375,7 @@ function openProductVersions(kind) {
 function onVersionChanged() {
   loadChapters()
   if (versionsKind.value === 'outline') outlineReloadKey.value++
-  if (versionsKind.value === 'world') loadAll()
-}
-function addCharacter() {
-  worldDraft.value.characters.push({ name: "", role: "", desc: "", appearance: "", personality: "", desire: "", wound: "", arc: "", speech_style: "", relations: "" })
-}
-function normalizeWorldDraft() {
-  const d = worldDraft.value
-  d.enemies = d.enemies || []
-  d.locations = d.locations || []
-  d.factions = d.factions || []
-  d.style_taboos = d.style_taboos || []
-  d.mechanism_baseline = d.mechanism_baseline || {}
-  d.clock = d.clock || {}
-}
-async function saveWorldDraft() {
-  worldSaving.value = true
-  try {
-    const res = await saveWorld(pid, worldDraft.value)
-    world.value = res
-    ElMessage.success("已保存")
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || "保存失败")
-  } finally { worldSaving.value = false }
+  if (versionsKind.value === 'world') worldEditorRef.value?.reload()
 }
 let pollTimer = null
 
@@ -493,10 +388,9 @@ async function loadAll() {
     chapters.value = (await getChapters(pid)).chapters || []
     genTotal.value = outline.value?.chapters?.length || 0
     genDoneCount.value = chapters.value.length
-    world.value = await getWorld(pid)
-    worldDraft.value = JSON.parse(JSON.stringify(world.value))
-    normalizeWorldDraft()
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
+    // 首次进入且用户未手动选过导航时，按数据状态引导：无大纲→大纲页，有大纲→章节页
+    if (!navTouched.value) tab.value = outlineReady.value ? 'chapters' : 'outline'
     await checkStatus()
   } catch (e) {
     ElMessage.error('加载失败')
@@ -562,7 +456,7 @@ function startPolling(onDone) {
       if (!s.running) {
         genDone.value = true
         clearInterval(pollTimer)
-        // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应 tab 仍是旧空数据
+        // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应面板仍是旧空数据
         if (s.error) {
           ElMessage.error('生成失败：' + s.error)
         } else {
@@ -580,9 +474,7 @@ async function refreshAfterGen() {
   try {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
-    world.value = await getWorld(pid)
-    worldDraft.value = JSON.parse(JSON.stringify(world.value))
-    normalizeWorldDraft()
+    await worldEditorRef.value?.reload()
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     genDoneCount.value = chapters.value.length
@@ -609,7 +501,7 @@ async function openChapter(c) {
   } catch { currentContent.value = '内容加载失败' }
 }
 
-// 小墨AI「定位到第 X 章」：切回章节 tab 并打开阅读器
+// 小墨AI「定位到第 X 章」：切回章节面板并打开阅读器
 function locateChapter(no) {
   const ch = chapters.value.find(c => Number(c.no) === Number(no))
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
@@ -751,18 +643,6 @@ async function startGen() {
   }
 }
 
-async function regenAllChapters() {
-  try { await ElMessageBox.confirm('将重新生成全部章节正文（保留大纲/世界观，已锁定章节自动跳过，未锁定章节内容将被覆盖）。继续？', '重新生成全部章节', { type: 'warning' }) } catch { return }
-  try {
-    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'all' } })
-    ElMessage.success('已开始重新生成全部章节')
-    beginGenUI('正在启动整本重写…')
-    startPolling()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '启动失败')
-  }
-}
-
 async function cancelGen() {
   try {
     await cancelGenerate(pid)
@@ -882,27 +762,86 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 </script>
 
 <style scoped>
-.detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.step-actions { display:flex; gap:8px; align-items:center; }
-.gen-status { font-size: 13px; color: #909399; margin-left: 12px; }
-.gen-error { display:inline-block; margin-top:6px; font-size:13px; color:#f56c6c; background:#fef0f0; border:1px solid #fbc4c4; border-radius:6px; padding:6px 10px; max-width:640px; word-break:break-all; }
-.gen-error-wrap { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-.ch-list { display: flex; flex-direction: column; gap: 8px; }
-.ch-group-title { font-weight: 600; font-size: 14px; color: #1f3a5f; margin: 10px 2px 4px; padding-left: 2px; border-left: 3px solid #c9a961; }
-.ch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border-radius: 8px; cursor: pointer; }
-.product-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
-.ch-item:hover { background: #f5f7fa; }
-.ch-no { color: #909399; font-size: 13px; width: 60px; }
-.ch-title { flex: 1; }
-.world-text { margin-bottom: 16px; line-height: 1.8; color: #606266; }
-.world-edit-head { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
-.char-head { margin-bottom: 8px; display: flex; align-items: center; flex-wrap: wrap; }
-.char-row .el-input { flex: 1; }
-.char-row .char-label { width: 70px; flex-shrink: 0; color: #909399; font-size: 13px; }
-.char-fields { display: flex; flex-direction: column; gap: 6px; }
-.char-row { display: flex; align-items: center; gap: 8px; }
-.char-row { display: flex; gap: 8px; font-size: 13px; }
-.char-label { flex: 0 0 70px; color: #909399; }
+/* ===== 顶栏：书名 + 元数据 + 导出 ===== */
+.pd-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--card-line); margin-bottom: 16px; }
+.pd-title { font-size: 24px; font-weight: 600; letter-spacing: .01em; line-height: 1.2; }
+.pd-meta { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.pd-head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+/* ===== 生成中横幅：全宽，仅生成/出错时出现 ===== */
+.gen-banner {
+  margin-bottom: 16px;
+  padding: 10px 16px;
+  background: rgba(201,162,39,.06);
+  border: 1px solid rgba(201,162,39,.25);
+  border-radius: 8px;
+}
+.gen-banner.is-error { border-color: #fbc4c4; background: #fef7f5; }
+.gen-banner-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.gen-banner-status { flex: 1; font-size: 13px; color: var(--ink-soft); }
+.gen-banner-pct { font-size: 12px; color: var(--gold-deep); font-variant-numeric: tabular-nums; font-weight: 500; }
+.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); animation: pd-pulse 1.4s ease-in-out infinite; flex-shrink: 0; }
+@keyframes pd-pulse {
+  0%, 100% { opacity: .35; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.gen-status { font-size: 13px; color: #909399; }
+.gen-error { display: inline-block; font-size: 13px; color: #f56c6c; word-break: break-all; flex: 1; }
+.gen-error-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* ===== 主体：左侧栏 + 工作区 ===== */
+.pd-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0 28px; align-items: start; }
+.pd-main { min-width: 0; padding-top: 2px; }
+
+/* ===== 章节列表：纯行 + 分隔线，无卡片背景 ===== */
+.ch-list { display: flex; flex-direction: column; }
+.ch-group { margin-bottom: 16px; }
+.ch-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 6px 0;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--card-line);
+}
+.ch-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--card-line);
+  cursor: pointer;
+  transition: background-color .12s ease;
+}
+.ch-item:last-child { border-bottom: none; }
+.ch-item:hover { background: rgba(201,162,39,.04); }
+.ch-no { color: var(--muted); font-size: 12px; width: 60px; flex-shrink: 0; }
+.ch-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.ch-words { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity .15s ease; }
+.ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; }
+/* 触屏设备无 hover，操作常驻 */
+@media (hover: none) { .ch-actions { opacity: 1; } }
+
+/* ===== 底部数据条 ===== */
+.pd-footer {
+  margin-top: 28px;
+  padding-top: 14px;
+  border-top: 1px solid var(--card-line);
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pd-footer b { color: var(--ink-soft); font-weight: 500; }
+.pd-footer .dot { color: var(--card-line); }
+
+/* ===== 面板工具条（大纲页） ===== */
+.panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.panel-toolbar-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.outline-empty-actions { display: flex; gap: 10px; justify-content: center; }
+
+/* ===== 阅读器 / 浮动条 / 导入（原有样式保留） ===== */
 .reader-content { line-height: 1.9; padding: 8px 12px; }
 .reader-content.dark { background: #1a1a2e; color: #e0e0e0; padding: 16px; border-radius: 8px; }
 .reader-header { display: flex; justify-content: space-between; align-items: center; }
@@ -916,4 +855,16 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .sel-float-item { cursor: pointer; }
 .sel-float-item:hover { color: #e6c98a; }
 .sel-float-sep { opacity: .4; }
+
+/* 窄屏：侧栏降为顶部横向导航 */
+@media (max-width: 900px) {
+  .pd-body { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .pd-head { flex-direction: column; align-items: stretch; }
+  .pd-head-actions { justify-content: flex-end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
+  .ch-item, .ch-actions { transition: none; }
+}
 </style>

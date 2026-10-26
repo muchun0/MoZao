@@ -193,3 +193,58 @@ def test_chapter_feedback_kept_previous(store_with_outline, byok_db,
     assert fb["quality"]["passed"] is False
     assert fb["quality"]["score"] == 55
     assert len(run["billing"]["entries"]) == 2  # 两版都结算（候选同样计费）
+
+
+# ---------- U1-A：进度分母口径（chapters_done 为书级绝对完成数，与 chapters_total 同口径） ----------
+
+class _MockWriterSimple:
+    """只写一版：满足 settle 链路，聚焦进度口径断言。"""
+
+    def __init__(self, store):
+        self.store = store
+
+    def write(self, no, title, goal, research, is_final=False):
+        self.store.save_chapter(Chapter(no=no, title=title, content=f"正文{no}" * 300))
+
+
+def _store_5ch_3done(store):
+    """5 章大纲 + 预置完成 1-3 章。"""
+    store.save_outline(Outline(title="测试书", intro="简介",
+                               chapters=[ChapterPlan(no=i, title=f"第{i}章", goal=f"目标{i}")
+                                         for i in range(1, 6)]))
+    for no in (1, 2, 3):
+        store.save_chapter(Chapter(no=no, title=f"第{no}章", content=f"旧正文{no}" * 300))
+    return store
+
+
+@pytest.mark.p0
+def test_exec_chapters_progress_all_reaches_total(store, byok_db, cleanup_runs):
+    """U1-A：scope=all 补完剩余章 → progress.chapters_done 与 chapters_total 同口径（100%）。"""
+    store = _store_5ch_3done(store)
+    pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
+                               chapter_writer=_MockWriterSimple(store))
+    handle = core._RunHandle()
+    gs._exec_chapters(store, pipeline, handle, {"scope": "all"},
+                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      [], [])
+    prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
+    assert prog["phase"] == "chapter"
+    assert prog["chapters_total"] == 5
+    assert prog["chapters_done"] == 5  # baseline 3 + 本次 2 = 全书 5，而非只报本次 2
+    assert prog["current_chapter"] == 5
+
+
+@pytest.mark.p0
+def test_exec_chapters_progress_single_absolute(store, byok_db, cleanup_runs):
+    """U1-A：单章重生成 → 进度为书级绝对完成数（baseline+1），而非恒定 20%。"""
+    store = _store_5ch_3done(store)
+    pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
+                               chapter_writer=_MockWriterSimple(store))
+    handle = core._RunHandle()
+    gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 4},
+                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      [], [])
+    prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
+    assert prog["chapters_total"] == 5
+    assert prog["chapters_done"] == 4  # 运行前 3 章 + 本次 1 章
+    assert prog["current_chapter"] == 4

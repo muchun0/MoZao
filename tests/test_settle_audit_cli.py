@@ -30,7 +30,7 @@ def project(tmp_path, monkeypatch):
     store = ProjectStore(tmp_path / PID)
     store.save_config(NovelConfig(title="对账书", total_words=10000))
     settle_ledger.settle_version(store, "chapter", "1", 1, 2000, mode="user_llm",
-                                 hq=False, project_id=PID)  # 0 元条目，避免依赖钱包
+                                 project_id=PID)  # 0 元条目，避免依赖钱包
     monkeypatch.setattr(settle_audit, "get_projects_dir", lambda: tmp_path)
     return store
 

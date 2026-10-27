@@ -213,7 +213,7 @@ def should_stop_now(store, mode: str) -> bool:
 # ---------- 结算核心 ----------
 
 def settle_version(store, kind: str, key: str, v: int, words: int, *,
-                   mode: str, hq: bool, project_id: str,
+                   mode: str, project_id: str,
                    content_sha: str = "") -> dict:
     """按「产物版本」结算一次（幂等）。
 
@@ -224,7 +224,6 @@ def settle_version(store, kind: str, key: str, v: int, words: int, *,
         v: 版本号（幂等键组成部分）。
         words: 该版本 AI 实际生成字数（`<=0` 直接跳过，不写账本）。
         mode: `platform` 或 `user_llm`。
-        hq: 是否高质量模式（影响单价）。
         project_id: 项目 ID（用于取折扣与落项目累计金额）。
         content_sha: 内容摘要（审计用，可选）。
 
@@ -249,13 +248,13 @@ def settle_version(store, kind: str, key: str, v: int, words: int, *,
     due = 0.0
     if mode == _MODE_PLATFORM:
         discount = db.project_discount(project_id)
-        due = round_money(agent_price(price_for(words, high_quality=hq), discount))
+        due = round_money(agent_price(price_for(words), discount))  # 统一高质量单价
     return _book_and_charge(store, entry_key=ek, words=words, due=due, mode=mode,
                             project_id=project_id, content_sha=content_sha)
 
 
 def settle_product(store, kind: str, key: str, words: int, *,
-                   mode: str, hq: bool, project_id: str,
+                   mode: str, project_id: str,
                    content_sha: str = "") -> dict:
     """无版本库产物的结算通道（0.5 临时方案）。
 
@@ -277,7 +276,7 @@ def settle_product(store, kind: str, key: str, words: int, *,
         v = _entry_version(last_ek) + 1
     else:
         v = 1
-    return settle_version(store, kind, key, v, words, mode=mode, hq=hq,
+    return settle_version(store, kind, key, v, words, mode=mode,
                           project_id=project_id, content_sha=content_sha)
 
 
@@ -299,7 +298,7 @@ def snapshot_chapter_versions(store, no: int) -> set[int]:
 
 
 def settle_chapter_versions(store, no: int, before: set[int], *,
-                            mode: str, hq: bool, project_id: str) -> list[dict]:
+                            mode: str, project_id: str) -> list[dict]:
     """结算「写章前快照之后新增的版本」。
 
     只结算新增版本，因此：`save_chapter` 幂等返回 None（内容未变）不扣费；
@@ -319,7 +318,7 @@ def settle_chapter_versions(store, no: int, before: set[int], *,
             logger.warning("章节版本无正文，跳过结算: project=%s no=%d v=%d", project_id, no, v)
             continue
         results.append({**settle_version(store, "chapter", str(no), v, words, mode=mode,
-                                         hq=hq, project_id=project_id,
+                                         project_id=project_id,
                                          content_sha=content_digest(content)),
                         "words": words})
     return results

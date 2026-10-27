@@ -67,16 +67,12 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "foreshadow_original_text", True, "伏笔原文片段存档（超长篇攻坚 S1.1）：埋设章落盘时确定性抽 1-3 句关键句存 original_excerpt（≤150 token/条），due_soon/overdue 章随收束提醒注入原文块；False=不抽不注入（向后兼容）"),
     FeatureFlag("memory", "chapter_commit", True, "章节原子提交+投影一致性（REQ-借鉴webnovel A/B）：每章收尾把章后入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕、同章幂等，并写 projection_log 供一致性体检；False=回退原分散调用（行为不变）"),
     # ---- writing：正文生成质量 ----
-    FeatureFlag("writing", "de_ai", True, "正文生成时注入去AI味写作约束"),
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
     FeatureFlag("writing", "fixed_style_anchor", False, "固定风格锚（超长篇攻坚 S2.3）：开头1-2章原文+个人旧稿作风格原点、永不替换，与滚动锚双轨；默认False（双锚体系默认关防放大AI特征）；True=开启"),
     FeatureFlag("writing", "style_drift_check", True, "L1 确定性漂移检测（超长篇攻坚 S2.4）：每章量化句长波动系数/口头禅/词汇多样性 TTR/比喻密度，输出漂移分供与前期章基线对比，治几十万字后文风漂移；False=关闭"),
     FeatureFlag("writing", "style_drift_threshold", 60, "文风漂移 L1 检测阈值（超长篇攻坚 S2.4）：漂移分低于此值报'文风漂移-L1'小改提示并轻扣 5 分；0=关闭单章提示（检测仍跑）"),
-    FeatureFlag("writing", "anti_similarity", True, "防同质化：常驻System提示词，拒绝套路/有代价/只展示不叙述"),
-    FeatureFlag("writing", "character_depth", True, "人物立体化：角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度"),
     FeatureFlag("writing", "fanqie_style", True, "番茄节奏：黄金三章 + 爽点闭环 + 断章 + 移动端排版"),
-    FeatureFlag("writing", "high_quality_mode", False, "高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字"),
     FeatureFlag("writing", "pacing_density", "medium", "爽点密度：low(慢热)/medium(适中)/high(密集)"),
     FeatureFlag("writing", "plot_speed", "medium", "剧情推进速度：slow(细腻)/medium(适中)/fast(快节奏)"),
     FeatureFlag("writing", "action_plan_first", False, "正文前独立生成人物行动表（REQ-token优化 P0-2：默认并入拆场景输出，不再独立调用；True=恢复独立调用）"),
@@ -89,7 +85,6 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
     FeatureFlag("writing", "auto_rewrite_rounds", 0, "章节质检未通过时自动整章重写的最大轮数（0=不自动重写：一次操作只产1个版本、只扣1份钱；重写已收费，需要自动多稿时调高）"),
     # ---- review：审校质检 ----
-    FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
     FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
     FeatureFlag("review", "final_review", False, "全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）"),
@@ -311,16 +306,16 @@ class NovelConfig:
     characters: list[str] = field(default_factory=list)  # 配角/反派预设（强约束，可留空让 AI 补）
     plot_direction: str = ""        # 剧情走向/关键情节/必须出现的桥段（参考方向，AI 可细化）
     forbidden: list[str] = field(default_factory=list)   # 避雷/不想出现的元素（强约束）
-    # ---- 质量增强开关（默认值见 FEATURE_FLAGS 注册表；新增开关先注册）----
-    editor_review: bool = feature_default("editor_review")       # 大纲生成后执行编辑视角质检，不通过则自动修正一次
-    de_ai: bool = feature_default("de_ai")                       # 正文生成时注入去AI味写作约束
+    # ---- 质量增强开关（编辑质检/去AI味/防同质化/人物立体化已固化全开，无后台开关；其余默认值见 FEATURE_FLAGS）----
+    editor_review: bool = True                                    # 大纲生成后执行编辑视角质检，不通过则自动修正一次（固化开启）
+    de_ai: bool = True                                            # 正文生成时注入去AI味写作约束（固化开启）
     style_reanchor_every: int = feature_default("style_reanchor_every")    # 周期轻量再锚定（S2.2）：每 N 章注入滚动风格锚；0=关
     style_anchor_rolling: bool = feature_default("style_anchor_rolling")    # 滚动风格锚（S2.2）：用 book_memory goods 高分片段作滚动风格源
     fixed_style_anchor: bool = feature_default("fixed_style_anchor")        # 固定风格锚（S2.3）：开头1-2章原文+个人旧稿作风格原点，默认关
     style_drift_check: bool = feature_default("style_drift_check")            # L1 漂移检测（S2.4）：每章量化句长波动/TTR/口头禅/比喻密度
     style_drift_threshold: int = feature_default("style_drift_threshold")      # L1 漂移检测阈值（S2.4）：漂移分低于此值报小改提示
-    anti_similarity: bool = feature_default("anti_similarity")   # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述
-    character_depth: bool = feature_default("character_depth")   # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度
+    anti_similarity: bool = True                                  # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述（固化开启）
+    character_depth: bool = True                                  # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度（固化开启）
     fanqie_style: bool = feature_default("fanqie_style")         # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系
     confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
     # ---- memory：记忆与长文一致性（P0-1/P0-2，默认值见 FEATURE_FLAGS）----
@@ -415,7 +410,7 @@ class NovelConfig:
     scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
     chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
-    high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
+    high_quality_mode: bool = True                                # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字（固化开启）
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     persona_override: str = ""        # 当前 agent 的完整人设（运行时内存态，由 webapp 从 agent_prompts 注入到 role_prompt；不落盘）
     json_schema_output: bool = feature_default("json_schema_output")  # JSON 输出约束（S4.3）：chat_json 传 response_format json_object，provider 支持时

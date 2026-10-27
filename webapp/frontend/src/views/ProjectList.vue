@@ -178,9 +178,8 @@ const formatSample = [
 const form = ref({
   title: '', genre: '', total_words: 25000, chapter_words: 2500, premise: '',
   background: '', hero: '', characters: [], plot_direction: '', forbidden: [],
-  editor_review: true, de_ai: true, anti_similarity: true, character_depth: true,
   memory_window: 5,
-  mode: 'auto', high_quality_mode: true,
+  mode: 'auto',
   existing_words: 0, user_content: '', expand_input: '', with_research: false,
 })
 const fileInput = ref(null)

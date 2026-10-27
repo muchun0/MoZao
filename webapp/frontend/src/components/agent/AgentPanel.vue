@@ -33,7 +33,7 @@
         <div class="billing-detail">
           {{ billingMode === 'user_llm'
             ? '使用您自己的模型额度，产物仍按版本记账'
-            : '按 AI 实际生成字数结算：普通 2 元/万字 · 高质量 3 元/万字；候选/重写版本同样计费' }}
+            : '按 AI 实际生成字数结算：统一 3 元/万字；候选/重写版本同样计费' }}
         </div>
         <template v-if="billingMode === 'platform'">
           <div class="billing-balance" :class="{ danger: balance <= 0 }">

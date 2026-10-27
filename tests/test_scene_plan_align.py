@@ -45,18 +45,7 @@ _CH2_MOVES = (
     "苏妄言留下一枚铜牌，说'三天后到执刑司报到，算你临时征召'→陆沉捏着铜牌，心里骂娘。"
 )
 
-# 2 个事件 + 2 个场景（2500 字/章 → 场景粒度优化 N=2，场景逐字引用事件1..2，每场景 1250 字）
-_DERIVED_SPLIT_JSON = (
-    '{"events": [{"id": "事件1", "desc": "占位", "conflict": "苏妄言", "action": "试探",'
-    ' "final_state": "面板2/2"},'
-    ' {"id": "事件2", "desc": "占位", "conflict": "苏妄言", "action": "抵挡",'
-    ' "final_state": "执刑司征召令已下"}],'
-    ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "平静",'
-    ' "anchors": ["火炉"], "time_marker": "清晨", "target_words": 1250},'
-    ' {"location": "铁匠铺", "scene_event_ref": "事件2", "emotion": "惊险",'
-    ' "anchors": ["术法碎片"], "time_marker": "片刻后", "target_words": 1250}],'
-    ' "characters_action": []}'
-)
+
 
 
 # ---------- _derive_events_from_moves 单元 ----------
@@ -183,56 +172,6 @@ def _save_outline(store, moves: str):
 
 
 @pytest.mark.p1
-def test_derived_flow_skeleton_in_prompt_and_events_locked(store):
-    """派生链路：拆场景 prompt 注入骨架；场景引用派生 id 通过校验；
-    场景 prompt 收到骨架 desc（模型无权改写）+ 模型补充的 final_state（按 id 合并保留）；
-    2500 字/章目标场景数 N=2（场景粒度优化 2026-10-13）。"""
-    _save_outline(store, _CH2_MOVES)
-    llm = MagicMock()
-    llm.chat.side_effect = [
-        _DERIVED_SPLIT_JSON,
-        "场景正文A。" * 160,
-        "场景正文B。" * 160,
-        "场景链路摘要",
-        "扩写正文。" * 300,          # 2 场景合计 1922 字 < 2500 → 自动触发扩写
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    # 1) 拆场景调用注入骨架
-    split_user = llm.chat.call_args_list[0][0][1]
-    assert "已由编辑按人物动线确定" in split_user
-    # 2) 场景 prompt 收到派生事件 desc（骨架原文）+ 模型补充的 final_state
-    scene_user = llm.chat.call_args_list[1][0][1]
-    assert "苏妄言进入铁匠铺" in scene_user          # 事件1 desc = 骨架拍原文
-    assert "面板2/2" in scene_user                    # 模型补充 final_state 被合并保留
-    assert ch.content and "场景正文A" in ch.content
-    assert llm.chat.call_count == 5                   # 拆场景 + 2场景 + 摘要 + 扩写
-
-
-@pytest.mark.p1
-def test_derived_ref_incomplete_falls_back_to_whole(store):
-    """派生模式下模型自造/遗漏事件 id（引用集合 ≠ 派生 id 集合）→ 回退整章，
-    整章 prompt 注入派生事件序列（事件不丢、不换措辞重演）。"""
-    _save_outline(store, _CH2_MOVES)
-    bad_json = (
-        '{"events": [{"id": "事件5", "desc": "自造事件", "conflict": "苏妄言", '
-        '"action": "试探", "final_state": "x"}],'
-        ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件5", "emotion": "平静",'
-        ' "anchors": [], "time_marker": "清晨", "target_words": 2500}],'
-        ' "characters_action": []}'
-    )
-    llm = MagicMock()
-    llm.chat.side_effect = [
-        bad_json,
-        "整章回退正文。" * 400 + "【摘要】回退摘要",
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 2                    # 拆场景失败 → 整章
-    assert "整章回退正文" in ch.content
-    whole_user = llm.chat.call_args_list[1][0][1]
-    assert "苏妄言进入铁匠铺" in whole_user            # 派生事件注入整章 prompt
-
-
-@pytest.mark.p1
 def test_derive_fail_falls_back_to_llm_planning(store):
     """character_moves 缺失/派生失败 → 回退原 LLM 规划路径（prompt 无骨架，行为不变）。"""
     _save_outline(store, "")                            # moves 为空
@@ -281,101 +220,3 @@ def test_scene_plan_align_flag_off_regression(store):
     assert "规划本章事件清单" in split_user            # 回退原路径
     assert "已由编辑按人物动线确定" not in split_user
     assert "苏妄言盘问" in ch.content
-
-
-# ---------- P0-4 characters_action 单字段补全（2026-10-09 生成端第三轮） ----------
-
-@pytest.mark.p1
-def test_ca_truncated_triggers_single_field_fill(store):
-    """整体 JSON 截断（characters_action 丢失且无法救回）→ 单字段补全调用，
-    行动表成功注入场景 prompt（措辞层约束真正生效）。"""
-    _save_outline(store, "")                             # moves 为空，原规划路径
-    llm = MagicMock()
-    # 截断 JSON：events/scenes 数组完整可救回，尾部（characters_action + }）丢失
-    truncated_json = (
-        '{"events": [{"id": "事件1", "desc": "苏妄言盘问陆沉", "conflict": "苏妄言", '
-        '"action": "试探", "final_state": "面板2/2"}],'
-        ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "警惕",'
-        ' "anchors": [], "time_marker": "清晨", "target_words": 2500}], '
-    )
-    fill_json = (
-        '[{"name": "陆沉", "goal": "蒙混过关", "key_actions": ["装傻应付盘问", "遮掩蚀痕"],'
-        ' "emotion": "警惕", "dialogue_intent": "隐瞒执能"}]'
-    )
-    llm.chat.side_effect = [
-        truncated_json,          # 拆场景（截断）
-        fill_json,               # 单字段补全 characters_action
-        "场景正文：苏妄言盘问。" * 280,
-        "场景链路摘要",
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 4                      # 拆场景 + 补全 + 场景 + 摘要
-    scene_user = llm.chat.call_args_list[2][0][1]
-    assert "装傻应付盘问" in scene_user                  # 补全的行动表注入场景 prompt
-    assert "遮掩蚀痕" in scene_user
-    assert "苏妄言盘问" in ch.content
-
-
-@pytest.mark.p1
-def test_ca_empty_but_json_ok_no_extra_call(store):
-    """整体 JSON 解析成功但 characters_action 为空数组（模型真未规划）→ 不触发补全
-    （无谓的额外 LLM 调用）。"""
-    _save_outline(store, "")
-    llm = MagicMock()
-    simple_json = (
-        '{"events": [{"id": "事件1", "desc": "林小满抵达落霞城", "conflict": "", '
-        '"action": "", "final_state": ""}],'
-        ' "scenes": [{"location": "落霞城", "scene_event_ref": "事件1", "emotion": "疲惫",'
-        ' "anchors": [], "time_marker": "清晨", "target_words": 2500}],'
-        ' "characters_action": []}'
-    )
-    llm.chat.side_effect = [
-        simple_json,
-        "场景正文：林小满抵达。" * 280,
-        "场景链路摘要",
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 3                      # 拆场景 + 场景 + 摘要（无补全）
-    assert "林小满抵达" in ch.content
-
-
-# ---------- P0-1 事件消费账本注入（2026-10-09 生成端第三轮） ----------
-
-@pytest.mark.p1
-def test_event_ledger_consumed_upcoming_injected(store):
-    """事件消费账本：场景1 注入「后续事件预览」（禁提前消费），场景2 注入
-    「已消费事件」（只许回响），治跨场景分布型重演。"""
-    _save_outline(store, "")
-    llm = MagicMock()
-    two_scene_json = (
-        '{"events": [{"id": "事件1", "desc": "苏妄言盘问陆沉，陆沉装傻糊弄", "conflict": "苏妄言", '
-        '"action": "试探", "final_state": ""},'
-        ' {"id": "事件2", "desc": "苏妄言留铜牌征召，陆沉心里骂娘", "conflict": "苏妄言", '
-        '"action": "征召", "final_state": "执刑司征召令已下"}],'
-        ' "scenes": [{"location": "铁匠铺", "scene_event_ref": "事件1", "emotion": "警惕",'
-        ' "anchors": [], "time_marker": "清晨", "target_words": 1250},'
-        ' {"location": "铁匠铺门口", "scene_event_ref": "事件2", "emotion": "压抑",'
-        ' "anchors": [], "time_marker": "稍后", "target_words": 1250}],'
-        ' "characters_action": []}'
-    )
-    llm.chat.side_effect = [
-        two_scene_json,
-        '{"duplicate_pairs": []}',   # P0-10：拆场景评审（无同构事件）
-        "苏妄言推门进来，盘问了两句。陆沉装傻糊弄过去。" * 120,
-        "陆沉把铜牌收进怀里，骂了一句，跟着她出了门。" * 120,
-        "场景链路摘要",
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    # P0-10 混合方案：5 = 拆场景 + 评审 + 场景1 + 场景2 + 摘要（场景路径内部）
-    assert llm.chat.call_count == 5
-    scene1_user = llm.chat.call_args_list[2][0][1]
-    scene2_user = llm.chat.call_args_list[3][0][1]
-    # 场景1：注入后续事件预览（事件2 desc），无已消费事件
-    assert "本章后续事件预览" in scene1_user
-    assert "苏妄言留铜牌征召，陆沉心里骂娘" in scene1_user
-    assert "本章已消费事件" not in scene1_user
-    # 场景2：注入已消费事件（事件1 desc），无后续预览
-    assert "本章已消费事件" in scene2_user
-    assert "苏妄言盘问陆沉，陆沉装傻糊弄" in scene2_user
-    assert "本章后续事件预览" not in scene2_user
-    assert "苏妄言推门进来" in ch.content

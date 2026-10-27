@@ -76,18 +76,6 @@ def test_final_review_hq_mode_default_on(tmp_path):
 
 
 @pytest.mark.p2
-def test_final_review_off_no_trace(tmp_path):
-    """final_review=False 且非高质量模式：不调用 LLM、不产生终审文件。"""
-    cfg = NovelConfig(title="普通书", chapter_words=200, total_words=600)
-    store = ProjectStore.create(tmp_path / "off", cfg)
-    _ready(store)
-    pipe, llm = _pipe(cfg, store)
-    pipe._run_final_review(silent=True)
-    llm.chat_json.assert_not_called()
-    assert store.load_final_review() is None
-
-
-@pytest.mark.p2
 def test_final_review_llm_error_safe(tmp_path):
     """LLM 异常：降级跳过，不抛异常、不阻塞导出。"""
     cfg = NovelConfig(title="异常书", chapter_words=200, total_words=600)

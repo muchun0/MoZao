@@ -100,7 +100,7 @@
 | `routers/` | 按域拆分路由（见 2.4） |
 | `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
-| `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
+| `pricing.py` | 定价档位（统一 3 元/万字，普通模式下线） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
 | `mailer.py` | 邮件通知（验证码/退款通知站长） |
 | `verify_code.py` | 邮箱验证码（6 位、10 分钟、60s 冷却、错 5 次作废） |

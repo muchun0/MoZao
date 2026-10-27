@@ -83,10 +83,11 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         characters=list(req.characters),
         plot_direction=req.plot_direction,
         forbidden=list(req.forbidden),
-        editor_review=req.editor_review,
-        de_ai=req.de_ai,
-        anti_similarity=req.anti_similarity,
-        character_depth=req.character_depth,
+        # 质量增强与高质量模式已固化全开（普通模式下线，无建书开关）
+        editor_review=True,
+        de_ai=True,
+        anti_similarity=True,
+        character_depth=True,
         confirm=req.confirm,
         memory_window=req.memory_window,
         mode=req.mode,
@@ -104,7 +105,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
         pacing_density=req.pacing_density,
         plot_speed=req.plot_speed,
         custom_prompt=req.custom_prompt,
-        high_quality_mode=req.high_quality_mode,
+        high_quality_mode=True,
         with_research=req.with_research,
     )
 
@@ -160,7 +161,7 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     # 按 AI 实际生成字数预估费用：创建时【不扣费】，仅做余额校验（防生成后付不起），
     # 生成完成后按实际 AI 字数结算扣费（见 _settle_price）
     ai_words = max(1, cfg.total_words - user_words)
-    base_price = price_for(ai_words, high_quality=bool(cfg.__dict__.get('high_quality_mode', False)))
+    base_price = price_for(ai_words)  # 统一高质量单价，无普通模式
     discount = float(user.get("agent_discount", 1.0)) if user.get("is_agent") else 1.0
     price = agent_price(base_price, discount)  # 预估费用（展示用）
     if user["balance"] < price:

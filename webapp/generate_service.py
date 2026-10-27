@@ -257,7 +257,6 @@ def _estimated_price(agent: str, params: dict, store: ProjectStore, mode: str) -
     if mode != "platform":
         return 0.0
     cfg = store.load_config()
-    hq = bool(getattr(cfg, "high_quality_mode", False))
     if agent == "writer.chapter":
         outline = store.load_outline()
         total = len(outline.chapters) if outline else 0
@@ -273,7 +272,7 @@ def _estimated_price(agent: str, params: dict, store: ProjectStore, mode: str) -
     else:
         words = _EST_WORDS.get(agent, 2000)
     discount = db.project_discount(store.dir.name)
-    return round_money(agent_price(price_for(words, high_quality=hq), discount))
+    return round_money(agent_price(price_for(words), discount))  # 统一高质量单价
 
 
 def estimate_agent_price(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
@@ -539,7 +538,6 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         cfg = store.load_config()
         uid = db.project_owner(project_id)
         mode = settle_ledger.billing_mode_of(_has_user_llm(uid))
-        hq = bool(getattr(cfg, "high_quality_mode", False))
         # 统一预运行注入：风格锚 + 用户记忆（旧路径 core._run_outline_only/_run_generation 原有逻辑）
         _apply_pre_run_injections(store, cfg, uid)
         # 人设 + user_prompt 注入（内存态，不落盘；sanitize 属阶段 4）
@@ -555,7 +553,7 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
                 persona_parts.append(extra_prompt)
         pipeline.cfg.persona_override = "\n\n".join(persona_parts)
         pipeline.cfg.skill_prompt_append = _build_skill_append(skill_ids)
-        billing = {"mode": mode, "hq": hq, "project_id": project_id}
+        billing = {"mode": mode, "project_id": project_id}
 
         if agent == "researcher":
             _exec_researcher(store, pipeline, handle)
@@ -695,7 +693,7 @@ def _exec_outline(store: ProjectStore, pipeline, handle, billing: dict,
         pipeline.run_editor_review(silent=True)
         # 一次 run 一次 commit（§3.10）；versioned 关闭时回退内容幂等结算
         r = core._commit_and_settle(store, "outline", store.load_outline(),
-                                    mode=billing["mode"], hq=billing["hq"],
+                                    mode=billing["mode"],
                                     project_id=billing["project_id"])
         _record_product_settle(store, r, "outline", billing, outputs, entries)
     except Exception:
@@ -726,7 +724,7 @@ def _exec_world(store: ProjectStore, pipeline, handle, billing: dict,
         pipeline.run_world(silent=True)
         _sink_research_safe(store)
         r = core._commit_and_settle(store, "world", store.load_world(),
-                                    mode=billing["mode"], hq=billing["hq"],
+                                    mode=billing["mode"],
                                     project_id=billing["project_id"])
         _record_product_settle(store, r, "world", billing, outputs, entries)
     except Exception:
@@ -796,13 +794,13 @@ def _exec_volume(store: ProjectStore, pipeline, params: dict, billing: dict,
         v = store.save_outline(outline, commit=True, source="ai")
         if v is not None:
             r = settle_ledger.settle_version(store, "outline", "all", v, vol_words,
-                                             mode=billing["mode"], hq=billing["hq"],
+                                             mode=billing["mode"],
                                              project_id=project_id)
             _record_settle(r, vol_words, outputs, entries, "outline", "all", v)
     else:
         store.save_outline(outline)
         r = settle_ledger.settle_product(store, "volume", str(vol_no), vol_words,
-                                         mode=billing["mode"], hq=billing["hq"],
+                                         mode=billing["mode"],
                                          project_id=project_id)
         entries.append({"entry": r.get("entry", ""), "charged": r.get("charged", 0.0),
                         "words": vol_words})
@@ -898,7 +896,6 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
                                       is_final=(no == total))
         results = settle_ledger.settle_chapter_versions(store, no, prev,
                                                         mode=billing["mode"],
-                                                        hq=billing["hq"],
                                                         project_id=project_id)
         _record_chapter_feedback(store, no, results, outputs, entries)
         written.add(no)

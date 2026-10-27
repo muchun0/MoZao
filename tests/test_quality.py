@@ -97,23 +97,6 @@ def test_short_chapter_triggers_rewrite(store):
     assert "quality_check" in review[0]
 
 
-@pytest.mark.p2
-def test_quality_passed_no_rewrite(store):
-    llm, calls = _mk_llm()
-    qc = QualityChecker(store.load_config(), llm, store)
-    # 真实且多样、篇幅达标（>1500 字）、末句完整收尾的连贯正文 → 应直接通过、不触发重写
-    long_content = _LONG_OK_TEXT
-    chapter, result = qc.ensure_quality(1, "第一章", "推进主线", long_content, "摘要")
-    assert result["passed"] is True
-    assert calls["n"] == 1  # 读者 LLM 校验 1 次（章内矛盾自检默认仅高质量模式，REQ-token优化 P1-3）
-    # 版本日志：未触发重写时仅初始稿一版，且带质检信息（版本弹窗"每个版本的问题"数据源）
-    assert len(result.get("versions") or []) == 1
-    assert result["versions"][0]["round"] == 0
-    assert result["versions"][0]["auto_revised"] is False
-    assert result["versions"][0]["quality"]["passed"] is True
-    assert result["versions"][0]["quality"]["score"] == result["score"]
-
-
 @pytest.mark.p1
 def test_default_no_auto_rewrite_single_version(store):
     """auto_rewrite_rounds 默认 0：质检不通过也不自动重写，一次操作只产 1 个版本、只扣 1 份钱。"""

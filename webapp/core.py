@@ -60,7 +60,7 @@ from .config_overrides import apply_global_overrides
 from .user_memory import UserMemoryService
 from .logger import get_logger
 from .outline_parser import extract_text, parse_outline_text
-from .pricing import FREE_REGISTER_BONUS, PRICE_PER_10K, PRICE_PER_10K_HQ, price_for, tiers
+from .pricing import FREE_REGISTER_BONUS, price_for, tiers
 from .referral import (AGENT_DISCOUNT, COMMISSION_BASE, COMMISSION_RATE,
                        REFERRAL_BONUS, agent_price, round_money)
 
@@ -166,10 +166,6 @@ class ProjectCreateReq(BaseModel):
     characters: list[str] = []
     plot_direction: str = ""
     forbidden: list[str] = []
-    editor_review: bool = True
-    de_ai: bool = True
-    anti_similarity: bool = True
-    character_depth: bool = True    # 人物立体化：角色卡一致性/选择代价/生活体感/出场标签与对话辨识度
     confirm: bool = False
     memory_window: int = 5
     mode: str = "auto"              # auto=现有工作流；expand=AI扩写（提供大纲/简要内容）
@@ -184,7 +180,6 @@ class ProjectCreateReq(BaseModel):
     pacing_density: str = "medium"  # 爽点密度
     plot_speed: str = "medium"      # 剧情速度
     custom_prompt: str = ""         # 用户自定义提示词
-    high_quality_mode: bool = False  # 高质量模式：场景级生成+动态模块+参数分层
     with_research: bool = False     # expand 模式可选：生成前先做一次题材调研（产出 research.json + 沉淀拆书库）；auto 模式始终调研，此字段忽略
 class OutlineImportReq(BaseModel):
     """项目详情页「重新导入大纲」：以用户传入为准，覆盖前自动备份。"""
@@ -648,6 +643,7 @@ def _compute_settle(store: ProjectStore) -> dict:
 
     返回 ai_words / billable_words / target_ai_words / price（按 billable 封顶后整本价）
     / hq / discount / use_user_llm。增量结算与整批结算共用，避免两套口径漂移。
+    计费已统一高质量单价（普通模式下线），price 不再区分模式；`hq` 固定 True 仅供兼容返回。
     """
     user_words = store.user_words()
     chapters = store.list_chapters()
@@ -656,15 +652,14 @@ def _compute_settle(store: ProjectStore) -> dict:
     target_total = store.load_config().total_words or 0
     target_ai_words = max(0, target_total - user_words)
     billable_words = min(ai_words, target_ai_words) if target_ai_words > 0 else ai_words
-    hq = bool(store.load_config().__dict__.get("high_quality_mode", False))
     discount = db.project_discount(store.dir.name)
-    price = round_money(agent_price(price_for(billable_words, high_quality=hq), discount))
+    price = round_money(agent_price(price_for(billable_words), discount))
     return {
         "ai_words": ai_words,
         "billable_words": billable_words,
         "target_ai_words": target_ai_words,
         "price": price,
-        "hq": hq,
+        "hq": True,
         "discount": discount,
         "use_user_llm": _project_use_user_llm(store),
     }
@@ -703,13 +698,13 @@ def _settle_incremental(store: ProjectStore) -> tuple[bool, str]:
 
 
 def _settle_product(store: ProjectStore, kind: str, key: str, payload, *,
-                    mode: str, hq: bool, project_id: str) -> Optional[dict]:
+                    mode: str, project_id: str) -> Optional[dict]:
     """按产物结算一次（同内容不重复收费）。失败只留痕，不阻断生成主链路。"""
     try:
         data = payload if isinstance(payload, dict) else payload.to_dict()
         words = count_words(kind, data)
         digest = settle_ledger.content_digest(json.dumps(data, ensure_ascii=False, sort_keys=True))
-        return settle_ledger.settle_product(store, kind, key, words, mode=mode, hq=hq,
+        return settle_ledger.settle_product(store, kind, key, words, mode=mode,
                                             project_id=project_id, content_sha=digest)
     except Exception:
         logger.exception("产物结算失败（不阻断生成）: project=%s kind=%s key=%s",
@@ -718,7 +713,7 @@ def _settle_product(store: ProjectStore, kind: str, key: str, payload, *,
 
 
 def _commit_and_settle(store: ProjectStore, kind: str, payload, *,
-                       mode: str, hq: bool, project_id: str,
+                       mode: str, project_id: str,
                        source: str = "ai") -> Optional[dict]:
     """run 收尾统一提交产物版本并按真实版本号结算（TECH-Agent用户化与版本化 §3.10）。
 
@@ -730,7 +725,7 @@ def _commit_and_settle(store: ProjectStore, kind: str, payload, *,
     try:
         data = payload if isinstance(payload, dict) else payload.to_dict()
         if not store.versioned_enabled():
-            return _settle_product(store, kind, "all", data, mode=mode, hq=hq,
+            return _settle_product(store, kind, "all", data, mode=mode,
                                    project_id=project_id)
         from novel_gen.store.versioned import VersionedProduct
         v = VersionedProduct(store, kind).commit_head("all", source=source)
@@ -739,7 +734,7 @@ def _commit_and_settle(store: ProjectStore, kind: str, payload, *,
         words = count_words(kind, data)
         digest = settle_ledger.content_digest(json.dumps(data, ensure_ascii=False, sort_keys=True))
         return settle_ledger.settle_version(store, kind, "all", v, words,
-                                            mode=mode, hq=hq, project_id=project_id,
+                                            mode=mode, project_id=project_id,
                                             content_sha=digest)
     except Exception:
         logger.exception("产物提交结算失败（不阻断生成）: project=%s kind=%s",
@@ -918,7 +913,6 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
         pipeline = _open_pipeline(store, trace_id=trace_id)
         project_id = store.dir.name
         mode = _settle_billing_mode(store)
-        hq = bool(getattr(cfg, "high_quality_mode", False))
         # P0-3 拆书库回流：调研前注入同题材爆款拆书素材（失败降级）
         _inject_teardown_material(store, cfg)
         # REQ-双锚风格锚定：拆书库题材文风锚（写手阶段消费，失败降级）
@@ -938,11 +932,11 @@ def _run_outline_only(store: ProjectStore, handle: _RunHandle) -> None:
             return
         # v2 计费：大纲在编辑评审定稿后统一提交版本并结算（一次 run 一次提交，§3.10）
         _commit_and_settle(store, "outline", pipeline.store.load_outline(),
-                           mode=mode, hq=hq, project_id=project_id)
+                           mode=mode, project_id=project_id)
         pipeline.run_world()
         # v2 计费：世界观同样按产物版本提交并结算（与大纲是两个不同产物）
         _commit_and_settle(store, "world", pipeline.store.load_world(),
-                           mode=mode, hq=hq, project_id=project_id)
+                           mode=mode, project_id=project_id)
         if handle.stop_event.is_set():
             return
         # 标记阶段完成
@@ -1002,7 +996,6 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
         pipeline = _open_pipeline(store, trace_id=trace_id)
         project_id = store.dir.name
         mode = _settle_billing_mode(store)
-        hq = bool(getattr(cfg, "high_quality_mode", False))
         # REQ-双锚风格锚定：所有生成入口统一注入题材锚（start_from>0 从第 N 章重生成、
         # 复用大纲继续生成也生效；重复注入幂等，失败静默降级）
         _inject_teardown_style_anchor(store, cfg)
@@ -1035,14 +1028,14 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
                     return
                 # v2 计费：大纲在编辑评审定稿后统一提交版本并结算（一次 run 一次提交，§3.10）
                 _commit_and_settle(store, "outline", pipeline.store.load_outline(),
-                                   mode=mode, hq=hq, project_id=project_id)
+                                   mode=mode, project_id=project_id)
             # 世界观：有则复用，没有则生成
             existing_world = store.load_world()
             if not (existing_world and (existing_world.world_view or existing_world.characters)):
                 pipeline.run_world()
                 # v2 计费：新建世界观是一个独立产物版本，提交并结算一次
                 _commit_and_settle(store, "world", pipeline.store.load_world(),
-                                   mode=mode, hq=hq, project_id=project_id)
+                                   mode=mode, project_id=project_id)
                 if handle.stop_event.is_set():
                     logger.info("生成停止: project=%s 阶段=world", store.dir.name)
                     return
@@ -1072,7 +1065,7 @@ def _run_generation(store: ProjectStore, handle: _RunHandle, start_from: int = 0
             prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
             pipeline.write_chapter(no, silent=False)
             settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
-                                                  hq=hq, project_id=project_id)
+                                                  project_id=project_id)
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why
@@ -1146,7 +1139,6 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
         cfg = store.load_config()
         pipeline = _open_pipeline(store, trace_id=trace_id)
         mode = _settle_billing_mode(store)
-        hq = bool(getattr(cfg, "high_quality_mode", False))
         outline = store.load_outline()
         research = store.load_research()
         # 用户级记忆库：跨书偏好/纪律/文风锚注入项目快照（批量入口，失败降级）
@@ -1163,7 +1155,7 @@ def _run_batch(store: ProjectStore, handle: _RunHandle, start: int, end: int) ->
             pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
                                           is_final=(no == len(outline.chapters)))
             settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
-                                                  hq=hq, project_id=project_id)
+                                                  project_id=project_id)
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why

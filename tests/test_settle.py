@@ -62,7 +62,7 @@ def test_compute_settle_basic(store):
     assert calc["ai_words"] == 2000
     assert calc["target_ai_words"] == 10000
     assert calc["billable_words"] == 2000
-    assert calc["price"] == pytest.approx(0.4, rel=0.02)  # 2000/10000 * 2 元/万字
+    assert calc["price"] == pytest.approx(0.6, rel=0.02)  # 2000/10000 * 3 元/万字（统一单价）
 
 
 def test_compute_settle_cap(store):
@@ -72,7 +72,7 @@ def test_compute_settle_cap(store):
     calc = server._compute_settle(store)
     assert calc["ai_words"] == 14000
     assert calc["billable_words"] == 10000
-    assert calc["price"] == pytest.approx(2.0, rel=0.02)
+    assert calc["price"] == pytest.approx(3.0, rel=0.02)  # 10000/10000 * 3 元
 
 
 def test_compute_settle_user_words(store, fake_db):
@@ -116,13 +116,13 @@ def test_incremental_zero_balance_keeps_byok_running(store, fake_db, monkeypatch
 def test_settle_price_legacy_charges_once(store, fake_db):
     """无任何账本的历史项目：兜底结算一次，再调用不重扣。"""
     server._settle_price(store)
-    assert fake_db["charge"] == [pytest.approx(-0.4, abs=0.01)]
+    assert fake_db["charge"] == [pytest.approx(-0.6, abs=0.01)]
     ledger = json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))
     assert ledger["mode"] == settle_ledger.LEDGER_MODE
-    assert ledger["entries"]["legacy:all:v1"]["charged"] == pytest.approx(0.4, abs=0.01)
+    assert ledger["entries"]["legacy:all:v1"]["charged"] == pytest.approx(0.6, abs=0.01)
     # 已进入 v2：再调用 no-op
     server._settle_price(store)
-    assert fake_db["charge"] == [pytest.approx(-0.4, abs=0.01)]
+    assert fake_db["charge"] == [pytest.approx(-0.6, abs=0.01)]
 
 
 def test_settle_price_byok_free(store, fake_db, monkeypatch):

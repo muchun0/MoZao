@@ -2,6 +2,7 @@
 """system路由（第三批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from ..pricing import PRICE_PER_10K  # noqa: F401  统一单价（core 不再透传）
 
 @app.get("/api/health")
 def health():
@@ -19,8 +20,7 @@ def pricing():
         "tiers": tiers(),
         "register_bonus": FREE_REGISTER_BONUS,
         "billing_mode": "by_words",   # 按字数计费
-        "price_per_10k": PRICE_PER_10K,
-        "price_per_10k_hq": PRICE_PER_10K_HQ,
+        "price_per_10k": PRICE_PER_10K,  # 统一高质量单价（普通模式下线）
     }
 
 

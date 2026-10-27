@@ -82,12 +82,12 @@ def test_settle_price_migrates_v1_without_charge(store, wallet):
 def test_settle_price_noop_when_v2_exists(store, wallet):
     """已有 v2 账本：`_settle_price` 直接返回，不产生扣费条目。"""
     settle_ledger.settle_version(store, "chapter", "1", 1, 2000, mode="platform",
-                                 hq=False, project_id="p")
+                                 project_id="p")
     before = set(json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))["entries"])
     server._settle_price(store)
     after = set(json.loads((store.dir / "settle.json").read_text(encoding="utf-8"))["entries"])
     assert before == after
-    assert wallet["charge"] == [pytest.approx(-0.4, abs=0.01)]
+    assert wallet["charge"] == [pytest.approx(-0.6, abs=0.01)]
 
 
 def test_corrupt_ledger_treated_as_settled(store, wallet):
@@ -104,6 +104,6 @@ def test_version_billing_ignores_target_cap(store, wallet):
     """版本级结算按实际生成字数计费，不再受 target_ai_words 封顶。"""
     words = 20000  # 目标只有 10000 字，旧口径会把计费字数封到 10000
     res = settle_ledger.settle_version(store, "chapter", "1", 1, words, mode="platform",
-                                       hq=False, project_id="p")
-    assert res["due"] == pytest.approx(4.0, abs=0.02)  # 20000/10000 * 2 元
-    assert res["charged"] == pytest.approx(4.0, abs=0.02)
+                                       project_id="p")
+    assert res["due"] == pytest.approx(6.0, abs=0.02)  # 20000/10000 * 3 元（统一单价）
+    assert res["charged"] == pytest.approx(6.0, abs=0.02)

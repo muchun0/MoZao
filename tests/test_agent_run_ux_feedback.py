@@ -225,7 +225,7 @@ def test_exec_chapters_progress_all_reaches_total(store, byok_db, cleanup_runs):
                                chapter_writer=_MockWriterSimple(store))
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "all"},
-                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      {"mode": "user_llm", "project_id": store.dir.name},
                       [], [])
     prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
     assert prog["phase"] == "chapter"
@@ -244,7 +244,7 @@ def test_exec_chapters_progress_single_absolute(store, byok_db, cleanup_runs):
                                chapter_writer=_MockWriterSimple(store))
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 4},
-                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      {"mode": "user_llm", "project_id": store.dir.name},
                       [], [])
     prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
     assert prog["chapters_total"] == 5
@@ -262,7 +262,7 @@ def test_exec_chapters_progress_regen_existing(store, byok_db, cleanup_runs):
                                chapter_writer=_MockWriterSimple(store))
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 2},
-                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      {"mode": "user_llm", "project_id": store.dir.name},
                       [], [])
     prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
     assert prog["chapters_total"] == 5
@@ -281,7 +281,7 @@ def test_exec_chapters_progress_regen_full_book(store, byok_db, cleanup_runs):
                                chapter_writer=_MockWriterSimple(store))
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 5},
-                      {"mode": "user_llm", "hq": False, "project_id": store.dir.name},
+                      {"mode": "user_llm", "project_id": store.dir.name},
                       [], [])
     prog = json.loads((store.dir / "task.json").read_text(encoding="utf-8"))["progress"]
     assert prog["chapters_total"] == 5

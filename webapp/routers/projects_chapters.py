@@ -6,18 +6,20 @@ from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
+from ..version_recommend import attach_chapter_recommendations
 from novel_gen.pipeline.templates import _style_reference
 import time
 
 
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")
 def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_require_user)):
-    """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记。"""
+    """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记 + 推荐徽章。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     if store.load_chapter(no) is None:
         raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
-    return {"no": no, "versions": store.list_versions(no)}
+    versions = attach_chapter_recommendations(store, no, store.list_versions(no))
+    return {"no": no, "versions": versions}
 
 
 @app.post("/api/projects/{project_id}/chapters/{no}/versions/{v}/select")
@@ -56,7 +58,8 @@ def delete_chapter_version(project_id: str, no: int, v: int,
     if not ok:
         raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在或为当前使用中版本，无法删除")
     logger.info("章节版本删除: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
-    return {"no": no, "deleted_version": v, "versions": store.list_versions(no)}
+    versions = attach_chapter_recommendations(store, no, store.list_versions(no))
+    return {"no": no, "deleted_version": v, "versions": versions}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")

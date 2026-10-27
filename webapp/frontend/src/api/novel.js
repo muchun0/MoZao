@@ -25,6 +25,9 @@ export const expandSelection = (pid, data) => request.post(`/projects/${pid}/exp
 export const getProductVersions = (pid, kind) => request.get(`/projects/${pid}/products/${kind}/versions`)
 export const selectProductVersion = (pid, kind, v) => request.post(`/projects/${pid}/products/${kind}/versions/${v}/select`)
 export const getRollbackImpact = (pid, kind, v) => request.get(`/projects/${pid}/products/${kind}/rollback-impact`, { params: { v } })
+// 两版只读对比（REQ-版本对比与推荐）：chapter 需 chapter_no
+export const getProductDiff = (pid, kind, v1, v2, chapterNo) =>
+  request.get(`/projects/${pid}/products/${kind}/versions/diff`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
 
 // Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
 export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)

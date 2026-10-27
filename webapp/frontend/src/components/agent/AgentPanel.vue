@@ -661,35 +661,35 @@ onBeforeUnmount(() => {
   font-size: 14px;
   line-height: 1.7;
 }
-.markdown-body :first-child { margin-top: 0; }
-.markdown-body :last-child { margin-bottom: 0; }
-.markdown-body h1 { font-size: 20px; margin: 18px 0 12px; }
-.markdown-body h2 {
-  font-size: 16px; margin: 18px 0 10px; padding-bottom: 6px;
-  border-bottom: 1px solid var(--card-line);
+.markdown-body :deep(:first-child) { margin-top: 0; }
+.markdown-body :deep(:last-child) { margin-bottom: 0; }
+/* 小弹窗里标题层级要克制：与正文字号差控制在 1-2px，去掉下划线避免视觉跳脱 */
+.markdown-body :deep(h1) { font-size: 16px; margin: 14px 0 8px; font-weight: 700; }
+.markdown-body :deep(h2) {
+  font-size: 15px; margin: 12px 0 6px; font-weight: 700;
 }
-.markdown-body h3 { font-size: 15px; margin: 14px 0 8px; }
-.markdown-body p { margin: 8px 0; }
-.markdown-body ul, .markdown-body ol { margin: 8px 0; padding-left: 22px; }
-.markdown-body li { margin: 4px 0; }
-.markdown-body blockquote {
-  margin: 10px 0; padding: 6px 12px;
+.markdown-body :deep(h3) { font-size: 14px; margin: 10px 0 6px; font-weight: 700; }
+.markdown-body :deep(p) { margin: 6px 0; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 6px 0; padding-left: 22px; }
+.markdown-body :deep(li) { margin: 3px 0; }
+.markdown-body :deep(blockquote) {
+  margin: 8px 0; padding: 6px 12px;
   border-left: 3px solid var(--gold);
   background: var(--gold-soft);
   color: var(--ink-soft);
 }
-.markdown-body code {
+.markdown-body :deep(code) {
   padding: 2px 6px; border-radius: 4px;
   background: var(--indigo-soft);
   font-family: ui-monospace, Consolas, monospace; font-size: 13px;
 }
-.markdown-body pre {
+.markdown-body :deep(pre) {
   padding: 10px 12px; border-radius: 6px; overflow-x: auto;
   background: var(--indigo-soft);
 }
-.markdown-body pre code { padding: 0; background: none; }
-.markdown-body a { color: var(--gold-deep); }
-.markdown-body strong { color: var(--ink); font-weight: 700; }
+.markdown-body :deep(pre code) { padding: 0; background: none; }
+.markdown-body :deep(a) { color: var(--gold-deep); }
+.markdown-body :deep(strong) { color: var(--ink); font-weight: 700; }
 
 @media (max-width: 860px) {
   .agent-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }

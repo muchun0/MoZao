@@ -135,8 +135,9 @@ class OutlineGenerator:
         self.role_prompt = role_prompt
 
     def _sys(self, system: str) -> str:
-        """把角色底色拼到阶段提示词之前；未配置时原样返回。"""
-        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
+        """把角色人设拼到阶段提示词之前：优先 persona_override，否则静态 role_prompt。"""
+        persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
+        return f"{persona}\n\n{system}" if persona else system
 
     def run(self, research: ResearchReport | None, silent: bool = False) -> Outline:
         target = self.cfg.num_chapters
@@ -280,7 +281,8 @@ class WorldGenerator:
         self.role_prompt = role_prompt
 
     def _sys(self, system: str) -> str:
-        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
+        persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
+        return f"{persona}\n\n{system}" if persona else system
 
     def run(self, outline: Outline, research: ResearchReport | None, silent: bool = False) -> World:
         system, user = world_prompt(self.cfg, outline, research.to_prompt_block() if research else "")
@@ -681,7 +683,8 @@ class ChapterWriter:
         return ""
 
     def _sys(self, system: str) -> str:
-        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
+        persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
+        return f"{persona}\n\n{system}" if persona else system
 
     def _volume_card_block(self, chapter_no: int, outline) -> str:
         """REQ-写作正向引导 5.5：分卷卡注入块（卷目标传导，软约束指引）。

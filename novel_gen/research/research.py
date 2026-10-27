@@ -29,7 +29,9 @@ class ResearchEngine:
         self.role_prompt = role_prompt
 
     def _sys(self, system: str) -> str:
-        return f"{self.role_prompt}\n\n{system}" if self.role_prompt else system
+        # 角色人设优先 persona_override（webapp 从 agent_prompts 注入），否则静态 role_prompt
+        persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
+        return f"{persona}\n\n{system}" if persona else system
 
     # ---------- 素材收集 ----------
     def _collect_material(self) -> list[SourceResult]:

@@ -87,6 +87,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "teardown_style_anchor", False, "拆书库题材文风锚（REQ-双锚风格锚定）：写手阶段注入同题材爆款文风与手法（弱约束，只借鉴语感严禁抄袭）；2026-10-14 朱雀归因实测为独立负面变量（无锚18.25% vs 有锚55.01% AI特征），决策默认关闭"),
     FeatureFlag("writing", "personal_style_anchor", False, "个人旧稿文风锚（REQ-双锚风格锚定 + 超长篇攻坚 S2.1）：有 user_edited 人工修订章节时抽取其风格注入（弱约束）；默认关闭（个人锚无条件注入会引入作者风格但可能放大模板化表达，需显式开启）"),
     FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
+    FeatureFlag("writing", "auto_rewrite_rounds", 0, "章节质检未通过时自动整章重写的最大轮数（0=不自动重写：一次操作只产1个版本、只扣1份钱；重写已收费，需要自动多稿时调高）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "editor_review", True, "大纲生成后执行编辑视角质检，不通过则自动修正一次"),
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
@@ -370,6 +371,7 @@ class NovelConfig:
     teardown_style_anchor: bool = feature_default("teardown_style_anchor")  # 拆书库题材文风锚：写手阶段注入同题材爆款文风与手法（REQ-双锚风格锚定）
     personal_style_anchor: bool = feature_default("personal_style_anchor")  # 个人旧稿文风锚：有 user_edited 章则抽取其风格注入（S2.1 默认关）
     payoff_quota: bool = feature_default("payoff_quota")                    # 爽点配额：按题材校验章级节奏，未达成注入写章提示（REQ-reader-ledger）
+    auto_rewrite_rounds: int = feature_default("auto_rewrite_rounds")       # 章节质检未通过自动整章重写最大轮数（0=不自动重写，一次一版）
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
@@ -415,6 +417,7 @@ class NovelConfig:
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
     high_quality_mode: bool = feature_default("high_quality_mode")  # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
+    persona_override: str = ""        # 当前 agent 的完整人设（运行时内存态，由 webapp 从 agent_prompts 注入到 role_prompt；不落盘）
     json_schema_output: bool = feature_default("json_schema_output")  # JSON 输出约束（S4.3）：chat_json 传 response_format json_object，provider 支持时
     prefix_cache_aligned: bool = feature_default("prefix_cache_aligned")  # 前缀缓存对齐（S4.1）：稳定前缀前置 + cache_hit 埋点
     # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期；后台可覆盖）----

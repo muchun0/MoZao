@@ -99,7 +99,9 @@ def test_ensure_quality_falls_back_to_best_when_rewrite_worse(store):
     坏稿不落盘（第四轮第 5 章：重写 1 后 4 个问题 > 初始 2 个问题，重写 2 无效 → 坏稿落盘的缺口）。"""
     llm = MagicMock()
     llm.chat.return_value = '{"issues": [], "追更欲": 4}'
-    qc = _qc(store, llm)
+    cfg = store.load_config()
+    cfg.auto_rewrite_rounds = 3  # 显式开启自动重写（默认 0=不重写，一次一版）
+    qc = QualityChecker(cfg, llm, store, trace=None, guard=None)
     init_content = "他站在铁匠铺门口，抬头看了一眼天色。"
     # 坏稿：同一长句重复 → 章内多稿自重复（大改）+ 字数不足 → 2 个问题（比初始更差）
     bad_draft = "他盯着面板数字看，心里盘算着接下来如何应对这场局面。" * 8

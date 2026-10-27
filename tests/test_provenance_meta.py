@@ -100,9 +100,10 @@ def test_run_sidecar_fields_complete(store, byok_db, monkeypatch, cleanup_runs):
     # 大纲产物已提交版本并记账
     assert run["outputs"] and run["outputs"][0]["kind"] == "outline"
     assert run["billing"]["entries"], "产物版本应产生结算条目"
-    # 人设已注入 pipeline 内存态（不落 config.json）
-    assert "大纲架构师" in pipeline.cfg.custom_prompt
-    assert "帮我加强冲突" in pipeline.cfg.custom_prompt
+    # 人设已注入 pipeline 内存态 persona_override（默认=角色底色 md，不落 config.json）
+    assert "结构设计师" in pipeline.cfg.persona_override
+    assert "帮我加强冲突" in pipeline.cfg.persona_override
+    # 人设不再覆盖 custom_prompt（建书时为空，落盘也为空）
     assert store.load_config().custom_prompt == ""
 
 

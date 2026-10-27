@@ -11,25 +11,28 @@ chapter 版本仍走 projects_chapters.py 既有路由，不在本文件重复�
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from .. import settle_ledger
+from ..version_recommend import attach_product_recommendations
 from novel_gen.store.versioned import VersionedProduct
 from novel_gen.pipeline.commit import check_projection
+from novel_gen.pipeline.version_diff import diff_chapter_text, diff_structured
 
-# 本路由只服务单实例产物（一个项目一份，key 恒为 "all"）
+# list/select/rollback 只服务单实例产物（key="all"）；diff 接口额外放行 chapter
 _PRODUCT_KINDS = ("outline", "world")
+_DIFF_KINDS = ("outline", "world", "chapter")
 _PRODUCT_KEY = "all"
 
 
-def _product(store, kind: str) -> VersionedProduct:
+def _product(store, kind: str, allowed: tuple = _PRODUCT_KINDS) -> VersionedProduct:
     """kind 白名单校验 + 门面构造（越界 kind 一律 400，不触碰文件系统）。"""
-    if kind not in _PRODUCT_KINDS:
+    if kind not in allowed:
         raise HTTPException(status_code=400,
-                            detail=f"不支持的产物类型：{kind}（支持 {', '.join(_PRODUCT_KINDS)}）")
+                            detail=f"不支持的产物类型：{kind}（支持 {', '.join(allowed)}）")
     return VersionedProduct(store, kind)
 
 
 @app.get("/api/projects/{project_id}/products/{kind}/versions")
 def list_product_versions(project_id: str, kind: str, user: dict = Depends(_require_user)):
-    """产物版本列表：versioned.list（含 words）+ 每版结算金额（账本反查）。"""
+    """产物版本列表：versioned.list（含 words）+ 每版结算金额（账本反查）+ 推荐徽章。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     vp = _product(store, kind)
@@ -40,7 +43,50 @@ def list_product_versions(project_id: str, kind: str, user: dict = Depends(_requ
         if charge is not None:
             item["charged"] = charge["charged"]
             item["due"] = charge["due"]
+    versions = attach_product_recommendations(store, versions)
     return {"kind": kind, "versions": versions}
+
+
+@app.get("/api/projects/{project_id}/products/{kind}/versions/diff")
+def diff_product_versions(project_id: str, kind: str, v1: int, v2: int,
+                           chapter_no: int | None = None,
+                           user: dict = Depends(_require_user)):
+    """两版只读对比（REQ-版本对比与推荐）：零 LLM、不写盘、不扣费。
+
+    - kind=chapter：必须传 chapter_no；返回段落级正文 diff；
+    - kind=outline/world：返回字段级结构化 diff。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    vp = _product(store, kind, allowed=_DIFF_KINDS)
+    key = str(chapter_no) if kind == "chapter" else _PRODUCT_KEY
+    if kind == "chapter" and not chapter_no:
+        raise HTTPException(status_code=400, detail="对比章节版本必须传 chapter_no")
+
+    a = vp.load_version(key, v1)
+    b = vp.load_version(key, v2)
+    if a is None or b is None:
+        raise HTTPException(status_code=404, detail="指定版本不存在")
+
+    if kind == "chapter":
+        result = diff_chapter_text(a.get("content") or "", b.get("content") or "")
+        result.update({"kind": kind, "chapter_no": chapter_no, "v1": v1, "v2": v2})
+    else:
+        changes = diff_structured(a, b)
+        # 按 group 聚合
+        groups: dict[str, list] = {}
+        for c in changes:
+            groups.setdefault(c["group"], []).append(c)
+        result = {
+            "kind": kind, "v1": v1, "v2": v2,
+            "groups": [{"group": g, "changes": cs} for g, cs in groups.items()],
+            "summary": {"added": sum(1 for c in changes if c["type"] == "added"),
+                        "removed": sum(1 for c in changes if c["type"] == "removed"),
+                        "modified": sum(1 for c in changes if c["type"] == "modified")},
+        }
+    logger.info("版本 diff: project=%s kind=%s v%d-v%d uid=%d",
+                project_id, kind, v1, v2, user["id"])
+    return result
 
 
 @app.post("/api/projects/{project_id}/products/{kind}/versions/{v}/select")

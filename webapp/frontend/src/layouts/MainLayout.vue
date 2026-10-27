@@ -6,7 +6,7 @@
         墨造 · AI小说生成
       </div>
       <div class="right">
-        <el-button v-if="auth.user" text @click="$router.push('/workspace')">工作台</el-button>
+        <el-button v-if="auth.user" text @click="$router.push('/workspace')">个人中心</el-button>
         <el-button v-if="auth.user" text @click="$router.push('/teardowns')">拆书库</el-button>
         <el-button v-if="auth.isAdmin" text @click="$router.push('/admin')">管理后台</el-button>
         <el-dropdown v-if="auth.user" @command="onCommand">

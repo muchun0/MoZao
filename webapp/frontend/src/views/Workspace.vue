@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h2>我的工作台</h2>
+    <h2>个人中心</h2>
     <el-tabs v-model="tab">
       <!-- ============ 概览 ============ -->
       <el-tab-pane label="概览" name="overview">

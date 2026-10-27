@@ -136,17 +136,17 @@
 | `stores/auth.js` | 登录态 Pinia store |
 | `stores/project.js` | 当前项目 Pinia store |
 | `api/request.js` | axios 封装（token 注入/错误处理） |
-| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` `assistant.js` | 按域接口封装（me.js：工作台-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口；assistant.js：小墨AI 会话/消息 5 个接口） |
+| `api/auth.js` `novel.js` `project.js` `admin.js` `tools.js` `me.js` `assistant.js` | 按域接口封装（me.js：个人中心-资料/流水/返佣/退款；admin.js 含 **`getConfig`/`updateConfig`** 系统开关接口；assistant.js：小墨AI 会话/消息 5 个接口） |
 | `views/Login.vue` | 登录/注册页 |
 | `views/ProjectList.vue` | 书案（作品列表/搜索/筛选） |
 | `views/ProjectDetail.vue` | 项目详情（阅读器/进度/生成控制；**2026-10-26 布局重构**：平铺 Tab 改左侧栏导航，生成类操作收敛进「大纲/Agent」页，顶栏仅留导出+状态徽章，生成中升级为全宽横幅，章节行操作 hover 浮出；世界观编辑拆出至 WorldEditor.vue） |
-| `views/Workspace.vue` | 用户工作台（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
+| `views/Workspace.vue` | 用户个人中心（概览/账户账单/推广返佣/模型配置/我的技能/风格角色 6 tab，复用 /api/me/*） |
 | `views/Admin.vue` | 站长后台（9 板块，含质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab**：memory/writing/review/guard/assistant 分组渲染 100 开关，改动项高亮、按组保存、展示默认值/修改人/时间） |
 | `components/assistant/AssistantPanel.vue` | **小墨AI 面板（REQ-小墨AI 一期）**：会话列表/新建/删除、模式切换（章节评估/改稿建议）、章节选择、消息区（卡片渲染/降级提示/token 用量）、Ctrl+Enter 发送、「定位到第 N 章」 |
 | `components/assistant/AssistantCard.vue` | 确定性卡片渲染：质检扣分（缺陷分口径）/问题清单/版本对比/正向实测（达标标签+阈值+缺口声明），不合成评分 |
 | `components/RechargeDialog.vue` | 充值/退款弹层 |
 | `components/LlmSettingsDialog.vue` | BYOK Key 设置 |
-| `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至工作台；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |
+| `components/tools/ToolsPanel.vue` | 工具面板（封面/质量校验/改稿建议+全书终审/节奏分析/多方案/批量/伏笔/锁定设定；技能与风格角色管理已迁移至个人中心；**三期** 场景体检/三分支续写/生成过程思维链三张卡片） |
 | `components/outline/OutlineEditor.vue` | 三级大纲编辑器（拖拽）；**阶段1C** apply 候选成功后 `emit('open-versions')` 跳版本列表并提示候选版本同样计费 |
 | `components/VersionDialog.vue` | **统一版本弹窗（阶段1C，2026-10-25）**：chapter（质检分/问题列表/申诉）与 outline/world（每版扣费金额、选择前弹回滚影响范围确认）共用；从 ProjectDetail 迁出章节版本逻辑 |
 | `components/agent/AgentPanel.vue` | **Agent 面板（阶段1C，2026-10-25）**：两栏工作区——左栏角色导航（5 角色，选中金线标记）+ 计费模式/余额（平台模式 ≤0 禁用引导充值），右栏当前角色工作区（人设版本 tag/编辑人设/参数区/user_prompt/运行停止/预估金额），技能挂载折叠区；轮询 getAgentRun 直至终态；**2026-10-26 UX 评审**：运行中进度条（progress 驱动，阶段文案+章节进度+已用时长）、预估金额参数变化实时刷新（estimate 接口，防抖）、轮询失败≥3 次才停止并提示、首次使用计费口径提示（localStorage 一次性）、完成时质检未过提示保留上一版/候选版本、启动 emit('started') 联动全局横幅；**2026-10-26 二轮修复**：预估首屏即请求（watch immediate）、非章节类进度条用 indeterminate 动画（防恒 0% 误读为卡住）、进度条任务视角（task_done/task_total，重生成已完成章不虚增，文案保留绝对章号） |

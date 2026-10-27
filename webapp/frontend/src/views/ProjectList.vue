@@ -19,7 +19,7 @@
       <el-card v-for="p in filtered" :key="p.id" class="pcard" @click="$router.push('/project/'+p.id)">
         <div class="pname">{{ p.title }}</div>
         <div class="pmeta">{{ p.genre }} · {{ p.total_words }}字</div>
-        <div class="pmeta">已生成 {{ p.chapters_done || 0 }} 章</div>
+        <div class="pmeta">已生成 {{ p.chapters_done || 0 }} / {{ p.chapters_total || '—' }} 章</div>
         <el-progress :percentage="pct(p)" :stroke-width="6" style="margin-top:8px" />
         <div class="pactions" @click.stop>
           <el-button v-if="!p.archived" size="small" @click="doArchive(p)">归档</el-button>
@@ -33,6 +33,17 @@
 
     <el-dialog v-model="showCreate" title="新建小说" width="780px">
       <el-form :model="form" label-width="110px">
+        <div class="fg-title">基本信息</div>
+        <el-form-item label="书名" required>
+          <el-input v-model="form.title" placeholder="给你的小说起个名字（必填）" />
+        </el-form-item>
+        <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
+        <div class="fg-row">
+          <el-form-item label="目标字数" style="flex:1"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
+          <el-form-item label="每章字数" style="flex:1"><el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" /></el-form-item>
+        </div>
+        <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
+
         <div class="fg-title">生成模式</div>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
@@ -41,6 +52,7 @@
           </el-radio-group>
         </el-form-item>
         <template v-if="form.mode === 'expand'">
+          <div class="fg-sub">AI 扩写输入（可选，不填则 AI 全自动生成）</div>
           <el-form-item label="现有字数">
             <el-input-number v-model="form.existing_words" :min="0" :step="10000" />
             <span class="muted" style="margin-left:8px">按差值计费</span>
@@ -66,14 +78,7 @@
           </el-form-item>
         </template>
 
-        <div class="fg-title">基础信息</div>
-        <el-form-item label="书名"><el-input v-model="form.title" placeholder="给你的小说起个名字" /></el-form-item>
-        <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
-        <div class="fg-row">
-          <el-form-item label="目标字数" style="flex:1"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
-          <el-form-item label="每章字数" style="flex:1"><el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" /></el-form-item>
-        </div>
-        <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
+        <div class="fg-title">写作配置</div>
         <el-form-item label="风格角色">
           <el-select v-model="form.style_role_id" clearable placeholder="可选：一键套用写作风格角色（人设+技能）">
             <el-option v-for="r in styleRoles" :key="r.id" :label="r.name" :value="r.id">
@@ -357,9 +362,10 @@ const filtered = computed(() => {
   return arr
 })
 
+// 进度口径统一为章节进度（与详情页底部「X / Y 章」一致），不再按字数算百分比
 function pct(p) {
-  if (!p.total_words) return 0
-  return Math.min(100, Math.round((p.generated_words || 0) / p.total_words * 100))
+  if (!p.chapters_total) return 0
+  return Math.min(100, Math.round((p.chapters_done || 0) / p.chapters_total * 100))
 }
 
 async function doCreate() {
@@ -419,6 +425,7 @@ onMounted(() => { load(); loadStyleRoles(); loadSkills() })
 .format-sample { background: #f6f8fa; border: 1px solid #e4e7ed; border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: #303133; white-space: pre-wrap; max-height: 420px; overflow: auto; }
 .fg-title { font-size: 14px; font-weight: 600; color: #303133; margin: 18px 0 10px; padding-left: 8px; border-left: 3px solid #c9a227; line-height: 1.2; }
 .fg-title:first-of-type { margin-top: 0; }
+.fg-sub { font-size: 12px; color: #909399; margin: -2px 0 12px; padding-left: 8px; }
 .fg-row { display: flex; gap: 16px; }
 .fg-tip { margin-left: 10px; font-size: 12px; }
 .tag-wrap { display: flex; align-items: center; flex-wrap: wrap; width: 100%; }

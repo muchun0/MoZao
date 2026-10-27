@@ -49,9 +49,10 @@ def test_save_user_prompt_increments_version(store):
     assert sha2 != sha1
     text, version, sha = agent_prompts.get_prompt_meta(store, "architect.outline")
     assert (text, version, sha) == ("我的大纲人设", "architect.outline@v2", sha2)
-    # v1 仍是默认人设原文（不可变版本，供 run 侧写反查）
+    # v1 仍是默认人设原文（=架构师 + 节奏伏笔 md 全文，角色底色而非一句话占位）
     agent_dir = store.dir / "agent_prompts" / "architect_outline"
-    assert "大纲架构师" in (agent_dir / "v1.md").read_text(encoding="utf-8")
+    v1_text = (agent_dir / "v1.md").read_text(encoding="utf-8")
+    assert "结构设计师" in v1_text and "节奏与伏笔" in v1_text
     meta = json.loads((agent_dir / "meta.json").read_text(encoding="utf-8"))
     assert [v["author"] for v in meta["versions"]] == ["default", "user"]
 

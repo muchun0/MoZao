@@ -12,9 +12,13 @@
    history 里的 `prompt_version`（`<agent>@v<n>`）+ `prompt_sha256` 可据此反查当时原文。
 2. **懒快照 v1**：无用户覆盖时，首次读取把系统默认人设快照为 v1（author="default"），
    保证 prompt_version 格式统一（评审 S-2）。
-3. 现网提示词由 `pipeline/templates.py` 运行时动态拼装、无静态 per-agent 模板文件，
-   故默认人设为各 agent 职责描述常量（`_DEFAULT_PROMPTS`），注入位置为
-   `cfg.custom_prompt`（追加到 system 末尾，与现网 custom_prompt 语义一致）。
+3. **默认人设 = 真实角色底色全文**：各 agent 的默认人设直接读取
+   `novel_gen/pipeline/agents/prompts/*.md`（角色底色，会被拼到具体任务提示词之前），
+   按 agent 组装对应的 md 组合（见 `_DEFAULT_PROMPT_FILES`），而不是一句话占位描述。
+   注入位置为各 generator/engine 的 role_prompt（system 开头，见 stages/research 的
+   `_sys` 与 `cfg.persona_override`）。
+4. **安全清洗**：用户保存的人设属用户可写内容，落快照前统一 `sanitize_system_text`
+   剥离注入话术（与 custom_prompt / 用户技能同源，纵深防御）。
 """
 from __future__ import annotations
 
@@ -40,14 +44,28 @@ EDITABLE_AGENTS = (
     "writer.chapter",
 )
 
-# 系统默认人设（懒快照 v1 的原文）。现网无静态模板文件，此处为职责描述常量。
-_DEFAULT_PROMPTS = {
-    "researcher": "你是题材调研助手。基于项目题材与设定做联网调研，产出可参考的题材资料与写作建议。",
-    "architect.outline": "你是小说大纲架构师。依据项目设定设计全书大纲，结构完整、节奏合理、冲突递进。",
-    "architect.volume": "你是卷纲架构师。依据全书大纲设计指定卷的卷纲，明确本卷主线、高潮与收束。",
-    "architect.world": "你是世界观架构师。依据项目设定构建世界观、人物卡与伏笔体系，设定自洽可长线支撑。",
-    "writer.chapter": "你是章节写手。依据大纲、世界观与记忆上下文撰写章节正文，文风统一、节奏达标。",
+# 角色底色 md 目录（webapp → novel_gen 允许的依赖方向）
+_PROMPTS_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "novel_gen" / "pipeline" / "agents" / "prompts"
+)
+
+# 各 agent 的默认人设 = 对应角色底色 md 的有序拼接（与运行时 role_prompt 同源）。
+# - 大纲架构师：架构师 + 节奏伏笔
+# - 世界观架构师：架构师 + 主题人物 + 世界观规则
+# - 卷纲架构师：架构师（卷纲复用结构判断标准）
+# - 写手：写手
+# - 调研员：调研员
+_DEFAULT_PROMPT_FILES: dict[str, list[str]] = {
+    "researcher": ["researcher.md"],
+    "architect.outline": ["architect.md", "pacing.md"],
+    "architect.world": ["architect.md", "theme_character.md", "world_rules.md"],
+    "architect.volume": ["architect.md"],
+    "writer.chapter": ["writer.md"],
 }
+
+# 默认人设读取缓存（md 内容在进程内不变，避免每次读盘）
+_default_cache: dict[str, str] = {}
 
 _PROMPT_VERSION_FMT = "{agent}@v{n}"
 
@@ -104,10 +122,28 @@ def _snapshot(store, agent: str, text: str, author: str) -> tuple[str, str]:
     return _PROMPT_VERSION_FMT.format(agent=agent, n=n), digest
 
 
+def _load_default_prompt(agent: str) -> str:
+    """读取并拼接该 agent 的默认角色底色 md（带进程内缓存）。"""
+    cached = _default_cache.get(agent)
+    if cached is not None:
+        return cached
+    parts: list[str] = []
+    for name in _DEFAULT_PROMPT_FILES[agent]:
+        path = _PROMPTS_DIR / name
+        if not path.exists():
+            raise FileNotFoundError(f"角色底色 md 缺失: {path}")
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            parts.append(text)
+    text = "\n\n".join(parts)
+    _default_cache[agent] = text
+    return text
+
+
 def get_prompt_meta(store, agent: str) -> tuple[str, str, str]:
     """读取 agent 当前人设，返回 (text, prompt_version, sha256)。
 
-    无覆盖时把系统默认人设懒快照为 v1（author="default"）后返回；
+    无覆盖时把系统默认人设（角色底色 md 全文）懒快照为 v1（author="default"）后返回；
     meta 损坏或版本文件缺失时重建快照（不抛错，留痕链路不能阻断生成）。
     """
     if agent not in EDITABLE_AGENTS:
@@ -122,17 +158,24 @@ def get_prompt_meta(store, agent: str) -> tuple[str, str, str]:
             rec = next((v for v in meta["versions"] if v.get("version") == current), {})
             digest = str(rec.get("sha256") or _sha256(text))
             return text, _PROMPT_VERSION_FMT.format(agent=agent, n=current), digest
-    # 懒快照：默认人设落 v1
-    text = _DEFAULT_PROMPTS[agent]
+    # 懒快照：默认人设（角色底色 md 全文）落 v1
+    text = _load_default_prompt(agent)
     version, digest = _snapshot(store, agent, text, author="default")
     return text, version, digest
 
 
 def save_user_prompt(store, agent: str, text: str) -> tuple[str, str]:
-    """保存用户人设为新版本快照，返回 (prompt_version, sha256)。"""
+    """保存用户人设为新版本快照，返回 (prompt_version, sha256)。
+
+    用户内容属可写文本，落快照前先 sanitize 剥离注入话术；清洗后无有效内容则拒绝。
+    """
     if agent not in EDITABLE_AGENTS:
         raise ValueError(f"不可编辑人设的 agent: {agent}")
     text = (text or "").strip()
     if not text:
         raise ValueError("人设内容不能为空")
-    return _snapshot(store, agent, text, author="user")
+    from novel_gen.safety import sanitize_system_text
+    cleaned = sanitize_system_text(text)
+    if not cleaned:
+        raise ValueError("人设内容包含异常指令，无法保存")
+    return _snapshot(store, agent, cleaned, author="user")

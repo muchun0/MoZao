@@ -11,9 +11,10 @@ run 侧写留痕。返回 `task_id` 供轮询四态状态机（running/resumed/d
 2. **一次 run 一次 commit**：产物在 run 收尾统一 `commit_head` + `settle_version`（§3.10），
    中间落盘只写 HEAD；写章按「新增版本」逐章结算（复用 settle_ledger 幂等键）。
 3. **停止语义**：stop_event 置位时当前未完成章不提交、已完成章保留，run 记 stopped（I-5）。
-4. **prompt 注入只进内存态**：人设（agent_prompts 当前版本）+ user_prompt 拼入
-   `cfg.custom_prompt`、Skill 拼入 `cfg.skill_prompt_append`，不落 config.json；
-   user_prompt 走 sanitize 属阶段 4，本期仅原样留痕于 run 侧写（≤4KB）。
+4. **prompt 注入只进内存态**：人设（agent_prompts 当前版本，默认=角色底色 md 全文）
+   注入 `cfg.persona_override`（role_prompt 位置，system 开头），user_prompt 清洗后追加
+   其后；Skill 拼入 `cfg.skill_prompt_append`，均不落 config.json。建书时填写的
+   custom_prompt 仍由 config.json 持久化、经 `_skill_append` 注入（不再被人设覆盖）。
 """
 from __future__ import annotations
 
@@ -544,8 +545,15 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         # 人设 + user_prompt 注入（内存态，不落盘；sanitize 属阶段 4）
         prompt_text, prompt_version, prompt_sha256 = agent_prompts.get_prompt_meta(store, agent)
         pipeline = core._open_pipeline(store, trace_id=trace_id)
-        custom = prompt_text if not user_prompt else f"{prompt_text}\n\n{user_prompt}"
-        pipeline.cfg.custom_prompt = custom
+        # 完整人设注入到 role_prompt（persona_override，system 开头）；user_prompt 属用户可写
+        # 内容，拼入前先 sanitize 剥离注入话术（人设保存时已清洗，此处清洗单次补充指令）。
+        persona_parts: list[str] = [prompt_text]
+        if user_prompt:
+            from novel_gen.safety import sanitize_system_text
+            extra_prompt = sanitize_system_text(user_prompt)
+            if extra_prompt:
+                persona_parts.append(extra_prompt)
+        pipeline.cfg.persona_override = "\n\n".join(persona_parts)
         pipeline.cfg.skill_prompt_append = _build_skill_append(skill_ids)
         billing = {"mode": mode, "hq": hq, "project_id": project_id}
 
@@ -770,8 +778,9 @@ def _exec_volume(store: ProjectStore, pipeline, params: dict, billing: dict,
         f"该卷共 {len(targets)} 章。请输出JSON："
         '{"intro":"分卷简介","chapters":[{"title":"章名","goal":"本章目标"}...]}，'
         f"chapters 数量必须为 {len(targets)}，顺序对应。")
-    if pipeline.cfg.custom_prompt:
-        sys = f"{sys}\n\n{pipeline.cfg.custom_prompt}"
+    _persona = (getattr(pipeline.cfg, "persona_override", "") or "").strip()
+    if _persona:
+        sys = f"{sys}\n\n{_persona}"
     raw = pipeline.llm.chat(sys, user_msg, temperature=0.7, max_tokens=2000)
     data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
     vol.intro = str(data.get("intro", vol.intro))

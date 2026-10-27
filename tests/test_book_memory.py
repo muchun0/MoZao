@@ -304,7 +304,9 @@ def test_quality_checker_records_pitfalls(store):
         return _LONG_OK_TEXT
 
     llm.chat.side_effect = _chat
-    qc = _qc(store, llm, memory=mem)
+    cfg = store.load_config()
+    cfg.auto_rewrite_rounds = 3  # 显式开启自动重写（默认 0=不重写，一次一版）
+    qc = QualityChecker(cfg, llm, store, trace=None, guard=None, memory=mem)
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", "太短了。", "摘要")
     assert result["passed"] is True
     data = mem.load()

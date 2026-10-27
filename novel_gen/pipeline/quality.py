@@ -147,8 +147,8 @@ class QualityChecker:
                        content: str, summary: str, silent: bool = False,
                        baseline: dict | None = None,
                        core_event: str = "") -> tuple[Chapter, dict]:
-        """校验 → 不通过则自动重写（最多 _MAX_REWRITE 轮，通过即停）→ 复检
-        → 返回 (最终 Chapter, 校验结果)。
+        """校验 → 不通过则按 auto_rewrite_rounds 自动重写（默认 0=不自动重写，
+        一次操作只产 1 个版本；通过即停）→ 复检 → 返回 (最终 Chapter, 校验结果)。
 
         baseline：机制数字基线（panel_baseline_dict(numbers)），供质检层叠加
         面板方向校验（P0-5：重写产物/改稿产物在质检层二次兜底蚀化回退/次数回升）。
@@ -210,19 +210,24 @@ class QualityChecker:
                                     baseline=baseline, core_event=core_event)
                 issues = result["issues"]
                 self._record_pitfalls(chapter_no, issues)
+                # 确定性抢救是"修复异常输出"而非"新增版本"：清空初始异常稿、只保留抢救稿，
+                # 避免异常多稿拼接也落库、按字数重复计费（一次操作只产 1 个版本）。
+                versions.clear()
                 _push(content, summary, result, 0, True)
 
         # P0-5 最优版本账本：初始稿作为基准，重写轮内择优（问题数升序、分数降序）
         best_content, best_summary, best_issues, best_result = content, summary, issues, result
         best_rewritten = rewritten_occurred
 
-        # 不通过 → 自动重写（最多 _MAX_REWRITE 轮；每轮重写后复检，通过即停；
-        # 全部失败才标记 review.json 放行，不再"1 次重写不通过即静默交付"）
+        # 不通过 → 自动重写（最多 auto_rewrite_rounds 轮；默认 0=不自动重写：一次操作
+        # 只产 1 个版本、只扣 1 份钱，重写已收费；需要自动多稿时由后台调高）。
+        # 每轮重写后复检，通过即停。
         rewrite_rounds = 0
-        while not result["passed"] and rewrite_rounds < _MAX_REWRITE:
+        max_rewrite = int(getattr(self.cfg, "auto_rewrite_rounds", _MAX_REWRITE))
+        while not result["passed"] and rewrite_rounds < max_rewrite:
             rewrite_rounds += 1
             if not silent:
-                print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{_MAX_REWRITE} 次自动重写...")
+                print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{max_rewrite} 次自动重写...")
             if self.guard is not None:
                 self.guard.enter_scene("revise")
             rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues,

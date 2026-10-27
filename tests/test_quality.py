@@ -82,7 +82,9 @@ def test_short_chapter_triggers_rewrite(store):
     # P0-5：重写稿必须是真正通过的稿子（坏重写稿会被 best-version 兜底回退，
     # 不再顶替相对较好的版本——见 test_quality_p05.py 回退用例）
     llm, calls = _mk_llm(rewrite_text=_LONG_OK_TEXT)
-    qc = QualityChecker(store.load_config(), llm, store)
+    cfg = store.load_config()
+    cfg.auto_rewrite_rounds = 3  # 显式开启自动重写（默认 0=不重写，一次一版）
+    qc = QualityChecker(cfg, llm, store)
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", "太短了。", "摘要")
     # 触发 1 次重写（第1次=读者校验，第2次=重写）
     assert calls["n"] >= 2
@@ -112,11 +114,31 @@ def test_quality_passed_no_rewrite(store):
     assert result["versions"][0]["quality"]["score"] == result["score"]
 
 
+@pytest.mark.p1
+def test_default_no_auto_rewrite_single_version(store):
+    """auto_rewrite_rounds 默认 0：质检不通过也不自动重写，一次操作只产 1 个版本、只扣 1 份钱。"""
+    from unittest.mock import MagicMock
+    cfg = store.load_config()
+    assert cfg.auto_rewrite_rounds == 0  # 默认关闭（重写已收费）
+    qc = QualityChecker(cfg, MagicMock(), store)
+    qc._rewrite_once = MagicMock(return_value=_LONG_OK_TEXT)
+    chapter, result = qc.ensure_quality(1, "第一章", "推进主线", "太短了。", "摘要", silent=True)
+    # 未触发重写：_rewrite_once 零调用，正文仍是初始稿，versions 仅 1 个版本
+    assert qc._rewrite_once.call_count == 0
+    assert chapter.content == "太短了。"
+    versions = result.get("versions") or []
+    assert len(versions) == 1
+    assert versions[0]["round"] == 0
+    assert result["passed"] is False
+
+
 @pytest.mark.p2
 def test_ensure_quality_versions_log_on_rewrite(store):
     """触发自动重写时：versions 日志逐轮记录（初始稿 + 每轮重写稿，各自带质检问题）。"""
     from unittest.mock import MagicMock
-    qc = QualityChecker(store.load_config(), MagicMock(), store)
+    cfg = store.load_config()
+    cfg.auto_rewrite_rounds = 3  # 显式开启自动重写（默认 0=不重写）
+    qc = QualityChecker(cfg, MagicMock(), store)
     # 初始稿字数严重不足 → 触发重写；重写稿复检通过
     qc._rewrite_once = MagicMock(return_value=_LONG_OK_TEXT)
     chapter, result = qc.ensure_quality(1, "第一章", "推进主线", "太短了。", "摘要")
@@ -578,6 +600,7 @@ def test_ensure_quality_max_rewrite_rounds(store):
     """复检一直不通过 → 最多重写 _MAX_REWRITE 轮（原 1 轮即放行）。"""
     from novel_gen.pipeline.quality import _MAX_REWRITE
     cfg = store.load_config()
+    cfg.auto_rewrite_rounds = _MAX_REWRITE  # 显式开启，验证自动重写轮数上限
     llm = MagicMock()
     calls = {"n": 0}
 

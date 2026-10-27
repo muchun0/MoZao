@@ -41,7 +41,7 @@ _NUM_VIOL_RE = re.compile(
     r"面板「(.+?)」应从基线 (\d+) (递增|递减)，正文出现(?:回退|回升) (\d+)→(\d+)"
 )
 
-#: 中文数字解析（蚀痕基线「已伸三十七寸」→ 37；支持 0-99 常见写法）
+#: 中文数字解析（累积状态基线「已伸三十七寸」→ 37；支持 0-99 常见写法）
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
@@ -883,30 +883,45 @@ class BookMemory:
         if prev is None and not start:
             return ""
         base_val = int(prev) if prev is not None else start
+        # 累积型字段名从设定账本声明提取（如「距离蚀化：97%」→「距离蚀化」），
+        # 代码不预置单书机制词；无百分比声明 → 通用名「机制数值」。
+        base = data["canon"].get("mechanism_baseline") or {}
+        _pf = str(base.get("panel_format") or base.get("面板格式") or "")
+        _fm = re.search(r"([\u4e00-\u9fff]{1,10}?)\s*[：:]\s*\d+\s*%", _pf)
+        _field = _fm.group(1) if _fm else "机制数值"
         lines = [
-            f"- 距离蚀化：背景参考，承接上一章末值 {base_val}%（蚀化只增不减；"
+            f"- {_field}：背景参考，承接上一章末值 {base_val}%（只增不减；"
             f"若本章发生结算则 +1、无结算保持；正文若出现该数字须与此一致，不要求刻意展示）"
         ]
-        # 蚀痕起始寸数：canon.mechanism_baseline 蚀痕字段含「已伸X寸」（中文数字；
-        # 英文键 scar_current/scar_start 兼容——P0-10 实测 world 基线键为英文）
-        base = data["canon"].get("mechanism_baseline") or {}
-        scratch_line = str(base.get("蚀痕") or base.get("蚀痕基线")
-                           or base.get("scar_current") or "")
+        # 机制累积状态基线（如「已伸三十七寸」类文本）：注入基线原文口径，链式数字
+        # 一致性由注册表账本（ledger）确定性校验，这里不假设单书单位/死亡联动。
+        scratch_line = ""
+        for _k in ("scar_current", "scar_start", "scar_end"):
+            v = str(base.get(_k) or "")
+            if v and re.search(r"[0-9一二三四五六七八九十百两]+", v):
+                scratch_line = v
+                break
+        if not scratch_line:
+            # 中文键兜底：任何键值含「数字+中文单位」（累积状态声明）即视为基线口径
+            for v in base.values():
+                vs = str(v or "")
+                if re.search(r"[0-9一二三四五六七八九十百两]+\s*[\u4e00-\u9fff]", vs):
+                    scratch_line = vs
+                    break
         if scratch_line:
-            start_inch = _parse_cn_number(scratch_line)  # 0=未解析出寸数（跳过寸数断言，只保留基线原文）
-            inch_tail = f"；每死亡一次再伸一寸（累计已伸 {start_inch + max(0, base_val - start)} 寸）" if start_inch else ""
-            lines.append(f"- 蚀痕基线（参考口径）：{scratch_line}{inch_tail}；"
-                         "正文若提到蚀痕位置须与此连续，不要求刻意展示")
+            lines.append(f"- 机制累积基线（参考口径）：{scratch_line}；"
+                         "正文若提到该机制状态须与此连续，不要求刻意展示")
         return ("【机制数字·背景参考（代码按上一章末值链式承接；正文按需自然呈现，"
                 "结算时为准——不要求刻意展示数字）】\n" + "\n".join(lines))
 
     def _erosion_start_from_baseline(self) -> int:
-        """从 canon.mechanism_baseline 的 panel_format（如「距离蚀化：97%」）解析起始蚀化。"""
+        """从 canon.mechanism_baseline 的 panel_format 解析累积型百分比起始值
+        （如「距离蚀化：97%」→ 97）。"""
         try:
             data = self.load()
             base = data["canon"].get("mechanism_baseline") or {}
             pf = str(base.get("panel_format") or base.get("面板格式") or "")
-            m = re.search(r"蚀化[：:]\s*(\d+)\s*%", pf)
+            m = re.search(r"[：:]\s*(\d+)\s*%", pf)
             if m:
                 return max(0, int(m.group(1)))
             return 0
@@ -997,8 +1012,8 @@ class BookMemory:
             return "禁止多稿拼接：只输出单一完整连贯版本，修改在原处替换，禁止保留原文再加平行版本"
         if "复读" in t or "同句" in t or "原样" in d:
             return "同一句/同一段禁止原样复读；需要强调时用递进改写（加新信息/改变环境或代价）"
-        if "机制数字" in t or "面板" in d or "蚀化" in d:
-            return "机制数字必须按方向规则严格结算（蚀化只增不减、次数递减、禁止同值跨结算点复现），正文从基线推进，禁止回退/回升"
+        if "机制数字" in t or "面板" in d:
+            return "机制数字必须按方向规则严格结算（累积字段只增不减、次数字段只减不增、禁止同值跨结算点复现），正文从基线推进，禁止回退/回升"
         if "矛盾" in t or "一致" in t or "身份" in t:
             return "同一角色/状态/事实全书口径唯一，禁止出现两版本描述"
         if "重复" in t:

@@ -51,7 +51,7 @@ _REPEAT_MIN_LEN = 8         # 参与复读统计的最短归一化句长
 _REPEAT_LONG_LEN = 12       # 叙述长句出现 2 次即视为整句复读
 _REPEAT_HARD_COUNT = 3      # 叙述/对话句出现 ≥3 次 → 大改（触发自动重写）
 _DIALOG_ALLOWED = 2         # 对话句（口头禅）允许 2 次（writer.md：同一口头禅每章 ≤2 次）
-_PANEL_KEYWORDS = ("次数", "进度", "蚀痕", "剩余", "面板")   # 数字面板行信号
+_PANEL_KEYWORDS = ("次数", "进度", "剩余", "累积", "状态", "面板")   # 数字面板行信号（通用机制词）
 
 # 机制数字结算校验（REQ-章内自洽与机制账本·扩展）：面板数字跨段同值复现 = 结算未推进
 _PANEL_REPEAT_SPAN = 150    # 同一面板数字两次出现的最小字距（> 视为跨事件复现，而非紧邻强调）
@@ -435,31 +435,28 @@ class QualityChecker:
             try:
                 from .chapter_state import (mechanism_field_registry as _mreg2,
                                             unknown_mechanism_fields as _unk2,
-                                            ledger_check as _lchk)
-                _st = self.memory.load().get("state") or {}
-                _prev_chs = [c for c in _st.get("chapters", [])
-                             if int(c.get("ch", 0)) < int(chapter_no)]
-                # v11 实证：ch5 无面板 → erosion=None 断链 → _base 回落起始 97 → ch6
-                # 蚀化差误算 101-97=4 误报。链式取最近非空 erosion（与账本继承同口径）。
-                _prev_eros = next(
-                    (c.get("erosion") for c in reversed(_prev_chs)
-                     if c.get("erosion") is not None), None)
-                _start = int(_st.get("erosion_start", 0) or 0)
-                _base = int(_prev_eros) if _prev_eros is not None else (_start or 0)
-                # 本章死亡数：正文蚀化最高值 - 上一章末蚀化（蚀化差反推，账本同口径）。
-                # _EROSION_SEQ_RE 原在 chapter_state（已随蚀化跨章校验移除），本地定义。
-                _eros_re = re.compile(r"(?:蚀化|进度|蚀痕)\s*[：:]\s*([0-9]+)")
-                _eros_now = max((int(_m.group(1)) for _m in _eros_re.finditer(content or "")),
-                                default=0)
-                _cumu = max(0, _eros_now - _base) if _base > 0 else 0
-                # P0-15/16 通用版（2026-10-10）：机制字段注册表（closed-world）+ 链式
-                # 账本 + 事件驱动双向。基线声明的字段逐字段校验（2026-10-17 均降小改）：
-                #   未知字段出现（累计死亡次数类）→ 小改建议；
-                #   无事件时 decrease 必须不变 / increase 面板必须不变（寸只查不回退）；
-                #   有事件时 decrease 必减、increase 必 ≥ 上章末 + 死亡数。
+                                            ledger_check as _lchk,
+                                            ledger_extract_numbers as _lex3,
+                                            _registry_initial as _rin)
                 _canon = (self.memory.load().get("canon") or {})
+                # 注册表从设定账本派生（含书级字段名，数据驱动），代码不预置单书机制词。
                 _reg = _mreg2(_canon.get("mechanism_baseline") or {})
                 if _reg:
+                    _cur = _lex3(content or "", _reg)
+                    _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
+                    _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+                    # 本章死亡数双源反推（P0-14/18 通用版）：每个 increase 字段用自身
+                    # 账本链差反推（如万墟「蚀化」上一章末 97 → 本章 101 = 死亡 4 次），
+                    # decrease 字段递减量补全（蚀化不涨时用次数递减量，账本数字非词面，
+                    # 比字段差更抗漏）；取最大（双源抗漏，防单一字段未结算漏检）。
+                    _cumu = 0
+                    for _c, _r in _reg.items():
+                        if _r == "increase" and _c in _cur:
+                            _pv = _prev_ledger.get(_c)
+                            if _pv is None:
+                                _pv = (_init or {}).get(_c)
+                            if _pv is not None:
+                                _cumu = max(_cumu, max(0, int(_cur[_c]) - int(_pv)))
                     for _it in _unk2(content, _reg):
                         issues.append({
                             "type": "写作-机制字段白名单违规",
@@ -467,29 +464,16 @@ class QualityChecker:
                             "level": "小改",
                         })
                         score -= 5
-                    _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
-                    from .chapter_state import _registry_initial as _rin
-                    _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
-                    # P0-18（2026-10-15）deaths 双源反推：蚀化不涨时用 decrease 字段
-                    # 递减量补全死亡数。v12 实证：ch3 死 3 次可死次数 3→0，但正文蚀化
-                    # 98→98 未结算 → 蚀化差=0 误判「无死亡」→ 可死次数递减被误报
-                    # 「无事件违规」，且蚀化未递增真违规漏检。decrease 字段（可死次数）
-                    # 的递减量是账本数字（非词面），比蚀化差更抗漏。
-                    try:
-                        from .chapter_state import ledger_extract_numbers as _lex3
-                        _cur3 = _lex3(content or "", _reg)
-                        _dec3 = 0
-                        for _c3, _r3 in _reg.items():
-                            if _r3 == "decrease" and _c3 in _cur3:
-                                _pv3 = _prev_ledger.get(_c3)
-                                if _pv3 is None:
-                                    _pv3 = (_init or {}).get(_c3)
-                                if _pv3 is not None and int(_cur3[_c3]) < int(_pv3):
-                                    _dec3 += int(_pv3) - int(_cur3[_c3])
-                        if _dec3 > 0:
-                            _cumu = max(_cumu, _dec3)
-                    except Exception:
-                        pass
+                    _dec3 = 0
+                    for _c3, _r3 in _reg.items():
+                        if _r3 == "decrease" and _c3 in _cur:
+                            _pv3 = _prev_ledger.get(_c3)
+                            if _pv3 is None:
+                                _pv3 = (_init or {}).get(_c3)
+                            if _pv3 is not None and int(_cur[_c3]) < int(_pv3):
+                                _dec3 += int(_pv3) - int(_cur[_c3])
+                    if _dec3 > 0:
+                        _cumu = max(_cumu, _dec3)
                     for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
                         issues.append({
                             "type": "写作-机制数字方向违规",
@@ -704,7 +688,7 @@ class QualityChecker:
 
         返回 {行文本: [字符偏移,...]}；无拼接返回空 dict。
         只统计「短促收尾/面板行」（长度在 min_line~max_line 之间）：多稿拼接时
-        每篇草稿都会自带同一句短收尾（如"今日可死次数：2。"），而长行重复多为
+        每篇草稿都会自带同一句短收尾（如"剩余次数：2。"），而长行重复多为
         正常叙事复用（如第2章一条 40 字长行重复 2 次是正常内容），不能当标记。
         """
         if not content or len(content) < min_line * 3:
@@ -771,7 +755,7 @@ class QualityChecker:
         2 次放行。
         聚合为每条类型一条 issue（附最多 3 个例句），避免刷屏。
 
-        P1-2 起数字面板行（含次数/进度/蚀痕/剩余+数字）不再纳入复读统计——面板行
+        P1-2 起数字面板行（含次数/进度/剩余/累积/状态+数字）不再纳入复读统计——面板行
         重复由 _panel_progress_issues 专检（区分"结算未推进"大改/"冗余显示"中改），
         复读再判大改会造成双重大改、误触发重写（《万墟之上》22:32 版实测）。
         """
@@ -819,7 +803,7 @@ class QualityChecker:
     def _panel_progress_issues(self, content: str) -> list[dict]:
         """机制数字结算校验（确定性）：同一面板数字（同标签同数值）跨段复现 = 结算未推进。
 
-        如「今日可死次数：2/3」在两次死亡后仍显示「2/3」——数字未随事件递减。
+        如「剩余次数：2/3」在两次死亡后仍显示「2/3」——数字未随事件递减。
         与 _repeat_sentence_issues 的区别：这里按「标签+数值」对齐（不要求整句相同），
         且要求两次出现间隔超过 _PANEL_REPEAT_SPAN（过滤"数字跳了一下"式紧邻强调）。
         正常递减（3/3→2/3→1/3）不误报。
@@ -831,10 +815,11 @@ class QualityChecker:
         """
         if not content or len(content) < _PANEL_REPEAT_SPAN * 2:
             return []
-        # 2026-10-10 P0-5：后缀补「蚀化」——与 chapter_state._PANEL_RE 对齐，
-        # 否则「距离蚀化：98%」在质检层同样漏检（第四轮第 5 章蚀化回退未被拦）。
+        # 后缀只保留通用机制词（次数/进度/剩余/累积/状态），书级字段名（如《万墟之上》
+        # 的「蚀化/蚀痕」）由设定账本派生的字段注册表在 direction/ledger 校验层兜底
+        # （本函数是冗余层，不预置单书机制词）。
         pattern = re.compile(
-            r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|蚀痕|蚀化|剩余))\s*[：:]\s*"
+            r"([\u4e00-\u9fff]{0,12}?(?:次数|进度|剩余|累积|状态))\s*[：:]\s*"
             r"([0-9]+(?:\s*[／/]\s*[0-9]+)?)"
         )
         hits: dict[tuple[str, str], list[int]] = {}
@@ -959,16 +944,17 @@ class QualityChecker:
         return []
 
     def _summary_consistency_issues(self, content: str, summary: str) -> list[dict]:
-        """摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致。
+        """摘要一致性（确定性兜底）：摘要提到的机制数字分数必须与正文最终结算一致。
 
-        《万墟之上》21:52 版：正文死亡两次、最终结算 1/3，摘要却写"面板从3/3结算
-        为2/3"——摘要未随正文更新（只提取了第一次死亡）。正文无面板分数或摘要无
-        分数 → 不报（不误伤无机制数字的章节）。
+        实测版：正文死亡两次、最终结算 1/3，摘要却写"面板从3/3结算为2/3"——摘要未随
+        正文更新（只提取了第一次死亡）。正文无机制分数或摘要无分数 → 不报（不误伤无
+        机制数字的章节）。只匹配通用「次数：N/M」格式（书级标签如「可死次数」由
+        「次数」分支覆盖，不预置单书词）。
         """
         if not content or not summary:
             return []
         import re as _re
-        panel = _re.findall(r"(?:剩余次数|可死次数|次数)\s*[:：]\s*(\d+)\s*[／/]\s*(\d+)", content)
+        panel = _re.findall(r"(?:剩余次数|次数)\s*[:：]\s*(\d+)\s*[／/]\s*(\d+)", content)
         if not panel:
             return []
         final_body = "/".join(panel[-1])
@@ -996,7 +982,7 @@ class QualityChecker:
         if not marks:
             return content
         # 选「出现次数最多、行最短」的重复句作分界标记：短而独立的收尾句
-        # （如面板行"今日可死次数：2。"）比长开头句更贴近"草稿收尾"，避免切出碎片。
+        # （如面板行"剩余次数：2。"）比长开头句更贴近"草稿收尾"，避免切出碎片。
         marker = max(marks, key=lambda s: (len(marks[s]), -len(s)))
         cuts = sorted(marks[marker])
         segs, prev = [], 0
@@ -1225,7 +1211,6 @@ class QualityChecker:
             num_issues = [
                 str(it.get("detail") or "") for it in (issues or [])
                 if "机制数字" in (str(it.get("type") or ""))
-                or "蚀化" in (str(it.get("type") or ""))
             ]
             nb = self.memory.numeric_backfill(num_issues)
             gb = self.memory.good_block(top_n=2)
@@ -1705,7 +1690,7 @@ def _norm_sentence(s: str) -> str:
 
 
 def _is_panel_line(norm: str) -> bool:
-    """数字面板行：含 次数/进度/蚀痕/剩余/面板 关键词且带数字（如「今日可死次数2」）。"""
+    """数字面板行：含 次数/进度/剩余/累积/状态/面板 关键词且带数字（如「剩余次数2」）。"""
     return any(k in norm for k in _PANEL_KEYWORDS) and any(c.isdigit() for c in norm)
 
 

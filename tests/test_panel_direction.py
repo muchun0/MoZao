@@ -59,9 +59,9 @@ def _save_outline(store):
 @pytest.mark.p1
 def test_panel_baseline_dict_last_value_per_label():
     """累计 numbers → 每标签取最后值（同标签多条只留最后一条）。"""
-    nums = ["可死次数：3", "距离蚀化：97%", "可死次数：2", "蚀化：98%"]
+    nums = ["可死次数：3", "累计进度：97%", "可死次数：2", "进度：98%"]
     base = panel_baseline_dict(nums)
-    assert base == {"次数": 2, "蚀化": 98}
+    assert base == {"次数": 2, "进度": 98}
     assert panel_baseline_dict([]) == {}
     assert panel_baseline_dict(["人物生死：疤脸已死"]) == {}    # 无机制标签不识别
 
@@ -94,16 +94,16 @@ def test_pdv_decrease_midnight_reset_allowed():
 
 @pytest.mark.p1
 def test_pdv_increase_ok():
-    """蚀化递增合法：基线 97 → 正文 97→98→99，无违规。"""
+    """累积字段递增合法（registry 驱动）：基线 97 → 正文 97→98→99，无违规。"""
     text = "距离蚀化：97%。又走一步，距离蚀化：98%。蚀痕蔓延，距离蚀化：99%。"
-    assert panel_direction_violations(text, {"蚀化": 97}) == []
+    assert panel_direction_violations(text, {"蚀化": 97}, {"蚀化": "increase"}) == []
 
 
 @pytest.mark.p1
 def test_pdv_increase_rollback_violation():
-    """蚀化回退违规：基线 97 → 正文 98→97（只增不减回退）→ 违规。"""
+    """累积字段回退违规（registry 驱动）：基线 97 → 正文 98→97（只增不减回退）→ 违规。"""
     text = "距离蚀化：98%。他运功压制，距离蚀化：97%。"
-    viols = panel_direction_violations(text, {"蚀化": 97})
+    viols = panel_direction_violations(text, {"蚀化": 97}, {"蚀化": "increase"})
     assert len(viols) == 1
     assert "回退" in viols[0]
 

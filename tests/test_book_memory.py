@@ -555,7 +555,7 @@ def test_record_chapter_state_and_cumulative():
 
 @pytest.mark.p1
 def test_erosion_anchor_deterministic():
-    """确定性数字锚（P0-14 链式）：蚀化 = 上一章末值承接；蚀痕寸数 = 基线+链式增量。"""
+    """确定性数字锚（P0-14 链式）：累积字段 = 上一章末值承接；机制累积基线注入原文口径。"""
     store = _store()
     mem = _memory(store)
     mem.sync_baseline(MagicMock(mechanism_baseline=_obj_baseline()))
@@ -563,10 +563,12 @@ def test_erosion_anchor_deterministic():
     mem.record_chapter_state(3, deaths=1, erosion=100)
     mem.record_chapter_state(4, deaths=1, erosion=101)
     anchor = mem.erosion_anchor(6)
-    assert "101%" in anchor and "上一章末值" in anchor   # 链式：取 ≤6 最近一章末蚀化
+    assert "101%" in anchor and "上一章末值" in anchor   # 链式：取 ≤6 最近一章末值
     assert "97%" not in anchor
-    assert "已伸" in anchor and "41 寸" in anchor   # 37 + (101-97) 链式增量
-    # 无蚀化记录的中途章不打断链（ch5 无蚀化 → 仍取 ch4 的 101）
+    # 字段名从基线 panel_format 声明提取（数据驱动）；累积基线注入基线原文
+    assert "距离蚀化" in anchor
+    assert "机制累积基线" in anchor and "已延伸三十七寸" in anchor
+    # 无蚀化记录的中途章不打断链（ch5 无记录 → 仍取 ch4 的 101）
     mem.record_chapter_state(5, deaths=0)
     anchor2 = mem.erosion_anchor(6)
     assert "101%" in anchor2

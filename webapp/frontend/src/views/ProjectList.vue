@@ -42,8 +42,6 @@
           <el-form-item label="目标字数" style="flex:1"><el-input-number v-model="form.total_words" :min="0" :step="1000" /></el-form-item>
           <el-form-item label="每章字数" style="flex:1"><el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" /></el-form-item>
         </div>
-        <el-form-item label="风格"><el-input v-model="form.style" placeholder="如：克制冷峻、轻松幽默" /></el-form-item>
-
         <div class="fg-title">生成模式</div>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
@@ -78,29 +76,6 @@
           </el-form-item>
         </template>
 
-        <div class="fg-title">写作配置</div>
-        <el-form-item label="风格角色">
-          <el-select v-model="form.style_role_id" clearable placeholder="可选：一键套用写作风格角色（人设+技能）">
-            <el-option v-for="r in styleRoles" :key="r.id" :label="r.name" :value="r.id">
-              <div style="display:flex;justify-content:space-between;gap:12px">
-                <span>{{ r.name }}</span>
-                <small class="muted">{{ r.user_id ? '我的' : '平台' }}</small>
-              </div>
-            </el-option>
-          </el-select>
-        </el-form-item>
-        <el-form-item label="写作技能">
-          <el-select v-model="form.skill_id" clearable placeholder="可选：套用平台写作技能（网文实战技巧）">
-            <el-option v-for="s in skills" :key="s.id" :label="s.name" :value="s.id">
-              <div style="display:flex;justify-content:space-between;gap:12px">
-                <span>{{ s.name }} <small class="muted" v-if="skillStage(s)">（{{ skillStage(s) }}）</small></span>
-                <small class="muted">{{ s.scope }}</small>
-              </div>
-            </el-option>
-          </el-select>
-          <span class="muted fg-tip">可与风格角色叠加：风格角色定人设，技能注入具体写作手法</span>
-        </el-form-item>
-
         <div class="fg-title">故事设定</div>
         <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" placeholder="一句话讲清故事核心创意（如：社畜穿越到修真界，靠内卷法则证道）" /></el-form-item>
         <el-form-item label="故事背景"><el-input v-model="form.background" type="textarea" :rows="3" placeholder="时代背景 / 世界规则 / 主要地点等（强约束，AI 不得违背）" /></el-form-item>
@@ -120,53 +95,15 @@
           <span class="muted fg-tip">不想出现的元素/情节（强约束，如：主角不圣母、拒绝悲剧结局）</span>
         </el-form-item>
 
-        <div class="fg-title">节奏与文风</div>
-        <el-form-item label="爽点密度">
-          <el-radio-group v-model="form.pacing_density">
-            <el-radio value="low">慢热铺垫</el-radio>
-            <el-radio value="medium">适中</el-radio>
-            <el-radio value="high">密集爽点</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="剧情速度">
-          <el-radio-group v-model="form.plot_speed">
-            <el-radio value="slow">细腻展开</el-radio>
-            <el-radio value="medium">适中</el-radio>
-            <el-radio value="fast">快节奏</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="自定义提示词"><el-input v-model="form.custom_prompt" type="textarea" :rows="2" placeholder="额外的创作要求（可选），将原样追加到生成指令" /></el-form-item>
-
         <div class="fg-title">质量选项</div>
-        <el-form-item label="高质量模式">
-          <el-switch v-model="form.high_quality_mode" />
-          <span class="muted fg-tip">场景级生成 + 动态模块轮换 + 每章自动改稿与读者视角审校，文笔与连贯性更好；单价 3 元/万字（普通 2 元/万字）</span>
+        <el-form-item label="记忆窗口">
+          <el-input-number v-model="form.memory_window" :min="0" :max="20" />
+          <span class="muted fg-tip">生成当前章时回填最近 N 章摘要（越大越连贯、成本越高）</span>
         </el-form-item>
-
-        <el-collapse v-model="advOpen" class="adv-collapse">
-          <el-collapse-item title="更多质量开关（编辑质检 / 去AI味 / 防同质化 / 人物立体化 / 记忆窗口，推荐全开）" name="adv">
-            <el-form-item label="编辑质检">
-              <el-switch v-model="form.editor_review" />
-              <span class="muted fg-tip">大纲生成后执行编辑视角 9 维质检，不通过自动修正一次</span>
-            </el-form-item>
-            <el-form-item label="去 AI 味">
-              <el-switch v-model="form.de_ai" />
-              <span class="muted fg-tip">正文生成时注入去 AI 味写作约束</span>
-            </el-form-item>
-            <el-form-item label="防同质化">
-              <el-switch v-model="form.anti_similarity" />
-              <span class="muted fg-tip">拒绝套路、人物内在矛盾、有代价的抉择，结局必须完整</span>
-            </el-form-item>
-            <el-form-item label="人物立体化">
-              <el-switch v-model="form.character_depth" />
-              <span class="muted fg-tip">角色卡一致性 + 选择代价 + 生活体感 + 对话辨识度</span>
-            </el-form-item>
-            <el-form-item label="记忆窗口">
-              <el-input-number v-model="form.memory_window" :min="0" :max="20" />
-              <span class="muted fg-tip">生成当前章时回填最近 N 章摘要（越大越连贯、成本越高）</span>
-            </el-form-item>
-          </el-collapse-item>
-        </el-collapse>
+        <div class="muted fg-tip" style="margin:0 0 10px 110px;font-size:12px;line-height:1.7">
+          已统一启用高质量模式（场景级生成 + 动态模块轮换 + 每章自动改稿与读者视角审校），
+          编辑质检 / 去 AI 味 / 防同质化 / 人物立体化 默认全开，单价 3 元/万字
+        </div>
 
         <el-form-item label="费用估算">
           <div class="price-hint">
@@ -175,7 +112,7 @@
             </span>
             <span v-else>AI生成约 {{ form.total_words }} 字</span>
             <br>
-            单价：{{ form.high_quality_mode ? '3.00 元/万字（高质量）' : '2.00 元/万字' }}
+            单价：3.00 元/万字（高质量）
             <b>预估费用：约 {{ estPrice }} 元</b>
             <small class="muted">（创建不扣费，生成完成后按实际字数结算）</small>
           </div>
@@ -200,7 +137,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { listProjects, createProject, archiveProject, cloneProject, deleteProject } from '../api/project'
-import { listStyleRoles, parseContent, listPlatformSkills, listMySkills } from '../api/tools'
+import { parseContent } from '../api/tools'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const list = ref([])
@@ -210,19 +147,10 @@ const filter = ref('')
 const sort = ref('created')
 const showCreate = ref(false)
 const creating = ref(false)
-const styleRoles = ref([])
-const skills = ref([])
 const showFormat = ref(false)
 const fileMsg = ref('')
 const charInput = ref('')
 const forbidInput = ref('')
-const advOpen = ref([])
-
-const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }
-const skillStage = s => {
-  const list = (s.applicable_stages || '').split(/[,，]/).map(x => x.trim()).filter(Boolean)
-  return list.length ? list.map(x => STAGE_LABELS[x] || x).join('/') : ''
-}
 
 const formatSample = [
   '《示例书名》',
@@ -248,12 +176,11 @@ const formatSample = [
 ].join('\n')
 
 const form = ref({
-  title: '', genre: '', total_words: 25000, chapter_words: 2500, style: '', premise: '',
+  title: '', genre: '', total_words: 25000, chapter_words: 2500, premise: '',
   background: '', hero: '', characters: [], plot_direction: '', forbidden: [],
-  pacing_density: 'medium', plot_speed: 'medium', custom_prompt: '',
   editor_review: true, de_ai: true, anti_similarity: true, character_depth: true,
-  memory_window: 5, skill_id: 0,
-  mode: 'auto', high_quality_mode: false, style_role_id: 0,
+  memory_window: 5,
+  mode: 'auto', high_quality_mode: true,
   existing_words: 0, user_content: '', expand_input: '', with_research: false,
 })
 const fileInput = ref(null)
@@ -264,7 +191,7 @@ const aiWords = computed(() => {
   return Math.max(0, target - existing)
 })
 const estPrice = computed(() => {
-  const rate = form.value.high_quality_mode ? 3 : 2
+  const rate = 3
   return ((aiWords.value / 10000) * rate).toFixed(2)
 })
 
@@ -312,25 +239,6 @@ async function load() {
   } catch (e) {
     ElMessage.error('加载失败')
   } finally { loading.value = false }
-}
-
-async function loadStyleRoles() {
-  try {
-    const res = await listStyleRoles()
-    styleRoles.value = res.roles || []
-  } catch (e) { /* 风格角色加载失败不阻塞建书 */ }
-}
-
-async function loadSkills() {
-  try {
-    const [pl, mine] = await Promise.all([listPlatformSkills(), listMySkills()])
-    const map = new Map()
-    ;(pl.skills || pl || []).forEach(s => map.set(s.id, { ...s, scope: '平台' }))
-    ;(mine.skills || mine || []).forEach(s => {
-      if (!map.has(s.id)) map.set(s.id, { ...s, scope: '我的' })
-    })
-    skills.value = [...map.values()]
-  } catch (e) { /* 技能加载失败不阻塞建书 */ }
 }
 
 function addCharacter() {
@@ -405,7 +313,7 @@ async function doDelete(p) {
   load()
 }
 
-onMounted(() => { load(); loadStyleRoles(); loadSkills() })
+onMounted(() => { load() })
 </script>
 
 <style scoped>
@@ -429,8 +337,4 @@ onMounted(() => { load(); loadStyleRoles(); loadSkills() })
 .fg-row { display: flex; gap: 16px; }
 .fg-tip { margin-left: 10px; font-size: 12px; }
 .tag-wrap { display: flex; align-items: center; flex-wrap: wrap; width: 100%; }
-.adv-collapse { margin-bottom: 14px; border-top: none; }
-.adv-collapse :deep(.el-collapse-item__header) { font-size: 13px; color: #606266; }
-.adv-collapse :deep(.el-collapse-item__content) { padding-bottom: 8px; }
-.adv-collapse :deep(.el-form-item) { margin-bottom: 14px; }
 </style>

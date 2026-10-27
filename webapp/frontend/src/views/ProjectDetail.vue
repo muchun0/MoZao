@@ -14,6 +14,7 @@
         </div>
       </div>
       <div class="pd-head-actions">
+        <el-button text @click="$router.push('/')">← 返回书架</el-button>
         <el-dropdown v-if="chapters.length" trigger="click" @command="doDownload">
           <el-button :disabled="genRunning" :loading="exporting">导出 ▾</el-button>
           <template #dropdown>
@@ -134,11 +135,9 @@
       </main>
     </div>
 
-    <!-- 底部数据条：已写字数 / 章节进度 / 质检均分 -->
+    <!-- 底部数据条：章节进度（字数信息已收敛到顶栏元数据，避免重复） -->
     <div class="pd-footer">
-      <span>已写 <b>{{ fmtWords(totalWords) }}</b></span>
-      <span class="dot">·</span>
-      <span>进度 <b>{{ genDoneCount }} / {{ genTotal || '—' }} 章</b></span>
+      <span>章节进度 <b>{{ genDoneCount }} / {{ genTotal || '—' }} 章</b></span>
     </div>
 
     <!-- 统一版本弹窗（阶段 1C）：chapter/outline/world 共用 -->
@@ -856,7 +855,6 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
   color: var(--muted);
 }
 .pd-footer b { color: var(--ink-soft); font-weight: 500; }
-.pd-footer .dot { color: var(--card-line); }
 
 /* ===== 面板工具条（大纲页） ===== */
 .panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

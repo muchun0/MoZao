@@ -38,14 +38,13 @@ def test_split_plan_beats():
 
 @pytest.mark.p2
 def test_norm_action_rewrite_normalized():
-    """等价改写归一到规范动作（修复点：近义改写不再判 miss）。"""
-    assert _normalize_term("咬喉")[0] == "被咬死"
-    assert _normalize_term("咬穿")[0] == "被咬死"
-    assert _normalize_term("检查面板")[0] == "看面板"
-    assert _normalize_term("面板在脑子里亮")[0] == "看面板"
+    """等价改写归一到规范动作（修复点：近义改写不再判 miss；书级词族已移除）。"""
+    assert _normalize_term("砸碎")[0] == "砸"
+    assert _normalize_term("活过来")[0] == "复活"
+    assert _normalize_term("走向")[0] == "前往"
     assert _normalize_term("没有任何动作词")[0] == "没有任何动作词"
     # _slot_hit：正文出现归一主词族任一写法即命中
-    assert _slot_hit("咬喉", "灰卒咬穿了他的喉咙")
+    assert _slot_hit("砸碎", "他用铁锤砸碎了核心")
     assert _slot_hit("清晨", "天刚蒙蒙亮")
     assert not _slot_hit("隐藏", "一座古老的祭坛")
 

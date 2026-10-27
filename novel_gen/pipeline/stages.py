@@ -944,6 +944,7 @@ class ChapterWriter:
                 dynamic_module_used=hq_mode,
                 plan_core_event=plan_core_event,
                 plan_moves=plan_moves,
+                conflict_names=_world_conflict_names(world),
                 silent=silent,
             )
             system = ""
@@ -1634,6 +1635,7 @@ class ChapterWriter:
                                  dynamic_module_used: bool = True,
                                  plan_core_event: str = "",
                                  plan_moves: str = "",
+                                 conflict_names: tuple[str, ...] = (),
                                  silent: bool = False):
         """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
 
@@ -1661,6 +1663,7 @@ class ChapterWriter:
             derived_events = _derive_events_from_moves(
                 plan_moves,
                 int(getattr(self.cfg, "chapter_words", 0) or 0),
+                names=conflict_names,
             )
             if derived_events:
                 # 骨架文本：编号 + desc 逐条列出，明示事件数与"场景数=事件数"约束
@@ -1816,7 +1819,7 @@ class ChapterWriter:
                     if sem_dup:
                         break
             else:
-                sem_dup = _scene_events_semantically_overlap(events_list)
+                sem_dup = _scene_events_semantically_overlap(events_list, conflict_names)
             if scenes and not ok_plan:
                 if not silent:
                     print(f"  [拆场景] 场景规划校验不通过（{why_bad}），回退整章生成")
@@ -2063,7 +2066,7 @@ class ChapterWriter:
                 # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
                 # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
                 if piece and done_events:
-                    dup_ev = _scene_text_rewrites_event(piece, done_events)
+                    dup_ev = _scene_text_rewrites_event(piece, done_events, conflict_names)
                     if dup_ev:
                         if not silent:
                             print(f"  [场景] 第{idx}个场景复写了已发生事件"
@@ -2091,7 +2094,7 @@ class ChapterWriter:
                             presence_penalty=0.2,
                         )
                         retry3 = _strip_html_tags(retry3)
-                        if retry3 and not _scene_text_rewrites_event(retry3, done_events):
+                        if retry3 and not _scene_text_rewrites_event(retry3, done_events, conflict_names):
                             piece = retry3
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
@@ -2620,32 +2623,61 @@ _SCENE_ACTION_NORM = {
 _SCENE_RESCUE_VERBS = ("救", "引开", "砸", "挡", "扑", "迎")
 
 
-def _event_conflict(text: str) -> str:
-    """提取事件槽位核心对象：优先被救/受害人物（苏妄言/学员/弟子/少年/少女），
-    无人物才取敌人词（赤尉/灰卒/蚀兽/蚀卒）；只返回核心词（去量词）——
-    敌人措辞（'三只灰卒' vs '三只赤尉伴生灰卒'）不参与精确比对，
-    同一人物+同一救援动作即判复写（第四版救人岩台版/墟口外版即此类，敌人词不同双漏检）。"""
-    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(苏妄言|学员|弟子|少年|少女)", text or "")
+def _world_conflict_names(world) -> tuple[str, ...]:
+    """从 World 人物卡 + 敌人图鉴提取冲突对象候选名单（通用化 2026-10-27）。
+
+    书级人名/敌人词（苏妄言/赤尉/灰卒/蚀兽/蚀卒）已从代码移除，改为按本书
+    World.characters / World.enemies 动态注入；异常 → 空名单（降级为通用称谓兜底）。
+    """
+    names: list[str] = []
+    try:
+        for c in (getattr(world, "characters", None) or []):
+            n = str(getattr(c, "name", "") or "").strip()
+            if n:
+                names.append(n)
+        for e in (getattr(world, "enemies", None) or []):
+            n = str(getattr(e, "name", "") or "").strip()
+            if n:
+                names.append(n)
+    except Exception:
+        pass
+    return tuple(names)
+
+
+def _event_conflict(text: str, names: tuple[str, ...] = ()) -> str:
+    """提取事件槽位核心对象：优先被救/受害人物（World 人物卡名单 + 通用称谓），
+    无人物才取敌人（World 敌人图鉴名单 + 通用称谓）；只返回核心词（去量词）。
+
+    通用化（2026-10-27）：书级人名/敌人词（苏妄言/赤尉/灰卒/蚀兽/蚀卒）移除，
+    候选名单由调用方从 World 动态注入（_world_conflict_names）；通用称谓
+    （少年/少女/弟子/学员）保留兜底。敌人措辞（'三只灰卒' vs '三只赤尉伴生灰卒'）
+    不参与精确比对——同一人物+同一救援动作即判复写（第四版救人岩台版/墟口外版
+    即此类，敌人词不同双漏检）。
+    """
+    src = text or ""
+    for name in names:
+        if name and name in src:
+            return name
+    m = re.search(r"(?:三头?|三只?|几只?|一头?|一只?|个)?(学员|弟子|少年|少女)", src)
     if m:
-        return m.group(2)
-    m = re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", text or "")
-    if m:
-        return m.group(2)
+        return m.group(1)
     return ""
 
 
-def _scene_text_rewrites_event(text: str, done_event_descs: list[str]) -> str:
+def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
+                               names: tuple[str, ...] = ()) -> str:
     """2026-10-01 场景正文事件级复写检测（零 LLM、确定性）：
     语义互斥只校验拆场景 events 清单，拦不住"场景生成时模型把已发生事件换措辞又写一遍"
     （第三版坡顶救人/墟口外救人：conflict 措辞'三条赤尉'vs'巨型赤尉'，文本相似度与
     事件清单双漏检——场景 2 与场景 3 各自引用唯一事件，但场景 3 正文把'救苏妄言'
     完整重演）。规则：正文含救援行为动词（救/引开/冲/砸/挡/拽/拖/扑/迎）+ 冲突对象，
-    且与某已完成事件的冲突对象+救援动作同现 → 该事件被再次完整执行，返回被复写事件原文。"""
-    c = _event_conflict(text)
+    且与某已完成事件的冲突对象+救援动作同现 → 该事件被再次完整执行，返回被复写事件原文。
+    通用化（2026-10-27）：冲突对象名单由调用方从 World 动态注入（names）。"""
+    c = _event_conflict(text, names)
     if not c or not any(v in text for v in _SCENE_RESCUE_VERBS):
         return ""
     for ev in done_event_descs:
-        ec = _event_conflict(ev)
+        ec = _event_conflict(ev, names)
         if not ec or not any(v in ev for v in _SCENE_RESCUE_VERBS):
             continue
         if c == ec or c in ec or ec in c:
@@ -2722,7 +2754,8 @@ def _scene_count_for_words(chapter_words: int) -> int:
     return 4
 
 
-def _derive_events_from_moves(moves: str, chapter_words: int = 0) -> list[dict]:
+def _derive_events_from_moves(moves: str, chapter_words: int = 0,
+                              names: tuple[str, ...] = ()) -> list[dict]:
     """REQ-scene-plan-align：把大纲 character_moves（逐拍动作序列）确定性切分为事件清单。
 
     - 每拍 = 一个事件（id 按序编号、desc 逐字保留骨架原文，conflict/action 复用语义槽位提取）；
@@ -2730,6 +2763,7 @@ def _derive_events_from_moves(moves: str, chapter_words: int = 0) -> list[dict]:
       N 由章节字数反推（_scene_count_for_words，每场景约 1200 字，行业粒度 800-2500 字）；
       chapter_words<=0 时 N=4（兼容旧行为，仅按拍数切分）。
     - 输入为空 / 切分后 <2 拍 → 返回 []（调用方回退原 LLM 规划路径）。
+    - names（通用化 2026-10-27）：冲突对象候选名单，从 World 动态注入。
 
     确定性保证：纯字符串切分 + 固定合并规则，无 LLM 采样，同一输入恒得同一输出。
     """
@@ -2761,18 +2795,20 @@ def _derive_events_from_moves(moves: str, chapter_words: int = 0) -> list[dict]:
         del beats[j]
     events = []
     for i, b in enumerate(beats, start=1):
-        c, a = _event_semantic_slots(b)
+        c, a = _event_semantic_slots(b, names=names)
         events.append({"id": f"事件{i}", "desc": b, "conflict": c, "action": a, "final_state": ""})
     return events
 
 
-def _event_semantic_slots(desc: str, conflict: str = "", action: str = "") -> tuple[str, str]:
+def _event_semantic_slots(desc: str, conflict: str = "", action: str = "",
+                          names: tuple[str, ...] = ()) -> tuple[str, str]:
     """提取事件的语义槽位（核心对象, 归一化动作）。
 
     2026-10-01 改为「被救/受害人物优先」：同一人物+同一动作即判重复（第四版
     '救苏妄言'岩台版/墟口外版：敌人措辞'三只灰卒'vs'三只赤尉伴生灰卒'，旧版按敌人词
-    比对双漏检——事件清单互斥与场景正文复写检测全失效）。desc 无人物时才回退敌人词
-    （赤尉/灰卒/蚀兽/蚀卒）；只取核心词（去量词）。动作归一化不变。
+    比对双漏检——事件清单互斥与场景正文复写检测全失效）。通用化（2026-10-27）：
+    人物/敌人名单由调用方从 World 动态注入（names），desc 无名单命中时回退通用称谓；
+    只取核心词（去量词）。动作归一化不变。
     """
     import re as _re
     conflict_v = ""
@@ -2782,26 +2818,23 @@ def _event_semantic_slots(desc: str, conflict: str = "", action: str = "") -> tu
             if w in desc:
                 action_v = norm
                 break
-    src = desc or ""
-    m = _re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(苏妄言|学员|弟子|少年|少女)", src)
-    if m:
-        conflict_v = m.group(2)
-    else:
-        m = _re.search(r"(三头?|三只?|几只?|一头?|一只?|个)?(赤尉|灰卒|蚀兽|蚀卒)", src or conflict)
-        if m:
-            conflict_v = m.group(2)
+    src = (desc or "").strip() or conflict
+    conflict_v = _event_conflict(src, names)
     return conflict_v, action_v
 
 
-def _scene_events_semantically_overlap(events: list[dict]) -> bool:
+def _scene_events_semantically_overlap(events: list[dict],
+                                       names: tuple[str, ...] = ()) -> bool:
     """事件清单语义槽位互斥（零 LLM）：任意两事件的（冲突对象, 归一化动作）相同 =
-    同一事件拆成两场景（救苏妄言石殿版/墟口外版），返回 True 由调用方回退整章。"""
+    同一事件拆成两场景（救苏妄言石殿版/墟口外版），返回 True 由调用方回退整章。
+    通用化（2026-10-27）：冲突对象名单由调用方从 World 动态注入（names）。"""
     slots: list[tuple[str, str]] = []
     for e in events or []:
         if not isinstance(e, dict):
             continue
         desc = str(e.get("desc") or "").strip()
-        c, a = _event_semantic_slots(desc, str(e.get("conflict") or ""), str(e.get("action") or ""))
+        c, a = _event_semantic_slots(desc, str(e.get("conflict") or ""),
+                                      str(e.get("action") or ""), names)
         if not c and not a:
             continue
         slots.append((c, a))

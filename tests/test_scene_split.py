@@ -342,35 +342,36 @@ def test_split_prompt_event_dedup_rule():
 
 
 def test_scene_events_semantic_slot_dedup():
-    """事件语义槽位互斥（2026-10-01）：同冲突对象+同动作=重复事件（救苏妄言石殿版/墟口外版），
-    即使 desc 措辞/地点不同；不同动作/不同冲突对象不误报。"""
+    """事件语义槽位互斥（2026-10-01）：同冲突对象+同动作=重复事件（救同伴石殿版/墟口外版），
+    即使 desc 措辞/地点不同；不同动作/不同冲突对象不误报。通用化后名单从 World 注入（names）。"""
     from novel_gen.pipeline.stages import _scene_events_semantically_overlap
+    names = ("陆沉", "苏妄言", "赤尉", "灰卒", "蚀核")
     # 同冲突（三头赤尉）+同动作（救援），地点不同 → 重复（4500 字版根因形态）
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉在穹顶石殿引开赤尉把苏妄言拖进窄缝", "conflict": "三头赤尉", "action": "救援"},
         {"id": "事件3", "desc": "陆沉在墟口外碎石坡从围阵中拽走苏妄言", "conflict": "三头赤尉", "action": "救援"},
-    ]) is True
+    ], names) is True
     # 无结构化字段时从 desc 兜底提取（救 vs 围）→ 救援/围攻不同动作不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件1", "desc": "陆沉被灰卒咬穿喉咙，面板3→2，复活"},
         {"id": "事件2", "desc": "陆沉在石殿救出苏妄言"},
-    ]) is False
+    ], names) is False
     # 同动作但冲突对象不同（救苏妄言 vs 救受伤弟子）→ 不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "救苏妄言", "conflict": "苏妄言", "action": "救援"},
         {"id": "事件3", "desc": "救受伤弟子", "conflict": "受伤弟子", "action": "救援"},
-    ]) is False
+    ], names) is False
     # 2026-10-01 第四版根因形态：同一"救苏妄言"事件，敌人措辞不同
     # （'三只灰卒' vs '三只赤尉伴生灰卒'）→ 人物优先判重（旧版按敌人词双漏检）
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、掰开咬住她左臂的灰卒，苏妄言获救", "action": "救援"},
         {"id": "事件3", "desc": "苏妄言被三只赤尉伴生灰卒围在巨石旁，陆沉冲出去用铁镐砸碎蚀核救她，苏妄言再次获救", "action": "救援"},
-    ]) is True
+    ], names) is True
     # 同一人物但动作不同（救 vs 察觉）→ 不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉救出苏妄言", "action": "救援"},
         {"id": "事件3", "desc": "苏妄言察觉陆沉死而复生的异常", "action": "察觉"},
-    ]) is False
+    ], names) is False
 
 
 def test_long_sentence_overlap_ratio():
@@ -418,8 +419,9 @@ def test_strip_json_block_robust():
 def test_scene_text_rewrites_event():
     """2026-10-01 场景正文事件级复写检测：场景正文把已发生事件换措辞又写一遍
     （坡顶救人版/墟口外救人版：conflict 措辞不同但同为'赤尉+救援'）→ 命中；
-    不同冲突对象（灰卒死亡 vs 救人）→ 不误报。"""
+    不同冲突对象（灰卒死亡 vs 救人）→ 不误报。通用化后名单从 World 注入（names）。"""
     from novel_gen.pipeline.stages import _scene_text_rewrites_event
+    names = ("陆沉", "苏妄言", "赤尉", "灰卒")
     # 已完成事件：场景1（灰卒死亡复活）、场景2（坡顶救人）
     done = [
         "陆沉被灰卒咬穿喉咙，面板 3/3→2/3，复活",
@@ -430,19 +432,19 @@ def test_scene_text_rewrites_event():
         "陆沉冲了出去，把铁精矿石抡圆砸向巨型赤尉的复眼，苏妄言趁机结印，"
         "金光直贯赤尉，三人退入裂隙。"
     )
-    assert _scene_text_rewrites_event(text_dup, done) == done[1]
+    assert _scene_text_rewrites_event(text_dup, done, names) == done[1]
     # 全新推进（无救援动作/不同冲突对象）→ 不命中
     text_new = (
         "裂隙深处一片死寂，陆沉靠着岩壁喘匀气，摸出火折子点上，"
         "他低头看了一眼面板，还剩两次。"
     )
-    assert _scene_text_rewrites_event(text_new, done) == ""
+    assert _scene_text_rewrites_event(text_new, done, names) == ""
     # 场景1 正文（灰卒死亡）不误报救人
     text_death = (
         "灰卒咬穿了他的喉管，血喷出来，他抬手去挡，视野发黑。"
         "面板浮现：今日可死次数：2/3。"
     )
-    assert _scene_text_rewrites_event(text_death, done) == ""
+    assert _scene_text_rewrites_event(text_death, done, names) == ""
     # 2026-10-01 第四版根因形态：场景正文复写"救苏妄言"但敌人措辞不同
     # （赤尉伴生灰卒 vs 灰卒）→ 人物优先命中；纯撤离场景不误报
     done4 = ["陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、苏妄言获救"]
@@ -450,12 +452,12 @@ def test_scene_text_rewrites_event():
         "墟口外的空地上，苏妄言被三只赤尉伴生灰卒围在巨石旁，"
         "陆沉再次冲出去，用铁镐砸碎蚀核救她，她脱险后喘着气看他。"
     )
-    assert _scene_text_rewrites_event(text_dup4, done4) == done4[0]
+    assert _scene_text_rewrites_event(text_dup4, done4, names) == done4[0]
     text_retreat = (
         "陆沉拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
         "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。"
     )
-    assert _scene_text_rewrites_event(text_retreat, done4) == ""
+    assert _scene_text_rewrites_event(text_retreat, done4, names) == ""
 
 
 def test_scene_prompt_forbid_event():
@@ -494,23 +496,23 @@ def test_extract_json_field_partial():
 
 def test_scene_prompt_prevention_rules():
     """写场景 prompt 含事前硬规则：数字结算时机、术语锁定、同模式动作去重、死亡多样化、
-    面板显示纪律、状态度量单一口径、角色身份锁定、摘要覆盖最终状态。"""
+    机制数字显示纪律、状态度量单一口径、角色身份锁定、摘要覆盖最终状态。"""
     from novel_gen.pipeline.templates import scene_prompt
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
              "anchors": [], "target_words": 1200, "final_state": "面板 2/3，蚀痕已越肘弯"}
     _, user = scene_prompt(cfg, 1, "第一章", 1, scene, "前情记忆", "", "")
-    assert "机制数字结算（硬约束）" in user             # 死亡瞬间 vs 复活后 数字口径
-    assert "术语与状态口径" in user                     # 禁止'光盾'变'命执盾'
+    assert "机制数字结算（硬约束）" in user             # 结算事件 数字口径
+    assert "术语与状态口径" in user                     # 术语固定写法
     assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
     assert "死因必须不同" in user                       # 连续死亡死因不同
-    assert "面板数字只出现一次且即时结算" in user       # 数字只在结算瞬间出现一次
-    assert "累积口径" in user                           # 蚀痕累积口径，禁止多处重新计量
-    assert "增长量只用" in user                         # 蚀痕增长只用'寸'，禁'三指/一指宽'
-    assert "外貌/服装/代称全局唯一" in user             # 苏妄言青袍短发不得第二套描述
-    assert "写本章最终结算后的面板状态" in user         # 摘要写最终结算数字，不写开篇状态
+    assert "数字只出现一次且即时结算" in user           # 数字只在结算瞬间出现一次
+    assert "累积口径" in user                           # 累积状态口径，禁止多处重新计量
+    assert "禁止同一状态多处从起点重新计量" in user     # 累积状态禁止多处从起点重新计量
+    assert "外貌/服装/代称全局唯一" in user             # 青袍短发代称不得第二套描述
+    assert "写本章最终结算后的机制状态" in user         # 摘要写最终结算数字，不写开篇状态
     assert "禁止再次描写同一事件" in user               # 本章已发生事件不得再次描写（两版本）
-    assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入（防蚀痕无增量）
+    assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入
 
 
 def test_split_prompt_word_count_hardcap():

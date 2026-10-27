@@ -100,9 +100,9 @@ def _save_outline(store, moves: str):
 
 @pytest.mark.p1
 def test_extract_beat_sequence_cycle_order():
-    """完整循环 → 归一化节拍序列（顺序保持、长词优先、去连续重复）。"""
+    """完整循环 → 归一化节拍序列（顺序保持、长词优先、去连续重复；书级拍已移除）。"""
     seq = _extract_beat_sequence(_CYCLE_A)
-    assert seq == ["盘问", "戳穿", "失控", "挡死", "死亡", "复活", "面板", "留牌", "离场"]
+    assert seq == ["盘问", "戳穿", "失控", "死亡", "复活", "离场"]
 
 
 @pytest.mark.p1
@@ -224,8 +224,8 @@ def test_beat_cycle_issues_detects_strong_shared_two_versions():
     """同一事件两版本共享 ≥2 种强情节拍且窗口等长
     （盘问→失控→死亡→面板 ×2）→ 仍报大改。"""
     content = (
-        "她盘问他，他失控，咽气倒下，面板显示可死次数。"
-        "她又逼问，执能爆裂，断气，面板又亮。"
+        "她盘问他，他失控，咽气倒下，又睁开眼爬了起来。"
+        "她又逼问，执能失控，断气，再次睁眼站起。"
     )
     issues = _beat_cycle_issues(content)
     assert len(issues) == 1

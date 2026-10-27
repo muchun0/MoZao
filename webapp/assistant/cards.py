@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from ..logger import get_logger
+from ..version_recommend import attach_chapter_recommendations
 
 logger = get_logger("assistant")
 
@@ -54,9 +55,13 @@ def _issue_card(snap: dict) -> dict | None:
 
 
 def _version_card(store, chapter_no: int) -> dict | None:
-    """版本对比事实：当前选中版 vs 最近一个未选中版（只给数字，不生成 diff 文本）。"""
+    """版本对比事实：当前选中版 vs 最近一个未选中版（只给数字，不生成 diff 文本）。
+
+    复用 webapp 装配层拿到 badge/reasons：若当前选中不是 recommended，
+    卡片附带小墨建议切到哪一版 + 理由（确定性，零 LLM）。
+    """
     try:
-        versions = store.list_versions(chapter_no)
+        versions = attach_chapter_recommendations(store, chapter_no, store.list_versions(chapter_no))
     except Exception:
         logger.warning("版本列表读取失败（降级无版本卡）: chapter=%s", chapter_no)
         return None
@@ -69,15 +74,30 @@ def _version_card(store, chapter_no: int) -> dict | None:
     prev = others[-1]
     cq = current.get("quality") or {}
     pq = prev.get("quality") or {}
+
+    # 小墨建议：当前不是 recommended 且存在 recommended 版 → 提示切换
+    suggestion = None
+    if current.get("badge") != "recommended":
+        rec = next((v for v in versions if v.get("badge") == "recommended"), None)
+        if rec and rec.get("v") != current.get("v"):
+            suggestion = {
+                "v": rec.get("v"),
+                "reasons": rec.get("reasons") or [],
+                "hook_score": (rec.get("quality") or {}).get("hook_score"),
+            }
+
     return {
         "type": "versions", "title": "版本对比", "chapter": chapter_no,
         "current": {"v": current.get("v"), "words": current.get("words"),
-                    "defect_score": cq.get("score"), "big_issues": cq.get("issue_count")},
+                    "defect_score": cq.get("score"), "big_issues": cq.get("issue_count"),
+                    "hook_score": cq.get("hook_score"), "badge": current.get("badge")},
         "previous": {"v": prev.get("v"), "words": prev.get("words"),
-                     "defect_score": pq.get("score"), "big_issues": pq.get("issue_count")},
+                     "defect_score": pq.get("score"), "big_issues": pq.get("issue_count"),
+                     "hook_score": pq.get("hook_score"), "badge": prev.get("badge")},
         "word_delta": (current.get("words") or 0) - (prev.get("words") or 0),
         "defect_delta": ((cq.get("score") or 0) - (pq.get("score") or 0))
         if cq and pq else None,
+        "suggestion": suggestion,
     }
 
 

@@ -140,28 +140,64 @@ def _load_default_prompt(agent: str) -> str:
     return text
 
 
+def _reset_default_snapshot(store, agent: str, default_text: str) -> tuple[str, str]:
+    """无用户人设时，把过期的默认人设缓存重置为干净的 v1。
+
+    默认人设（author="default"）是系统模板的缓存、不是用户资产；当用户从未保存过
+    自己的人设时，系统 md 升级无需保留旧 default——删除旧快照后重建 v1，版本号
+    保持 v1、不产生版本垃圾。
+    """
+    agent_dir = _agent_dir(store, agent)
+    if agent_dir.exists():
+        for path in agent_dir.glob("v*.md"):
+            path.unlink()
+        meta_path = agent_dir / "meta.json"
+        if meta_path.exists():
+            meta_path.unlink()
+    return _snapshot(store, agent, default_text, author="default")
+
+
 def get_prompt_meta(store, agent: str) -> tuple[str, str, str]:
     """读取 agent 当前人设，返回 (text, prompt_version, sha256)。
 
-    无覆盖时把系统默认人设（角色底色 md 全文）懒快照为 v1（author="default"）后返回；
-    meta 损坏或版本文件缺失时重建快照（不抛错，留痕链路不能阻断生成）。
+    - 当前为用户人设（author="user"）：直接返回，永不被系统自动覆盖；
+    - 当前为默认人设（author="default"）：内容与当前角色底色 md 一致才返回，md 已升级
+      （旧项目是一句话占位快照）时自动刷新——无用户版本则重置为干净 v1，有用户历史
+      （兜底）则新建 default 快照、保留用户版本；
+    - 无版本 / meta 损坏 / 版本文件缺失：重建默认快照（不抛错，留痕链路不能阻断生成）。
     """
     if agent not in EDITABLE_AGENTS:
         raise ValueError(f"不可编辑人设的 agent: {agent}")
     agent_dir = _agent_dir(store, agent)
+    default_text = _load_default_prompt(agent)
+    default_sha = _sha256(default_text)
     meta = _read_meta(agent_dir)
+    versions = meta.get("versions") or []
     current = int(meta.get("current") or 0)
-    if current > 0:
+    cur_rec = next((v for v in versions if v.get("version") == current), None)
+    has_user = any(v.get("author") == "user" for v in versions)
+
+    # 当前是用户人设 → 直接返回（用户选择优先，不自动覆盖）
+    if cur_rec is not None and cur_rec.get("author") == "user":
         path = agent_dir / f"v{current}.md"
         if path.exists():
             text = path.read_text(encoding="utf-8")
-            rec = next((v for v in meta["versions"] if v.get("version") == current), {})
-            digest = str(rec.get("sha256") or _sha256(text))
+            digest = str(cur_rec.get("sha256") or _sha256(text))
             return text, _PROMPT_VERSION_FMT.format(agent=agent, n=current), digest
-    # 懒快照：默认人设（角色底色 md 全文）落 v1
-    text = _load_default_prompt(agent)
-    version, digest = _snapshot(store, agent, text, author="default")
-    return text, version, digest
+        cur_rec = None  # 文件丢失，落到重建逻辑
+
+    # 当前默认人设内容仍是最新（sha 一致）且文件存在 → 直接返回
+    if cur_rec is not None and str(cur_rec.get("sha256")) == default_sha:
+        path = agent_dir / f"v{current}.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8"), _PROMPT_VERSION_FMT.format(agent=agent, n=current), default_sha
+
+    # 默认人设过时 / 无版本 / 文件丢失：无用户版本→重置为干净 v1；有用户历史→新建 default
+    if not has_user:
+        version, digest = _reset_default_snapshot(store, agent, default_text)
+    else:
+        version, digest = _snapshot(store, agent, default_text, author="default")
+    return default_text, version, digest
 
 
 def save_user_prompt(store, agent: str, text: str) -> tuple[str, str]:

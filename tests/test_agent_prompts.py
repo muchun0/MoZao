@@ -85,3 +85,34 @@ def test_all_editable_agents_have_default(store):
     for agent in agent_prompts.EDITABLE_AGENTS:
         text, version, _ = agent_prompts.get_prompt_meta(store, agent)
         assert text.strip() and version == f"{agent}@v1"
+
+
+@pytest.mark.p1
+def test_stale_default_snapshot_refreshed_to_full_md(store):
+    """存量项目的旧 default 快照（一句话占位）→ 自动刷新为完整 md，版本号保持 v1。"""
+    import hashlib
+    import time
+    agent = "writer.chapter"
+    stale = "你是章节写手。依据大纲、世界观与记忆上下文撰写章节正文，文风统一、节奏达标。"
+    agent_dir = store.dir / "agent_prompts" / "writer_chapter"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "v1.md").write_text(stale, encoding="utf-8")
+    meta = {"current": 1, "versions": [{"version": 1, "author": "default",
+                                        "sha256": hashlib.sha256(stale.encode("utf-8")).hexdigest(),
+                                        "created_at": time.time()}]}
+    (agent_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    # 读取：旧 default 缓存被重置为完整 md，版本号保持 v1（不产生 v2）
+    text, version, sha = agent_prompts.get_prompt_meta(store, agent)
+    assert version == "writer.chapter@v1"
+    assert "你只写本章正文" in text
+    assert text != stale
+
+
+@pytest.mark.p1
+def test_user_prompt_not_overwritten_when_default_upgrades(store):
+    """用户已保存人设 → 系统默认升级也不自动覆盖用户人设（用户选择优先）。"""
+    agent = "writer.chapter"
+    version2, _ = agent_prompts.save_user_prompt(store, agent, "我的专属写手人设，文风冷峻克制。")
+    text, version, sha = agent_prompts.get_prompt_meta(store, agent)
+    assert version == version2
+    assert text == "我的专属写手人设，文风冷峻克制。"

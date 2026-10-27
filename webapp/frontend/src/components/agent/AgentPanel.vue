@@ -152,7 +152,14 @@
           人设将作为 system 提示词注入该 Agent（追加到默认模板末尾）。保存即生成新版本，历史版本不可变、可追溯；当前版本 {{ editingVersion }}。请勿写入越权指令，输出仍受平台合规校验约束。
         </template>
       </el-alert>
-      <el-input v-model="editingText" type="textarea" :rows="10" maxlength="8000" show-word-limit />
+      <div class="prompt-mode-bar">
+        <el-radio-group v-model="promptMode" size="small">
+          <el-radio-button value="preview">预览</el-radio-button>
+          <el-radio-button value="edit">编辑（Markdown 源码）</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div v-if="promptMode === 'preview'" class="prompt-preview markdown-body" v-html="renderedPrompt"></div>
+      <el-input v-else v-model="editingText" type="textarea" :rows="12" maxlength="8000" show-word-limit />
       <template #footer>
         <el-button @click="promptDialog = false">取消</el-button>
         <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存为新版本</el-button>
@@ -171,6 +178,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance, estimateAgentRun } from '../../api/project'
 import { getAgentPrompts, saveAgentPrompt } from '../../api/novel'
 import SkillPicker from './SkillPicker.vue'
+import MarkdownIt from 'markdown-it'
+
+// 人设 Markdown 预览：html=false 转义原始 HTML（防 XSS），linkify 自动识别链接
+const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
 
 const props = defineProps({
   pid: { type: String, required: true },
@@ -390,12 +401,16 @@ const editingAgent = ref('')
 const editingAgentName = ref('')
 const editingText = ref('')
 const editingVersion = ref('')
+// 弹窗默认渲染态（可读），可切到编辑态改 Markdown 源码
+const promptMode = ref('preview')
+const renderedPrompt = computed(() => mdRenderer.render(editingText.value || ''))
 
 function openPromptEditor(a) {
   editingAgent.value = a.key
   editingAgentName.value = a.name
   editingText.value = prompts.value[a.key]?.text || ''
   editingVersion.value = promptVersion(a.key)
+  promptMode.value = 'preview'
   promptDialog.value = true
 }
 
@@ -634,6 +649,47 @@ onBeforeUnmount(() => {
 }
 
 .prompt-tip { margin-bottom: 10px; }
+.prompt-mode-bar { margin-bottom: 10px; }
+.prompt-preview {
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 14px 18px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.markdown-body :first-child { margin-top: 0; }
+.markdown-body :last-child { margin-bottom: 0; }
+.markdown-body h1 { font-size: 20px; margin: 18px 0 12px; }
+.markdown-body h2 {
+  font-size: 16px; margin: 18px 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--card-line);
+}
+.markdown-body h3 { font-size: 15px; margin: 14px 0 8px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul, .markdown-body ol { margin: 8px 0; padding-left: 22px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body blockquote {
+  margin: 10px 0; padding: 6px 12px;
+  border-left: 3px solid var(--gold);
+  background: var(--gold-soft);
+  color: var(--ink-soft);
+}
+.markdown-body code {
+  padding: 2px 6px; border-radius: 4px;
+  background: var(--indigo-soft);
+  font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+}
+.markdown-body pre {
+  padding: 10px 12px; border-radius: 6px; overflow-x: auto;
+  background: var(--indigo-soft);
+}
+.markdown-body pre code { padding: 0; background: none; }
+.markdown-body a { color: var(--gold-deep); }
+.markdown-body strong { color: var(--ink); font-weight: 700; }
 
 @media (max-width: 860px) {
   .agent-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }

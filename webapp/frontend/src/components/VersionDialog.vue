@@ -17,7 +17,7 @@
             <span class="ver-no">v{{ v.v }}</span>
             <el-tag v-if="v.badge === 'recommended'" size="small" type="warning" effect="dark">推荐</el-tag>
             <el-tag v-else-if="v.badge === 'user_managed'" size="small" type="primary">你的选择</el-tag>
-            <el-tag v-else-if="v.badge === 'blocked_compliance'" size="small" type="info">合规不可用</el-tag>
+            <!-- blocked_compliance 理论不入版本库（quality 合规命中不落盘），后端兜底不推荐，UI 不展示 -->
             <el-tag size="small" :type="v.selected ? 'success' : 'info'">{{ v.selected ? '当前' : sourceText(v.source) }}</el-tag>
             <el-tag v-if="v.quality && v.quality.score !== undefined && v.quality.score !== null"
                     size="small" :type="v.quality.passed ? 'success' : 'danger'">

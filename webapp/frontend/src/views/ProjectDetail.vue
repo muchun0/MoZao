@@ -10,6 +10,7 @@
             <span v-if="project.config?.genre">{{ project.config.genre }}</span>
             <span v-if="project.config?.total_words">目标 {{ fmtWords(project.config.total_words) }}</span>
             <span>已写 {{ fmtWords(totalWords) }}</span>
+            <span>章节进度 {{ genDoneCount }} / {{ genTotal || '—' }} 章</span>
           </template>
         </div>
       </div>
@@ -133,11 +134,6 @@
           <ToolsPanel :pid="pid" />
         </section>
       </main>
-    </div>
-
-    <!-- 底部数据条：章节进度（字数信息已收敛到顶栏元数据，避免重复） -->
-    <div class="pd-footer">
-      <span>章节进度 <b>{{ genDoneCount }} / {{ genTotal || '—' }} 章</b></span>
     </div>
 
     <!-- 统一版本弹窗（阶段 1C）：chapter/outline/world 共用 -->
@@ -843,18 +839,6 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; pointer-events: auto; }
 /* 触屏设备无 hover，操作常驻 */
 @media (hover: none) { .ch-actions { opacity: 1; pointer-events: auto; } }
-
-/* ===== 底部数据条 ===== */
-.pd-footer {
-  margin-top: 28px;
-  padding-top: 14px;
-  border-top: 1px solid var(--card-line);
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.pd-footer b { color: var(--ink-soft); font-weight: 500; }
 
 /* ===== 面板工具条（大纲页） ===== */
 .panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

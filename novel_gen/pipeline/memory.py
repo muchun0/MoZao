@@ -392,6 +392,49 @@ class Memory:
     def _build_entity_cards(self, world, sub_enemies, sub_locations, sub_factions,
                             sub_items, sub_terminology, w_normal: list[str]) -> None:
         """L1 事前设计卡：怪物/地点/势力 + 分章命中的物品/术语卡（写手不得自行发明）。"""
+        self._build_creature_cards(world, sub_enemies, sub_locations, sub_factions, w_normal)
+        self._build_item_term_cards(world, sub_items, sub_terminology, w_normal)
+
+    def _build_foreshadow(self, world, sub_fs, hit: list[str], trimmed: bool,
+                          w_normal: list[str]) -> None:
+        """L1 伏笔：设定卡子集 / 裁剪后相关伏笔 / 全量已埋伏笔。"""
+        if not world.foreshadowing:
+            return
+        def _fs(x):
+            # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
+            if hasattr(x, "buried_ch"):
+                parts = []
+                if x.name or x.content:
+                    parts.append(x.name or x.content)
+                if getattr(x, "buried_ch", 0):
+                    parts.append(f"埋第{x.buried_ch}章")
+                if getattr(x, "reveal_ch", None):
+                    parts.append(f"收第{x.reveal_ch}章")
+                return "（" + "，".join(parts) + "）" if len(parts) > 1 else (parts[0] if parts else "")
+            if isinstance(x, dict):
+                return " ".join(str(v) for v in x.values())
+            return str(x)
+        if sub_fs is not None:
+            if sub_fs:
+                w_normal.append("相关伏笔：" + "；".join(sub_fs))
+        elif trimmed:
+            related = [x for x in world.foreshadowing if any(n in _fs(x) for n in hit)]
+            if related:
+                w_normal.append("相关伏笔：" + "；".join(_fs(x) for x in related))
+        else:
+            w_normal.append("已埋伏笔：" + "；".join(_fs(x) for x in world.foreshadowing))
+
+    def _build_key_settings(self, world, cfg_d, up_to_chapter: int, key_parts: list[str]) -> None:
+        """L1 用户强约束 + 全部事前设定卡（进强约束区，永不裁剪，prompt 末尾）。"""
+        self._build_user_constraints(world, cfg_d, key_parts)
+        self._build_theme_anchors(world, key_parts)
+        self._build_mechanism_baseline_cards(world, key_parts)
+        self._build_progression_cards(world, key_parts)
+        self._build_ending_cards(world, cfg_d, up_to_chapter, key_parts)
+
+    def _build_creature_cards(self, world, sub_enemies, sub_locations, sub_factions,
+                              w_normal: list[str]) -> None:
+        """L1 事前设计卡：生物图鉴 / 地点卡 / 势力卡（写手不得自行发明）。"""
         # ---- 事前设计卡（REQ-事前设定卡）：怪物/地点/势力，小而全量注入（写手不得自行发明）。
         # REQ-token优化 P1-1：有设定卡子集时按章只注入相关卡；无子集保持全量注入。 ----
         try:
@@ -445,6 +488,10 @@ class Memory:
                     w_normal.append("【势力卡·成员行为须符合此卡】\n" + "；".join(f_lines))
         except Exception:
             pass
+
+    def _build_item_term_cards(self, world, sub_items, sub_terminology,
+                               w_normal: list[str]) -> None:
+        """L1 分章命中的物品/道具卡 + 术语统一卡（防万能工具 / 专有名词标准写法）。"""
         # P2 修正：物品卡（防万能工具）按分章命中注入（sub_items=None=索引缺失回退全量；
         # 空列表=本章无命中不注入）；不再是"永不裁剪"强约束区
         try:
@@ -493,37 +540,8 @@ class Memory:
         except Exception:
             pass
 
-    def _build_foreshadow(self, world, sub_fs, hit: list[str], trimmed: bool,
-                          w_normal: list[str]) -> None:
-        """L1 伏笔：设定卡子集 / 裁剪后相关伏笔 / 全量已埋伏笔。"""
-        if not world.foreshadowing:
-            return
-        def _fs(x):
-            # ForeshadowItem（结构化）：携带埋点/回收章号，支撑正文伏笔闭环
-            if hasattr(x, "buried_ch"):
-                parts = []
-                if x.name or x.content:
-                    parts.append(x.name or x.content)
-                if getattr(x, "buried_ch", 0):
-                    parts.append(f"埋第{x.buried_ch}章")
-                if getattr(x, "reveal_ch", None):
-                    parts.append(f"收第{x.reveal_ch}章")
-                return "（" + "，".join(parts) + "）" if len(parts) > 1 else (parts[0] if parts else "")
-            if isinstance(x, dict):
-                return " ".join(str(v) for v in x.values())
-            return str(x)
-        if sub_fs is not None:
-            if sub_fs:
-                w_normal.append("相关伏笔：" + "；".join(sub_fs))
-        elif trimmed:
-            related = [x for x in world.foreshadowing if any(n in _fs(x) for n in hit)]
-            if related:
-                w_normal.append("相关伏笔：" + "；".join(_fs(x) for x in related))
-        else:
-            w_normal.append("已埋伏笔：" + "；".join(_fs(x) for x in world.foreshadowing))
-
-    def _build_key_settings(self, world, cfg_d, up_to_chapter: int, key_parts: list[str]) -> None:
-        """L1 用户强约束 + 全部事前设定卡（进强约束区，永不裁剪，prompt 末尾）。"""
+    def _build_user_constraints(self, world, cfg_d, key_parts: list[str]) -> None:
+        """L1 用户强约束（背景/主角/避雷 + 核心设定锁定 + 金手指机制，永不裁剪）。"""
         # 用户强约束（永不裁剪，进关键区）
         if cfg_d is not None:
             if getattr(cfg_d, "background", ""):
@@ -540,6 +558,9 @@ class Memory:
             key_parts.append(
                 "【金手指机制卡·绝对不可违背，数字与规则全文必须自洽，首章要实际用起来并兑现标题】\n" + mechanism
             )
+
+    def _build_theme_anchors(self, world, key_parts: list[str]) -> None:
+        """L1 底层锚点：主题 / 主角弧光 / 金手指五要素 / 设定禁忌（进强约束区）。"""
         # ---- 底层锚点（REQ 多Agent协作分层优化）：主题/弧光/金手指五要素/设定禁忌进强约束区 ----
         theme = getattr(world, "theme_proposition", "") or ""
         if theme:
@@ -567,6 +588,9 @@ class Memory:
         taboos = getattr(world, "setting_taboos", []) or []
         if taboos:
             key_parts.append("【设定禁忌·明确禁止出现的吃设定行为】\n" + "；".join(str(t) for t in taboos))
+
+    def _build_mechanism_baseline_cards(self, world, key_parts: list[str]) -> None:
+        """L1 机制初始值 + 时钟规则 + 语言风格禁忌（强约束区，写手不得自造数字/违背时间）。"""
         # 机制初始值（REQ-事前设定卡）：正文里数字的唯一标准答案，写手不得自行发明数字
         mb = getattr(world, "mechanism_baseline", None)
         if mb is not None and any([getattr(mb, f, "") for f in
@@ -596,6 +620,9 @@ class Memory:
         style_taboos = getattr(world, "style_taboos", []) or []
         if style_taboos:
             key_parts.append("【语言风格禁忌·以下词语/表达绝对禁止出现】\n" + "；".join(str(t) for t in style_taboos))
+
+    def _build_progression_cards(self, world, key_parts: list[str]) -> None:
+        """L1 等级/境界体系卡（防战力崩坏）：境界阶梯与主角当前境界进强约束区。"""
         # P1-3 等级/境界体系卡（防战力崩坏）：境界阶梯与主角当前境界进强约束区
         ps = getattr(world, "power_system", None)
         if ps is not None and (getattr(ps, "levels", None) or getattr(ps, "protagonist_level", "")):
@@ -615,6 +642,9 @@ class Memory:
                     "【等级/境界体系·战力提升必须在此阶梯内递增，禁止凭空跳阶/战力崩坏】\n"
                     + "\n".join(ps_lines)
                 )
+
+    def _build_ending_cards(self, world, cfg_d, up_to_chapter: int, key_parts: list[str]) -> None:
+        """L1 结局卡（末 5 章才注入）+ 对白风格指南（强约束区）。"""
         # P1-2 结局卡（末 N 章才注入，P2 修正）：终局方向只在末 5 章注入，避免写第 1 章时
         # 模型就预知结局（与 world_reveals「未揭示设定进强约束区禁剧透」逻辑一致：
         # 终局属未揭示的高阶设定，不应全程暴露）；num_chapters 未知时保守始终注入

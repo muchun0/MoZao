@@ -93,7 +93,13 @@
 | 文件 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
-| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照 `user_memory_snapshot.json`，webapp 写 / novel_gen 读，幂等+失败降级，接入全部生成入口）与 `_distill_user_memory`（书级→用户级蒸馏，生成完成/批量 finally 触发，幂等）；**后台开关管理** `_apply_global_overrides`（sys_config 表为准 → 内存态覆盖 cfg 顶层/agent_guard 子项/scene_limits，`_open_pipeline` 内 load_config 之后注入，DB 异常降级留痕） |
+| `core.py` | **核心层门面（组装壳，2026-10-28 拆分）**：FastAPI 实例/lifespan/CORS + 星号导入 6 个业务域子模块并统一再导出（`__all__ = [n for n in globals() if not n.startswith("__")]`），`from .core import *` / `from webapp.core import X` 导出面零变化；不再承载业务实现 |
+| `core_runtime.py` | **运行时**：路径常量（BASE_DIR/PROJECTS_DIR/OUTPUT_DIR/WEB_DIR/_MAX_UPLOAD/_TASK_FILE）、`_RunHandle`（含 task_id）/`_RUNS`/`_LOCK`/`_GEN_SEMAPHORE`、槽位 `_acquire_slot`/`_release_slot`、任务持久化 `_mark_task`/`_clear_task`/`_resume_interrupted_tasks`（agent_run 分支延迟 import generate_service） |
+| `core_models.py` | **Pydantic 请求/响应模型**：LLMReq…ChapterEditReq 全部请求模型（不含业务实现） |
+| `core_auth.py` | **鉴权**：`_require_user`/`_require_admin`/`_check_project_access`/`_assign_legacy_projects`/`_public_user` + 登录限流 `_login_ratelimit`/`_record_login_fail` |
+| `core_project.py` | **项目工具**：`_find_project`/`_list_projects`/`_cfg_to_dict`/`_resolve_llm`/`_server_api_key`/`_open_pipeline`（内含 `_apply_global_overrides` 后台开关覆盖）/`_project_use_user_llm`/`_user_llm_cfg`/封面工具/锁定 `_is_locked`/`_assert_not_locked`/摘要 `_regenerate_summary`/`_outline_diff`/`_guard_user_input`/`_backup_outline` |
+| `core_settle.py` | **结算链（P0 资金）**：`_compute_settle`/`_settle_billing_mode`/`_settle_incremental`/`_settle_price`/`_settle_product`/`_commit_and_settle`/`_grant_consume_commission`；被测试补丁的 `_project_use_user_llm` 经 `from . import core` 延迟解析保留 monkeypatch 接缝 |
+| `core_generate.py` | **生成线程**：注入 `_inject_teardown_material`（P0-3 拆书库回流）/`_inject_teardown_style_anchor`（REQ-双锚）/`_inject_user_memory`（用户级记忆库）+ `_distill_user_memory`；后台线程 `_run_generation`（含 start_from 从第 N 章重生成）/`_run_outline_only`/`_run_batch`/`_research_needed`；被测试补丁 helper 经 `from . import core` 延迟解析保留 monkeypatch 接缝 |
 | `user_memory.py` | **用户级记忆库服务（跨书创作偏好继承）**：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像 preferences/跨书纪律 disciplines/个人文风锚 style_anchors/stats），`record_project_signals`（新书显式输入，按项目幂等）、`record_edits`（人工修订跨书锚，上限 30）、`distill`（书级 pitfalls/taste 蒸馏，全量重算式幂等）、`build_snapshot`（题材匹配过滤+上限裁剪→注入快照）、`summary/clear`；全部写路径零额外 LLM |
 | `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 把 `sys_config` 实时值合并进 `NovelConfig`（顶层字段 + agent_guard 标量 + scene_limits），DB 异常回退快照/默认并 logger 留痕；生成链路（`core._open_pipeline`）与小墨AI 对话（`assistant/service.py`）共用，避免同一逻辑两处维护 |
 | `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装四层上下文：system 人设+Bible / 层2 事实块 / 层3 对话窗口 / 层4 提问；按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 组装 → LLM → 失败降级 → 输出合规 → 落库） |
@@ -126,7 +132,7 @@
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 
-> 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
+> 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。**2026-10-28 再拆 core.py 1377 行** → 薄门面 core.py + 6 业务域子模块（core_runtime/models/auth/project/settle/generate），行为零变化验证：全量 pytest 1053 绿 + /api 路由 127=127 逐字节一致 + 门面 161 符号再导出面完整。
 
 ### 2.5 前端 webapp/frontend/src/（Vue 3 + Element Plus + Vite）
 
@@ -148,10 +154,11 @@
 - `llm/factory.py`：按 provider 字符串创建客户端；`core._resolve_llm` 决定用平台 Key 还是用户 BYOK Key。
 
 ### 3.2 webapp（core.py 关键函数）
-- 鉴权链：`_require_user`（Header token）→ `_require_admin` → `_check_project_access`（项目归属/管理员全可见）。
-- 结算链：`_compute_settle`（统一口径：增量/整批）→ `_settle_incremental`（**先落盘结算基线再扣费**）→ `_grant_consume_commission`（返佣）。
-- 生成控制：`_acquire_slot`（全局信号量 3 并发）→ `_run_generation`/`_run_outline_only`/`_run_batch`（后台线程）→ `_mark_task`/`_clear_task`（task.json）。
-- 任务持久化：`_resume_interrupted_tasks`（lifespan 启动时重拾中断任务）。
+> 2026-10-28 拆分后这些函数分布在 6 个业务域子模块，经 `webapp.core` 门面统一再导出，调用面（routers / generate_service / server / 测试）不变。
+- 鉴权链：`_require_user`（Header token）→ `_require_admin` → `_check_project_access`（项目归属/管理员全可见）〔core_auth〕。
+- 结算链：`_compute_settle`（统一口径：增量/整批）→ `_settle_incremental`（**先落盘结算基线再扣费**）→ `_grant_consume_commission`（返佣）〔core_settle〕。
+- 生成控制：`_acquire_slot`（全局信号量 3 并发）→ `_run_generation`/`_run_outline_only`/`_run_batch`（后台线程）→ `_mark_task`/`_clear_task`（task.json）〔core_generate + core_runtime〕。
+- 任务持久化：`_resume_interrupted_tasks`（lifespan 启动时重拾中断任务）〔core_runtime〕。
 
 ### 3.3 数据库（MySQL，库 `mozao`）
 | 表 | 用途 |
@@ -209,7 +216,7 @@
 
 1. **新业务路由** → `webapp/routers/<对应域>.py`，数据操作走 `webapp/db/` 对应域子模块已有函数，或在该域子模块内新增（禁止回写 base.py 堆 SQL）。
 2. **改生成逻辑/提示词** → `novel_gen/pipeline/`（角色行为改 `agents/prompts/*.md`，编排改 `manager.py`）。
-3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core.py` 结算链。
+3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core_settle.py`（经 core.py 门面再导出）结算链。
 4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。
 5. 不确定某文件干什么 → 先查 `docs/filemap.md`；涉及历史决策 → 查 `docs/decisions.md`。
 

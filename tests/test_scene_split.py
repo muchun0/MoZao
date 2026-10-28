@@ -389,3 +389,35 @@ def test_scene_done_events_injected_to_later_scene(store):
     assert "【本章已发生事件" in user2
     assert "陆沉引开赤尉救苏妄言" in user2
     assert "禁止再次发生" in user2 or "禁止重复描写" in user2
+
+
+@pytest.mark.p1
+def test_scene_split_writes_scenes_json(store):
+    """接线回归（修复 save_scenes 断链）：场景级生成后 scenes.json 必须真实落盘。
+
+    历史 bug：_generate_chapter_scenes 只返回 chapter_text，scenes 从未传回 write()，
+    write() 尾部 locals().get("scenes") 恒 None → save_scenes 从未执行 → scene_inspector
+    事件审查/前端场景回看/chain_of_thought 三个下游读到空数据空转。修复后 scenes 由
+    _write_body 透传到 _write_post_gates 落盘。此处断言生成后 load_scenes() 有本章场景。
+    """
+    cfg = store.load_config()
+    cfg.high_quality_mode = True
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "落霞城", "event": "林小满抵达寻医", "emotion": "疲惫", '
+        '"target_words": 1200}], "characters_action": []}'
+    )
+    llm.chat.side_effect = [
+        scenes_json,           # 拆场景
+        "场景正文。" * 300,     # 场景 1
+        "摘要",
+    ]
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    data = store.load_scenes()
+    assert "1" in data, "第 1 章场景应已落盘 scenes.json"
+    assert data["1"]["scenes"], "本章应有拆场景记录"
+    assert data["1"]["scenes"][0]["event"] == "林小满抵达寻医"
+    assert isinstance(data["1"].get("state"), dict)

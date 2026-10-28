@@ -650,10 +650,11 @@ class ChapterWriter:
         self, chapter_no: int, plan_title: str, plan_goal: str,
         research: ResearchReport | None, is_final: bool, silent: bool,
     ) -> tuple[str, str, str, str, str]:
-        """生成并清洗正文，返回 (content, summary, system, plan_core_event, plan_moves)。
+        """生成并清洗正文，返回 (content, summary, system, plan_core_event, plan_moves, scenes)。
 
         步骤：机制基线同步 + 场景计数重置 → 组装 memory_context → 注入记忆块 →
         场景级/整章生成 → 清洗 HTML → 摘要兜底/脱节重生成 → 高质量模式自动改稿+读者审校。
+        scenes 为场景级路径的拆场景结果（整章路径为空列表），供 write() 落盘 scenes.json。
         """
         world = self.store.load_world()
         # P0-8：每章开始——①机制基线同步进记忆设定账本（蚀痕位置等权威口径）；
@@ -681,8 +682,9 @@ class ChapterWriter:
         # 场景级生成：高质量模式始终启用；普通模式单章目标 ≥2000 字自动拆场景（P1-2）
         hq_mode = getattr(self.cfg, "high_quality_mode", False)
         scene_split = getattr(self.cfg, "scene_split", True)
+        scenes: list = []
         if hq_mode or (scene_split and self.cfg.chapter_words >= 2000):
-            text = self._generate_chapter_scenes(
+            text, scenes = self._generate_chapter_scenes(
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
                 dynamic_module_used=hq_mode,
@@ -766,7 +768,7 @@ class ChapterWriter:
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 logger.warning(f'  [读者审校] 跳过: {e}')
-        return content, summary, system, plan_core_event, plan_moves
+        return content, summary, system, plan_core_event, plan_moves, scenes
 
     def write(
         self,
@@ -777,7 +779,7 @@ class ChapterWriter:
         silent: bool = False,
         is_final: bool = False,
     ) -> Chapter:
-        content, summary, system, plan_core_event, plan_moves = self._write_body(
+        content, summary, system, plan_core_event, plan_moves, scenes = self._write_body(
             chapter_no, plan_title, plan_goal, research, is_final, silent,
         )
 
@@ -957,11 +959,11 @@ class ChapterWriter:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
             self.store.save_chapter(chapter)
         self._write_post_gates(chapter_no, plan_title, content, summary,
-                               plan_moves, plan_core_event, silent)
+                               plan_moves, plan_core_event, scenes, silent)
         return chapter
 
     def _write_post_gates(self, chapter_no, plan_title, content, summary,
-                          plan_moves, plan_core_event, silent) -> None:
+                          plan_moves, plan_core_event, scenes, silent) -> None:
         """章末后处理门禁（正文落盘后）：Beat 覆盖度门禁 + 机制状态账本 + 场景落盘 + 摘要。
 
         与正文/质检解耦：全部为确定性/记录类副作用，失败逐块降级不阻塞。
@@ -1063,12 +1065,14 @@ class ChapterWriter:
                                              numbers=_nums)
         except Exception:
             pass
-        # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；普通模式无 scenes 则跳过）
+        # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；
+        # 普通整章路径无 scenes 则跳过）。修复：原 write() 用 locals().get("scenes")
+        # 拿不到 _generate_chapter_scenes 内部变量（恒 None → 从未落盘），现由
+        # _write_body 透传真实 scenes；scene_state 取实例属性 self._scene_state_acc
+        #（P0-8 已暴露给 write() 的章节累计机制数字）。
         try:
-            _sc = locals().get("scenes")
-            if _sc:
-                _ss = locals().get("scene_state_acc") or {}
-                self.store.save_scenes(chapter_no, _sc, _ss)
+            if scenes:
+                self.store.save_scenes(chapter_no, scenes, self._scene_state_acc or {})
         except Exception:
             pass
         if summary:
@@ -1580,6 +1584,9 @@ class ChapterWriter:
         REQ-scene-plan-align：plan_moves 非空且开关开启时，事件清单由大纲 character_moves
         确定性派生（_derive_events_from_moves），模型只做场景切分与细节补充——
         杜绝"每次生成事件清单不一样 + 同一冲突拆成多个版本"。
+
+        返回 (chapter_text, scenes)：scenes 为本拆场景结果，供 write() 落盘
+        scenes.json（回退整章路径返回 (text, [])）。
         """
         import json
         from .templates import (
@@ -1602,7 +1609,7 @@ class ChapterWriter:
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
                 plan_core_event, fallback_events, silent,
-                panel_baseline=self._scene_state_acc or None)
+                panel_baseline=self._scene_state_acc or None), []
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
@@ -2089,7 +2096,9 @@ class ChapterWriter:
 
         # P0-8：场景累计机制数字基线暴露给 write()（质检层透传，修复原 locals() 拿不到）
         self._scene_state_acc = scene_state_acc
-        return chapter_text
+        # 返回 (正文, scenes)：scenes 为本章拆场景结果（供 write() 落盘 scenes.json；
+        # 回退整章路径返回 ([], text)）。修复原 scenes 丢失、save_scenes 从未接线的断链。
+        return chapter_text, scenes
 
     def _gen_action_plan(self, chapter_no, plan_title, plan_goal, memory_context) -> str:
         """P1-1 行动表先行：生成人物行动表 JSON，解析失败返回空（自动回退原流程）。

@@ -13,11 +13,15 @@
 """
 from __future__ import annotations
 
+import logging
+
 from ..config import NovelConfig
 from ..llm.base import LLMClient
 from ..store.project import ProjectStore
 from .schemas import ResearchReport
 from .sources import KnowledgeBaseSource, SourceResult, WebSearchSource
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchEngine:
@@ -95,15 +99,15 @@ class ResearchEngine:
 
         self.store.save_research(report)
         if not silent:
-            self._print_summary(report, used_web)
+            self._log_summary(report, used_web)
         return report
 
     @staticmethod
-    def _print_summary(report: ResearchReport, used_web: bool) -> None:
-        print(f"\n[调研完成] 题材：{report.genre}"
-              f" ｜ 数据源：{'内置知识库 + 联网搜索' if used_web else '内置知识库 + 模型先验'}")
-        print(f"共性综述：{report.summary}")
-        print("流行方向：", "；".join(report.trends[:3]))
-        print("情节套路：", "；".join(report.plot_patterns[:4]))
-        print("文风混合：", "；".join(report.styles[:3]))
-        print(f"开篇策略：{report.opening_strategy}\n")
+    def _log_summary(report: ResearchReport, used_web: bool) -> None:
+        logger.info(f"\n[调研完成] 题材：{report.genre}"
+                    f" ｜ 数据源：{'内置知识库 + 联网搜索' if used_web else '内置知识库 + 模型先验'}")
+        logger.info(f"共性综述：{report.summary}")
+        logger.info("流行方向：%s", "；".join(report.trends[:3]))
+        logger.info("情节套路：%s", "；".join(report.plot_patterns[:4]))
+        logger.info("文风混合：%s", "；".join(report.styles[:3]))
+        logger.info(f"开篇策略：{report.opening_strategy}\n")

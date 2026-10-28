@@ -223,7 +223,7 @@ class QualityChecker:
                     summary = ns
                 rewritten_occurred = True
                 if not silent:
-                    print(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
+                    logger.info(f"  [自校验] 第{chapter_no}章检测到多稿拼接，已抢救为单一草稿（{len(content)} 字）")
                 result = self.check(chapter_no, plan_title, plan_goal, content, summary,
                                     baseline=baseline, core_event=core_event)
                 issues = result["issues"]
@@ -245,14 +245,14 @@ class QualityChecker:
         while not result["passed"] and rewrite_rounds < max_rewrite:
             rewrite_rounds += 1
             if not silent:
-                print(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{max_rewrite} 次自动重写...")
+                logger.warning(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{max_rewrite} 次自动重写...")
             if self.guard is not None:
                 self.guard.enter_scene("revise")
             rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues,
                                            baseline=baseline)
             if not rewritten or len(rewritten) <= len(content) * 0.5:
                 if not silent:
-                    print("  [自校验] 重写结果无效（为空或长度不足），停止重写")
+                    logger.warning("  [自校验] 重写结果无效（为空或长度不足），停止重写")
                 break
             content = rewritten
             nc, ns = _split_summary(content)
@@ -267,7 +267,7 @@ class QualityChecker:
             issues = result["issues"]
             self._record_pitfalls(chapter_no, issues)
             if not silent:
-                print(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
+                logger.info(f"  [自校验] 第 {rewrite_rounds} 次重写后复检："
                       f"{'通过' if result['passed'] else f'仍有 {len(issues)} 个问题'}")
             _push(content, summary, result, rewrite_rounds, True)
             # P0-5 择优：问题更少，或问题相同但分数更高 → 更新最优版本。
@@ -293,7 +293,7 @@ class QualityChecker:
             content, summary, issues, result = best_content, best_summary, best_issues, best_result
             rewritten_occurred = best_rewritten or rewritten_occurred
             if not silent:
-                print(f"  [自校验] 第{chapter_no}章重写未消除问题，回退到最优版本"
+                logger.warning(f"  [自校验] 第{chapter_no}章重写未消除问题，回退到最优版本"
                       f"（{len(issues)} 个问题，{len(content)} 字）")
 
         # P1-1 Reflexion：重写 >=2 轮仍未通过 → LLM 写一句反思入账（下次生成携带为先验）。

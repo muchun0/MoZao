@@ -135,8 +135,8 @@ class OutlineGenerator:
         outline = self._normalize(outline)
         self.store.save_outline(outline)
         if not silent:
-            print(f"[大纲完成] {outline.title}｜共 {len(outline.chapters)} 章")
-            print(f"简介：{outline.intro}\n")
+            logger.info(f"[大纲完成] {outline.title}｜共 {len(outline.chapters)} 章")
+            logger.info(f"简介：{outline.intro}\n")
         return outline
 
     def _run_batched(
@@ -183,7 +183,7 @@ class OutlineGenerator:
         for start in range(1, target + 1, self._BATCH_SIZE):
             end = min(start + self._BATCH_SIZE - 1, target)
             if not silent:
-                print(f"  [大纲分批] 第 {start}—{end} 章 ...")
+                logger.info(f"  [大纲分批] 第 {start}—{end} 章 ...")
             system, user = outline_prompt(
                 self.cfg,
                 research.to_prompt_block(),
@@ -222,9 +222,9 @@ class OutlineGenerator:
         elif chapters and len(chapters) < target:
             # 模型未给足章节：超长篇分批生成场景下可能因某批缺失而不足，
             # 打印提示让上层知晓（保留已生成部分，避免静默丢失）。
-            print(f"  [提示] 大纲仅 {len(chapters)} 章，少于目标 {target} 章（不补足，按实际推进）")
+            logger.info(f"  [提示] 大纲仅 {len(chapters)} 章，少于目标 {target} 章（不补足，按实际推进）")
         elif not chapters:
-            print("  [提示] 大纲未生成任何章节。")
+            logger.info("  [提示] 大纲未生成任何章节。")
         # 重新编号，并补默认标题/目标
         normalized = []
         for i, c in enumerate(chapters, start=1):
@@ -275,7 +275,7 @@ class WorldGenerator:
             world.world_view = f"{self.cfg.genre}题材原创世界观"
         self.store.save_world(world)
         if not silent:
-            print(f"[人物/世界观完成] {len(world.characters)} 个人物，{len(world.foreshadowing)} 条伏笔\n")
+            logger.info(f"[人物/世界观完成] {len(world.characters)} 个人物，{len(world.foreshadowing)} 条伏笔\n")
         return world
 
 
@@ -914,7 +914,7 @@ class ChapterWriter:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + \
                         "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan
             except Exception as e:
-                print(f"  [行动表] 跳过: {e}")
+                logger.warning(f"  [行动表] 跳过: {e}")
 
         # 场景级生成：高质量模式始终启用；普通模式单章目标 ≥2000 字自动拆场景（P1-2）
         hq_mode = getattr(self.cfg, "high_quality_mode", False)
@@ -982,7 +982,7 @@ class ChapterWriter:
                 _regen_summary = self._gen_summary(chapter_no, plan_title, content)
                 if _regen_summary:
                     if not silent:
-                        print(f"  [摘要] 模型自带摘要与正文脱节（含正文未出现的 3 字词），"
+                        logger.info(f"  [摘要] 模型自带摘要与正文脱节（含正文未出现的 3 字词），"
                               f"基于正文重生成摘要")
                     summary = _regen_summary
 
@@ -994,7 +994,7 @@ class ChapterWriter:
                                          role_prompt=self.reviewer_role_prompt)
                 content = reviser.revise(chapter_no, plan_title, plan_goal, content, silent=silent)
             except Exception as e:
-                print(f'  [改稿] 跳过: {e}')
+                logger.warning(f'  [改稿] 跳过: {e}')
             # 读者视角审校（只记录不改正文；P0-10 注入本作记忆 + 三项专项检查）
             try:
                 from .reviser import ReaderReviewer
@@ -1003,7 +1003,7 @@ class ChapterWriter:
                                         memory=self._memory())
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
-                print(f'  [读者审校] 跳过: {e}')
+                logger.warning(f'  [读者审校] 跳过: {e}')
 
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
         guard_cfg = getattr(self.cfg, "agent_guard", None)
@@ -1079,7 +1079,7 @@ class ChapterWriter:
                     pass
             except Exception as qe:
                 if not silent:
-                    print(f"  [自校验] 跳过: {qe}")
+                    logger.warning(f"  [自校验] 跳过: {qe}")
 
         # 方案4（落盘分流）：质检未通过且该章已有旧版 → 保留旧版正文，不覆盖
         # （坏章不得顶掉用户已有的可用版本；仅首次生成/无旧版时才落盘新稿）。
@@ -1100,7 +1100,7 @@ class ChapterWriter:
                 if _enh is not None:
                     content, summary = _enh
                     if not silent:
-                        print(f"  [增强旁路] 第{chapter_no}章质检通过后触发增强润色，已采纳增强稿")
+                        logger.info(f"  [增强旁路] 第{chapter_no}章质检通过后触发增强润色，已采纳增强稿")
             except Exception:
                 logger.exception("增强润色旁路失败（降级跳过，保留原稿）")
         # P0-1 合规红线：最终稿含合规命中 → 该章整体拒绝落盘（除非有健康旧版可保留）。
@@ -1120,21 +1120,21 @@ class ChapterWriter:
                     content, summary = prev.content, prev.summary
                     kept_previous = True
                     if not silent:
-                        print(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}），"
+                        logger.info(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}），"
                               f"保留上一版健康正文（{len(content)} 字），违规新稿不落盘")
                 elif not silent:
-                    print(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}）"
+                    logger.warning(f"  [自校验] 第{chapter_no}章含合规违规（score={_qc.get('score', 0)}）"
                           f"且无健康旧版，该章整体拒绝落盘（compliance_rejected）")
             elif _prev_ok:
                 content, summary = prev.content, prev.summary
                 kept_previous = True
                 if not silent:
-                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                    logger.warning(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
                           f"保留上一版正文（{len(content)} 字），不覆盖旧章")
             else:
                 kept_previous = False
                 if prev is not None and not silent:
-                    print(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
+                    logger.warning(f"  [自校验] 第{chapter_no}章质检未通过（score={_qc.get('score', 0)}），"
                           f"上一版正文（{len(prev.content)} 字）健康检查未通过"
                           "（含注册表外字段/重复节拍/链式账本违规），"
                           f"改落盘本轮重写最优候选（{len(content)} 字）")
@@ -1289,7 +1289,7 @@ class ChapterWriter:
             self.store.append_summary(chapter_no, summary)
         if not silent:
             tail = f"｜摘要：{summary}" if summary else "｜（未生成摘要）"
-            print(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
+            logger.info(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
         return chapter
 
 
@@ -1581,7 +1581,7 @@ class ChapterWriter:
                 _why = ("情节级重演：" + str(_issues[0]["detail"]) if _issues else "") + \
                        (f"；字数超限（{len(_text)} 字）" if _over else "") + \
                        (f"；机制数字违规（{_viols[0]}）" if _viols else "")
-                print(f"  [回退整章] 第{chapter_no}章生成后检出{_why}，重试第{_try}次")
+                logger.warning(f"  [回退整章] 第{chapter_no}章生成后检出{_why}，重试第{_try}次")
             _dedup_parts = []
             if _issues:
                 _dedup_parts.append(
@@ -1696,7 +1696,7 @@ class ChapterWriter:
                         _ca_needs_fill = True
                 else:
                     if not silent:
-                        print("  [拆场景] JSON 解析失败，重试 1 次（温度 0.5）...")
+                        logger.warning("  [拆场景] JSON 解析失败，重试 1 次（温度 0.5）...")
                     raw2 = self.llm.chat(
                         sys_s,
                         user_s + "\n\n再次提醒：只输出一个合法的 JSON 对象，"
@@ -1724,16 +1724,16 @@ class ChapterWriter:
                 # 救回为空/损坏），单独让模型只输出行动表数组——措辞层约束真正生效。
                 if not ca and _ca_needs_fill and scenes:
                     if not silent:
-                        print("  [行动表] characters_action 截断救回失败，单字段补全调用...")
+                        logger.warning("  [行动表] characters_action 截断救回失败，单字段补全调用...")
                     ca = self._fill_characters_action(
                         chapter_no, plan_title, plan_goal,
                         plan_core_event, fallback_events, prev_tail, silent=silent,
                     )
                     if not silent and ca:
-                        print(f"  [行动表] 补全成功，行动表注入 {len(ca)} 条（措辞层约束生效）")
+                        logger.info(f"  [行动表] 补全成功，行动表注入 {len(ca)} 条（措辞层约束生效）")
                 action_plan_block = _format_action_plan(ca or [])
                 if not silent:
-                    print(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
+                    logger.info(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
                           f"{len(fallback_events)} 个事件")
             # 2026-09-30 拆场景设计重构（用户指出"一直在打补丁、根因在场景拆分设计"）：
             # 场景拆分 = 事件分配——LLM 先规划互斥事件清单 events，场景 scene_event_ref 逐字
@@ -1804,11 +1804,11 @@ class ChapterWriter:
                 sem_dup = _scene_events_semantically_overlap(events_list, conflict_names)
             if scenes and not ok_plan:
                 if not silent:
-                    print(f"  [拆场景] 场景规划校验不通过（{why_bad}），回退整章生成")
+                    logger.warning(f"  [拆场景] 场景规划校验不通过（{why_bad}），回退整章生成")
                 scenes = []
             elif sem_dup:
                 if not silent:
-                    print("  [拆场景] 事件清单语义槽位重叠（同冲突对象+同动作=重复事件），"
+                    logger.warning("  [拆场景] 事件清单语义槽位重叠（同冲突对象+同动作=重复事件），"
                           "回退整章生成")
                 scenes = []
             elif derived_events and scenes:
@@ -1819,7 +1819,7 @@ class ChapterWriter:
                 derived_ids = {str(e.get("id") or "").strip() for e in derived_events}
                 if refs != derived_ids:
                     if not silent:
-                        print(f"  [拆场景] 场景事件引用与派生事件骨架不一致"
+                        logger.warning(f"  [拆场景] 场景事件引用与派生事件骨架不一致"
                               f"（refs={sorted(refs)} vs derived={sorted(derived_ids)}），回退整章生成")
                     scenes = []
         except Exception:
@@ -2006,7 +2006,7 @@ class ChapterWriter:
                         _span_ovlp = _long_sentence_overlap_ratio(prev_text, piece)
                     if _ratio > _SCENE_ADJACENT_REPEAT_RATIO or _span_ovlp > _SCENE_ADJACENT_SPAN_RATIO:
                         if not silent:
-                            print(f"  [场景] 第{idx}个场景与上一场景高度相似"
+                            logger.warning(f"  [场景] 第{idx}个场景与上一场景高度相似"
                                   f"（全文 {_ratio:.2f} / 长段复刻 {_span_ovlp:.2f}），"
                                   f"疑似重演上一场景，重试 1 次强制从上一场景结局后续写")
                         sys_c2, user_c2 = scene_prompt(
@@ -2051,7 +2051,7 @@ class ChapterWriter:
                     dup_ev = _scene_text_rewrites_event(piece, done_events, conflict_names)
                     if dup_ev:
                         if not silent:
-                            print(f"  [场景] 第{idx}个场景复写了已发生事件"
+                            logger.warning(f"  [场景] 第{idx}个场景复写了已发生事件"
                                   f"（{dup_ev[:50]}），重试强制只写本场景唯一事件")
                         sys_c3, user_c3 = scene_prompt(
                             self.cfg, chapter_no, plan_title, idx, sc,
@@ -2106,7 +2106,7 @@ class ChapterWriter:
                     for _try in (1, 2):
                         if not silent:
                             _why = "本场景内部循环重演" if _inner_issue else "与已发生场景节拍重合"
-                            print(f"  [场景] 第{idx}个场景{_why}"
+                            logger.warning(f"  [场景] 第{idx}个场景{_why}"
                                   f"（{'→'.join(_seq)}），疑似换措辞重演完整循环，"
                                   f"重试第{_try}次强制只写本场景唯一事件")
                         _ev_desc = str(sc.get("event") or "").strip() or "本场景唯一事件"
@@ -2152,7 +2152,7 @@ class ChapterWriter:
                             break
                     if not _beat_ok:
                         if not silent:
-                            print(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
+                            logger.warning(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
                         # P0-8：回退整章补基线校验——用本章场景累计数字（已推进场景的
                         # 结算值）做权威基线，整章正文数字必须从这些值继续单调推进
                         return self._fallback_whole_chapter(
@@ -2192,7 +2192,7 @@ class ChapterWriter:
                         _panel_ok = False
                         for _try in (1, 2):
                             if not silent:
-                                print(f"  [场景] 第{idx}个场景机制数字违反方向规则"
+                                logger.warning(f"  [场景] 第{idx}个场景机制数字违反方向规则"
                                       f"（{_viols[0]}），重试第{_try}次强制按基线推进")
                             _viol_text = "\n".join(f"- {v}" for v in _viols[:4])
                             sys_c5, user_c5 = scene_prompt(
@@ -2233,7 +2233,7 @@ class ChapterWriter:
                                 _panel_ok = True
                                 break
                         if not _panel_ok and not silent:
-                            print(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
+                            logger.warning(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
                                   f"采用最后稿（质检层二次拦截）")
                 # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
                 # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
@@ -2300,7 +2300,7 @@ class ChapterWriter:
                     except Exception:
                         pass
             except Exception as e:
-                print(f"    [场景] 第{idx}个场景生成失败: {e}")
+                logger.warning(f"    [场景] 第{idx}个场景生成失败: {e}")
                 scene_texts.append("")
 
         chapter_text = "\n\n".join(t for t in scene_texts if t)
@@ -2382,7 +2382,7 @@ class ChapterWriter:
                 )
             return "\n".join(lines)
         except Exception as e:
-            print(f"  [行动表] 生成失败，回退原流程: {e}")
+            logger.warning(f"  [行动表] 生成失败，回退原流程: {e}")
             return ""
 
     def _fill_characters_action(self, chapter_no, plan_title, plan_goal,
@@ -2416,16 +2416,16 @@ class ChapterWriter:
                     # P0-5（2026-10-10）：补成功日志——此前只有失败日志，
                     # 无法区分"独立行动表调用失败回退"与"拆场景救回+单字段补全成功"。
                     if not silent:
-                        print(f"  [行动表补全] 第{_try}次补全成功：注入 {len(ok)} 条行动（原解析截断救回）")
+                        logger.info(f"  [行动表补全] 第{_try}次补全成功：注入 {len(ok)} 条行动（原解析截断救回）")
                     return ok
                 if not silent:
-                    print(f"  [行动表补全] 第{_try}次解析失败，重试 1 次...")
+                    logger.warning(f"  [行动表补全] 第{_try}次解析失败，重试 1 次...")
             if not silent:
-                print("  [行动表补全] 两次均失败，本次不注入行动表（记录 trace 告警）")
+                logger.warning("  [行动表补全] 两次均失败，本次不注入行动表（记录 trace 告警）")
             return []
         except Exception as e:
             if not silent:
-                print(f"  [行动表补全] 补全调用异常：{e}")
+                logger.warning(f"  [行动表补全] 补全调用异常：{e}")
             return []
 
     def _scene_split_review(self, chapter_no, plan_title, plan_goal,
@@ -2466,12 +2466,12 @@ class ChapterWriter:
                 if 0 <= i < len(events_list) and 0 <= j < len(events_list) and i != j:
                     out.append((i, j, str(p.get("reason") or "")))
             if out and not silent:
-                print(f"  [拆场景] 评审发现 {len(out)} 组语义同构事件（"
+                logger.info(f"  [拆场景] 评审发现 {len(out)} 组语义同构事件（"
                       + "; ".join(f"{i}≈{j}:{r[:20]}" for i, j, r in out) + "），代码合并去重")
             return out
         except Exception as e:
             if not silent:
-                print(f"  [拆场景] 评审调用失败（降级不阻塞）: {e}")
+                logger.warning(f"  [拆场景] 评审调用失败（降级不阻塞）: {e}")
             return []
 
     def _ensure_length(self, content: str, plan_title: str, plan_goal: str, base_system: str) -> str:
@@ -2553,7 +2553,7 @@ class ChapterWriter:
             out = _strip_html_tags(out)
             if out and 0.5 * len(piece) <= len(out) <= len(piece) and len(out) <= target * 1.3:
                 if not silent:
-                    print(f"  [场景] 第{idx}个场景超长（{len(piece)} 字），"
+                    logger.warning(f"  [场景] 第{idx}个场景超长（{len(piece)} 字），"
                           f"精简重写为 {len(out)} 字")
                 return out
             return ""

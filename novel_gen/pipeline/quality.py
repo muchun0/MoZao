@@ -347,218 +347,61 @@ class QualityChecker:
 
         # 1. 结构要求（确定性）
         target = max(self.cfg.chapter_words, 1)
-        words = len(content or "")
-        if words < target * _MIN_WORDS_RATIO:
-            issues.append({
-                "type": "结构-字数严重不足",
-                "detail": f"本章仅 {words} 字，不足目标 {target} 字的 30%",
-                "level": "大改",
-            })
-            score -= 30
-        elif words < target * 0.6:
-            issues.append({
-                "type": "结构-字数偏少",
-                "detail": f"本章 {words} 字，低于目标 {target} 字的 60%",
-                "level": "中改",
-            })
-            score -= 10
+        _it, _d = self._check_structure(content, target)
+        issues.extend(_it); score += _d
 
-        # 2. 内容重复（确定性，与最近 N 章对比）
-        dup = self._dup_issues(chapter_no, content)
-        if dup:
-            issues.extend(dup)
-            score -= 20
+        # 2. 内容重复（确定性，与最近 N 章对比）+ 2.4 章内多稿自重复
+        _it, _d = self._check_repetition(chapter_no, content)
+        issues.extend(_it); score += _d
 
-        # 2.4 章内多稿自重复（确定性）：同一章内部出现大段重复 → 疑似草稿拼接
-        #    补盲：_dup_issues 只比对前几章，看不到本章内部多段草稿互相重复。
-        for it in self._self_dup_issues(content):
-            issues.append(it)
-            score -= 30
+        # 2.7 章内同句复读（确定性，REQ-章内自洽与机制账本）
+        _it, _d = self._check_repeat_sentence(content)
+        issues.extend(_it); score += _d
 
-        # 2.7 章内同句复读（确定性，REQ-章内自洽与机制账本）：同一句/同一动作
-        #    整句原样复读（城墙墓碑、复活体感、铜钱、被扑倒等一字不差重复）。
-        #    _self_dup_issues 只抓多稿拼接（短行+大段 n-gram），不覆盖整句复读，
-        #    这里对母题密度提示词做成文后兜底：命中大改级 → 触发 1 次自动重写。
-        for it in self._repeat_sentence_issues(content):
-            issues.append(it)
-            score -= 15
+        # 2.8 机制数字结算校验（确定性）
+        _it, _d = self._check_panel_progress(content)
+        issues.extend(_it); score += _d
 
-        # 2.8 机制数字结算校验（确定性，REQ-章内自洽与机制账本·扩展）：
-        #    同一面板数字（同标签同数值）跨段复现 = 结算未推进（如"可死次数 2/3"
-        #    在两次死亡后仍显示 2/3）。区别于复读检测（只检同句）、拼接检测（只检
-        #    字面大段重复），这里从"数值账本"角度校验：数字必须随事件严格增减。
-        for it in self._panel_progress_issues(content):
-            issues.append(it)
-            score -= 5
+        # 2.8b 面板数字方向校验（P0-5）
+        _it, _d = self._check_panel_direction(content, baseline)
+        issues.extend(_it); score += _d
 
-        # 2.8b 面板数字方向校验（P0-5，2026-10-10）：与场景级防线4 同基线
-        #    （panel_baseline_dict(numbers)），质检层二次兜底——重写/改稿产物
-        #    若出现蚀化 98→97 回退、次数无子时重置的回升，即使场景级防线被绕过
-        #    （如第 5 章场景级静默）也在落盘前拦截。无基线/标签未识别不校验。
-        if baseline:
-            try:
-                from .chapter_state import (panel_direction_violations as _pdv,
-                                            mechanism_field_registry as _mregq)
-                _regq = {}
-                if self.memory is not None:
-                    _regq = _mregq((self.memory.load().get("canon") or {})
-                                   .get("mechanism_baseline") or {})
-                for it in _pdv(content, baseline, _regq):
-                    issues.append({
-                        "type": "写作-机制数字方向违规",
-                        "detail": it,
-                        "level": "小改",
-                    })
-                    score -= 5
-            except Exception:
-                pass
+        # 2.8c 蚀化跨章累计 + 链式账本校验（REQ-机制数字软提示与通用化）
+        _it, _d = self._check_mechanism_ledger(chapter_no, content)
+        issues.extend(_it); score += _d
 
-        # 2.8c 蚀化跨章累计 + P0-15/16 通用链式校验（P0-10，2026-10-10，治 v7 第 6 章
-        # 口径冲突；P0-14 根因修复；P0-15/16 通用版 2026-10-10）：
-        #    正文蚀化值最高必须 = 上一章末蚀化 + 本章死亡次数。
-        #    v7 ch6 实证：ch1/3/4 死 3 次蚀化应 97→100%，正文仍写 97%——单章因果
-        #    校验（2.8b）只查"本章死亡→本章+1"，跨章累计不入账。
-        #    v8 实证根因：旧版期望 = 起始 97 + 账本累计死亡，而账本被 death_count
-        #    词面计数污染（ch1 重复段落多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板
-        #    误计）→ 锚虚高 → 模型跟随 → "自洽地错"（ch4 蚀化 106、ch6 累计 11）。
-        #    P0-14 改为链式：期望 = 账本上一章末蚀化 + 本章死亡次数（death_count 用
-        #    书级个性化信号 extra_signals + 排除自述统计类）；未死亡（本章 0 次）时
-        #    蚀化必须保持上一章末值不变（防无死亡虚涨/回退）。
-        #    v10 实证（2026-10-10）：条件原为 `if baseline and self.memory`——回退整章
-        #    路径 scene_state_acc 为空 → baseline=None → 2.8c 整段跳过 → 「累计死亡
-        #    次数：39/37」幻觉行（注册表外字段）与链式数字违规全部漏检。修复：本区块
-        #    只依赖 memory（注册表/账本从 canon/state 取），不再依赖场景透传 baseline；
-        #    区块内 2.8b 方向校验单独保留 `if baseline`（需场景级基线才可判）。
-        # 2.8c P0-15/16 通用链式校验（2026-10-17 弱化版，REQ-机制数字软提示与通用化）：
-        #    保留机制字段注册表（closed-world）+ 链式账本 + 事件驱动双向校验，但机制
-        #    数字问题一律降为「小改/软提示」——给改稿建议、不强制重写、不阻塞流程。
-        #    已移除蚀化跨章累计强校验（erosion_cumulative_check）。
-        if self.memory is not None:
-            try:
-                from .chapter_state import (mechanism_field_registry as _mreg2,
-                                            unknown_mechanism_fields as _unk2,
-                                            ledger_check as _lchk,
-                                            ledger_extract_numbers as _lex3,
-                                            _registry_initial as _rin)
-                _canon = (self.memory.load().get("canon") or {})
-                # 注册表从设定账本派生（含书级字段名，数据驱动），代码不预置单书机制词。
-                _reg = _mreg2(_canon.get("mechanism_baseline") or {})
-                if _reg:
-                    _cur = _lex3(content or "", _reg)
-                    _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
-                    _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
-                    # 本章死亡数双源反推（P0-14/18 通用版）：每个 increase 字段用自身
-                    # 账本链差反推（如万墟「蚀化」上一章末 97 → 本章 101 = 死亡 4 次），
-                    # decrease 字段递减量补全（蚀化不涨时用次数递减量，账本数字非词面，
-                    # 比字段差更抗漏）；取最大（双源抗漏，防单一字段未结算漏检）。
-                    _cumu = 0
-                    for _c, _r in _reg.items():
-                        if _r == "increase" and _c in _cur:
-                            _pv = _prev_ledger.get(_c)
-                            if _pv is None:
-                                _pv = (_init or {}).get(_c)
-                            if _pv is not None:
-                                _cumu = max(_cumu, max(0, int(_cur[_c]) - int(_pv)))
-                    for _it in _unk2(content, _reg):
-                        issues.append({
-                            "type": "写作-机制字段白名单违规",
-                            "detail": _it,
-                            "level": "小改",
-                        })
-                        score -= 5
-                    _dec3 = 0
-                    for _c3, _r3 in _reg.items():
-                        if _r3 == "decrease" and _c3 in _cur:
-                            _pv3 = _prev_ledger.get(_c3)
-                            if _pv3 is None:
-                                _pv3 = (_init or {}).get(_c3)
-                            if _pv3 is not None and int(_cur[_c3]) < int(_pv3):
-                                _dec3 += int(_pv3) - int(_cur[_c3])
-                    if _dec3 > 0:
-                        _cumu = max(_cumu, _dec3)
-                    for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
-                        issues.append({
-                            "type": "写作-机制数字方向违规",
-                            "detail": _it,
-                            "level": "小改",
-                        })
-                        score -= 5
-            except Exception:
-                pass
+        # 2.8d 大纲核心事件正文覆盖校验（P0-17）
+        _it, _d = self._check_core_event(content, core_event)
+        issues.extend(_it); score += _d
 
-        # 2.8d P0-17 大纲核心事件正文覆盖校验（2026-10-10，治 v9 ch6 大纲「忘忧阁
-        #    阁主密报」未进正文、正文写自创「不问阁」）：core_event 分段后每段与正文
-        #    做 2 字以上最长公共子串匹配，命中段 <60% = 本章正文丢失大纲核心事件
-        #    → 大改（触发整章级重写路径）。任何书有大纲 core_event 即校验，通用。
-        if core_event:
-            try:
-                _miss = _core_event_missing(content, core_event)
-                if _miss:
-                    issues.append({
-                        "type": "情节-大纲核心事件未覆盖",
-                        "detail": (f"本章正文未覆盖大纲核心事件段（命中不足 60%）："
-                                   f"{' / '.join(_miss[:3])}——核心事件必须写进正文，"
-                                   "不得替换为自创事件"),
-                        "level": "大改",
-                    })
-                    score -= 30
-            except Exception:
-                pass
+        # 2.9 对话轮重复（确定性兜底）
+        _it, _d = self._check_dialogue_loop(content)
+        issues.extend(_it); score += _d
 
-        # 2.9 对话轮重复（确定性兜底）：同一轮问答/对话序列原样重复 ≥2 次
-        #    = 场景内循环拼接（"你死了？→你看错了→我看见数字了"三遍）。
-        for it in self._dialogue_loop_issues(content):
-            issues.append(it)
-            score -= 30
+        # 2.12 情节级重演检测（确定性，2026-10-09）
+        _it, _d = self._check_beat_cycle(content)
+        issues.extend(_it); score += _d
 
-        # 2.12 情节级重演检测（确定性，2026-10-09）：同一「节拍序列」（盘问→戳穿→
-        #    失控→挡死→死亡→复活→面板→离场 等完整循环）在章内非重叠出现 ≥2 次
-        #    = 同事件多版本重演（换措辞循环；文本 n-gram/整句复读/对话轮检测全漏检，
-        #    文本相似度盲区见 REQ-scene-plan-align §7.2）。
-        for it in _beat_cycle_issues(content):
-            issues.append(it)
-            score -= 30
+        # 2.10 字数审计（确定性·仅提示）
+        _it, _d = self._check_length_audit(content)
+        issues.extend(_it); score += _d
 
-        # 2.10 字数审计（确定性·仅提示）：正文远超章节目标字数 → 小改提示、不扣分；
-        #    2026-09-30 起不再判大改（超长≠质量失败，纯字数不触发整章重写，省 token）；
-        #    2026-10-17 起连小改也不扣分——超长只要剧情与质量正常就不应减分，
-        #    不能单纯以字数作为质量判断；仍保留提示供模型后续收敛。
-        for it in self._length_audit_issues(content):
-            issues.append(it)
+        # 2.11 摘要一致性（确定性兜底）
+        _it, _d = self._check_summary_consistency(content, summary)
+        issues.extend(_it); score += _d
 
-        # 2.11 摘要一致性（确定性兜底）：摘要提到的面板分数必须与正文最终结算一致
-        #    （《万墟之上》21:52 版：正文两次死亡最终 1/3，摘要却写"3/3→2/3"——摘要
-        #    未随正文更新，误导后续章节账本与读者）。摘要无分数 → 不报。
-        if summary:
-            for it in self._summary_consistency_issues(content, summary):
-                issues.append(it)
-                score -= 5
-
-        # 2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似中途截断
-        for it in self._ending_issues(content):
-            issues.append(it)
-            score -= 30
+        # 2.6 结尾完整性（确定性）
+        _it, _d = self._check_ending(content)
+        issues.extend(_it); score += _d
 
         # 2.5 AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）
         ai_style_issues, ai_style_delta = self._check_ai_and_style(content, chapter_no)
         issues.extend(ai_style_issues)
         score += ai_style_delta
 
-        # 3. 输出合规（模块3 基础合规校验；REQ-门禁质检正向影响 P0-1/P0-2：结构化
-        #    命中信息 rule_category/rule_phrase，供删旧稿重写与首次教育分层使用）
-        if getattr(self.cfg.agent_guard, "output_check", True):
-            from ..safety import basic_content_check_structured as _bcs
-            bad = _bcs(content)
-            if bad:
-                _cats = sorted({b.get("rule_category", "") for b in bad if b.get("rule_category")})
-                issues.append({
-                    "type": "合规-疑似违规内容",
-                    "detail": "；".join(f"「{b.get('phrase', '')}」" for b in bad),
-                    "level": "大改",
-                    "rule_category": "、".join(_cats),
-                    "rule_phrase": "；".join(b.get("phrase", "") for b in bad),
-                })
-                score -= 40
+        # 3. 输出合规（模块3 基础合规校验）
+        _it, _d = self._check_compliance(content)
+        issues.extend(_it); score += _d
 
         # 4. 读者体验（LLM：代入感/爽点/钩子/主动性 + 人物一致性）
         llm_issues, hook_score = self._reader_llm_check(chapter_no, plan_title, plan_goal, content)
@@ -573,16 +416,9 @@ class QualityChecker:
                 })
                 score -= 20
 
-        # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）：
-        # 抓确定性规则与读者视角都漏的硬矛盾——身体状态/知觉范围前后不一、
-        # 同类生物行为模式不一、方位指代错误、同一意象比喻两版本。
-        # 高质量模式每章开启；普通模式按 consistency_llm_every 降频（默认每 3 章 1 次）。
-        _hq = getattr(self.cfg, "high_quality_mode", False)
-        _every = max(1, int(getattr(self.cfg, "consistency_llm_every", 3) or 3))
-        if _hq or (getattr(self.cfg, "consistency_llm_check", False) and chapter_no % _every == 1):
-            for it in self._consistency_llm_check(chapter_no, content):
-                issues.append(it)
-                score -= 25
+        # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）
+        _it, _d = self._check_consistency(chapter_no, content)
+        issues.extend(_it); score += _d
 
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
@@ -593,6 +429,222 @@ class QualityChecker:
             "score": max(0, min(100, score)),
             "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
         }
+
+    def _check_structure(self, content: str, target: int) -> tuple[list, int]:
+        """1. 结构要求（确定性）：字数严重不足（<30%）大改、不足 60% 中改。"""
+        words = len(content or "")
+        if words < target * _MIN_WORDS_RATIO:
+            return ([{
+                "type": "结构-字数严重不足",
+                "detail": f"本章仅 {words} 字，不足目标 {target} 字的 30%",
+                "level": "大改",
+            }], -30)
+        if words < target * 0.6:
+            return ([{
+                "type": "结构-字数偏少",
+                "detail": f"本章 {words} 字，低于目标 {target} 字的 60%",
+                "level": "中改",
+            }], -10)
+        return [], 0
+
+    def _check_repetition(self, chapter_no: int, content: str) -> tuple[list, int]:
+        """2/2.4 内容重复（与最近 N 章对比）+ 章内多稿自重复（草稿拼接补盲）。"""
+        issues, score = [], 0
+        dup = self._dup_issues(chapter_no, content)
+        if dup:
+            issues.extend(dup)
+            score -= 20
+        for it in self._self_dup_issues(content):
+            issues.append(it)
+            score -= 30
+        return issues, score
+
+    def _check_repeat_sentence(self, content: str) -> tuple[list, int]:
+        """2.7 章内同句复读：同一句/同一动作整句原样复读，大改级触发自动重写。"""
+        issues, score = [], 0
+        for it in self._repeat_sentence_issues(content):
+            issues.append(it)
+            score -= 15
+        return issues, score
+
+    def _check_panel_progress(self, content: str) -> tuple[list, int]:
+        """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。"""
+        issues, score = [], 0
+        for it in self._panel_progress_issues(content):
+            issues.append(it)
+            score -= 5
+        return issues, score
+
+    def _check_panel_direction(self, content: str, baseline: dict | None) -> tuple[list, int]:
+        """2.8b 面板数字方向校验（P0-5）：与场景级防线4 同基线，质检层二次兜底。"""
+        if not baseline:
+            return [], 0
+        try:
+            from .chapter_state import (panel_direction_violations as _pdv,
+                                        mechanism_field_registry as _mregq)
+            _regq = {}
+            if self.memory is not None:
+                _regq = _mregq((self.memory.load().get("canon") or {})
+                               .get("mechanism_baseline") or {})
+            issues, score = [], 0
+            for it in _pdv(content, baseline, _regq):
+                issues.append({
+                    "type": "写作-机制数字方向违规",
+                    "detail": it,
+                    "level": "小改",
+                })
+                score -= 5
+            return issues, score
+        except Exception:
+            return [], 0
+
+    def _ledger_cumulative(self, chapter_no: int, content: str, _reg: dict,
+                           _canon: dict) -> int:
+        """2.8c 机制死亡/递减量反推：increase 字段链差 + decrease 递减量取最大（双源抗漏）。"""
+        from .chapter_state import (ledger_extract_numbers as _lex3,
+                                    _registry_initial as _rin)
+        _cur = _lex3(content or "", _reg)
+        _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
+        _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+        _cumu = 0
+        for _c, _r in _reg.items():
+            if _r == "increase" and _c in _cur:
+                _pv = _prev_ledger.get(_c)
+                if _pv is None:
+                    _pv = (_init or {}).get(_c)
+                if _pv is not None:
+                    _cumu = max(_cumu, max(0, int(_cur[_c]) - int(_pv)))
+        _dec3 = 0
+        for _c3, _r3 in _reg.items():
+            if _r3 == "decrease" and _c3 in _cur:
+                _pv3 = _prev_ledger.get(_c3)
+                if _pv3 is None:
+                    _pv3 = (_init or {}).get(_c3)
+                if _pv3 is not None and int(_cur[_c3]) < int(_pv3):
+                    _dec3 += int(_pv3) - int(_cur[_c3])
+        return max(_cumu, _dec3)
+
+    def _check_mechanism_ledger(self, chapter_no: int, content: str) -> tuple[list, int]:
+        """2.8c 链式机制账本（REQ-机制数字软提示与通用化）：注册表从设定账本派生，
+        字段白名单违规与链式方向违规一律软扣分（小改/不阻塞）。"""
+        if self.memory is None:
+            return [], 0
+        try:
+            from .chapter_state import (mechanism_field_registry as _mreg2,
+                                        unknown_mechanism_fields as _unk2,
+                                        ledger_check as _lchk,
+                                        _registry_initial as _rin)
+            _canon = (self.memory.load().get("canon") or {})
+            _reg = _mreg2(_canon.get("mechanism_baseline") or {})
+            if not _reg:
+                return [], 0
+            issues, score = [], 0
+            for _it in _unk2(content, _reg):
+                issues.append({
+                    "type": "写作-机制字段白名单违规",
+                    "detail": _it,
+                    "level": "小改",
+                })
+                score -= 5
+            _cumu = self._ledger_cumulative(chapter_no, content, _reg, _canon)
+            _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
+            _init = _rin(_canon.get("mechanism_baseline") or {}, _reg)
+            for _it in _lchk(content, _prev_ledger, _reg, _cumu, _init):
+                issues.append({
+                    "type": "写作-机制数字方向违规",
+                    "detail": _it,
+                    "level": "小改",
+                })
+                score -= 5
+            return issues, score
+        except Exception:
+            return [], 0
+
+    def _check_core_event(self, content: str, core_event: str) -> tuple[list, int]:
+        """2.8d 大纲核心事件正文覆盖校验（P0-17）：核心事件分段命中 <60% = 大改。"""
+        if not core_event:
+            return [], 0
+        try:
+            _miss = _core_event_missing(content, core_event)
+            if _miss:
+                return ([{
+                    "type": "情节-大纲核心事件未覆盖",
+                    "detail": (f"本章正文未覆盖大纲核心事件段（命中不足 60%）："
+                               f"{' / '.join(_miss[:3])}——核心事件必须写进正文，"
+                               "不得替换为自创事件"),
+                    "level": "大改",
+                }], -30)
+            return [], 0
+        except Exception:
+            return [], 0
+
+    def _check_dialogue_loop(self, content: str) -> tuple[list, int]:
+        """2.9 对话轮重复（确定性兜底）：同一轮问答序列原样重复 ≥2 次 = 循环拼接。"""
+        issues, score = [], 0
+        for it in self._dialogue_loop_issues(content):
+            issues.append(it)
+            score -= 30
+        return issues, score
+
+    def _check_beat_cycle(self, content: str) -> tuple[list, int]:
+        """2.12 情节级重演检测（确定性，2026-10-09）：完整节拍序列非重叠 ≥2 次 = 重演。"""
+        issues, score = [], 0
+        for it in _beat_cycle_issues(content):
+            issues.append(it)
+            score -= 30
+        return issues, score
+
+    def _check_length_audit(self, content: str) -> tuple[list, int]:
+        """2.10 字数审计（确定性·仅提示）：远超目标 → 提示不扣分（2026-10-17 起）。"""
+        return self._length_audit_issues(content), 0
+
+    def _check_summary_consistency(self, content: str, summary: str) -> tuple[list, int]:
+        """2.11 摘要一致性（确定性兜底）：摘要面板分必须与正文最终结算一致。"""
+        if not summary:
+            return [], 0
+        issues, score = [], 0
+        for it in self._summary_consistency_issues(content, summary):
+            issues.append(it)
+            score -= 5
+        return issues, score
+
+    def _check_ending(self, content: str) -> tuple[list, int]:
+        """2.6 结尾完整性（确定性）：正文未以句末标点收尾 → 疑似截断。"""
+        issues, score = [], 0
+        for it in self._ending_issues(content):
+            issues.append(it)
+            score -= 30
+        return issues, score
+
+    def _check_compliance(self, content: str) -> tuple[list, int]:
+        """3. 输出合规（模块3 基础合规校验；结构化 rule_category/rule_phrase）。"""
+        if not getattr(self.cfg.agent_guard, "output_check", True):
+            return [], 0
+        from ..safety import basic_content_check_structured as _bcs
+        bad = _bcs(content)
+        if not bad:
+            return [], 0
+        _cats = sorted({b.get("rule_category", "") for b in bad if b.get("rule_category")})
+        return ([{
+            "type": "合规-疑似违规内容",
+            "detail": "；".join(f"「{b.get('phrase', '')}」" for b in bad),
+            "level": "大改",
+            "rule_category": "、".join(_cats),
+            "rule_phrase": "；".join(b.get("phrase", "") for b in bad),
+        }], -40)
+
+    def _check_consistency(self, chapter_no: int, content: str) -> tuple[list, int]:
+        """4.5 章内前后矛盾自检（LLM，REQ-章内自洽）：确定性+读者视角都漏的硬矛盾。
+        高质量模式每章开启；普通模式按 consistency_llm_every 降频。"""
+        _hq = getattr(self.cfg, "high_quality_mode", False)
+        _every = max(1, int(getattr(self.cfg, "consistency_llm_every", 3) or 3))
+        if not (_hq or (getattr(self.cfg, "consistency_llm_check", False) and chapter_no % _every == 1)):
+            return [], 0
+        issues, score = [], 0
+        for it in self._consistency_llm_check(chapter_no, content):
+            issues.append(it)
+            score -= 25
+        return issues, score
 
     def _finalize_issues(self, issues: list[dict], score: int) -> tuple[bool, list[dict], int]:
         """去重 + 排序（大改在前）+ 诊断回喂，返回 (passed, uniq, score)。"""

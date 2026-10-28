@@ -31,7 +31,8 @@ class Orchestrator:
         self.store = store
         self.llm = llm
         self.trace = trace
-        self.validator = validator or LogicValidator()
+        self.validator = validator or LogicValidator(
+            llm=llm, llm_semantic=bool(getattr(cfg, "llm_semantic_mechanism", True)))
         #: 仲裁意见缓冲（本任务内），供最终质量报告/成果整合引用
         self.arbitrations: list[dict] = []
 

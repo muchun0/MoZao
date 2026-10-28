@@ -216,6 +216,7 @@ def test_salvage_recovers_single_draft(store):
     """多稿拼接正文 → ensure_quality 确定性抢救为单一完整草稿，且不依赖 LLM 重写。"""
     llm, calls = _mk_llm()
     cfg = store.load_config()
+    cfg.llm_semantic_beats = False  # 词表换LLM 批次一：本测试断言确定性抢救的 LLM 调用数，关新开关回归纯词表路径
     cfg.chapter_words = 500  # 抢救后的单稿（~370字）达标即可通过，避免触发重写
     qc = QualityChecker(cfg, llm, store)
     stacked = _mk_draft("第一稿：他往侧边跑，撞上一块岩壁。") + "\n\n" + \
@@ -607,6 +608,7 @@ def test_ensure_quality_max_rewrite_rounds(store):
 def test_consistency_llm_every_normal_mode(store):
     """普通模式 + consistency_llm_check=True → 每 N 章抽 1 次（第1章触发、第2章不触发）。"""
     cfg = store.load_config()
+    cfg.llm_semantic_beats = False  # 词表换LLM 批次一：本测试断言 reader+consistency 恰 2 次调用，关新开关回归纯词表路径
     cfg.high_quality_mode = False
     cfg.consistency_llm_check = True
     cfg.consistency_llm_every = 3

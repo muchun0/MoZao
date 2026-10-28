@@ -1720,3 +1720,150 @@ def final_review_prompt(cfg: NovelConfig, outline: Outline, chapters_block: str,
         '"problem": "具体问题（对应章节）", "suggestion": "改进建议"}], "ok": true/false}'
     )
     return system, user
+
+
+# =====================================================================
+# REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，
+# 词表保留确定性兜底。prompt 全部收敛于此（AGENTS §11.3 代码数据分离）。
+# 调用方（beats/beat_gate/scene_event_utils/validator）只消费规范 JSON，
+# 任何解析失败/异常在调用方回退词表（logger.warning 留痕，不阻塞）。
+# =====================================================================
+
+
+def beats_extract_prompt(text: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 beats.py：正文 → 规范节拍标签序列（重演检测输入）。
+
+    原 `_BEAT_DICT` 词表只认固定行为词，换措辞（"他被问得哑口无言" vs "盘问"）
+    即漏抽。LLM 按语义抽取节拍，但标签必须限定在规范集合内，保证下游
+    LCS/循环检测（_beats_rewrite_detected/_beats_local_rewrite_detected/
+    _beat_cycle_issues/_beats_scene_isomorphic）可消费。
+    """
+    system = (
+        "你是小说结构分析员。把给定正文按时间顺序抽取「情节节拍序列」——"
+        "每个节拍 = 正文中一个关键行为/剧情转折/特殊事件。\n"
+        "节拍标签只能从以下规范集合中原样选用（不得自造、不得改写）：\n"
+        "盘问（逼问/质问/试探）、戳穿（识破/看穿）、失控、死亡（咽气/毙命/断气，"
+        "不包括普通倒下）、复活（醒来/睁眼/爬起/回神）、对峙（别动/盯着/冷笑）、"
+        "包扎（按住/撕布/止血/换药）、装晕（装死）、离场（离开/跟上/消失/转身/离去）、"
+        "约定（约在）。\n"
+        "判定规则：\n"
+        "1. 按正文出现的时间顺序输出，一个节拍只记一次（连续重复/换措辞重申同一行为不重复计数）\n"
+        "2. 只有正文确实发生了该行为才记；没有对应行为的不要生造\n"
+        "3. 宁缺毋滥：拿不准的节拍不输出；正文无关键行为时输出空列表\n"
+        '只输出合法 JSON：{"beats": ["盘问", "死亡", "复活"]}；无节拍输出 '
+        '{"beats": []}。不要输出代码块标记、解释或省略号。'
+    )
+    user = f"【待分析正文】\n{text}\n\n请抽取该正文的情节节拍序列。"
+    return system, user
+
+
+def beat_gate_coverage_prompt(content: str, planned_beats: list[str]) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 beat_gate.py：整章一次 LLM 判各计划拍是否在正文兑现。
+
+    替代 `_ACTION_SYNONYMS`/`_MOD_SYNONYMS` 近义词表的子串命中判定——近义改写
+    （清晨↔蒙蒙亮、咬喉↔咬穿）与语序调整在词表路径漏判，LLM 按语义判。
+    一次调用覆盖全部拍（成本：每章 1 次），输出与 planned_beats 一一对应。
+    """
+    beats_block = "\n".join(f"{i}. {b}" for i, b in enumerate(planned_beats))
+    system = (
+        "你是小说编辑，检查大纲「计划拍」是否在正文中兑现。\n"
+        "对每个计划拍（一个动作/事件片段），判断其动作与限定语义是否在正文出现：\n"
+        "- 换措辞、近义改写、语序调整都算兑现（如计划拍写「清晨出门」，正文写"
+        "「天刚蒙蒙亮，他走出院门」算兑现）\n"
+        "- 同一动作以更具体方式呈现算兑现（计划「前往」，正文写「踏入密林深处」算）\n"
+        "- 计划拍的核心限定（时间/地点/对象）缺失则不算完整兑现\n"
+        "- 正文完全没体现该拍的动作语义 → covered=false\n"
+        "hit 列出正文中兑现该拍的语义点（动作/限定各一项即可），miss 列出缺失的语义点。\n"
+        '只输出合法 JSON：{"beats": [{"covered": true, "hit": ["前往"], "miss": []}, '
+        '{"covered": false, "hit": [], "miss": ["清晨"]}]}。'
+        "beats 数组长度必须与计划拍数量一致、顺序一一对应。不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【本章正文】\n" + (content[:3000] if content else "") + "\n\n"
+        "【大纲计划拍】\n" + beats_block + "\n\n"
+        "请逐拍判断是否在正文兑现，输出 covered/hit/miss。"
+    )
+    return system, user
+
+
+def scene_event_derive_prompt(beats: list[str], names: tuple[str, ...] = ()) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 scene_event_utils.py：事件语义槽 + 因果粘连（一次调用）。
+
+    替代 `_SCENE_ACTION_NORM`（动作归一表）与 `_CAUSAL_BEAT_RE`（因果粘连正则）：
+    - 每个节拍片段提取「冲突对象」与「归一化动作」（语义槽，供事件清单与互斥校验）；
+    - 相邻片段因果粘连判定（后一片段是前一片段结果的直接延续 → 合并为同一事件）。
+    """
+    beats_block = "\n".join(f"{i}. {b}" for i, b in enumerate(beats))
+    names_block = ("；".join(names)) if names else "（无固定名单，按文本实际人物/称谓）"
+    system = (
+        "你是小说结构编辑。给出一章从大纲人物动线切出的节拍片段列表，做两件事：\n"
+        "1. 为每个片段提取语义槽：\n"
+        "   - conflict（冲突对象）：片段中被救援/攻击/对峙/追杀的核心人物或对象，"
+        "优先从给定名单中选准确名字；名单外按文本实际出现的人物名/身份称谓"
+        "（如 学员/弟子/少年/少女）；没有明确对象输出空串\n"
+        "   - action（归一化动作）：把片段的核心动作归一到规范动作集合——"
+        "救援/围攻/击杀/逃离/撤离/追击/抵挡/偷袭/刺杀/对峙/埋伏/侦查/探索；"
+        "无匹配输出空串\n"
+        "2. 判定相邻片段因果粘连：后一片段（下标 i）是前一片段（下标 i-1）结果的"
+        "直接延续（同一事件的自然推进，如「遭遇袭击→受伤昏迷→苏醒」），需要合并为"
+        "同一事件时，把后一片段下标 i 加入 merge 数组；正常递进/换地点/新对手不算粘连。\n"
+        '只输出合法 JSON：{"events": [{"conflict": "苏妄言", "action": "救援"}, '
+        '{"conflict": "", "action": "探索"}], "merge": [2, 4]}。'
+        "events 长度必须与片段数一致；merge 下标从 1 开始。不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【节拍片段列表】\n" + beats_block + "\n\n"
+        f"【冲突对象候选名单】{names_block}\n\n"
+        "请提取每个片段的 conflict/action，并输出需要因果合并的相邻对。"
+    )
+    return system, user
+
+
+def scene_rewrite_prompt(text: str, done_events: list[str]) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 scene_event_utils.py：场景正文是否复写已发生事件。
+
+    替代 `_SCENE_RESCUE_VERBS` + `_event_conflict` 称谓兜底的字符串判定——
+    换措辞（救援→施救/帮/拉开）在词表路径漏检。输出命中事件下标，未命中 -1。
+    宁可漏报不误杀（防正常递进/呼应误判为复写）。
+    """
+    ev_block = "\n".join(f"{i}. {e}" for i, e in enumerate(done_events)) if done_events else "（无）"
+    system = (
+        "你是小说质检编辑。判断一段场景正文是否「换措辞重写」了某个已发生事件。\n"
+        "判定标准：正文与某已发生事件本质是同一人物 + 同一冲突 + 同一结果，"
+        "仅措辞/切入点/细节不同（如已写「救出苏妄言」，正文又写「把苏妄言从废墟里拉出来」"
+        "→ 复写）；正文若是在事件后续推进/新信息揭示/正常呼应（一句话带过），不算复写。\n"
+        "宁可漏报不误杀：拿不准输出 -1。\n"
+        '只输出合法 JSON：{"rewrite_of": -1} 或 {"rewrite_of": 0}（0=复写第1个已发生事件）。'
+        "不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【已发生事件清单】\n" + ev_block + "\n\n"
+        "【待检查场景正文】\n" + (text[:3000] if text else "") + "\n\n"
+        "该场景正文是否复写了某个已发生事件？输出命中下标或 -1。"
+    )
+    return system, user
+
+
+def mechanism_check_prompt(mechanism: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 validator.py：机制卡三要素 LLM 语义校验（每本 1 次）。
+
+    替代 `_MECH_SEMANTIC`/`_MECH_SETTLE`/`_MECH_END` 信号词表——"今日剩余复活次数"
+    这类含数字的语义描述旧词表会漏判为缺「机制语义」。missing 文案必须与词表
+    兜底输出完全一致（调用方按固定文案判定三要素缺失）。
+    """
+    system = (
+        "你是小说设定编辑。检查金手指机制卡是否覆盖以下三要素：\n"
+        "1. 机制语义：每个数字/状态的确切含义（如「蚀痕=死亡累计次数」「今日=自然日」）\n"
+        "2. 结算规则：何时增减/重置/与历史衔接（如「每死一次蚀痕+1」「次日清零」）\n"
+        "3. 代价与终局：代价递增/上限/触发/永久（如「蚀痕满十死亡不可逆」「上限九次」）\n"
+        "判定规则：\n"
+        "- 机制卡对某要素有明确描述（含数字/状态的语义说明、结算动作、代价规则）就不算缺失\n"
+        "- 只把「确实没有描述」的要素列入 missing，宁可少判不可多判\n"
+        "- missing 只能使用以下三个固定文案之一：\n"
+        '  "机制语义（每个数字/状态的确切含义）" / "结算规则（何时增减/重置/与历史衔接）" / '
+        '"代价与终局（代价递增/上限/触发）"\n'
+        '只输出合法 JSON：{"missing": ["结算规则（何时增减/重置/与历史衔接）"]}；'
+        "三要素齐全输出 {\"missing\": []}。不要代码块标记、解释或省略号。"
+    )
+    user = f"【金手指机制卡】\n{mechanism}\n\n请判断该机制卡缺失哪些要素。"
+    return system, user

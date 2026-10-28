@@ -278,7 +278,12 @@ def test_scene2_plus_action_plan_no_full_implementation(store):
         "场景链路摘要",
         "扩写正文。" * 300,   # 2 场景合计 < 2500 → 自动触发扩写
     ]
-    _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
+    cfg = store.load_config()
+    # 词表换LLM 批次一：本测试断言固定 mock 序列中的场景 2 prompt 位置，关新开关保持原调用布局
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
     scene2_user = llm.chat.call_args_list[3][0][1]
     assert "本场景只落实与『本场景唯一事件』直接相关的行动" in scene2_user
     assert "禁止跨场景重复落实同一行动/同一节拍" in scene2_user

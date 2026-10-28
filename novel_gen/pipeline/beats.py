@@ -14,7 +14,13 @@ REQ-scene-plan-align §7.2 根因 C/D/E）。
 """
 from __future__ import annotations
 
+import logging
 import re
+
+from ..llm.json_parse import parse_json_obj
+from .templates import beats_extract_prompt
+
+logger = logging.getLogger(__name__)
 
 #: 情节节拍词典：关键行为词 → 归一化节拍（长词优先匹配）。
 #: 通用化（2026-10-27）：仅保留通用行为词拍（盘问/戳穿/失控/死亡/复活/对峙/包扎/
@@ -38,6 +44,11 @@ _BEAT_DICT = {
 }
 _KEYS = sorted(_BEAT_DICT, key=len, reverse=True)
 _PATTERN = re.compile("|".join(re.escape(k) for k in _KEYS))
+
+#: 规范节拍标签白名单（= _BEAT_DICT 的 values）：LLM 输出只允许从其中选用；
+#: 模型自造/改写标签导致有效标签不足时判定为未遵守约束，回退确定性词表兜底，
+#: 防非规范标签污染下游 LCS/循环检测。
+_BEAT_LABELS = frozenset(_BEAT_DICT.values())
 
 #: 重演判定阈值：LCS ≥ 4 且 LCS/较短序列 ≥ 0.7
 #: （完整循环重演判据；正常单事件场景 2-3 拍不触发，机制允许的多次死亡-复活
@@ -71,6 +82,52 @@ def _extract_beat_sequence(text: str) -> list[str]:
         if not seq or seq[-1] != b:
             seq.append(b)
     return seq if len(seq) >= 2 else []
+
+
+def _llm_extract_beats(llm, text: str) -> list[str] | None:
+    """LLM 语义抽取节拍序列（REQ-词表换LLM 批次一）。
+
+    返回 list = LLM 成功判定（可能为空列表 = 正文无节拍，不回退词表）；
+    返回 None = LLM 失败/非结构化/未遵守标签白名单，调用方应回退词表兜底。
+    """
+    if not text:
+        return []
+    if len(text) > 2500:
+        text = text[:2000] + "……" + text[-400:]
+    system, user = beats_extract_prompt(text)
+    raw = llm.chat(system, user, temperature=0.2, max_tokens=600, json_mode=True)
+    data = parse_json_obj(raw)
+    beats = data.get("beats") if isinstance(data, dict) else None
+    if not isinstance(beats, list):
+        return None
+    valid: list[str] = []
+    for b in beats:
+        if not isinstance(b, str):
+            continue
+        label = b.strip()
+        if label in _BEAT_LABELS and (not valid or valid[-1] != label):
+            valid.append(label)
+    if len(beats) >= 2 and len(valid) < 2:
+        logger.warning("llm beats ignore label whitelist: raw=%r", beats)
+        return None
+    return valid if len(valid) >= 2 else []
+
+
+def extract_beats(text: str, llm=None, use_llm: bool = True) -> list[str]:
+    """节拍序列门面：LLM 语义抽取优先；llm 缺失/开关关闭/调用失败/非结构化时
+    回退确定性词表 `_extract_beat_sequence`（词表路径行为零变化）。"""
+    if llm is None or not use_llm or not text:
+        return _extract_beat_sequence(text)
+    try:
+        seq = _llm_extract_beats(llm, text)
+    except Exception as exc:
+        logger.warning("llm beats extract failed, fallback dict: %s: %s",
+                       type(exc).__name__, exc)
+        return _extract_beat_sequence(text)
+    if seq is None:
+        logger.warning("llm beats unstructured, fallback dict")
+        return _extract_beat_sequence(text)
+    return seq
 
 
 def _lcs_len(a: list[str], b: list[str]) -> int:
@@ -182,10 +239,12 @@ def _beats_scene_isomorphic(seq: list[str], scene_ledger: list[list[str]]) -> bo
     return False
 
 
-def _beat_cycle_issues(content: str) -> list[dict]:
-    """质检 2.12 情节级重演检测（确定性）：整章正文内同一长度 ≥4 节拍序列
+def _beat_cycle_issues(content: str, llm=None, use_llm: bool = True) -> list[dict]:
+    """质检 2.12 情节级重演检测：整章正文内同一长度 ≥4 节拍序列
     出现 ≥2 次 = 同事件多版本重演（换措辞循环，文本 n-gram 漏检）。
 
+    REQ-词表换LLM 批次一：节拍序列优先走 LLM 语义抽取（`extract_beats`），
+    LLM 失败/非结构化/未接 llm/开关关闭时回退确定性词表（行为与旧版一致）。
     双判据（2026-10-15 全书复测校准）：
     1. 连续子序列判据：同一长度 ≥4 的连续节拍串出现 ≥2 次且串内含 ≥2 种
        强情节拍（完整循环等长再现；换措辞在序列层即相同序列——CYCLE_A/B、
@@ -195,7 +254,7 @@ def _beat_cycle_issues(content: str) -> list[dict]:
        （面板/对峙）拼进 6 拍窗口 vs 后续 10 拍窗口——长度差 4、LCS 占比
        0.67，双判据均拦。
     """
-    seq = _extract_beat_sequence(content)
+    seq = extract_beats(content, llm, use_llm)
     if len(seq) < _CYCLE_MIN * 2:
         return []
     return _check_exact_sequence_cycle(seq) or _check_windowed_cycle(seq)

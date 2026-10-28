@@ -584,6 +584,18 @@ class QualityChecker:
                 issues.append(it)
                 score -= 25
 
+        # 去重 + 排序 + 诊断回喂
+        passed, uniq, score = self._finalize_issues(issues, score)
+
+        return {
+            "passed": passed,
+            "issues": uniq,
+            "score": max(0, min(100, score)),
+            "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
+        }
+
+    def _finalize_issues(self, issues: list[dict], score: int) -> tuple[bool, list[dict], int]:
+        """去重 + 排序（大改在前）+ 诊断回喂，返回 (passed, uniq, score)。"""
         # 去重 + 排序（大改在前）
         seen, uniq = set(), []
         for it in issues:
@@ -611,12 +623,7 @@ class QualityChecker:
                             _it["expected_gain"] = _fb.get("expected_gain")
             except Exception:
                 pass
-        return {
-            "passed": passed,
-            "issues": uniq,
-            "score": max(0, min(100, score)),
-            "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
-        }
+        return passed, uniq, score
 
     def _check_ai_and_style(self, content: str, chapter_no: int) -> tuple[list[dict], int]:
         """AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）。

@@ -99,7 +99,13 @@
 | 路径 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 dist + 启动（无业务逻辑） |
-| `core.py` | **核心层**：FastAPI 实例/lifespan、鉴权、项目工具、结算、生成线程、任务持久化、登录限流；**P0-3** `_inject_teardown_material` 拆书库回流（调研前注入同题材拆书条目）；**REQ-双锚** `_inject_teardown_style_anchor` 拆书库题材文风锚（写手阶段消费，失败静默；`_run_generation` 入口统一注入，含从第 N 章重生成）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照，接入全部生成入口）+ `_distill_user_memory`（书级→用户级蒸馏，生成 finally 触发）；**REQ-后台开关管理** `_apply_global_overrides`（sys_config 表为准内存态覆盖，_open_pipeline 内注入，config.json 快照不动）；**阶段1B（2026-10-25）** `_RunHandle` 增 `task_id` 字段、`_resume_interrupted_tasks` 增 `agent_run` 分支（局部 import generate_service 调 resume_agent_run，失败清 task+释放信号量） |
+| `core.py` | **核心层门面（组装壳，2026-10-28 拆分）**：FastAPI 实例/lifespan/CORS + 星号导入 6 个业务域子模块统一再导出（`__all__` 动态收集，`from .core import *` 导出面零变化）。业务实现见 core_runtime/models/auth/project/settle/generate |
+| `core_runtime.py` | **运行时**：路径常量（BASE_DIR/PROJECTS_DIR/OUTPUT_DIR/WEB_DIR）、`_RunHandle`（含 task_id）/`_RUNS`/`_LOCK`/`_GEN_SEMAPHORE`、槽位 `_acquire_slot`/`_release_slot`、任务持久化 `_mark_task`/`_clear_task`/`_resume_interrupted_tasks`（agent_run 分支延迟 import generate_service） |
+| `core_models.py` | **Pydantic 请求/响应模型**（LLMReq…ChapterEditReq 全部） |
+| `core_auth.py` | **鉴权**：`_require_user`/`_require_admin`/`_check_project_access`/`_assign_legacy_projects`/`_public_user` + 登录限流 |
+| `core_project.py` | **项目工具**：`_find_project`/`_list_projects`/`_open_pipeline`（含 `_apply_global_overrides`）/`_project_use_user_llm`/`_resolve_llm`/封面/锁定/摘要/`_guard_user_input` |
+| `core_settle.py` | **结算链（P0）**：`_compute_settle`/`_settle_billing_mode`/`_settle_incremental`/`_settle_price`/`_settle_product`/`_commit_and_settle`/`_grant_consume_commission`（被补丁 `_project_use_user_llm` 经延迟 `from . import core` 解析） |
+| `core_generate.py` | **生成线程**：`_inject_teardown_material`（P0-3 拆书库回流）/`_inject_teardown_style_anchor`（REQ-双锚）/`_inject_user_memory`+`_distill_user_memory`（用户级记忆库）；`_run_generation`/`_run_outline_only`/`_run_batch`/`_research_needed`（被补丁 helper 经延迟 `from . import core` 解析） |
 | `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 读 `sys_config` 实时值覆盖 NovelConfig（顶层 + agent_guard 标量/scene_limits），DB 异常回退默认并 logger 留痕；生成链路与小墨AI 对话共用（`core._apply_global_overrides` 保留同名入口） |
 | `user_memory.py` | **用户级记忆库服务**（跨书创作偏好继承）：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像/跨书纪律/个人文风锚/stats），`record_project_signals`/`record_edits`/`distill`/`build_snapshot`/`summary`/`clear`，全部写路径零额外 LLM |
 | `assistant/` | **小墨AI（REQ-小墨AI 一期，项目页写作对话）**：`prompt.py` 读取 `novel_gen/pipeline/agents/prompts/assistant.md`（mtime 缓存 + 内置降级 + warning）；`context.py` 只读项目产物组装四层上下文（人设+Bible / 事实块 / 对话窗口 / 提问），token 预算按固定档位裁剪、正文头尾保留；`cards.py` 确定性卡片（质检扣分/问题清单按大中小改排序/版本对比/正向实测），阈值全部 import 自 `pipeline/ai_taste.py`，缺口（破折号密度/面板数字）明示；`service.py` 编排（输入校验 → 章节解析 → 组装 → LLM 调用 → 失败降级留痕 → 输出合规 → 落库） |

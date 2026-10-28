@@ -426,7 +426,32 @@ class Memory:
             if w_normal:
                 parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 
-        # L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态
+        self._build_l15_states(parts, up_to_chapter)
+
+        self._build_l16_chapter_state(parts, up_to_chapter)
+
+        self._build_l2_and_l3(parts, up_to_chapter)
+
+        self._build_l4_summaries(parts, up_to_chapter)
+
+        self._build_l45_direct_read(parts, up_to_chapter)
+
+        self._build_verify_issues(parts)
+
+        self._build_anti_cliche(parts)
+
+        self._build_repetition(parts, up_to_chapter)
+
+        # 强约束区（P1-3）：用户锁定 / 强约束 / 核心世界观，置于 prompt 末尾（模型权重最高）
+        if key_parts:
+            parts.append("[L1·核心锁定·强约束（最高优先级，必须严格遵守）]\n" + "\n".join(key_parts))
+
+        if not parts:
+            return ""
+        return "\n\n".join(parts)
+
+    def _build_l15_states(self, parts: list[str], up_to_chapter: int) -> None:
+        """L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态。"""
         try:
             from .character_state import format_state_line
             cs = self.store.load_character_states()
@@ -442,9 +467,8 @@ class Memory:
         except Exception:
             pass
 
-        # L1.6 章内/章间状态账本（REQ-章内自洽与机制账本）：上一章结束时的
-        # 机制数字/人物生死/物品归属/时间/事实，供本章延续（防数字断链、死而复生）。
-        # 账本来自已落盘的前章（chapter < 当前章才注入），失败静默降级。
+    def _build_l16_chapter_state(self, parts: list[str], up_to_chapter: int) -> None:
+        """L1.6 章内/章间状态账本（REQ-章内自洽与机制账本）：承接上一章可变状态，防断链/死而复生。"""
         try:
             from .chapter_state import format_chapter_state
             st = self.store.load_chapter_state()
@@ -455,7 +479,8 @@ class Memory:
         except Exception:
             pass
 
-        # L2 卷级摘要：当前所在分卷
+    def _build_l2_and_l3(self, parts: list[str], up_to_chapter: int) -> None:
+        """L2 卷级摘要 + L3 近章大纲 + L3.5 本章转场衔接。"""
         try:
             outline = self.store.load_outline()
             if outline and outline.volumes:
@@ -499,7 +524,8 @@ class Memory:
         except Exception:
             pass
 
-        # L4 前章尾文（短期摘要）
+    def _build_l4_summaries(self, parts: list[str], up_to_chapter: int) -> None:
+        """L4 前章尾文（短期摘要）：最近 N 章一句话摘要。"""
         summaries = self.store.load_summaries()
         recent = [s for s in summaries if int(s.get("no", 0)) < up_to_chapter]
         recent = recent[-self.memory_window:] if self.memory_window else recent
@@ -509,9 +535,8 @@ class Memory:
                 f"[L4·前章剧情摘要·最近 {len(recent)} 章]\n" + "\n".join(lines)
             )
 
-        # L4.5 近章正文直读（P0-1）：一句话摘要丢细节（对话/动作/物品/位置），
-        # 直读最近 N 章正文尾部作为细节锚点；长度受 memory_direct_read_* 配置约束，
-        # 0=关闭（行为与旧版一致）。
+    def _build_l45_direct_read(self, parts: list[str], up_to_chapter: int) -> None:
+        """L4.5 近章正文直读（P0-1）：直读最近 N 章正文尾部作细节锚点。"""
         try:
             cfg_d = self.store.load_config()
             n_direct = int(getattr(cfg_d, "memory_direct_read_chapters", 0) or 0)
@@ -532,7 +557,8 @@ class Memory:
         except Exception:
             pass
 
-        # 一致性校验 issues（高质量模式）：提醒后续章节注意修正
+    def _build_verify_issues(self, parts: list[str]) -> None:
+        """一致性校验 issues（高质量模式）：提醒后续章节注意修正。"""
         try:
             v_issues = self.store.load_verify_issues()
             # 只保留最近一次校验（按 chapter 取最新）
@@ -550,7 +576,8 @@ class Memory:
         except Exception:
             pass
 
-        # 反套路约束（常驻）
+    def _build_anti_cliche(self, parts: list[str]) -> None:
+        """反套路约束（常驻）：读 anti_cliche.json 注入防套路提示。"""
         try:
             ac_path = self.store.dir / "anti_cliche.json"
             if ac_path.exists():
@@ -563,7 +590,8 @@ class Memory:
         except Exception:
             pass
 
-        # 重复度检测：最近章节高频词/句式
+    def _build_repetition(self, parts: list[str], up_to_chapter: int) -> None:
+        """重复度检测：最近章节高频词/句式。"""
         try:
             from .repetition import RepetitionDetector
             cfg = self.store.load_config()
@@ -573,11 +601,3 @@ class Memory:
                 parts.append(banned_hint)
         except Exception:
             pass
-
-        # 强约束区（P1-3）：用户锁定 / 强约束 / 核心世界观，置于 prompt 末尾（模型权重最高）
-        if key_parts:
-            parts.append("[L1·核心锁定·强约束（最高优先级，必须严格遵守）]\n" + "\n".join(key_parts))
-
-        if not parts:
-            return ""
-        return "\n\n".join(parts)

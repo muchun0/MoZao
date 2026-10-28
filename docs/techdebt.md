@@ -84,7 +84,7 @@
 | 函数 | 位置 | 行数 | 备注 |
 |---|---|---|---|
 | ~~`build_context`~~（含嵌套 `_fs`） | `memory.py:45` | 58（原 539） | ✅ 已全部拆完（§11.1 先拆函数，2026-10-28）：L1.5-L4.5 等 8 块 + L1 设定库 7 块，共 15 个 helper；续拆 `_build_entity_cards`/`_build_key_settings`，memory 全部方法 <50 行达标 |
-| `init_db` | `db/base.py:392` | 92 | DDL + seed + 迁移全在这 |
+| ~~`init_db`~~ | `db/base.py:392` | 20（原 92） | ✅ 已拆（§11.1 先拆函数，2026-10-28）：6 个 helper（建表/两处补列/邀请码/BYOK/种子化），保持严格顺序；init_db 92→20 行 |
 | `build_context` | `memory.py:45` | 75 | |
 | `build_setting_cards` | `setting_cards.py:47` | 60 | |
 | `ledger_check` | `chapter_state.py:667` | 59 | 机制数字账本（核心一致性） |

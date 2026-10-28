@@ -398,103 +398,123 @@ def init_db() -> None:
     from .config import seed_feature_flags
 
     with _connect() as conn:
-        for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
-                    _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
-                    _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES):
-            conn.execute(ddl)
+        _run_schema_ddl(conn)
         _ensure_teardown_user_id()
-        # 老表缺列时补列（新库建全表后通常不会命中；幂等保护）
         cols = _column_names(conn, "users")
-        if "email" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN email VARCHAR(120)")
-            conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)")
-        if "is_agent" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN is_agent INT NOT NULL DEFAULT 0")
-        if "agent_discount" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN agent_discount DOUBLE NOT NULL DEFAULT 1.0")
-        if "invite_code" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN invite_code VARCHAR(50)")
-            conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_invite (invite_code)")
-        if "referrer_id" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN referrer_id INT")
-        # 用户自配模型（填了即用自己的 key，平台不扣费）
-        if "llm_provider" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN llm_provider VARCHAR(30) NOT NULL DEFAULT ''")
-        if "llm_api_key" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN llm_api_key VARCHAR(200) NOT NULL DEFAULT ''")
-        if "llm_base_url" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(200) NOT NULL DEFAULT ''")
-        if "llm_model" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN llm_model VARCHAR(100) NOT NULL DEFAULT ''")
-        usk_cols = _column_names(conn, "user_skills")
-        if "market_id" not in usk_cols:
-            conn.execute("ALTER TABLE user_skills ADD COLUMN market_id INT NOT NULL DEFAULT 0")
-            conn.execute("ALTER TABLE user_skills ADD KEY idx_us_market (market_id)")
-        pcols = _column_names(conn, "project_owner")
-        if "price" not in pcols:
-            conn.execute("ALTER TABLE project_owner ADD COLUMN price DOUBLE NOT NULL DEFAULT 0")
-        if "discount" not in pcols:
-            conn.execute("ALTER TABLE project_owner ADD COLUMN discount DOUBLE NOT NULL DEFAULT 1.0")
-        # writing_skills 加 role 字段：空=全局，researcher/architect/writer/reviewer=专属某角色
-        scol = _column_names(conn, "writing_skills")
-        if "role" not in scol:
-            conn.execute("ALTER TABLE writing_skills ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT ''")
-            conn.execute("ALTER TABLE writing_skills ADD KEY idx_ws_role (role)")
-        # REQ-技能统一：平台技能加适用阶段/版本元数据（空阶段=全阶段生效）
-        if "applicable_stages" not in scol:
-            conn.execute("ALTER TABLE writing_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
-        if "version" not in scol:
-            conn.execute("ALTER TABLE writing_skills ADD COLUMN version VARCHAR(20) NOT NULL DEFAULT '1'")
-        # user_skills 加适用阶段元数据（空阶段=全阶段生效）
-        usk_stage_cols = _column_names(conn, "user_skills")
-        if "applicable_stages" not in usk_stage_cols:
-            conn.execute("ALTER TABLE user_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
-        # skill_market 加适用阶段元数据（市场技能安装进 user_skills 时保留阶段）
-        sm_stage_cols = _column_names(conn, "skill_market")
-        if "applicable_stages" not in sm_stage_cols:
-            conn.execute("ALTER TABLE skill_market ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
-        # style_roles 加 user_id 归属：0=平台内置，>0=用户自建
-        sr_cols = _column_names(conn, "style_roles")
-        if "user_id" not in sr_cols:
-            conn.execute("ALTER TABLE style_roles ADD COLUMN user_id INT NOT NULL DEFAULT 0")
-            conn.execute("ALTER TABLE style_roles ADD KEY idx_sr_user (user_id)")
-        # style_roles 加 reference_text（P2-1 few-shot 风格范文，可空；存量数据兼容）
-        if "reference_text" not in _column_names(conn, "style_roles"):
-            conn.execute("ALTER TABLE style_roles ADD COLUMN reference_text TEXT")
-        # style_role_skills 加 skill_type：admin=writing_skills / user=user_skills
-        srs_cols = _column_names(conn, "style_role_skills")
-        if "skill_type" not in srs_cols:
-            conn.execute("ALTER TABLE style_role_skills ADD COLUMN skill_type VARCHAR(8) NOT NULL DEFAULT 'admin'")
-            try:
-                conn.execute("ALTER TABLE style_role_skills DROP INDEX uk_srs_role_skill")
-            except Exception:
-                pass
-            conn.execute("ALTER TABLE style_role_skills ADD UNIQUE KEY uk_srs_role_skill (role_id, skill_type, skill_id)")
-        # 老用户补邀请码（无码则按 id 生成 INV+id）
-        rows = conn.execute(
-            "SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
-        for r in rows:
-            code = _make_invite_code(r["id"])
-            conn.execute("UPDATE users SET invite_code=%s WHERE id=%s", (code, r["id"]))
-        # 存量明文 BYOK Key 迁移为密文（enc:v1: 前缀幂等；密钥缺失时跳过并警告）
-        if "llm_api_key" in cols:
-            plain_rows = conn.execute(
-                "SELECT id, llm_api_key FROM users "
-                "WHERE llm_api_key IS NOT NULL AND llm_api_key<>'' "
-                "AND llm_api_key NOT LIKE 'enc:v1:%'").fetchall()
-            for r in plain_rows:
-                enc = encrypt_secret(r["llm_api_key"])
-                if enc:
-                    conn.execute("UPDATE users SET llm_api_key=%s WHERE id=%s", (enc, r["id"]))
-                else:
-                    logger.warning("BYOK Key 加密迁移跳过: user_id=%d", r["id"])
-        # 风格角色种子化（幂等：仅当表为空时从 skills_library/style-references 导入）
+        _migrate_user_columns(conn, cols)
+        _migrate_skill_columns(conn)
+        _backfill_invite_codes(conn, _make_invite_code)
+        _migrate_byok_keys(conn, cols)
+        _seed_guarded(_seed_style_roles, "风格角色")
+        _seed_guarded(seed_feature_flags, "sys_config 开关")
+
+
+def _run_schema_ddl(conn) -> None:
+    """init_db 拆：执行全量建表 DDL（幂等，IF NOT EXISTS）。"""
+    for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
+                _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
+                _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES):
+        conn.execute(ddl)
+
+
+def _migrate_user_columns(conn, cols) -> None:
+    """init_db 拆：老 users 表缺列时补列（幂等保护）。"""
+    if "email" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email VARCHAR(120)")
+        conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)")
+    if "is_agent" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_agent INT NOT NULL DEFAULT 0")
+    if "agent_discount" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN agent_discount DOUBLE NOT NULL DEFAULT 1.0")
+    if "invite_code" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN invite_code VARCHAR(50)")
+        conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_invite (invite_code)")
+    if "referrer_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN referrer_id INT")
+    # 用户自配模型（填了即用自己的 key，平台不扣费）
+    if "llm_provider" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN llm_provider VARCHAR(30) NOT NULL DEFAULT ''")
+    if "llm_api_key" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN llm_api_key VARCHAR(200) NOT NULL DEFAULT ''")
+    if "llm_base_url" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(200) NOT NULL DEFAULT ''")
+    if "llm_model" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN llm_model VARCHAR(100) NOT NULL DEFAULT ''")
+
+
+def _migrate_skill_columns(conn) -> None:
+    """init_db 拆：user_skills/project_owner/writing_skills/skill_market/style_roles/style_role_skills 缺列补列。"""
+    usk_cols = _column_names(conn, "user_skills")
+    if "market_id" not in usk_cols:
+        conn.execute("ALTER TABLE user_skills ADD COLUMN market_id INT NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE user_skills ADD KEY idx_us_market (market_id)")
+    pcols = _column_names(conn, "project_owner")
+    if "price" not in pcols:
+        conn.execute("ALTER TABLE project_owner ADD COLUMN price DOUBLE NOT NULL DEFAULT 0")
+    if "discount" not in pcols:
+        conn.execute("ALTER TABLE project_owner ADD COLUMN discount DOUBLE NOT NULL DEFAULT 1.0")
+    # writing_skills 加 role 字段：空=全局，researcher/architect/writer/reviewer=专属某角色
+    scol = _column_names(conn, "writing_skills")
+    if "role" not in scol:
+        conn.execute("ALTER TABLE writing_skills ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE writing_skills ADD KEY idx_ws_role (role)")
+    # REQ-技能统一：平台技能加适用阶段/版本元数据（空阶段=全阶段生效）
+    if "applicable_stages" not in scol:
+        conn.execute("ALTER TABLE writing_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
+    if "version" not in scol:
+        conn.execute("ALTER TABLE writing_skills ADD COLUMN version VARCHAR(20) NOT NULL DEFAULT '1'")
+    # user_skills 加适用阶段元数据（空阶段=全阶段生效）
+    if "applicable_stages" not in _column_names(conn, "user_skills"):
+        conn.execute("ALTER TABLE user_skills ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
+    # skill_market 加适用阶段元数据（市场技能安装进 user_skills 时保留阶段）
+    if "applicable_stages" not in _column_names(conn, "skill_market"):
+        conn.execute("ALTER TABLE skill_market ADD COLUMN applicable_stages VARCHAR(200) NOT NULL DEFAULT ''")
+    # style_roles 加 user_id 归属：0=平台内置，>0=用户自建
+    sr_cols = _column_names(conn, "style_roles")
+    if "user_id" not in sr_cols:
+        conn.execute("ALTER TABLE style_roles ADD COLUMN user_id INT NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE style_roles ADD KEY idx_sr_user (user_id)")
+    # style_roles 加 reference_text（P2-1 few-shot 风格范文，可空；存量数据兼容）
+    if "reference_text" not in _column_names(conn, "style_roles"):
+        conn.execute("ALTER TABLE style_roles ADD COLUMN reference_text TEXT")
+    # style_role_skills 加 skill_type：admin=writing_skills / user=user_skills
+    srs_cols = _column_names(conn, "style_role_skills")
+    if "skill_type" not in srs_cols:
+        conn.execute("ALTER TABLE style_role_skills ADD COLUMN skill_type VARCHAR(8) NOT NULL DEFAULT 'admin'")
         try:
-            _seed_style_roles()
-        except Exception as e:
-            logger.warning("风格角色种子化跳过（不影响启动）: %s", e)
-        # 全局开关种子化（幂等：注册表全量同步进 sys_config，新增开关自动入表）
-        try:
-            seed_feature_flags()
-        except Exception as e:
-            logger.warning("sys_config 开关种子化跳过（不影响启动）: %s", e)
+            conn.execute("ALTER TABLE style_role_skills DROP INDEX uk_srs_role_skill")
+        except Exception:
+            pass
+        conn.execute("ALTER TABLE style_role_skills ADD UNIQUE KEY uk_srs_role_skill (role_id, skill_type, skill_id)")
+
+
+def _backfill_invite_codes(conn, make_invite_code) -> None:
+    """init_db 拆：老用户补邀请码（无码则按 id 生成 INV+id）。"""
+    rows = conn.execute(
+        "SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
+    for r in rows:
+        code = make_invite_code(r["id"])
+        conn.execute("UPDATE users SET invite_code=%s WHERE id=%s", (code, r["id"]))
+
+
+def _migrate_byok_keys(conn, cols) -> None:
+    """init_db 拆：存量明文 BYOK Key 迁移为密文（enc:v1: 前缀幂等；密钥缺失时跳过并警告）。"""
+    if "llm_api_key" in cols:
+        plain_rows = conn.execute(
+            "SELECT id, llm_api_key FROM users "
+            "WHERE llm_api_key IS NOT NULL AND llm_api_key<>'' "
+            "AND llm_api_key NOT LIKE 'enc:v1:%'").fetchall()
+        for r in plain_rows:
+            enc = encrypt_secret(r["llm_api_key"])
+            if enc:
+                conn.execute("UPDATE users SET llm_api_key=%s WHERE id=%s", (enc, r["id"]))
+            else:
+                logger.warning("BYOK Key 加密迁移跳过: user_id=%d", r["id"])
+
+
+def _seed_guarded(seed_fn, label) -> None:
+    """init_db 拆：种子化（幂等，失败仅告警不阻断启动）。"""
+    try:
+        seed_fn()
+    except Exception as e:
+        logger.warning("%s种子化跳过（不影响启动）: %s", label, e)

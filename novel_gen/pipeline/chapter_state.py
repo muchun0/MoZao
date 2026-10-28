@@ -692,42 +692,44 @@ def ledger_check(content: str, prev_ledger: dict, registry: dict[str, str],
         if prev is None:
             continue
         if deaths <= 0:
-            if rule == "increase":
-                if "寸" in core:
-                    # 单位字段（寸/里/丈…）允许合法正向增长（外力/碎片等），只查不回退
-                    if val < prev:
-                        out.append(
-                            f"机制字段「{core}」本章无死亡结算但值 {val} 较上一章末 {prev} "
-                            "回退（未发生事件时累计类机制数字不得回退）"
-                        )
-                elif val != prev:
-                    out.append(
-                        f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
-                        "（未发生事件时机制数字必须保持上一章末值不变）"
-                    )
-            elif val != prev:
-                out.append(
-                    f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
-                    "（未发生事件时机制数字必须保持上一章末值不变）"
-                )
+            msg = _check_no_event_consistency(core, rule, val, prev)
         else:
-            if rule == "decrease":
-                if val > prev:
-                    out.append(
-                        f"机制字段「{core}」本章发生死亡但值 {val} 未从上一章末 {prev} 递减"
-                        "（死亡必须 -1）"
-                    )
-                elif prev == 0 and val == 0:
-                    out.append(
-                        f"机制字段「{core}」上一章末已为 0，本章仍发生死亡（次数用尽后"
-                        "不得再安排死亡，基线未声明该边界行为）"
-                    )
-            elif rule == "increase" and len(core) > 1 and val < prev + max(0, deaths):
-                out.append(
-                    f"机制字段「{core}」本章发生 {deaths} 次死亡，值 {val} 应 ≥ 上一章末"
-                    f" {prev} + {deaths}（每死 +1，随死亡累计递增）"
-                )
-            # 单字单位字段（寸/层/级…）：有事件时不校验增量（增量依赖机制基线自由文本
-            # ——碎片/外力/剩余描述均可合法影响单位数值，无法通用推导「应 ≥ prev+deaths」；
-            # 无事件回退已在上方 increase 分支拦截）
+            msg = _check_event_direction(core, rule, val, prev, deaths)
+        if msg:
+            out.append(msg)
     return out
+
+
+def _check_no_event_consistency(core: str, rule: str, val: int, prev: int) -> str | None:
+    """无事件（deaths=0）：decrease/中性字段保持上一章末；increase 字段不得回退。
+
+    单位字段（寸/里/丈…）允许合法正向增长（外力/碎片），只查不回退。
+    """
+    if rule == "increase" and "寸" in core:
+        if val < prev:
+            return (f"机制字段「{core}」本章无死亡结算但值 {val} 较上一章末 {prev} "
+                    "回退（未发生事件时累计类机制数字不得回退）")
+        return None
+    if val != prev:
+        return (f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
+                "（未发生事件时机制数字必须保持上一章末值不变）")
+    return None
+
+
+def _check_event_direction(core: str, rule: str, val: int, prev: int, deaths: int) -> str | None:
+    """有事件（deaths>0）：decrease 必须递减；increase（多字符字段）必须 ≥ prev+deaths。
+
+    单字单位字段（寸/层/级…）有事件时不校验增量（增量依赖机制基线自由文本，
+    无法通用推导「应 ≥ prev+deaths」；无事件回退已在上方拦截）。
+    """
+    if rule == "decrease":
+        if val > prev:
+            return (f"机制字段「{core}」本章发生死亡但值 {val} 未从上一章末 {prev} 递减"
+                    "（死亡必须 -1）")
+        if prev == 0 and val == 0:
+            return (f"机制字段「{core}」上一章末已为 0，本章仍发生死亡（次数用尽后"
+                    "不得再安排死亡，基线未声明该边界行为）")
+    elif rule == "increase" and len(core) > 1 and val < prev + max(0, deaths):
+        return (f"机制字段「{core}」本章发生 {deaths} 次死亡，值 {val} 应 ≥ 上一章末"
+                f" {prev} + {deaths}（每死 +1，随死亡累计递增）")
+    return None

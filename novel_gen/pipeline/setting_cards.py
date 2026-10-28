@@ -44,69 +44,86 @@ def _match_items(items: list, keywords: set, goal_blob: str) -> list:
     return out
 
 
+def _prepare_world_lists(world):
+    """从 world 一次性抽取各类实体列表（统一来源，避免每章重复 getattr）。"""
+    chars = [c for c in (world.characters or []) if getattr(c, "name", "")]
+    return (
+        chars,
+        list(world.enemies or []),
+        list(world.locations or []),
+        list(world.factions or []),
+        list(world.foreshadowing or []),
+        list(world.items or []),
+        list(world.terminology or []),
+    )
+
+
+def _build_chapter_card(plan, world, summaries, lists):
+    """构建单章设定卡索引：预测出场人物 + 关键词匹配各类实体。
+
+    任何子步骤失败都按保守策略降级（预测失败→全量人物；匹配为空→省略该类目）。
+    """
+    chars, enemies, locations, factions, fs, items, terminology = lists
+    no = int(getattr(plan, "no", 0))
+    goal = getattr(plan, "goal", "") or ""
+    core = getattr(plan, "core_event", "") or ""
+    # 1) 出场人物：沿用 Lorebook 预测（构建期无 char_states，传空 dict；
+    #    预测失败返回全量名，保守不裁剪）
+    try:
+        from .memory import predict_appearing_chars
+        cand = predict_appearing_chars(world, goal, summaries[-3:], {}, no)
+    except Exception:
+        cand = []
+    hit_names = cand or [c.name for c in chars]
+    # 2) 关键词：本章 goal + core_event + 出场人物名
+    keywords = set()
+    for kw in (goal, core):
+        if kw:
+            keywords.add(kw)
+    keywords.update(hit_names)
+    # 3) 匹配 生物/地点/势力/伏笔：名称直判 or 关键词包含
+    goal_blob = " ".join((goal, core, " ".join(hit_names)))
+    ch_enemies = [e.name for e in _match_items(enemies, keywords, goal_blob)]
+    ch_locations = [l.name for l in _match_items(locations, keywords, goal_blob)]
+    ch_factions = [f.name for f in _match_items(factions, keywords, goal_blob)]
+    ch_items = [it.name for it in _match_items(items, keywords, goal_blob)]
+    ch_terminology = [t.name for t in _match_items(terminology, keywords, goal_blob)]
+    ch_fs = []
+    for x in fs:
+        if hasattr(x, "content"):
+            blob = f"{getattr(x, 'name', '') or ''} {getattr(x, 'content', '') or ''} " \
+                   f"{getattr(x, 'hint', '') or ''}"
+        else:
+            blob = str(x)
+        if any(k and k in blob for k in keywords):
+            ch_fs.append((blob or "")[:80])
+    return {
+        "no": no,
+        "chars": hit_names,
+        "enemies": ch_enemies,
+        "locations": ch_locations,
+        "factions": ch_factions,
+        "foreshadows": ch_fs,
+        "items": ch_items,
+        "terminology": ch_terminology,
+    }
+
+
 def build_setting_cards(store, world, outline) -> dict:
     """确定性构建分章设定卡索引。任何异常返回空 dict（调用方跳过，回退全量注入）。"""
     try:
         if world is None or outline is None or not outline.chapters:
             return {}
-        chars = [c for c in (world.characters or []) if getattr(c, "name", "")]
-        enemies = list(world.enemies or [])
-        locations = list(world.locations or [])
-        factions = list(world.factions or [])
-        fs = list(world.foreshadowing or [])
-        items = list(world.items or [])
-        terminology = list(world.terminology or [])
+        lists = _prepare_world_lists(world)
         try:
             summaries = [s.get("summary", "") for s in store.load_summaries()]
         except Exception:
             summaries = []
         chapters = []
         for plan in outline.chapters:
-            no = int(getattr(plan, "no", 0))
-            if no <= 0:
+            if int(getattr(plan, "no", 0)) <= 0:
                 continue
-            goal = getattr(plan, "goal", "") or ""
-            core = getattr(plan, "core_event", "") or ""
-            # 1) 出场人物：沿用 Lorebook 预测（构建期无 char_states，传空 dict；
-            #    预测失败返回全量名，保守不裁剪）
-            try:
-                from .memory import predict_appearing_chars
-                cand = predict_appearing_chars(world, goal, summaries[-3:], {}, no)
-            except Exception:
-                cand = []
-            hit_names = cand or [c.name for c in chars]
-            # 2) 关键词：本章 goal + core_event + 出场人物名
-            keywords = set()
-            for kw in (goal, core):
-                if kw:
-                    keywords.add(kw)
-            keywords.update(hit_names)
-            # 3) 匹配 生物/地点/势力/伏笔：名称直判 or 关键词包含
-            goal_blob = " ".join((goal, core, " ".join(hit_names)))
-            ch_enemies = [e.name for e in _match_items(enemies, keywords, goal_blob)]
-            ch_locations = [l.name for l in _match_items(locations, keywords, goal_blob)]
-            ch_factions = [f.name for f in _match_items(factions, keywords, goal_blob)]
-            ch_items = [it.name for it in _match_items(items, keywords, goal_blob)]
-            ch_terminology = [t.name for t in _match_items(terminology, keywords, goal_blob)]
-            ch_fs = []
-            for x in fs:
-                if hasattr(x, "content"):
-                    blob = f"{getattr(x, 'name', '') or ''} {getattr(x, 'content', '') or ''} " \
-                           f"{getattr(x, 'hint', '') or ''}"
-                else:
-                    blob = str(x)
-                if any(k and k in blob for k in keywords):
-                    ch_fs.append((blob or "")[:80])
-            chapters.append({
-                "no": no,
-                "chars": hit_names,
-                "enemies": ch_enemies,
-                "locations": ch_locations,
-                "factions": ch_factions,
-                "foreshadows": ch_fs,
-                "items": ch_items,
-                "terminology": ch_terminology,
-            })
+            chapters.append(_build_chapter_card(plan, world, summaries, lists))
         return {"version": 1, "chapters": chapters}
     except Exception:
         return {}

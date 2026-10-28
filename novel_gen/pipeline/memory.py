@@ -59,22 +59,8 @@ class Memory:
         key_parts: list[str] = []   # 强约束区：放 prompt 末尾（权重最高）
 
         # L1 全局设定库（P1-3 Lorebook 式裁剪）
-        cfg_d, lorebook_on = self._load_lorebook_flag()
         if world is not None:
-            w_normal = []
-            # REQ-token优化 P1-1：分章设定卡子集（缺失/关闭/失败 → None = 回退全量注入）
-            (sc_ch, sub_chars, sub_enemies, sub_locations, sub_factions,
-             sub_fs, sub_items, sub_terminology) = self._load_setting_cards(up_to_chapter)
-            self._build_world_reveals(world, up_to_chapter, w_normal, key_parts)
-            hit, trimmed = self._build_character_cards(
-                world, sub_chars, lorebook_on, chapter_goal, up_to_chapter, w_normal)
-            self._build_entity_cards(
-                world, sub_enemies, sub_locations, sub_factions, sub_items,
-                sub_terminology, w_normal)
-            self._build_foreshadow(world, sub_fs, hit, trimmed, w_normal)
-            self._build_key_settings(world, cfg_d, up_to_chapter, key_parts)
-            if w_normal:
-                parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
+            self._build_l1_world(world, up_to_chapter, chapter_goal, parts, key_parts)
 
         self._build_l15_states(parts, up_to_chapter)
 
@@ -99,6 +85,28 @@ class Memory:
         if not parts:
             return ""
         return "\n\n".join(parts)
+
+    def _build_l1_world(self, world: World, up_to_chapter: int, chapter_goal: str,
+                       parts: list[str], key_parts: list[str]) -> None:
+        """L1 全局设定库：分章裁剪注入（人物/实体/伏笔 reveal + 核心锁定项）。
+
+        分章设定卡子集缺失/关闭/失败时回退全量注入（保守，不裁设定）。
+        """
+        cfg_d, lorebook_on = self._load_lorebook_flag()
+        w_normal: list[str] = []
+        # REQ-token优化 P1-1：分章设定卡子集（缺失/关闭/失败 → None = 回退全量注入）
+        (sc_ch, sub_chars, sub_enemies, sub_locations, sub_factions,
+         sub_fs, sub_items, sub_terminology) = self._load_setting_cards(up_to_chapter)
+        self._build_world_reveals(world, up_to_chapter, w_normal, key_parts)
+        hit, trimmed = self._build_character_cards(
+            world, sub_chars, lorebook_on, chapter_goal, up_to_chapter, w_normal)
+        self._build_entity_cards(
+            world, sub_enemies, sub_locations, sub_factions, sub_items,
+            sub_terminology, w_normal)
+        self._build_foreshadow(world, sub_fs, hit, trimmed, w_normal)
+        self._build_key_settings(world, cfg_d, up_to_chapter, key_parts)
+        if w_normal:
+            parts.append("[L1·全局设定·本章相关]\n" + "\n".join(w_normal))
 
     def _build_l15_states(self, parts: list[str], up_to_chapter: int) -> None:
         """L1.5 人物动态状态快照（P0-2）：静态人物卡之外，注入最近出场人物的当前状态。"""

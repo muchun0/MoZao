@@ -57,6 +57,19 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
     FeatureFlag("memory", "book_memory", True, "小说级记忆系统（P0-7）：质检出问题→踩坑账本→重写/场景 prompt 注入本作历史错误+修复指令，同模式≥2次升级永久纪律，针对本书持续进化；False=关闭（管线行为与 P0-5 一致）"),
     FeatureFlag("memory", "book_memory_top_n", 5, "踩坑账本注入 Top-N 条数（P0-7）：按出现次数×最近频率排序取前 N 条注入重写/场景 prompt"),
+    FeatureFlag("memory", "pitfall_inject_min_count", 2,
+                "踩坑账本注入最小出现次数（REQ-踩坑账本注入对账）：只注入 count>=N 的踩坑，与 "
+                "escalate() 的 count>=2 同口径，防单次低频问题过度束缚正常生成"),
+    FeatureFlag("memory", "pitfall_reconcile", True,
+                "踩坑账本注入对账开关（REQ-踩坑账本注入对账）：各注入点落盘 expected vs actual "
+                "明细；False=只注入不对账（注入行为完全不变）"),
+    FeatureFlag("memory", "pitfall_reconcile_fail_fast", False,
+                "注入对账 Fail Fast（REQ-踩坑账本注入对账）：True=连续 L3 达阈值时抛错中断生成；"
+                "默认 False——本项目按生成字数收费，不用只读观测函数的判定掐断用户已付费的生成"),
+    FeatureFlag("memory", "pitfall_reconcile_streak", 3,
+                "注入对账 L3 连续章数阈值（REQ-踩坑账本注入对账）：连续 N 章 L3 才升级告警；0=关闭该判定"),
+    FeatureFlag("memory", "pitfall_reconcile_book_limit", 5,
+                "注入对账 L3 单书累计章数阈值（REQ-踩坑账本注入对账）：单书累计 N 章 L3 升级告警；0=关闭该判定"),
     FeatureFlag("memory", "user_memory", True, "用户级记忆库（跨书创作偏好继承）：从用户全部作品蒸馏偏好/跨书纪律/文风锚，新书创建与生成时自动继承注入；False=关闭（不蒸馏不记录）"),
     FeatureFlag("memory", "user_memory_inject_top", 5, "用户级跨书纪律注入 Top-N 条数：按次数×跨书数排序取前 N 条注入正文 prompt"),
     FeatureFlag("memory", "reader_ledger", True, "读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）：写章时注入读者已知/在等/误认、临期/超时伏笔收束提醒、爽点节奏缺口提示；False=全部关闭（不读不写不注入）"),
@@ -341,6 +354,11 @@ class NovelConfig:
     reveal_tracking: bool = feature_default("reveal_tracking")                         # 揭示执行跟踪（REQ-揭示执行跟踪）：每章检测真相锚定词兑现，落 reveal_status.json
     book_memory: bool = feature_default("book_memory")                                 # 小说级记忆系统（P0-7）：质检出问题→踩坑账本→注入本作历史错误
     book_memory_top_n: int = feature_default("book_memory_top_n")                      # 踩坑账本注入 Top-N 条数（P0-7）
+    pitfall_inject_min_count: int = feature_default("pitfall_inject_min_count")        # 踩坑账本注入最小出现次数（≥N 才注入）
+    pitfall_reconcile: bool = feature_default("pitfall_reconcile")                     # 踩坑账本注入对账开关（只读观测）
+    pitfall_reconcile_fail_fast: bool = feature_default("pitfall_reconcile_fail_fast")  # 对账 Fail Fast（默认关，见 FEATURE_FLAGS）
+    pitfall_reconcile_streak: int = feature_default("pitfall_reconcile_streak")         # 对账 L3 连续章数阈值
+    pitfall_reconcile_book_limit: int = feature_default("pitfall_reconcile_book_limit")  # 对账 L3 单书累计章数阈值
     user_memory: bool = feature_default("user_memory")                                 # 用户级记忆库（跨书创作偏好继承）：新书创建与生成时继承注入
     user_memory_inject_top: int = feature_default("user_memory_inject_top")            # 用户级跨书纪律注入 Top-N 条数
     reader_ledger: bool = feature_default("reader_ledger")                             # 读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）

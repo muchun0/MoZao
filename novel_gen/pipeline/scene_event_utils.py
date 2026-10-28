@@ -435,3 +435,32 @@ def _extract_json_field(raw: str, field: str) -> list:
         return val if isinstance(val, list) else []
     except Exception:
         return []
+
+
+def _dedup_events_by_pairs(events: list[dict],
+                           pairs: list) -> tuple[list[dict], int]:
+    """通用事件合并：按语义重复对清单丢弃后者（保留较早完整事件）。返回 (去重后, 丢弃数)。
+
+    纯函数、零 LLM、无实例状态。重复对来源不限——可由 _scene_split_review 的 LLM
+    语义评审产生，也可人工给定；pairs 元素可为 (i, j) 或 (i, j, reason)。
+
+    设计为通用：任何需要"按重复对合并事件清单"的场景（派生事件去重、拆场景评审、
+    未来其他语义去重）都可复用。调用方负责在去重后 <2 时回退到安全路径。
+    """
+    if not events or len(events) < 2 or not pairs:
+        return events, 0
+    drop: set[int] = set()
+    for p in pairs:
+        try:
+            i, j = int(p[0]), int(p[1])
+        except Exception:
+            continue
+        if 0 <= i < len(events) and 0 <= j < len(events) and i != j:
+            drop.add(j)
+    if not drop:
+        return events, 0
+    new_events = [e for idx, e in enumerate(events) if idx not in drop]
+    if len(new_events) < 2:
+        # 去重后事件过少，不返回残缺清单（由调用方回退）
+        return [], len(drop)
+    return new_events, len(drop)

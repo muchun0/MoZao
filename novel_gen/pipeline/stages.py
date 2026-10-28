@@ -1422,6 +1422,22 @@ class ChapterWriter:
                 int(getattr(self.cfg, "chapter_words", 0) or 0),
                 names=conflict_names,
             )
+            # 2026-10-28 场景重演修复（REQ-场景重演修复-事件清单去重，方案一，通用 LLM 语义去重）：
+            # 派生事件经通用 LLM 语义评审（_scene_split_review，判事件同构/跨场景重叠）产出
+            # 重复对，再由纯函数 _dedup_events_by_pairs 确定性合并。消融定位：
+            # scene_plan_align × scene_split 协同；纯字符相似度判据对新项目语义重演泛化不足，
+            # 故判断交给 LLM（通用办法，其他场景可复用）；合并仍确定性、可单测。
+            # 评审/去重失败 → 保留原清单（降级不阻塞）；去重后 <2 → 回退 LLM 规划路径。
+            if derived_events:
+                _dedup_pairs = self._scene_split_review(
+                    chapter_no, plan_title, plan_goal, derived_events, [], silent=silent)
+                if _dedup_pairs:
+                    _merged, _dedup_dropped = _dedup_events_by_pairs(
+                        derived_events, _dedup_pairs)
+                    if len(_merged) >= 2:
+                        derived_events = _merged
+                    else:
+                        derived_events = []
             if derived_events:
                 skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
                     "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
@@ -2337,6 +2353,7 @@ from .scene_event_utils import (
     _norm_scene_event, _scene_event_ordinals, _scene_count_for_words,
     _derive_events_from_moves, _event_semantic_slots,
     _scene_events_semantically_overlap, _merge_duplicate_events,
+    _dedup_events_by_pairs,
     _expand_scene_event_refs, _normalize_scene_targets,
     _validate_scene_plan, _scene_events_overlap, _split_summary,
     _is_repetitive_text, _summary_invented_words,

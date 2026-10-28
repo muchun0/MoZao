@@ -220,3 +220,24 @@ def test_scene_plan_align_flag_off_regression(store):
     assert "规划本章事件清单" in split_user            # 回退原路径
     assert "已由编辑按人物动线确定" not in split_user
     assert "苏妄言盘问" in ch.content
+
+
+@pytest.mark.p1
+def test_derive_then_dedup_by_pairs():
+    """派生事件经通用语义合并器去重：大纲重复节拍（当夜/次日同一仪式）被丢弃。
+
+    REQ-场景重演修复-事件清单去重：派生路径由通用 LLM 评审产出重复对，
+    再用 _dedup_events_by_pairs 确定性合并（合并器在此单测，LLM 评审接入靠端到端回归）。
+    """
+    from novel_gen.pipeline.scene_event_utils import _dedup_events_by_pairs
+    moves = ("沈砚当夜在祭坛烧格目→次日清晨沈砚又在祭坛烧格目→"
+             "老更夫沿河巡查→沈砚回到河边。")
+    evs = _derive_events_from_moves(moves)   # 默认 n_target=4 → 4 事件
+    assert len(evs) >= 2
+    pairs = [(0, 1, "同事件重复：当夜/次日烧格目")]
+    dedup, dropped = _dedup_events_by_pairs(evs, pairs)
+    assert dropped == 1
+    assert len(dedup) == len(evs) - 1
+    descs = " ".join(e["desc"] for e in dedup)
+    assert "当夜在祭坛烧格目" in descs
+    assert "次日清晨" not in descs          # 重复的"次日再烧"被丢弃

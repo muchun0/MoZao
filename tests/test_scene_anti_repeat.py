@@ -271,6 +271,7 @@ def test_scene2_plus_action_plan_no_full_implementation(store):
     _save_outline(store, _CH2_MOVES)
     llm = MagicMock()
     llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生路径通用 LLM 语义去重评审：无重复（2026-10-28 接入）
         _SPLIT_JSON,
         _NORMAL_SCENE,
         _NORMAL_SCENE,
@@ -278,7 +279,7 @@ def test_scene2_plus_action_plan_no_full_implementation(store):
         "扩写正文。" * 300,   # 2 场景合计 < 2500 → 自动触发扩写
     ]
     _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    scene2_user = llm.chat.call_args_list[2][0][1]
+    scene2_user = llm.chat.call_args_list[3][0][1]
     assert "本场景只落实与『本场景唯一事件』直接相关的行动" in scene2_user
     assert "禁止跨场景重复落实同一行动/同一节拍" in scene2_user
     assert "写手必须逐条落实" not in scene2_user

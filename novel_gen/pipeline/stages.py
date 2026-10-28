@@ -427,7 +427,7 @@ class ChapterWriter:
             pass
         return ""
 
-    def _sys(self, system: str) -> str:
+    def _with_persona(self, system: str) -> str:
         persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
         return f"{persona}\n\n{system}" if persona else system
 
@@ -713,7 +713,7 @@ class ChapterWriter:
             _wl = self._panel_whitelist_block()
             if _wl:
                 user = user + _wl
-            system = self._sys(system)
+            system = self._with_persona(system)
             # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
             _anchor_parts = []
             _ra = self._rolling_style_anchor(chapter_no)
@@ -1323,7 +1323,7 @@ class ChapterWriter:
             user_memory_block=self._user_memory_block(),
             panel_baseline=_pbt,
         )
-        system = self._sys(system)
+        system = self._with_persona(system)
         # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
         # （closed-world：基线声明的字段才允许出现，禁止累计死亡次数类自造标签；
         # 次数/剩余类字段为 0 时本章不得再安排死亡）——v10 实证 ch3/ch6 幻觉行
@@ -1731,7 +1731,7 @@ class ChapterWriter:
                 user_memory_block=self._user_memory_block(),
                 state_anchor=state_anchor_text,
             )
-            sys_c = self._sys(sys_c)
+            sys_c = self._with_persona(sys_c)
             # REQ-超长篇攻坚 S2.2/S2.3：周期轻量再锚定（滚动锚）+ 固定锚双轨注入
             _anchor_parts = []
             _ra = self._rolling_style_anchor(chapter_no)
@@ -1790,7 +1790,7 @@ class ChapterWriter:
                             state_anchor=state_anchor_text,
                         )
                         retry = self.llm.chat(
-                            self._sys(sys_c2), user_c2,
+                            self._with_persona(sys_c2), user_c2,
                             temperature=0.7,
                             max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
                             frequency_penalty=0.35,
@@ -1834,7 +1834,7 @@ class ChapterWriter:
                             state_anchor=state_anchor_text,
                         )
                         retry3 = self.llm.chat(
-                            self._sys(sys_c3), user_c3,
+                            self._with_persona(sys_c3), user_c3,
                             temperature=0.7,
                             max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
                             frequency_penalty=0.35,
@@ -1893,7 +1893,7 @@ class ChapterWriter:
                             state_anchor=state_anchor_text,
                         )
                         retry4 = self.llm.chat(
-                            self._sys(sys_c4), user_c4,
+                            self._with_persona(sys_c4), user_c4,
                             temperature=0.7,
                             max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
                             frequency_penalty=0.4,
@@ -1978,7 +1978,7 @@ class ChapterWriter:
                                 state_anchor=state_anchor_text,
                             )
                             retry5 = self.llm.chat(
-                                self._sys(sys_c5), user_c5,
+                                self._with_persona(sys_c5), user_c5,
                                 temperature=0.7,
                                 max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
                                 frequency_penalty=0.4,

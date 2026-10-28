@@ -954,7 +954,9 @@ class NovelPipeline:
         self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:
-            logger.info(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
+            logger.info(
+                f"\n续写完成：用户 {len(self._user_chapters())} 章 + "
+                f"AI {total - len(self._user_chapters())} 章，共 {total} 章。")
         logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
 
     def _write_design_reports(self, silent: bool = False) -> None:

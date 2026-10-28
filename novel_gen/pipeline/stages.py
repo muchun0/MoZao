@@ -728,6 +728,161 @@ class ChapterWriter:
             logger.exception("分卷卡注入失败（降级不注入）")
         return ""
 
+    def _inject_memory_blocks(self, chapter_no: int, world, memory_context: str,
+                               plan_title: str, plan_goal: str) -> tuple[str, str, str]:
+        """写章前注入各类记忆/约束块到 memory_context，返回增强后的 (memory_context, plan_core_event, plan_moves)。
+
+        集中了补偿块/时间线/章末钩子/章级设计卡/分卷卡/读者账本/good/反思/建议/beat正向/
+        体检建议/用户锁定/行动表等 ~15 个注入点。每个注入点独立 try/except 降级，
+        单块失败不阻塞整章生成。
+        """
+        # REQ S1.3 注入位置工程：到期必兑现的补偿块放 prompt 最前部
+        try:
+            _comp_block = self._pending_compensation_block(chapter_no)
+            if _comp_block:
+                memory_context = memory_context + "\n\n" + _comp_block if memory_context else _comp_block
+        except Exception:
+            logger.exception("上章承诺补偿块注入失败（降级跳过）")
+
+        # 注入时间线提示 + 章末钩子 + 副本上下文
+        plan_core_event = ""
+        plan_moves = ""
+        outline = None
+        try:
+            outline = self.store.load_outline()
+            if outline and chapter_no - 1 < len(outline.chapters):
+                plan_core_event = outline.chapters[chapter_no - 1].core_event or ""
+                plan_moves = getattr(outline.chapters[chapter_no - 1], "character_moves", "") or ""
+                _cliff = getattr(outline.chapters[chapter_no - 1], "cliffhanger", "") or ""
+                if _cliff:
+                    _hook_block = "【本章章末钩子·本章结尾必须兑现此钩子，制造'想看下一章'的冲动】\n" + _cliff
+                    memory_context = memory_context + "\n\n" + _hook_block if memory_context else _hook_block
+            if outline and outline.timelines:
+                from .templates import timeline_hint_for_chapter
+                plan_tl = ""
+                if chapter_no - 1 < len(outline.chapters):
+                    plan_tl = outline.chapters[chapter_no - 1].timeline
+                tl_hint = timeline_hint_for_chapter(outline.timelines, plan_tl)
+                if tl_hint:
+                    memory_context = memory_context + "\n\n" + tl_hint if memory_context else tl_hint
+            if outline and outline.units:
+                from .templates import unit_hint_for_chapter
+                unit_hint = unit_hint_for_chapter(outline.units, chapter_no)
+                if unit_hint:
+                    memory_context = memory_context + "\n\n" + unit_hint if memory_context else unit_hint
+        except Exception:
+            pass
+
+        # 章级设计卡块
+        try:
+            _design_block = self._chapter_design_block(chapter_no)
+            if _design_block:
+                memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
+        except Exception:
+            logger.exception("章级设计卡注入失败（降级跳过）")
+
+        # 分卷卡块
+        try:
+            if outline is not None:
+                _vc_block = self._volume_card_block(chapter_no, outline)
+                if _vc_block:
+                    memory_context = memory_context + "\n\n" + _vc_block if memory_context else _vc_block
+        except Exception:
+            logger.exception("分卷卡注入失败（降级跳过）")
+
+        # 读者认知账本
+        try:
+            _rl = self._reader_ledger_obj()
+            if _rl is not None:
+                _rl_block = _rl.inject_block(chapter_no)
+                if _rl_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
+        except Exception:
+            logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
+
+        # good 账本
+        try:
+            _gmem = self._memory()
+            if _gmem is not None:
+                _good = _gmem.good_block(top_n=3)
+                if _good:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _good
+        except Exception:
+            logger.exception("good 账本注入失败（降级跳过，不阻塞写章；但 good 质感引导缺失）")
+
+        # 反思笔记
+        try:
+            _rmem = self._memory()
+            if _rmem is not None:
+                _ref = _rmem.reflection_block(chapter_no)
+                if _ref:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _ref
+        except Exception:
+            logger.exception("反思笔记注入失败（降级跳过，不阻塞写章；反思先验缺失）")
+
+        # 建议指令库
+        try:
+            _smem = self._memory()
+            if _smem is not None and getattr(self.cfg, "suggestion_lib", True):
+                _sug = _smem.suggestion_block()
+                if _sug:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _sug
+        except Exception:
+            logger.exception("建议指令库注入失败（降级跳过，不阻塞写章；编辑建议未携带）")
+
+        # beat 正向供给
+        try:
+            _bp = self._beat_positive_block(chapter_no)
+            if _bp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _bp
+        except Exception:
+            logger.exception("beat 正向供给注入失败（降级跳过，不阻塞写章）")
+
+        # 场景体检建议
+        try:
+            _insp = self._inspector_block(chapter_no)
+            if _insp:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _insp
+        except Exception:
+            logger.exception("场景体检建议注入失败（降级跳过，不阻塞写章）")
+
+        # 用户锁定内容
+        try:
+            lock_path = self.store.dir / "lock.json"
+            if lock_path.exists():
+                import json as _json
+                _lk = _json.loads(lock_path.read_text(encoding="utf-8"))
+                _locked_bits = []
+                if _lk.get("world_view") and world and world.world_view:
+                    _locked_bits.append("【用户已锁定的世界观，必须严格遵守，不得违背】\n" + world.world_view)
+                _locked_chars = (_lk.get("character") or {})
+                if _locked_chars and world and world.characters:
+                    for _c in world.characters:
+                        if _locked_chars.get(getattr(_c, "name", "")):
+                            _locked_bits.append(
+                                f"【用户已锁定人物「{getattr(_c,'name','')}」，设定不得改动】\n"
+                                f"性格:{getattr(_c,'personality','')} 欲望:{getattr(_c,'desire','')} "
+                                f"说话方式:{getattr(_c,'speech_style','')}")
+                if _locked_bits:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
+                        "以下为用户锁定的不可违背设定：\n" + "\n".join(_locked_bits)
+        except Exception:
+            pass
+
+        # 人物行动表（仅 action_plan_first=True 时独立调用）
+        if getattr(self.cfg, "action_plan_first", False):
+            try:
+                action_plan = self._gen_action_plan(
+                    chapter_no, plan_title, plan_goal, memory_context,
+                )
+                if action_plan:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
+                        "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan
+            except Exception as e:
+                logger.warning(f"  [行动表] 跳过: {e}")
+
+        return memory_context, plan_core_event, plan_moves
+
     def write(
         self,
         chapter_no: int,
@@ -756,165 +911,9 @@ class ChapterWriter:
         )
         prev_tail = self._prev_tail(chapter_no)
 
-        # REQ S1.3 注入位置工程：到期必兑现的补偿块放 prompt 最前部（Lost in the Middle
-        # ——关键指令放首部，避免被中部大段设定/摘要淹没）；无漏兑现则空串（零 token）。
-        try:
-            _comp_block = self._pending_compensation_block(chapter_no)
-            if _comp_block:
-                memory_context = memory_context + "\n\n" + _comp_block if memory_context else _comp_block
-        except Exception:
-            logger.exception("上章承诺补偿块注入失败（降级跳过）")
-
-        # 注入时间线提示
-        plan_core_event = ""
-        plan_moves = ""
-        try:
-            outline = self.store.load_outline()
-            if outline and chapter_no - 1 < len(outline.chapters):
-                plan_core_event = outline.chapters[chapter_no - 1].core_event or ""
-                # REQ-scene-plan-align：人物动线（逐拍动作序列）注入拆场景规划层，
-                # 事件清单从此确定性派生（唯一性最强的骨架不再被丢弃）
-                plan_moves = getattr(outline.chapters[chapter_no - 1], "character_moves", "") or ""
-                # P2 章末钩子：注入当前章章末钩子（writer 写章末须兑现，防流水账结尾）
-                _cliff = getattr(outline.chapters[chapter_no - 1], "cliffhanger", "") or ""
-                if _cliff:
-                    _hook_block = "【本章章末钩子·本章结尾必须兑现此钩子，制造'想看下一章'的冲动】\n" + _cliff
-                    memory_context = memory_context + "\n\n" + _hook_block if memory_context else _hook_block
-            if outline and outline.timelines:
-                from .templates import timeline_hint_for_chapter
-                plan_tl = ""
-                if chapter_no - 1 < len(outline.chapters):
-                    plan_tl = outline.chapters[chapter_no - 1].timeline
-                tl_hint = timeline_hint_for_chapter(outline.timelines, plan_tl)
-                if tl_hint:
-                    memory_context = memory_context + "\n\n" + tl_hint if memory_context else tl_hint
-            # 注入副本上下文
-            if outline and outline.units:
-                from .templates import unit_hint_for_chapter
-                unit_hint = unit_hint_for_chapter(outline.units, chapter_no)
-                if unit_hint:
-                    memory_context = memory_context + "\n\n" + unit_hint if memory_context else unit_hint
-        except Exception:
-            pass
-
-        # REQ-chapter-design 一期：本章设计卡块（冲突核心/情绪落点/出场角色关系/对白功能），
-        # 仿章末钩子块拼进 memory_context（软约束指引）；开关关/无卡/异常 → 空串不注入。
-        try:
-            _design_block = self._chapter_design_block(chapter_no)
-            if _design_block:
-                memory_context = memory_context + "\n\n" + _design_block if memory_context else _design_block
-        except Exception:
-            logger.exception("章级设计卡注入失败（降级跳过）")
-
-        # REQ-写作正向引导 5.5：分卷卡块（本卷目标+障碍+卷末高潮+本章在卷中位置+卷末收束），
-        # 仿章级设计卡块拼进 memory_context（软约束指引）；无卷卡/无归属/异常 → 空串不注入。
-        try:
-            if outline is not None:
-                _vc_block = self._volume_card_block(chapter_no, outline)
-                if _vc_block:
-                    memory_context = memory_context + "\n\n" + _vc_block if memory_context else _vc_block
-        except Exception:
-            logger.exception("分卷卡注入失败（降级跳过）")
-
-        # REQ-reader-ledger：读者认知账本/伏笔承诺/爽点配额注入（追加到 memory_context，
-        # 场景级与整章两条写章路径都吃到；异常降级空串不阻塞）
-        try:
-            _rl = self._reader_ledger_obj()
-            if _rl is not None:
-                _rl_block = _rl.inject_block(chapter_no)
-                if _rl_block:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
-        except Exception:
-            logger.exception("读者认知账本注入失败（降级跳过，不阻塞写章）")
-
-        # REQ-写作正向引导 5.6：good 账本注入（本作高分章好片段——参考质感非内容
-        # 来源；场景与整章两条写章路径都吃到，软约束不阻塞）
-        # §11.6 降级纪律：注入失败必须留痕，禁止无日志裸吞异常（good 缺失会导致
-        # 重写/场景只被「历史错误」负反馈束缚、失去正向质感引导）。
-        try:
-            _gmem = self._memory()
-            if _gmem is not None:
-                _good = _gmem.good_block(top_n=3)
-                if _good:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + _good
-        except Exception:
-            logger.exception("good 账本注入失败（降级跳过，不阻塞写章；但 good 质感引导缺失）")
-
-        # P1-1 Reflexion 反思笔记注入（此前章节反复未过的教训，作为写本/下章的先验）。
-        # 场景与整章两条写章路径都吃到；空账本/关闭 → 空串，异常降级留日志不阻塞。
-        try:
-            _rmem = self._memory()
-            if _rmem is not None:
-                _ref = _rmem.reflection_block(chapter_no)
-                if _ref:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + _ref
-        except Exception:
-            logger.exception("反思笔记注入失败（降级跳过，不阻塞写章；反思先验缺失）")
-
-        # P1-3 建议指令库注入（编辑审稿沉淀的正向写作手法指令，择优采用）。
-        # 场景与整章两条写章路径都吃到；空库/关闭 → 空串，异常降级留日志不阻塞。
-        try:
-            _smem = self._memory()
-            if _smem is not None and getattr(self.cfg, "suggestion_lib", True):
-                _sug = _smem.suggestion_block()
-                if _sug:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + _sug
-        except Exception:
-            logger.exception("建议指令库注入失败（降级跳过，不阻塞写章；编辑建议未携带）")
-
-        # P1-4 BeatGate 正向供给注入（上章未兑现拍的推进方向示范）。
-        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
-        try:
-            _bp = self._beat_positive_block(chapter_no)
-            if _bp:
-                memory_context = (memory_context + "\n\n" if memory_context else "") + _bp
-        except Exception:
-            logger.exception("beat 正向供给注入失败（降级跳过，不阻塞写章）")
-
-        # P1-5 场景体检建议闭环注入（上一章体检沉淀的改进建议）。
-        # 场景与整章两条写章路径都吃到；空/关闭 → 空串，异常降级留日志不阻塞。
-        try:
-            _insp = self._inspector_block(chapter_no)
-            if _insp:
-                memory_context = (memory_context + "\n\n" if memory_context else "") + _insp
-        except Exception:
-            logger.exception("场景体检建议注入失败（降级跳过，不阻塞写章）")
-
-        # 注入用户锁定的内容作为硬约束
-        try:
-            lock_path = self.store.dir / "lock.json"
-            if lock_path.exists():
-                import json as _json
-                _lk = _json.loads(lock_path.read_text(encoding="utf-8"))
-                _locked_bits = []
-                if _lk.get("world_view") and world and world.world_view:
-                    _locked_bits.append("【用户已锁定的世界观，必须严格遵守，不得违背】\n" + world.world_view)
-                _locked_chars = (_lk.get("character") or {})
-                if _locked_chars and world and world.characters:
-                    for _c in world.characters:
-                        if _locked_chars.get(getattr(_c, "name", "")):
-                            _locked_bits.append(
-                                f"【用户已锁定人物「{getattr(_c,'name','')}」，设定不得改动】\n"
-                                f"性格:{getattr(_c,'personality','')} 欲望:{getattr(_c,'desire','')} "
-                                f"说话方式:{getattr(_c,'speech_style','')}")
-                if _locked_bits:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
-                        "以下为用户锁定的不可违背设定：\n" + "\n".join(_locked_bits)
-        except Exception:
-            pass
-
-        # P1-1 人物行动表先行：默认并入拆场景输出（REQ-token优化 P0-2，不再独立调用）；
-        # 仅当 action_plan_first=True 时恢复独立调用（老项目/显式开启）。
-        if getattr(self.cfg, "action_plan_first", False):
-            try:
-                action_plan = self._gen_action_plan(
-                    chapter_no, plan_title, plan_goal, memory_context,
-                )
-                if action_plan:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + \
-                        "【本章人物行动表（写手必须逐条落实：人物言行与行动表一致，剧情不空转、不OOC）】\n" + action_plan
-            except Exception as e:
-                logger.warning(f"  [行动表] 跳过: {e}")
+        memory_context, plan_core_event, plan_moves = self._inject_memory_blocks(
+            chapter_no, world, memory_context, plan_title, plan_goal,
+        )
 
         # 场景级生成：高质量模式始终启用；普通模式单章目标 ≥2000 字自动拆场景（P1-2）
         hq_mode = getattr(self.cfg, "high_quality_mode", False)

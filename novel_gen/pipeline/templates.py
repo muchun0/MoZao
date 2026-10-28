@@ -1509,6 +1509,7 @@ def chapter_prompt(
             f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
             f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
             f"{_panel_baseline_block(panel_baseline)}"
+            f"{book_pitfalls_block}"
             f"写作要求：\n"
             f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
             f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"

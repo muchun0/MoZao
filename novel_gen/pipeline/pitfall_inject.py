@@ -31,7 +31,7 @@
 参数               取值                                 依据
 =================  ==================================  ==========================
 ``top_n``          ``cfg.book_memory_top_n``（默认 5）  复用已有旋钮，修「后台调节对场景路径无效」的接线缺失
-``min_count``      ``cfg.pitfall_inject_min_count``(2)   与 ``escalate()`` 的 ``count>=2`` 及 ``_book_pitfalls`` docstring 同口径
+``min_count``      ``cfg.pitfall_inject_min_count``(2)   与 ``escalate()`` 的 ``count>=2`` 同口径
 ``self_ch``        ``chapter_no``                        回退整章是「本章重试」场景，最需要去污染
 =================  ==================================  ==========================
 
@@ -46,6 +46,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+
+from .pitfall_contract import contract_for, expected_params
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +89,14 @@ def build_injection(cfg, memory, chapter_no: int) -> PitfallInjection:
         `PitfallInjection`：block 为空串表示本次无注入。任何异常都降级为空注入
         并 `logger.exception` 留痕，绝不上抛。
     """
-    from ..config import feature_default
-
-    top_n = int(getattr(cfg, "book_memory_top_n", None)
-                or feature_default("book_memory_top_n") or 5)
-    min_count = int(getattr(cfg, "pitfall_inject_min_count", None)
-                    if getattr(cfg, "pitfall_inject_min_count", None) is not None
-                    else feature_default("pitfall_inject_min_count") or 0)
-    self_ch = int(chapter_no)
-    params = {"top_n": top_n, "min_count": min_count, "self_ch": self_ch}
+    # T02.5：取值唯一来源是 pitfall_contract。本函数不再自行计算参数——
+    # 那样做会让「注入侧一套值、对账侧一套值」的结构性分叉再次成为可能，
+    # 而那正是本次要消灭的根因。替换后返回值与改造前逐字相同（行为零变化）。
+    contract = contract_for("scene", cfg, chapter_no)
+    top_n = int(contract["top_n"])
+    min_count = int(contract["min_count"])
+    self_ch = contract["self_ch"]
+    params = expected_params(contract)
 
     if memory is None:
         return PitfallInjection(block="", patterns=[], params=params)

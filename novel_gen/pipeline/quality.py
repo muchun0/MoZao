@@ -539,51 +539,10 @@ class QualityChecker:
             issues.append(it)
             score -= 30
 
-        # 2.5 AI 痕迹量化检测（P1-4，确定性规则，只扣分不单独阻断）
-        if getattr(self.cfg, "ai_taste_check", True):
-            try:
-                from .ai_taste import ai_taste_issues
-                taste_issues = ai_taste_issues(
-                    content,
-                    threshold=int(getattr(self.cfg, "ai_taste_threshold", 60) or 60),
-                )
-                if taste_issues:
-                    issues.extend(taste_issues)
-                    score -= 20
-            except Exception:
-                pass
-
-        # 2.5b 文风漂移 L1 确定性检测（REQ-超长篇攻坚 S2.4，每章必跑 ≈0 token）。
-        #   句长波动系数/TTR/填充词占比/明喻密度 → 漂移分，低分 = 单章模板化信号。
-        #   轻扣分（-5，level=小改）：单章指标波动大，真实漂移是几十万字渐进信号，
-        #   需与前期章基线对比；跨章持续低分才提示再锚定（S2.2 周期性滚动锚兜底）。
-        if getattr(self.cfg, "style_drift_check", True):
-            try:
-                from .ai_taste import drift_score, style_drift_metrics
-                d = drift_score(content)
-                if d < int(getattr(self.cfg, "style_drift_threshold", 60) or 60):
-                    m = style_drift_metrics(content)
-                    issues.append({
-                        "type": "文风漂移-L1（句长模板化）",
-                        "detail": (
-                            f"漂移分 {d}/100；句长波动系数 {m.get('sentence_cv')}（过低=句长趋同"
-                            f"模板化）、词汇多样性 TTR {m.get('ttr')}、填充词占比 "
-                            f"{m.get('filler_ratio')}。单章信号，建议与前期章基线对比，"
-                            f"跨章持续低分需再锚定"),
-                        "level": "小改",
-                    })
-                    score -= 5
-            except Exception:
-                logger.exception("文风漂移 L1 检测失败（降级跳过）")
-
-        # 2.5c P0-4 手法/句式层同质度（REQ-门禁质检正向影响）：跨章趋同软提示，
-        #    level=小改、不扣分（不阻断；供作者参考与后续 good 注入降权）。
-        if getattr(self.cfg, "style_homogeneity_check", True):
-            try:
-                for _homog_it in self._style_homogeneity_issues(chapter_no, content):
-                    issues.append(_homog_it)
-            except Exception:
-                logger.exception("同质度检测失败（降级跳过）")
+        # 2.5 AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）
+        ai_style_issues, ai_style_delta = self._check_ai_and_style(content, chapter_no)
+        issues.extend(ai_style_issues)
+        score += ai_style_delta
 
         # 3. 输出合规（模块3 基础合规校验；REQ-门禁质检正向影响 P0-1/P0-2：结构化
         #    命中信息 rule_category/rule_phrase，供删旧稿重写与首次教育分层使用）
@@ -658,6 +617,54 @@ class QualityChecker:
             "score": max(0, min(100, score)),
             "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
         }
+
+    def _check_ai_and_style(self, content: str, chapter_no: int) -> tuple[list[dict], int]:
+        """AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）。
+
+        返回 (issues, score_delta)；score_delta 为负数表示扣分。
+        """
+        issues: list[dict] = []
+        delta = 0
+        # AI 痕迹量化检测（P1-4，确定性规则，只扣分不单独阻断）
+        if getattr(self.cfg, "ai_taste_check", True):
+            try:
+                from .ai_taste import ai_taste_issues
+                taste_issues = ai_taste_issues(
+                    content,
+                    threshold=int(getattr(self.cfg, "ai_taste_threshold", 60) or 60),
+                )
+                if taste_issues:
+                    issues.extend(taste_issues)
+                    delta -= 20
+            except Exception:
+                pass
+        # 文风漂移 L1 确定性检测（REQ-超长篇攻坚 S2.4，每章必跑 ≈0 token）。
+        if getattr(self.cfg, "style_drift_check", True):
+            try:
+                from .ai_taste import drift_score, style_drift_metrics
+                d = drift_score(content)
+                if d < int(getattr(self.cfg, "style_drift_threshold", 60) or 60):
+                    m = style_drift_metrics(content)
+                    issues.append({
+                        "type": "文风漂移-L1（句长模板化）",
+                        "detail": (
+                            f"漂移分 {d}/100；句长波动系数 {m.get('sentence_cv')}（过低=句长趋同"
+                            f"模板化）、词汇多样性 TTR {m.get('ttr')}、填充词占比 "
+                            f"{m.get('filler_ratio')}。单章信号，建议与前期章基线对比，"
+                            f"跨章持续低分需再锚定"),
+                        "level": "小改",
+                    })
+                    delta -= 5
+            except Exception:
+                logger.exception("文风漂移 L1 检测失败（降级跳过）")
+        # P0-4 手法/句式层同质度（REQ-门禁质检正向影响）：跨章趋同软提示。
+        if getattr(self.cfg, "style_homogeneity_check", True):
+            try:
+                for _homog_it in self._style_homogeneity_issues(chapter_no, content):
+                    issues.append(_homog_it)
+            except Exception:
+                logger.exception("同质度检测失败（降级跳过）")
+        return issues, delta
 
     # ---------- 确定性规则实现 ----------
     def _dup_issues(self, chapter_no: int, content: str) -> list[dict]:

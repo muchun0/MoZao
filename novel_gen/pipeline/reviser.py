@@ -56,7 +56,7 @@ class ChapterReviser:
         issues = locate.get("issues", [])
         if not issues:
             if not silent:
-                print(f"  [改稿] 第{chapter_no}章未发现需要修改的问题")
+                logger.info(f"  [改稿] 第{chapter_no}章未发现需要修改的问题")
             self._save_review(chapter_no, issues, content, content)
             return content
 
@@ -67,7 +67,7 @@ class ChapterReviser:
         # 步骤3：只改小改
         if not small:
             if not silent:
-                print(f"  [改稿] 第{chapter_no}章 {len(medium_plus)} 个中改以上问题，记录但不自动改")
+                logger.info(f"  [改稿] 第{chapter_no}章 {len(medium_plus)} 个中改以上问题，记录但不自动改")
             self._save_review(chapter_no, issues, content, content)
             return content
 
@@ -92,12 +92,12 @@ class ChapterReviser:
 
         if verify.get("ok") and not verify.get("new_issues"):
             if not silent:
-                print(f"  [改稿] 第{chapter_no}章已自动修改 {len(small)} 个小问题")
+                logger.info(f"  [改稿] 第{chapter_no}章已自动修改 {len(small)} 个小问题")
             self._save_review(chapter_no, issues, content, revised)
             return revised
         else:
             if not silent:
-                print(f"  [改稿] 第{chapter_no}章改后引入新问题，保留原版")
+                logger.warning(f"  [改稿] 第{chapter_no}章改后引入新问题，保留原版")
             self._save_review(chapter_no, issues, content, content)
             return content
 

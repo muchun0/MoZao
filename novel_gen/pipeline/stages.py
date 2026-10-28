@@ -21,7 +21,7 @@ from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .style_anchor import extract_personal_anchor
 from .beats import (
-    _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
+    _extract_beat_sequence, extract_beats, _beats_rewrite_detected, _beats_local_rewrite_detected,
     _beats_scene_isomorphic, _beat_cycle_issues,
 )
 from .templates import (
@@ -990,6 +990,8 @@ class ChapterWriter:
                     warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
                     chapter_type=_ctype, priorities=_priorities, loose=_loose,
                     far_beats=_far,
+                    llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beat_gate", True)),
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
                 # P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往
@@ -1188,7 +1190,8 @@ class ChapterWriter:
             if _reg_h and _unk_h(content, _reg_h):
                 return False
             # 2) 重复节拍（同事件循环重演）
-            if _beat_cycle_issues(content):
+            if _beat_cycle_issues(content, llm=self.llm,
+                                  use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))):
                 return False
             # 3) 链式账本（蚀化差口径，与质检 2.8c 一致）
             if _reg_h:
@@ -1340,7 +1343,8 @@ class ChapterWriter:
                               frequency_penalty=0.3, presence_penalty=0.15) or ""
         for _try in (1, 2):
             _text = _strip_html_tags(_text)
-            _issues = _beat_cycle_issues(_text)
+            _issues = _beat_cycle_issues(_text, llm=self.llm,
+                                         use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True)))
             _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
             _viols: list[str] = []
             if _text:
@@ -1421,6 +1425,8 @@ class ChapterWriter:
                 plan_moves,
                 int(getattr(self.cfg, "chapter_words", 0) or 0),
                 names=conflict_names,
+                llm=self.llm,
+                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
             )
             # 2026-10-28 场景重演修复（REQ-场景重演修复-事件清单去重，方案一，通用 LLM 语义去重）：
             # 派生事件经通用 LLM 语义评审（_scene_split_review，判事件同构/跨场景重叠）产出
@@ -1829,7 +1835,11 @@ class ChapterWriter:
                 # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
                 # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
                 if piece and done_events:
-                    dup_ev = _scene_text_rewrites_event(piece, done_events, conflict_names)
+                    dup_ev = _scene_text_rewrites_event(
+                        piece, done_events, conflict_names,
+                        llm=self.llm,
+                        use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                    )
                     if dup_ev:
                         if not silent:
                             logger.warning(f"  [场景] 第{idx}个场景复写了已发生事件"
@@ -1857,7 +1867,10 @@ class ChapterWriter:
                             presence_penalty=0.2,
                         )
                         retry3 = _strip_html_tags(retry3)
-                        if retry3 and not _scene_text_rewrites_event(retry3, done_events, conflict_names):
+                        if retry3 and not _scene_text_rewrites_event(
+                                retry3, done_events, conflict_names,
+                                llm=self.llm,
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
                             piece = retry3
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
@@ -1869,8 +1882,12 @@ class ChapterWriter:
                 #  ③ _beats_local_rewrite_detected：局部子序列重合（重试稿压缩重演段/插序逃逸兜底）。
                 # 命中 → 重试（forbid_event=本场景唯一事件，强制只推进本场景事件）；
                 # 同一场景连续 2 次重试仍重演 → 整章回退（整章单次生成无场景间越权消费）。
-                _inner_issue = _beat_cycle_issues(piece) if piece else None
-                _seq = _extract_beat_sequence(piece) if piece else []
+                _inner_issue = _beat_cycle_issues(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else None
+                _seq = extract_beats(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else []
                 _dup_beat = bool(
                     _seq and done_beat_seqs
                     and (_beats_rewrite_detected(_seq, done_beat_seqs)
@@ -1916,8 +1933,12 @@ class ChapterWriter:
                             presence_penalty=0.25,
                         )
                         retry4 = _strip_html_tags(retry4)
-                        _seq4 = _extract_beat_sequence(retry4) if retry4 else []
-                        _inner4 = _beat_cycle_issues(retry4) if retry4 else None
+                        _seq4 = extract_beats(
+                            retry4, llm=self.llm,
+                            use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if retry4 else []
+                        _inner4 = _beat_cycle_issues(
+                            retry4, llm=self.llm,
+                            use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if retry4 else None
                         _dup4 = bool(
                             _seq4 and done_beat_seqs
                             and (_beats_rewrite_detected(_seq4, done_beat_seqs)
@@ -2032,7 +2053,9 @@ class ChapterWriter:
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
                 # 正文级节拍序列登记（措施3）：最终采用场景正文的节拍指纹，供后续场景比对
-                _bs = _extract_beat_sequence(piece) if piece else []
+                _bs = extract_beats(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else []
                 if _bs:
                     done_beat_seqs.append(_bs)
                     scene_beat_ledger.append(_bs)  # P0-10 跨场景同构账本

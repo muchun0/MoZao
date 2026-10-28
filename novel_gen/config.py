@@ -137,6 +137,11 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "suggestion_lib", True, "P1-3 EditorReviewer 建议指令库：编辑审稿建议按手法分类(对话/战斗/情绪/环境/叙事)沉淀进 book_memory.suggestion_lib，写章生成时注入复用；False=建议仅审稿时展示，不入库不注入"),
     FeatureFlag("review", "beat_positive_supply", True, "P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往哪个方向写」的示范指引(零LLM规则模板)存入 beat_gate，下一章生成时注入兑现；False=beat_gate 仅负向报漏不供给方向"),
     FeatureFlag("review", "repetition_direction", True, "P2-1 RepetitionDetector 正向替换供给：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让模型知道往哪走；False=重写仅禁重复不给新方向"),
+    # ---- REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，词表保留确定性兜底 ----
+    FeatureFlag("review", "llm_semantic_beats", True, "节拍序列 LLM 语义抽取（REQ-词表换LLM 批次一 beats.py）：正文按规范节拍标签（盘问/戳穿/失控/死亡/复活/对峙/包扎/装晕/离场/约定）LLM 抽取节拍序列供重演检测；LLM 失败/非结构化自动回退 _BEAT_DICT 词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_beat_gate", True, "Beat 门禁 LLM 语义覆盖判定（REQ-词表换LLM 批次一 beat_gate.py）：整章一次 LLM 判大纲各拍动作/限定语义是否在正文兑现（输出 covered/hit/miss），替代 _ACTION_SYNONYMS/_MOD_SYNONYMS 近义词表判定；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("writing", "llm_semantic_scene_events", True, "场景事件 LLM 语义判定（REQ-词表换LLM 批次一 scene_event_utils.py）：事件归一动作/冲突对象/因果粘连合并/场景正文事件复写 4 处 LLM 判断，替代 _SCENE_ACTION_NORM/_SCENE_RESCUE_VERBS/_CAUSAL_BEAT_RE；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_mechanism", True, "机制卡三要素 LLM 语义校验（REQ-词表换LLM 批次一 validator.py）：开书时 LLM 判机制卡是否覆盖机制语义/结算规则/代价终局（每本 1 次），替代 _MECH_SEMANTIC/_MECH_SETTLE/_MECH_END 信号词表；LLM 失败回退词表；False=纯词表"),
     # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期，只读诊断，不改稿不扣费）----
     FeatureFlag("assistant", "assistant_enabled", True, "小墨AI 总开关：项目页写作对话（章节评估/改稿建议），关闭后前后端入口隐藏"),
     FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
@@ -399,6 +404,11 @@ class NovelConfig:
     suggestion_lib: bool = feature_default("suggestion_lib")                      # P1-3 建议指令库
     beat_positive_supply: bool = feature_default("beat_positive_supply")          # P1-4 BeatGate 正向供给
     repetition_direction: bool = feature_default("repetition_direction")          # P2-1 重复正向替换供给
+    # ---- REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，词表保留确定性兜底 ----
+    llm_semantic_beats: bool = feature_default("llm_semantic_beats")              # 节拍序列 LLM 语义抽取（重演检测），失败回退词表
+    llm_semantic_beat_gate: bool = feature_default("llm_semantic_beat_gate")      # Beat 门禁 LLM 语义覆盖判定，失败回退词表
+    llm_semantic_scene_events: bool = feature_default("llm_semantic_scene_events")  # 场景事件 LLM 语义槽/因果/复写判定，失败回退词表
+    llm_semantic_mechanism: bool = feature_default("llm_semantic_mechanism")      # 机制卡三要素 LLM 语义校验，失败回退词表
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

@@ -41,7 +41,7 @@
 | `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角）；**P2** `ProjectStore` 新增场景落盘（`scenes.json` 分章场景清单+状态，供回看/编辑/复用）、`teardown_material.txt`（P0-3 拆书库回流素材）；**REQ-双锚** `teardown_style_anchor.txt`（题材文风锚，webapp 写/novel_gen 读）；`Chapter.user_edited`（用户编辑保存=人工修订标记，个人风格锚来源）；**REQ-借鉴webnovel A/B** `chapter_commit.json`（章节统一提交记录：pending/committed/incomplete + 失败项）+ `projection_log.jsonl`（投影一致性日志，JSONL 原子写）；**REQ-章节版本化（2026-10-16）** `chapter_versions.json` 版本索引（每章 versions/selected/history）+ `chapters/<no>/v<k>.json` 历史版本存档——`save_chapter` 追加版本语义（内容相同幂等不追加、不同则存档旧 HEAD 追加新版、每章上限 15 淘汰最旧且 HEAD 不淘汰；`quality` 质检结果写入版本 history、`promote=False` 候选版本只存档不顶 HEAD）、`load_chapter_version`/`list_versions`（透传 quality）/`select_version`（回退=复制回 HEAD，用户选择置 `user_managed`）/`_auto_select_best`（未用户管理时自动选 score 最高版）/`delete_version`（selected 不可删），`chapters/<no>.json` 继续作当前选中版本（HEAD），`load_chapter`/`list_chapters` 对外行为不变 | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
 | `utils/` | 工具：章节切分、数据迁移、路径、纯文本算法（`text.py` 最长公共子串，§11.2 单一权威源） | `chapter_splitter.py`、`migrate.py`、`paths.py`、`text.py` |
-| `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘 | — |
+| `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘；2026-10-28 词表换LLM 批次一 +4（`llm_semantic_beats`/`llm_semantic_beat_gate`/`llm_semantic_scene_events`/`llm_semantic_mechanism`，默认开） | — |
 | `safety.py` | 输入防护（模块3）：Prompt 注入检测/System 清洗/输出合规校验（纯函数） | — |
 
 > 注意：README 旧文中提到的 `novel_gen/cli.py`、`__main__.py` 已不存在；当前产品入口为 Web 端 `run_web.py`。
@@ -52,7 +52,7 @@
 |---|---|
 | `manager.py` | `NovelPipeline`：阶段编排（调研→大纲→质检→人物→逐章→导出）、风格注入 `_with_stylist`、断点续跑；**校验合并**（REQ-token优化 P1-5）：`_run_verify` 默认 `verify_combined_prompt` 一次调用输出 consistency/reader/editor 三类（verify_combined=False 回退原 3 连调用），一致性校验频率 `verify_every` 默认 5；**P0-1**：实例化 `ReaderAgent` 为正式角色成员，`_run_verify` 把其 persona（reader.md + reader 专属技能）注入读者视角检查（不增调用数）；`_build_setting_cards` 幂等接入分章设定卡索引；**REQ-chapter-design 一期**：`_build_chapter_design`（world+outline 齐备后幂等构建逐章设计卡，失败降级不注入）+ `_backfill_pacing`（大纲复用短路/扩写路径幂等补齐 key_nodes/volume_pacing/emotion_curve；根因：扩写路径从不跑 pacing.plan_outline 致三字段真实数据全空，plan_outline 本身只补缺失不覆盖）；`_parse_json_obj` 容错解析；P2-2 全书终审 `_run_final_review`（resume/done 后，异常降级不阻塞导出结算）、编辑审稿 churn 落 trace；**REQ-借鉴webnovel A** `_commit_after_chapter`（章末 4 个分散入账收敛为一次统一提交，落基线/失败留痕/幂等/投影日志，开关 `chapter_commit`，False 回退原分散调用、行为不变）；**REQ-双锚** 章节扩写循环注入个人旧稿锚（`extract_personal_anchor`）+ 题材锚（store 文件） |
 | `orchestrator.py` | 架构总控 `Orchestrator`：任务拆解、**阶段门禁 StageGate**（产出→准出校验→不合格自动重生成≤N轮→超限仲裁放行）、跨模块冲突仲裁（主题>人物>世界观）；`manager.run_world/run_outline` 接入门禁（mock provider 默认跳过，保持离线行为一致） |
-| `validator.py` | 独立第三方逻辑校验 Agent `LogicValidator`：5 类专项校验（设定一致性/人物OOC/主线偏移/重复情节≤5%/伏笔完整性）+ 机制卡三要素校验（语义/结算/代价终局，REQ-章内自洽），输出分级问题清单，供 StageGate 与质量报告复用 |
+| `validator.py` | 独立第三方逻辑校验 Agent `LogicValidator`：5 类专项校验（设定一致性/人物OOC/主线偏移/重复情节≤5%/伏笔完整性）+ 机制卡三要素校验（语义/结算/代价终局，REQ-章内自洽；2026-10-28 词表换LLM 批次一改可 LLM 语义判定 `llm_semantic_mechanism`，失败回退信号词表），输出分级问题清单，供 StageGate 与质量报告复用 |
 | `issue_triage.py` | 问题分级模型 `IssueItem`（fatal/major/minor）+ triage/has_fatal/sort 纯函数 |
 | `report.py` | 成果整合：全书完成后落盘 4 份设计文档（核心设定册/全本骨架大纲/节奏执行手册/质量校验报告）到 `projects/<id>/design/`，失败降级不阻塞 |
 | `agents/base.py` | Agent 基类（人设/技能注入 prompt 的统一入口） |
@@ -171,7 +171,7 @@
 | `refund_requests` | 退款申请与处理 |
 | `skills` | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限/信任；platform=管理员可信、user/market=用户可写（拼 system 前清洗）；含 role/applicable_stages/version/downloads/market_id；旧 `writing_skills`/`user_skills`/`skill_market` 保留不 DROP（迁移回退） |
 | `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
-| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（100 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
+| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（104 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
 | `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险；小墨AI 调用以 `scene=assistant` 落表 |
 | `conversations` / `messages` | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id/user_id/title/mode/时间）与 `messages`（conversation_id/role/content/extra JSON：卡片、token、章节号、降级标记）；项目产物仍是评估事实来源，会话表只存对话 |
 
@@ -232,7 +232,7 @@
 
 ### 8.2 关键落点
 
-- **beat 门禁扩展（S3.2）**：`pipeline/beat_gate.py` —— loose 去标点匹配 `_norm_for_loose`/`_slot_hit(loose)`、章型白名单 `detect_chapter_type`（对话=引号占比≥0.35、过渡=<50字）、节点优先级 P0/P1/P2（`beat_node_priority`）。
+- **beat 门禁扩展（S3.2）**：`pipeline/beat_gate.py` —— loose 去标点匹配 `_norm_for_loose`/`_slot_hit(loose)`、章型白名单 `detect_chapter_type`（对话=引号占比≥0.35、过渡=<50字）、节点优先级 P0/P1/P2（`beat_node_priority`）；**2026-10-28 词表换LLM 批次一**：新增 `_llm_beat_coverage` 整章一次 LLM 语义覆盖判定（covered/hit/miss，开关 `llm_semantic_beat_gate` 默认开），失败回退 `_ACTION_SYNONYMS` 近义词表逐拍（原确定性路径保留兜底）。
 - **承诺台账接线（S3.1）**：`store/project.py` 增 `pending_commitments_path/load/save/prev`；`stages.py` write() 落盘 + `_pending_compensation_block`（L1+L2 合并）注入 memory_context 前段（S1.3 前置）。
 - **双锚（S2.1）**：`stages.py` `_teardown_anchor`/`_personal_anchor`，开关默认关返回空串，不注入。
 - **降本（S4.3/S4.1）**：`llm/base.py`+`providers.py` `json_mode`→`response_format={"type":"json_object"}` + `prompt_cache_hit_tokens` 埋点；`templates.py:1644 chapter_prompt` 在 `prefix_cache_aligned` 下把稳定块（字数·硬指标+constraints+题材参考）前置 user 最前；`config.state_extract_frequency` 3→5。

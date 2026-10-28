@@ -589,9 +589,14 @@ class QualityChecker:
         return issues, score
 
     def _check_beat_cycle(self, content: str) -> tuple[list, int]:
-        """2.12 情节级重演检测（确定性，2026-10-09）：完整节拍序列非重叠 ≥2 次 = 重演。"""
+        """2.12 情节级重演检测：完整节拍序列非重叠 ≥2 次 = 重演。
+
+        REQ-词表换LLM 批次一：节拍序列优先 LLM 语义抽取，失败自动回退词表；
+        开关 llm_semantic_beats（默认开）置 False 时纯词表。
+        """
         issues, score = [], 0
-        for it in _beat_cycle_issues(content):
+        use_llm_beats = bool(getattr(self.cfg, "llm_semantic_beats", True))
+        for it in _beat_cycle_issues(content, llm=self.llm, use_llm=use_llm_beats):
             issues.append(it)
             score -= 30
         return issues, score

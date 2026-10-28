@@ -6,17 +6,58 @@ REQ-多Agent协作分层优化：收敛 manager._run_verify 等分散校验，�
 （设定一致性 / 人物OOC / 主线偏移 / 重复情节 / 伏笔完整性），输出分级问题清单
 （fatal/major/minor，见 issue_triage.IssueItem），供 StageGate 阶段门禁与最终质量报告复用。
 
-设计：确定性结构化校验为主（零 LLM 成本、可复现单测），语义级校验（主线偏移、
-人物OOC 的深层判断）由上层 StageGate 可选叠加 LLM（异常降级），本类保持纯函数安全。
+设计：确定性结构化校验为主（零 LLM 成本、可复现单测）；仅「机制卡三要素」属语义
+判断，由 REQ-词表换LLM 批次一改为可选 LLM 语义判定（llm+llm_semantic 双开关），
+失败/非结构化时回退原信号词表兜底，其余校验保持纯函数安全。
 """
 from __future__ import annotations
 
+import logging
+
+from ..llm.json_parse import parse_json_obj
 from ..store.schemas import GoldfingerRules, Outline, World
 from .issue_triage import IssueItem
+from .templates import mechanism_check_prompt
+
+logger = logging.getLogger(__name__)
 
 
 #: 伏笔三级合法值
 _FS_LEVELS = {"small", "medium", "large"}
+
+#: 机制卡三要素固定文案（LLM 路径与词表兜底产出的 missing 必须完全一致）
+_MISSING_SEMANTIC = "机制语义（每个数字/状态的确切含义）"
+_MISSING_SETTLE = "结算规则（何时增减/重置/与历史衔接）"
+_MISSING_END = "代价与终局（代价递增/上限/触发）"
+_MECH_FIXED_MISSING = (_MISSING_SEMANTIC, _MISSING_SETTLE, _MISSING_END)
+
+
+def _llm_mechanism_missing(mechanism: str, llm) -> list[str] | None:
+    """LLM 语义判定机制卡三要素缺失（REQ-词表换LLM 批次一，开书时每本 1 次）。
+
+    返回：
+    - None：LLM 调用失败 / 返回非结构化（dict 空、无 missing、missing 非 list）
+      → 调用方回退词表兜底；
+    - list[str]：LLM 判定结果（可为 [] = 三要素齐全，不回退）。
+    规范化：逐条 strip，只保留三个固定文案之一（非固定文案丢弃），去重。
+    """
+    if not mechanism:
+        return []
+    try:
+        system, user = mechanism_check_prompt(mechanism)
+        raw = llm.chat(system, user, temperature=0.2, max_tokens=300, json_mode=True)
+    except Exception:
+        return None
+    data = parse_json_obj(raw)
+    missing = data.get("missing") if isinstance(data, dict) else None
+    if not isinstance(missing, list):
+        return None
+    kept: list[str] = []
+    for item in missing:
+        text = str(item).strip()
+        if text in _MECH_FIXED_MISSING and text not in kept:
+            kept.append(text)
+    return kept
 
 
 class LogicValidator:
@@ -27,6 +68,12 @@ class LogicValidator:
     - stage="skeleton"：骨架（Outline）——主线 / 重复 / 分卷归属
     - stage="pacing"：节奏（Outline）——关键节点 / 分卷节奏 / 弧光落点
     """
+
+    def __init__(self, llm=None, llm_semantic: bool = True):
+        # REQ-词表换LLM 批次一：仅机制卡三要素可选 LLM 语义判定；
+        # llm 为 None 或 llm_semantic=False 时行为与改造前完全一致（纯词表）。
+        self.llm = llm
+        self.llm_semantic = llm_semantic
 
     def validate_stage(self, stage: str, product) -> list[IssueItem]:
         try:
@@ -71,13 +118,21 @@ class LogicValidator:
         mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
         if not mechanism:
             return issues
-        missing = []
-        if not any(k in mechanism for k in self._MECH_SEMANTIC):
-            missing.append("机制语义（每个数字/状态的确切含义）")
-        if not any(k in mechanism for k in self._MECH_SETTLE):
-            missing.append("结算规则（何时增减/重置/与历史衔接）")
-        if not any(k in mechanism for k in self._MECH_END):
-            missing.append("代价与终局（代价递增/上限/触发）")
+        # REQ-词表换LLM 批次一：开关开启且 llm 可用时走 LLM 语义判定；
+        # 返回 None（失败/非结构化）留痕后回退词表兜底，issue 构造逻辑不变。
+        missing: list[str] | None = None
+        if self.llm is not None and self.llm_semantic:
+            missing = _llm_mechanism_missing(mechanism, self.llm)
+            if missing is None:
+                logger.warning("[validator] 机制卡 LLM 语义判定失败/非结构化，回退词表兜底")
+        if missing is None:
+            missing = []
+            if not any(k in mechanism for k in self._MECH_SEMANTIC):
+                missing.append(_MISSING_SEMANTIC)
+            if not any(k in mechanism for k in self._MECH_SETTLE):
+                missing.append(_MISSING_SETTLE)
+            if not any(k in mechanism for k in self._MECH_END):
+                missing.append(_MISSING_END)
         if missing:
             issues.append(IssueItem(
                 severity="fatal", scope="mechanism",

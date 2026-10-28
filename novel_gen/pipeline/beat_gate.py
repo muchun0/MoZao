@@ -22,7 +22,9 @@
   不再依赖写死的实体词清单。
 
 设计约束（AGENTS.md §11 / REQ-beat-gate）：
-- **纯确定性、零 LLM**：同一输入恒得同一输出，可复现、零 token 成本；
+- **词表路径纯确定性、零 LLM**（llm=None / use_llm=False / LLM 失败回退）；
+  REQ-词表换LLM 批次一起，传入 llm 时整章一次 LLM 语义判定全部拍（成本每章 1 次），
+  近义词表保留为确定性兜底；
 - **检测+记录+提示，不独立重生成正文**：重写统一由既有 quality.ensure_quality 链路负责；
 - 外部契约不变：`compute_beat_coverage` / `assess_chapter` 签名与返回结构
   {planned:[{beat,covered,hit,miss}], coverage, verdict, missing} 保持一致。
@@ -31,6 +33,9 @@ from __future__ import annotations
 
 import logging
 import re
+
+from ..llm.json_parse import parse_json_obj
+from .templates import beat_gate_coverage_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -205,10 +210,40 @@ def _beat_covered(beat: str, content: str, loose: bool = True) -> tuple[bool, li
     return covered, hit, miss
 
 
+def _llm_beat_coverage(content: str, planned_beats: list[str], llm) -> list[dict] | None:
+    """整章一次 LLM 判定全部计划拍是否在正文兑现（REQ-词表换LLM 批次一）。
+
+    替代逐拍近义词表子串命中——近义改写/语序调整由 LLM 按语义判。成本纪律：每章只调
+    1 次 LLM，禁止每拍 1 次。返回与 planned_beats 等长、顺序对齐的
+    [{"covered":bool,"hit":[str],"miss":[str]}]；dict 为空 / 无 beats / beats 非 list /
+    长度与计划拍不等 / 任一条非 dict → 返回 None，调用方逐拍回退词表（确定性兜底）。
+    """
+    text = content or ""
+    if len(text) > 3000:
+        text = text[:2500] + "……" + text[-400:]
+    system, user = beat_gate_coverage_prompt(text, planned_beats)
+    raw = llm.chat(system, user, temperature=0.2, max_tokens=800, json_mode=True)
+    data = parse_json_obj(raw)
+    if not data or not isinstance(data.get("beats"), list):
+        return None
+    llm_beats = data["beats"]
+    if len(llm_beats) != len(planned_beats):
+        return None
+    result: list[dict] = []
+    for item in llm_beats:
+        if not isinstance(item, dict):
+            return None
+        hit = [str(h) for h in item["hit"]] if isinstance(item.get("hit"), list) else []
+        miss = [str(m) for m in item["miss"]] if isinstance(item.get("miss"), list) else []
+        result.append({"covered": bool(item.get("covered")), "hit": hit, "miss": miss})
+    return result
+
+
 def compute_beat_coverage(content: str, moves: str, core_event: str = "",
                           min_coverage: float = 0.6, warn_coverage: float = 0.4,
                           chapter_type: str = "剧情", priorities: dict | None = None,
-                          loose: bool = True, far_beats: list[str] | None = None) -> dict:
+                          loose: bool = True, far_beats: list[str] | None = None,
+                          llm=None, use_llm: bool = True) -> dict:
     """计算正文对章计划 beat 的覆盖率并分级（REQ S3.2 扩展，向后兼容）。
 
     返回：{planned:[{beat,covered,hit,miss}], coverage, verdict, missing, chapter_type}
@@ -246,11 +281,26 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
                 return {**base, "planned": [], "coverage": None,
                         "verdict": "skip_far", "missing": []}
     body = content or ""
+    # 整章一次 LLM 语义判定（REQ-词表换LLM 批次一）：成功则逐拍直接采用 LLM 的
+    # covered/hit/miss；llm 为空 / use_llm=False / 异常 / 对齐不符 → 词表逐拍兜底。
+    llm_results: list[dict] | None = None
+    if llm is not None and use_llm and planned_beats:
+        try:
+            llm_results = _llm_beat_coverage(body, planned_beats, llm)
+            if llm_results is None:
+                logger.warning("[BeatGate] LLM 语义判定结果不可用（对齐/格式不符），回退词表逐拍")
+        except Exception:
+            logger.warning("[BeatGate] LLM 语义判定异常，回退词表逐拍判定", exc_info=True)
+            llm_results = None
     planned = []
     covered_count = 0
     missing: list[str] = []
-    for beat in planned_beats:
-        ok, hit, miss = _beat_covered(beat, body, loose)
+    for idx, beat in enumerate(planned_beats):
+        if llm_results is not None:
+            r = llm_results[idx]
+            ok, hit, miss = r["covered"], r["hit"], r["miss"]
+        else:
+            ok, hit, miss = _beat_covered(beat, body, loose)
         planned.append({"beat": beat, "covered": ok, "hit": hit, "miss": miss})
         if ok:
             covered_count += 1
@@ -270,15 +320,19 @@ def compute_beat_coverage(content: str, moves: str, core_event: str = "",
 def assess_chapter(content: str, moves: str, core_event: str = "",
                    min_coverage: float = 0.6, warn_coverage: float = 0.4,
                    chapter_type: str = "auto", priorities: dict | None = None,
-                   loose: bool = True, far_beats: list[str] | None = None) -> dict:
+                   loose: bool = True, far_beats: list[str] | None = None,
+                   llm=None, use_llm: bool = True) -> dict:
     """对单章正文做 beat 覆盖门禁评估（纯函数，供 stages 接线与 router 体检复用）。
 
     chapter_type="auto"（默认）：由正文确定性判定章型（对话/过渡章白名单）；
     显式传"剧情"/"对话"等则按给定值。loose=False 完全回退旧精确子串匹配（向后兼容）。
     far_beats（REQ S3.6）：距当前 > 窗口的远期节点，不计入 fail 判定分母。
+    llm/use_llm（REQ-词表换LLM 批次一）：传入 LLM 客户端时整章一次语义判定全部拍，
+    失败自动回退近义词表兜底；llm=None 或 use_llm=False 走纯词表（存量行为不变）。
     """
     result = compute_beat_coverage(content, moves, core_event, min_coverage, warn_coverage,
-                                   chapter_type, priorities, loose, far_beats)
+                                   chapter_type, priorities, loose, far_beats,
+                                   llm=llm, use_llm=use_llm)
     if result["verdict"] in ("skip", "skip_chapter_type", "skip_priority", "skip_far"):
         logger.info("[BeatGate] %s（%s）", result["verdict"],
                     "无计划拍" if result["verdict"] == "skip"

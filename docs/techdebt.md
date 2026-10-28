@@ -24,12 +24,12 @@
 
 | 行数 | 文件 | 红线状态 | 膨胀记录 |
 |---|---|---|---|
-| **3157** | `pipeline/stages.py` | 🔴 **>1000 禁新增** | decisions 记录 2228 → 现 3157（+929） |
-| **1968** | `pipeline/templates.py` | 🔴 **>1000 禁新增** | 1784 → 1968（+184） |
-| **1796** | `pipeline/quality.py` | 🔴 **>1000 禁新增** | 1306 → 1796（+490） |
-| **1088** | `pipeline/manager.py` | 🔴 **>1000 禁新增** | — |
-| **1067** | `store/project.py` | 🔴 **>1000 禁新增** | — |
-| **1037** | `pipeline/book_memory.py` | 🔴 **>1000 禁新增** | — |
+| **2338** | `pipeline/stages.py` | 🔴 **>1000 禁新增** | wave2 拆函数后 3157→2341，wave3 抽 `_split_scenes` 后 2338 |
+| **1723** | `pipeline/templates.py` | 🔴 **>1000 禁新增** | wave2 抽规则 .md 后 1968→1722，本轮微增 1723 |
+| **1836** | `pipeline/quality.py` | 🔴 **>1000 禁新增** | wave2 拆函数后 1796→1783，wave3 `check()` 拆 15 helper 后微增 1836 |
+| **1069** | `pipeline/manager.py` | 🔴 **>1000 禁新增** | — |
+| **1068** | `store/project.py` | 🔴 **>1000 禁新增** | — |
+| **1038** | `pipeline/book_memory.py` | 🔴 **>1000 禁新增** | — |
 | 989 | `store/schemas.py` | 🟠 濒临（>500 须拆） | — |
 | 733 | `pipeline/chapter_state.py` | 🟠 >500 须拆 | — |
 | 583 | `pipeline/memory.py` | 🟠 >500 须拆 | — |
@@ -39,7 +39,7 @@
 
 | 行数 | 文件 | 红线状态 |
 |---|---|---|
-| **1377** | `core.py` | 🔴 **>1000 禁新增**（拆分史 2853 拆分后，又回涨到 1377） |
+| **1378** | `core.py` | 🔴 **>1000 禁新增**（拆分史 2853 拆分后，又回涨到 1377） |
 | 907 | `generate_service.py` | 🟠 接近 1000，单文件承载全部 Agent 触发业务 |
 | 500 | `db/base.py` | 🟠 临界（DDL + seed 全在这） |
 | 490 | `settle_ledger.py` | 🟠 >500 边缘（**P0 资金链路，优先关注**） |
@@ -164,3 +164,26 @@
 - 安全与依赖漏洞：`pip-audit` / `npm audit` / OWASP（SQL 注入、XSS、CSRF、文件上传、密钥泄漏）。
 - 性能债：慢查询与索引、LLM 重复调用、串行等待、热点缓存。
 - 前端债：`ProjectDetail.vue`/`Admin.vue`/`ToolsPanel.vue` 单组件规模与逻辑堆积（本次未扫 src/）。
+
+---
+
+## 12. 偿还进展记录（wave 追加）
+
+> 本节记录实际偿还进度，与上文分析快照区分。每波偿都以「全量 pytest + 行为零变化」验证。
+
+### wave1-2（2026-10-28 已合 devtest）
+- **print → logger**：核心链路 91 处 print 清零（stages/manager/quality），仅剩 config 4 + core 1 处非核心。
+- **`memory.build_context` 拆 15 helper**（`_fs` 259 行函数消失）。
+- **`init_db` 92→20 行**。
+- **wave2 7 commits**：拆 6 个超长函数（`quality`/`stages`）；提示词规则外置 `prompts/rules/*.md`（`templates.py` 1968→1722）；`stages` 底部 ~550 行纯函数抽 `scene_event_utils.py`（437 行）；`write` 记忆块注入抽 `_inject_memory_blocks`；`OutlineGenerator`/`WorldGenerator` 抽 `outline_generators.py`（244 行）。
+
+### wave3（2026-10-28 分支 `refactor/techdebt-wave3`，工作区已提交未合 devtest）
+- **`quality.py:check()` 263→99 行**：抽 15 个 profile helper（`_check_structure`/`_check_repetition`/`_check_panel_direction`/`_ledger_cumulative` 等），语义/扣分零变化。
+- **`stages.py:write()` 407→191 行**：抽 `_write_body`（正文生成段）+ `_write_post_gates`（章末 BeatGate+机制状态账本+场景落盘段）；删除死赋值 `world=load_world()`。
+- **`stages.py:_generate_chapter_scenes()` 720→525 行**：拆场景段抽 `_split_scenes` helper（产 `(scenes, events_list, fallback_events, action_plan_block)`）。
+- 全量 pytest **1052 passed** 验证。
+
+### 判定结论（§11.1 行数是信号非硬指标）
+- 7 个超红线文件仅 `webapp/core.py`（1378，真·多内聚：请求模型/鉴权/结算/生成线程/任务持久化/记忆注入）该拆文件，但需独立会话满足「openapi 逐字节一致 + 端到端冒烟」闸门。
+- 其余 6 个（stages/quality/templates/manager/project/book_memory）均为单一内聚，不拆文件，仅函数层瘦身。
+- 重复逻辑（LCS/JSON 解析/鉴权多份）已评估为已收敛，不在本轮范围。

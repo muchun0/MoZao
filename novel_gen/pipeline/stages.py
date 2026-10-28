@@ -646,15 +646,15 @@ class ChapterWriter:
 
         return memory_context, plan_core_event, plan_moves
 
-    def write(
-        self,
-        chapter_no: int,
-        plan_title: str,
-        plan_goal: str,
-        research: ResearchReport | None,
-        silent: bool = False,
-        is_final: bool = False,
-    ) -> Chapter:
+    def _write_body(
+        self, chapter_no: int, plan_title: str, plan_goal: str,
+        research: ResearchReport | None, is_final: bool, silent: bool,
+    ) -> tuple[str, str, str, str, str]:
+        """生成并清洗正文，返回 (content, summary, system, plan_core_event, plan_moves)。
+
+        步骤：机制基线同步 + 场景计数重置 → 组装 memory_context → 注入记忆块 →
+        场景级/整章生成 → 清洗 HTML → 摘要兜底/脱节重生成 → 高质量模式自动改稿+读者审校。
+        """
         world = self.store.load_world()
         # P0-8：每章开始——①机制基线同步进记忆设定账本（蚀痕位置等权威口径）；
         # ②场景计数按章重置（v6 第 4-7 章 review 超 25 次被 guard 拦停一致性校验的根因）
@@ -766,6 +766,20 @@ class ChapterWriter:
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 logger.warning(f'  [读者审校] 跳过: {e}')
+        return content, summary, system, plan_core_event, plan_moves
+
+    def write(
+        self,
+        chapter_no: int,
+        plan_title: str,
+        plan_goal: str,
+        research: ResearchReport | None,
+        silent: bool = False,
+        is_final: bool = False,
+    ) -> Chapter:
+        content, summary, system, plan_core_event, plan_moves = self._write_body(
+            chapter_no, plan_title, plan_goal, research, is_final, silent,
+        )
 
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
         guard_cfg = getattr(self.cfg, "agent_guard", None)
@@ -942,6 +956,16 @@ class ChapterWriter:
         if not _qc_versions and not compliance_rejected:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
             self.store.save_chapter(chapter)
+        self._write_post_gates(chapter_no, plan_title, content, summary,
+                               plan_moves, plan_core_event, silent)
+        return chapter
+
+    def _write_post_gates(self, chapter_no, plan_title, content, summary,
+                          plan_moves, plan_core_event, silent) -> None:
+        """章末后处理门禁（正文落盘后）：Beat 覆盖度门禁 + 机制状态账本 + 场景落盘 + 摘要。
+
+        与正文/质检解耦：全部为确定性/记录类副作用，失败逐块降级不阻塞。
+        """
         # 三期 F1：Beat 覆盖度门禁（纯确定性、零 LLM）——正文落盘后自检对章计划拍的
         # 覆盖率，分级记录到 beat_gate.json（pass/warn/fail/skip）。检测+记录+提示，不独立
         # 重生成正文（重写统一走 quality.ensure_quality）；mock provider/关闭/无计划拍静默跳过。
@@ -1052,7 +1076,6 @@ class ChapterWriter:
         if not silent:
             tail = f"｜摘要：{summary}" if summary else "｜（未生成摘要）"
             logger.info(f"  第{chapter_no}章《{plan_title}》完成（{len(content)} 字）{tail}")
-        return chapter
 
 
     def _enhance_pass(self, chapter_no, plan_title, plan_goal, content, summary,
@@ -1374,33 +1397,19 @@ class ChapterWriter:
         # 附注展示（见上方 _over 检查），交付由质检层按字数规则记录。
         return _text
 
-    def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
-                                 memory_context, prev_tail, is_final,
-                                 dynamic_module_used: bool = True,
-                                 plan_core_event: str = "",
-                                 plan_moves: str = "",
-                                 conflict_names: tuple[str, ...] = (),
-                                 silent: bool = False):
-        """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
+    def _split_scenes(self, chapter_no, plan_title, plan_goal, prev_tail,
+                      plan_core_event, plan_moves, conflict_names, silent):
+        """拆场景段（从 _generate_chapter_scenes 抽出，§11.1 先拆函数）。
 
-        高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
-        普通模式只启用拆场景→逐场景→润色基础链路。拆场景失败自动回退整章生成。
-
-        REQ-scene-plan-align：plan_moves 非空且开关开启时，事件清单由大纲 character_moves
-        确定性派生（_derive_events_from_moves），模型只做场景切分与细节补充——
-        杜绝"每次生成事件清单不一样 + 同一冲突拆成多个版本"。
+        产出 (scenes, events_list, fallback_events, action_plan_block)：
+        - 拆场景（低温 0.4；顺带产出本章人物行动表，不独立调用）
+        - REQ-scene-plan-align：事件清单由大纲 character_moves 确定性派生（硬骨架）
+        - 场景事件引用展开 / 语义同构合并 / 结构校验 / 互斥校验 / 回退整章决策
+        - 场景字数预算归一（确定性）
         """
         import json
-        from .templates import (
-            split_scenes_prompt, scene_prompt, polish_chapter_prompt,
-            _pick_dynamic_module,
-        )
-
-        # 1. 拆场景（低温 0.4；REQ-token优化 P0-2：顺带产出本章人物行动表，不再独立调用）
         action_plan_block = ""
         fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
-        # REQ-scene-plan-align：从大纲 character_moves 确定性派生事件清单（硬骨架）。
-        # 派生成功 → 模型无权增删/改写事件，只做补字段 + 拆场景；失败 → 回退原 LLM 规划路径。
         derived_events: list = []
         skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
@@ -1410,12 +1419,9 @@ class ChapterWriter:
                 names=conflict_names,
             )
             if derived_events:
-                # 骨架文本：编号 + desc 逐条列出，明示事件数与"场景数=事件数"约束
                 skeleton_arg = f"共 {len(derived_events)} 个事件，场景数必须等于事件数：\n" + \
                     "\n".join(f"{e['id']}：{e['desc']}" for e in derived_events)
         try:
-            # P0-10 拆场景层注入机制数字锚（蚀化当前应 = 起始基线 + 截至上一章累计死亡），
-            # 规划事件 final_state 时模型据此写机制状态增量，不自造跨章口径
             _split_anchor = ""
             try:
                 _msplit = self._memory()
@@ -1431,20 +1437,12 @@ class ChapterWriter:
             )
             raw = self.llm.chat(sys_s, user_s, temperature=0.4)
             split_data = None
-            # P0-4：仅当「整体 JSON 解析失败」（尾部截断证据）且救回 characters_action
-            # 为空时才触发单字段补全；整体解析成功但 characters_action 为空数组 =
-            # 模型真未规划（合法），不补全（避免无谓的额外 LLM 调用）。
             _ca_needs_fill = False
             try:
                 split_data = json.loads(_strip_json_block(raw))
             except Exception:
                 split_data = None
             if not isinstance(split_data, dict):
-                # 2026-10-01 拆场景 JSON 健壮化：整体解析失败 → 字段级兜底
-                # （events 在前、scenes 在中，长输出截断通常只丢 characters_action）。
-                # 能救回 scenes 就继续走场景拆分；救不回就重试 1 次（温度升 0.5），
-                # 仍失败才回退整章——回退前保留可解析的 events 供整章 prompt 注入
-                # （防"拆场景失败 → 救人事件丢失/重复"整条事前防线失效）。
                 scenes_fb = _extract_json_field(raw, "scenes")
                 events_fb = _extract_json_field(raw, "events")
                 if scenes_fb or events_fb:
@@ -1481,9 +1479,6 @@ class ChapterWriter:
                 fallback_events = split_data.get("events") or []
                 scenes = split_data.get("scenes", [])
                 ca = split_data.get("characters_action") or []
-                # P0-4 characters_action 单字段补全（2026-10-09）：
-                # 大 JSON 长输出截断只丢尾部 characters_action 时（_extract_json_field
-                # 救回为空/损坏），单独让模型只输出行动表数组——措辞层约束真正生效。
                 if not ca and _ca_needs_fill and scenes:
                     if not silent:
                         logger.warning("  [行动表] characters_action 截断救回失败，单字段补全调用...")
@@ -1497,17 +1492,7 @@ class ChapterWriter:
                 if not silent:
                     logger.info(f"  [拆场景] 规划通过：{len(scenes)} 个场景，"
                           f"{len(fallback_events)} 个事件")
-            # 2026-09-30 拆场景设计重构（用户指出"一直在打补丁、根因在场景拆分设计"）：
-            # 场景拆分 = 事件分配——LLM 先规划互斥事件清单 events，场景 scene_event_ref 逐字
-            # 引用事件编号。这里把引用展开为事件原文（sc["event"]），互斥由「事件清单两两
-            # 不同 + 引用唯一性 + 场景数/字数校验」结构化保证，不再依赖文本相似度猜重叠
-            # （6316 字版"苏妄言被围"被拆成 5 个换措辞场景即旧校验盲区）。
             events_list = split_data.get("events") or [] if split_data else []
-            # REQ-scene-plan-align：派生模式下事件清单以大纲 character_moves 为准（确定性），
-            # desc/id 以骨架为准（模型无权增删/改写事件）；模型输出同 id 事件的结构化字段
-            # （conflict/action/final_state，尤其机制数字增量）按 id 合并保留——
-            # 骨架锁住"事件是什么"，模型只补"冲突对象/动作/机制状态增量"。
-            # 回退整章注入的事件序列同样用合并后事件（防丢事件/换措辞重演）。
             if derived_events:
                 model_by_id = {
                     str(e.get("id") or ""): e
@@ -1524,10 +1509,6 @@ class ChapterWriter:
                     events_list.append(de)
                 fallback_events = events_list
             _expand_scene_event_refs(scenes, events_list)
-            # P0-10 拆场景评审（混合方案①，2026-10-10）：独立评审 agent 判事件
-            # 语义同构 → 代码确定性合并。治 v7 ch5 药铺三重拼接规划层根因——
-            # desc 相似度预筛（>0.55）对「查药粉/诊脉/探脉枕」三个不同原文不命中，
-            # 需语义级判断；派生模式 desc 是骨架原文（合并会破坏 id 对应）→ 只告警。
             if not derived_events and events_list and scenes and len(events_list) >= 2:
                 _pairs = self._scene_split_review(
                     chapter_no, plan_title, plan_goal, events_list, scenes, silent
@@ -1537,18 +1518,10 @@ class ChapterWriter:
                     if _merged:
                         events_list, scenes = _merged
                         fallback_events = events_list
-            # P1-1 场景事件边界互斥 + 结构校验（场景数≤4、target_words 和∈±10%、
-            # 事件引用唯一）+ 2026-10-01 事件语义槽位互斥（同冲突对象+同动作=重复，
-            # 防"救苏妄言"拆成石殿版/墟口外版两场景）+ P0-17 大纲核心事件覆盖校验：
-            # 不合格 = 同一事件拆成两场景（同事件两版本拼接源头），回退整章生成
             ok_plan, why_bad = _validate_scene_plan(
                 scenes, int(getattr(self.cfg, "chapter_words", 0) or 0),
                 core_event=str(plan_core_event or ""),
             )
-            # REQ-scene-plan-align：派生模式下事件互斥改用 desc（骨架原文）相似度兜底——
-            # 模型补充的 conflict/action 可能把同一人物交互的递进拍标成同动作（如"扫描/
-            # 装傻"都标"试探"），槽位检查会误杀回退；desc 是骨架逐拍原文，互斥由"两拍
-            # 原文明显不同"保证，相似度 >0.55 才视为重复（防大纲拍本身重复）。
             if derived_events:
                 import difflib as _difflib
                 _norms = [_norm_scene_event(e.get("desc") or "") for e in events_list]
@@ -1574,9 +1547,6 @@ class ChapterWriter:
                           "回退整章生成")
                 scenes = []
             elif derived_events and scenes:
-                # REQ-scene-plan-align：派生模式下场景 scene_event_ref 必须恰好覆盖派生
-                # 事件 id 集合（无遗漏/无重复/无新增）。模型自造 id、漏引用、重复引用
-                # 均视为不遵守骨架 → 回退整章（整章路径仍注入派生事件序列兜底）。
                 refs = {str(sc.get("scene_event_ref") or "").strip() for sc in scenes if isinstance(sc, dict)}
                 derived_ids = {str(e.get("id") or "").strip() for e in derived_events}
                 if refs != derived_ids:
@@ -1587,15 +1557,41 @@ class ChapterWriter:
         except Exception:
             scenes = []
 
-        # REQ-写作正向引导 5.5 场景字数预算收敛（确定性、零 LLM）：校验通过后把各
-        # 场景 target_words 按比例归一，合计精确等于 chapter_words。治"±10% 校验放行后
-        # 仍有残差 → 逐场景生成整章超长（v9 ch4=5050/ch6=4310 字数硬伤）"。
         if scenes:
             try:
                 _normalize_scene_targets(
                     scenes, int(getattr(self.cfg, "chapter_words", 0) or 0))
             except Exception:
                 pass
+        return scenes, events_list, fallback_events, action_plan_block
+
+    def _generate_chapter_scenes(self, chapter_no, plan_title, plan_goal,
+                                 memory_context, prev_tail, is_final,
+                                 dynamic_module_used: bool = True,
+                                 plan_core_event: str = "",
+                                 plan_moves: str = "",
+                                 conflict_names: tuple[str, ...] = (),
+                                 silent: bool = False):
+        """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
+
+        高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
+        普通模式只启用拆场景→逐场景→润色基础链路。拆场景失败自动回退整章生成。
+
+        REQ-scene-plan-align：plan_moves 非空且开关开启时，事件清单由大纲 character_moves
+        确定性派生（_derive_events_from_moves），模型只做场景切分与细节补充——
+        杜绝"每次生成事件清单不一样 + 同一冲突拆成多个版本"。
+        """
+        import json
+        from .templates import (
+            split_scenes_prompt, scene_prompt, polish_chapter_prompt,
+            _pick_dynamic_module,
+        )
+
+        # 1. 拆场景（低温 0.4；含派生事件骨架/JSON 健壮化/结构校验/字数归一/回退决策）
+        scenes, events_list, fallback_events, action_plan_block = self._split_scenes(
+            chapter_no, plan_title, plan_goal, prev_tail,
+            plan_core_event, plan_moves, conflict_names, silent,
+        )
 
         if not scenes:
             # 拆场景失败 / 场景正文重演重试耗尽，回退到普通整章生成（逻辑见下方方法）。

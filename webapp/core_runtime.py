@@ -26,11 +26,11 @@ from .logger import get_logger
 
 logger = get_logger("server")
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 # 数据目录可配置：.env 的 DATA_DIR；未配置时回退代码根，行为与历史版本一致
 PROJECTS_DIR = get_projects_dir()
 OUTPUT_DIR = get_output_dir()
-WEB_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+WEB_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 _MAX_UPLOAD = 10 * 1024 * 1024  # P2 上传大小上限 10MB
 
 

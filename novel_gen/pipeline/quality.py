@@ -245,7 +245,9 @@ class QualityChecker:
         while not result["passed"] and rewrite_rounds < max_rewrite:
             rewrite_rounds += 1
             if not silent:
-                logger.warning(f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），触发第 {rewrite_rounds}/{max_rewrite} 次自动重写...")
+                logger.warning(
+                    f"  [自校验] 第{chapter_no}章未通过（{len(issues)} 个问题），"
+                    f"触发第 {rewrite_rounds}/{max_rewrite} 次自动重写...")
             if self.guard is not None:
                 self.guard.enter_scene("revise")
             rewritten = self._rewrite_once(chapter_no, plan_title, plan_goal, content, issues,

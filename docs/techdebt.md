@@ -187,3 +187,10 @@
 - 7 个超红线文件仅 `webapp/core.py`（1378，真·多内聚：请求模型/鉴权/结算/生成线程/任务持久化/记忆注入）该拆文件，但需独立会话满足「openapi 逐字节一致 + 端到端冒烟」闸门。
 - 其余 6 个（stages/quality/templates/manager/project/book_memory）均为单一内聚，不拆文件，仅函数层瘦身。
 - 重复逻辑（LCS/JSON 解析/鉴权多份）已评估为已收敛，不在本轮范围。
+
+### wave-p2（2026-10-28 分支 `refactor/techdebt-p2`，§10 P2 债清理，行为零变化 1053 测试绿）
+- **命名表意化**：`stages.py:_sys` → `_with_persona`（persona 前缀拼 system，8 处引用）、`schemas.py:_s` → `_flatten_str`（Character.from_dict 内 dict/list/标量展平，7 处）。`_fs`/`_qc`/`_why`/`_ok` 已在早前 wave 消失，本轮实测无定义残留。
+- **超长行 ≤120（仅安全代码行）**：`quality.py` L248 logger.warning、`manager.py` L957 logger.info（相邻 f-string 隐式拼接，字符串内容逐字不变）、`schemas.py` Character.from_dict 参数列表 2 行 + `MechanismBaseline.from_dict` walrus 三元表达式 1 行。
+- **死代码/长 docstring 实测甄别**：techdebt §7 点名的注释块（quality:421/stages:1100/chapter_state:448）经逐处核实均为**设计决策/踩坑说明注释**（如 stages L1757 场景重演兜底根因、quality L61 结算锚点排除项、chapter_state L442 机制通用化设计），属 §11.4 应保留的设计注释，**非可删死代码**——本轮不删，避免丢失设计意图。
+- **超长函数再拆甄别**：剩余 >50 行的函数多数是已 wave 瘦身过的生成核心（`_generate_chapter_scenes` 720→525、`write` 407→191、`check` 263→99）或**提示词字符串函数**（templates 的 scene_prompt 160 行等，行数大因提示词文本而非逻辑复杂度），按 §12"单一内聚不拆文件、函数层已瘦身"判定不再拆，避免生成核心链路行为风险。
+- **schemas 样板去重未做（甄别为需选型，中成本）**：`schemas.py` 29 份手写 `to_dict`/`from_dict`。模型已是 `@dataclass`，`to_dict` 是简单字段映射（理论上可 `asdict`），但 `from_dict` 均带自定义逻辑（`_flatten_str` 展平、嵌套模型递归转换、walrus 条件转换），**无法用 dataclass/pydantic 自动序列化直接替代**；且 `asdict` 对嵌套模型递归输出与手写 `to_dict` 的字段结构是否逐字节一致需验证，改动面 29 模型、行为风险中。按 techdebt §10 标注"需先选型记 decisions、成本中"，**留待独立会话**处理（非 P2 低风险范围）。

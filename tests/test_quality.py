@@ -217,6 +217,7 @@ def test_salvage_recovers_single_draft(store):
     llm, calls = _mk_llm()
     cfg = store.load_config()
     cfg.llm_semantic_beats = False  # 词表换LLM 批次一：本测试断言确定性抢救的 LLM 调用数，关新开关回归纯词表路径
+    cfg.llm_semantic_ai_taste = False  # 词表换LLM 批次二：ai_taste 四维度 LLM 判定同样新增 1 次调用，关开关保持原调用布局
     cfg.chapter_words = 500  # 抢救后的单稿（~370字）达标即可通过，避免触发重写
     qc = QualityChecker(cfg, llm, store)
     stacked = _mk_draft("第一稿：他往侧边跑，撞上一块岩壁。") + "\n\n" + \
@@ -609,6 +610,7 @@ def test_consistency_llm_every_normal_mode(store):
     """普通模式 + consistency_llm_check=True → 每 N 章抽 1 次（第1章触发、第2章不触发）。"""
     cfg = store.load_config()
     cfg.llm_semantic_beats = False  # 词表换LLM 批次一：本测试断言 reader+consistency 恰 2 次调用，关新开关回归纯词表路径
+    cfg.llm_semantic_ai_taste = False  # 词表换LLM 批次二：ai_taste LLM 判定新增 1 次调用，关开关保持原计数
     cfg.high_quality_mode = False
     cfg.consistency_llm_check = True
     cfg.consistency_llm_every = 3

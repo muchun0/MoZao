@@ -84,7 +84,7 @@
 | `compliance.py` | **合规红线纯函数**（REQ-门禁质检正向影响 P0-1/P0-2，2026-10-18）：`has_compliance`（type 含「合规-疑似违规内容」）/`compliance_categories`（rule_category 去重，旧格式 detail 反查大类兜底）/`compliance_education_block`（首次教育文本，指向内容不指向人）；零 LLM、失败降级空串；供 quality/stages 判定合规拒绝 |
 | `diagnosis.py` | **质检诊断回喂纯函数**（REQ-门禁质检正向影响 P0-3，2026-10-18）：`suggest_for`（确定性维度→fix_suggestion/expected_gain，精确表+前缀表+AI痕迹兜底，已带建议不覆盖）+ `build_issue_block`（带建议质检问题块，reask 非盲重写）；供 quality._rewrite_whole 复用 |
 | `book_memory.py` | **小说级记忆系统（P0-7，2026-10-10，docs/TECH-book-memory.md）**：`BookMemory` 五账本（设定 canon/事件 events/踩坑 pitfalls/经验 taste/好文风 goods）持久化 `book_memory.json`；质检出问题→`record_pitfall`（零 LLM、大改级、同章去重跨章累加）→`escalate` 同模式≥2次升级永久纪律（排除通用类）→`decay` 3章未复发降权；注入组装 `pitfall_block`（Top-N，重写/场景双措辞）+ `canon_block`（新名词规范/永久纪律/机制基线）+ `numeric_backfill`（方向违规→确定性修复指令）+ `record_event_consumed` 跨章事件消费 + `record_taste` 章节评分（最近 20 章）+ **good 账本（REQ-写作正向引导 5.6，2026-10-15）**：`record_good` 高分章（≥85 且无大改）段落自动入账 / `record_good_manual` 用户编辑保存（webapp 触发）免质检入账，按手法确定性分类（对话-潜台词/战斗-动作链/情绪-白描+点破/环境-物象白描/叙事-节奏），每类 ≤5 条、总量 ≤50、每条 ≤300 字；`good_block` 注入「本作写得好的片段（参考质感非内容来源）」供场景生成/重写双路径；开关 `book_memory=False` 全跳过（管线行为与 P0-5 一致）；供 stages（懒加载/5 处场景注入/回退整章）/quality（质检记录+重写注入）/webapp（编辑保存入账）复用 |
-| `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断 |
+| `ai_taste.py` | AI 痕迹量化检测（P1-4）：确定性规则给分（连接词/情绪词/排比/段落雷同），只扣分不阻断；**2026-10-28 词表换LLM 批次二**：四维度（连接词堆砌/情绪词直白宣告/填充词口头禅/直白点破）可 LLM 语义判定（`llm_semantic_ai_taste` 默认开，整章 1 次），失败回退词表+统计；密度统计/排比/雷同/漂移量化（S2.4-L1）保持确定性 |
 | `skills.py` | **技能统一注入管线**（REQ-技能统一）：`SkillAssembler` 统一采集 平台全局/平台角色/用户技能/项目快照（均读统一表 `skills`，source 区分 platform/user），按角色默认阶段（STAGE_BY_ROLE）过滤（技能 applicable_stages 空=全量）、统一清洗、产出 manifest（供 `agent_trace` 归因）；**P0-2**：STAGE_BY_ROLE 补 theme_character/world_rules/pacing 三 key、移除 validator 死配置（非 BaseAgent 不参与技能注入）；`agents/base.py` 与 `templates._skill_append` 均经此管线 |
 | `templates.py` | 提示词模板组装；P2-3 动态模块随机化 `_pick_dynamic_module`（seed 可复现、相邻去重）；P2-1 风格范文锚定 `_style_reference`（截 3000 字，空则不注入）；P2-2 `final_review_prompt` 终审编辑；**P1** `opening_prompt`/`ending_prompt`（开篇/结局 Agent 任务提示词）；P0-1 `verify_combined_prompt` 支持 `reader_persona` 注入；**P2** 大纲 prompt（open/expand/continue）chapters 字段新增 `cliffhanger`（章末钩子）；**REQ-双锚** scene/chapter 注入题材锚（`teardown_anchor` 参数，开关 `teardown_style_anchor` 控制）、`expand_chapter_prompt` 补风格范文+个人锚+题材锚（弱约束，空不注入）；**REQ-scene-plan-align** `split_scenes_prompt` 新增 `moves` 骨架注入（非空=事件清单已由 character_moves 派生，第一步改为补字段、禁增删改写事件；空=原规划路径）；**§7.3 措施1** `scene_prompt` 新增 `event_progress` 事件进度硬约束（只推进本场景事件、禁提前消费后续事件完整流程）+ 场景衔接规则补"后续事件留给各自场景"；**生成端第三轮（P0-1/P0-3，2026-10-09）** `scene_prompt` 新增 `consumed_events`（已消费只许回响）/`upcoming_events`（后续禁提前消费）/`panel_baseline`（机制数字基线）/`panel_violations`（带错重试说明）四参数；**P0-4** `characters_action_fill_prompt` 单字段补全（只输出行动表数组）；**P0-7（2026-10-10）** `split_scenes_prompt` 新增 `book_canon`（设定账本注入）、`scene_prompt` 新增 `book_pitfalls`（本作历史错误注入块） |
 
@@ -171,7 +171,7 @@
 | `refund_requests` | 退款申请与处理 |
 | `skills` | **统一技能表（REQ-技能统一 阶段二）**：source∈{platform,user,market} + owner_id 区分权限/信任；platform=管理员可信、user/market=用户可写（拼 system 前清洗）；含 role/applicable_stages/version/downloads/market_id；旧 `writing_skills`/`user_skills`/`skill_market` 保留不 DROP（迁移回退） |
 | `style_roles` / `style_role_skills` | 风格角色（人设 + P2-1 参考文风 `reference_text`）+ 挂载技能 |
-| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（104 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
+| `sys_config` / `sys_config_log` | **后台开关管理（REQ-后台开关管理）**：全局生成引擎开关唯一运行时权威（106 项由 FEATURE_FLAGS seed 幂等同步，新增开关自动入表）；`sys_config_log` 记录每次修改的旧值/新值/operator |
 | `agent_trace` | Agent 全链路执行快照（LLM 调用明细/成本事件/质量校验；trace_id 串联单次任务，预留 user_id/scene/extra 支撑监控与用户分析）；P2-4 `quality_report` 据此聚合质检分布/重写率/弃书风险；小墨AI 调用以 `scene=assistant` 落表 |
 | `conversations` / `messages` | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id/user_id/title/mode/时间）与 `messages`（conversation_id/role/content/extra JSON：卡片、token、章节号、降级标记）；项目产物仍是评估事实来源，会话表只存对话 |
 
@@ -200,7 +200,7 @@
 | 全链路 trace（模块1） | LLM 层模板方法自动埋点（Prompt/返回/Token/耗时/错误栈）→ MySQL `agent_trace`；trace_id 串联单次任务；pipeline 阶段级 `agent_step` 语义记录 | 问题回溯、阶段2 监控/成本报表数据底座；sink 失败自动降级不阻塞 |
 | 成本防护（模块2） | LLM 调用计数 + 累计 Token 阈值，超限抛 `AgentGuardError`；生成线程捕获后保留产物 + 超限提示（可断点继续）；事件写 trace | 防死循环/成本爆炸；mock 不挂 guard；`agent_guard.*` 可开关 |
 | 输入/输出防护（模块3） | API 输入注入检测（命中 400）+ 拼 system 前清洗（custom_prompt/skill/用户技能）+ 输出基础合规校验 | 防 Prompt 注入篡改系统约束；正常创作输入零误报 |
-| 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace | 减少人工返工；异常降级不阻塞 |
+| 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace；**2026-10-28 词表换LLM 批次二**：机制面板结算事件锚点判定可 LLM 语义化（`llm_semantic_panel_anchor` 默认开，判两处面板数字间是否真实结算，失败回退锚点正则，issue 保持小改） | 减少人工返工；异常降级不阻塞 |
 | 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
 | 全局开关覆盖（后台管理） | `FEATURE_FLAGS` 注册表 = 默认值唯一事实来源；`init_db` seed 幂等同步进 `sys_config`（新增开关自动入表）；`_open_pipeline` 内 `_apply_global_overrides` 以表为准内存态覆盖 cfg（顶层/agent_guard/scene_limits），**config.json 项目快照不迁移不改写**；DB 异常降级走快照/默认并留痕 | 运行时开关收敛到管理后台、以表中数据为准；新增开关历史项目零迁移统一生效（用户核心动机） |
 
@@ -238,7 +238,7 @@
 - **降本（S4.3/S4.1）**：`llm/base.py`+`providers.py` `json_mode`→`response_format={"type":"json_object"}` + `prompt_cache_hit_tokens` 埋点；`templates.py:1644 chapter_prompt` 在 `prefix_cache_aligned` 下把稳定块（字数·硬指标+constraints+题材参考）前置 user 最前；`config.state_extract_frequency` 3→5。
 - **伏笔原文存档（S1.1）**：`store/schemas.py ForeshadowItem.original_excerpt`；`pipeline/reader_ledger.py` `_archive_foreshadow_excerpts`（埋设章落盘时抽原文句）、`_foreshadow_block` 附【到期伏笔原文】。
 - **周期再锚定（S2.2）**：`stages.py` `ChapterWriter._rolling_style_anchor(chapter_no)`（`chapter_no%style_reanchor_every==0` 时读 `BookMemory.good_block(top_n=3, max_chars=900)` 注入 system 前段）。
-- **漂移检测（S2.4-L1）**：`pipeline/ai_taste.py` `style_drift_metrics`（句长均值/cv/TTR/填充词占比/明喻密度）+ `drift_score`，纯确定性每章可跑，供与前期章基线对比。
+- **漂移检测（S2.4-L1）**：`pipeline/ai_taste.py` `style_drift_metrics`（句长均值/cv/TTR/填充词占比/明喻密度）+ `drift_score`，纯确定性每章可跑，供与前期章基线对比（**2026-10-28 词表换LLM 批次二**：AI 痕迹四维度已 LLM 化，漂移量化与统计阈值保持确定性）。
 - **伏笔 stalled + 语义双路（S1.4）**：`reader_ledger.py` 状态机新增 `stalled`（planted 且埋后超 `ledger_stall_after` 章无推进、不在回收窗口 → 注入"冷却"提醒，防长文伏笔弃笔）；模块级 `semantic_foreshadow_check`（字面未命中时 LLM 判语义推进，默认关省成本）。
 - **固定锚双轨（S2.3）**：`stages.py` `_fixed_style_anchor`（开头 1-2 章原文 + 个人旧稿作风格原点，永不替换，默认关防放大 AI 特征）；整章/场景两路径滚动锚+固定锚双轨合并注入。
 - **L3 风格裁判（S2.5）**：`manager.py` `_run_verify`（每 verify_every 章）末尾接 `_style_judge_l3`——LLM 比对最近章 vs 风格原点输出六维差异，漂移维度≥阈值写 verify_issues（触发再锚定信号）。

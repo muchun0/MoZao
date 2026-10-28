@@ -16,7 +16,7 @@ from typing import Any
 from .base import _connect, logger
 
 # 后台展示分组顺序（与 novel_gen.config.FEATURE_FLAGS.module 对齐）
-FLAG_MODULES: tuple[str, ...] = ("memory", "writing", "review", "guard", "assistant")
+FLAG_MODULES: tuple[str, ...] = ("memory", "writing", "review", "guard", "assistant", "version")
 
 # select 枚举白名单（唯一事实来源：seed 类型推导与路由层校验共用）。
 # key → 可选值列表；此类开关注册表 default 为 str，但后台渲染为下拉框。
@@ -97,12 +97,24 @@ def coerce_config_type(config_type: str, raw: str):
     return str(raw)
 
 
+# 已退役开关（行为固化进代码，从注册表移除后同步清理存量行，防残留覆盖/后台误改）。
+# 仅白名单内的 key 才会被清理；不在名单的「非注册表行」（如 scene_limits）不受影响。
+RETIRED_FLAGS: tuple[str, ...] = (
+    "editor_review",          # 大纲编辑质检：已固化开启
+    "de_ai",                  # 去AI味：已固化开启
+    "anti_similarity",        # 防同质化：已固化开启
+    "character_depth",        # 人物立体化：已固化开启
+    "high_quality_mode",      # 高质量模式：已固化开启（普通模式不再存在）
+)
+
+
 def seed_feature_flags() -> int:
     """把 FEATURE_FLAGS 注册表全量幂等同步进 sys_config（新增开关自动入表）。
 
     INSERT ... ON DUPLICATE KEY UPDATE：仅同步 label/description/config_type 等元数据，
     不覆盖管理员已修改的 config_value / updated_by（以表值为准）。
-    删除的注册项不删表（防误删，保留历史）。
+    删除的注册项不删表（防误删，保留历史）；但 `RETIRED_FLAGS` 白名单内的退役开关
+    会被清理（行为已固化进代码，保留行会导致后台残留开关并继续覆盖项目配置）。
     返回本次新增条数。
     """
     from novel_gen.config import FEATURE_FLAGS
@@ -123,6 +135,10 @@ def seed_feature_flags() -> int:
             )
             # MySQL 对 ON DUPLICATE KEY UPDATE：插入成功 rowcount=1，更新=2，无变化=0
             added += 1 if cur.rowcount == 1 else 0
+        for key in RETIRED_FLAGS:
+            cur = conn.execute("DELETE FROM sys_config WHERE config_key=%s", (key,))
+            if cur.rowcount:
+                logger.warning("退役开关清理: 已删除 sys_config 行 %s（行为已固化进代码）", key)
     return added
 
 

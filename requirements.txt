@@ -17,8 +17,6 @@ httpx<0.28,>=0.23
 PyYAML>=6.0             # config.yaml 解析
 python-dotenv>=1.0.0    # .env 文件加载（API Key / SMTP / DB 连接串）
 
-# ===== 封面生成（程序化绘制，零外部 API） =====
-Pillow>=12.3.0
 
 # ===== 多格式导出 =====
 ebooklib>=0.18          # EPUB 3 导出

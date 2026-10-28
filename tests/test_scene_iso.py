@@ -42,10 +42,10 @@ def _writer(cfg, llm, store):
 
 @pytest.mark.p1
 def test_scene_isomorphic_pharmacy_hit():
-    """v7 ch5 实证：同一「诊脉→药包→离场」三拍写三遍 → 同构命中（3 拍 + 非通用拍 2）。"""
-    seq = _extract_beat_sequence("他进门诊脉，接过药包，转身离开。")
-    assert seq == ["诊脉", "药包", "离场"]
-    ledger = [_extract_beat_sequence("进店查药粉，又替他诊脉，递上药包，随后离开。")]
+    """同一「戳穿→装晕→离场」三拍写两遍 → 同构命中（3 拍 + 非通用拍 2；书级药铺拍已移除）。"""
+    seq = _extract_beat_sequence("他戳穿她的把戏，她装晕倒地，他转身离开。")
+    assert seq == ["戳穿", "装晕", "离场"]
+    ledger = [_extract_beat_sequence("她再试探，他识破，装死躺着，跟上离开。")]
     assert _beats_scene_isomorphic(seq, ledger) is True
 
 
@@ -68,21 +68,20 @@ def test_scene_isomorphic_short_and_empty():
 
 @pytest.mark.p1
 def test_scene_isomorphic_partial_repeat_hit():
-    """v8 ch1 实证：三重拼接中场景 2/3 只重复场景 1 的核心 3~4 拍（面板→留牌→小九→
-    离场），ratio≈0.6~0.75——旧 0.8 阈值漏检，放宽 0.6 后命中（非通用拍≥2 防误判）。"""
-    seq = _extract_beat_sequence("面板闪了闪，他捏住留牌，小九探过身来，他转身离场，又约定了明日再见。")
-    ledger = [_extract_beat_sequence("他触到碎片，面板跳了一下。强撑着对峙，又死了一次，"
-                                     "面板亮了，留牌在掌心发烫，小九跟上来，他转身离开。")]
-    # 公共子序列 = {面板, 留牌, 小九, 离场} = 4 拍；ratio = 4/min(6, 9) ≈ 0.67 ≥ 0.6
+    """部分重复仍命中：场景 2 只重复场景 1 的核心拍（戳穿→装晕→包扎→离场），
+    ratio=0.8 ≥ 0.6、非通用拍≥2 → 判同构（放宽阈值防漏检）。"""
+    seq = _extract_beat_sequence("她戳穿他的谎言，他装晕蒙混，撕布包扎伤口，他冷笑对峙，转身离场。")
+    ledger = [_extract_beat_sequence("他识破她的试探，装死骗过她，按住伤口止血，跟上离开，约在桥头。")]
+    # 公共子序列 = {戳穿, 装晕, 包扎, 离场} = 4 拍；ratio = 4/min(5, 5) = 0.8 ≥ 0.6
     assert _beats_scene_isomorphic(seq, ledger) is True
 
 
 @pytest.mark.p1
 def test_scene_isomorphic_partial_ratio_below_still_false():
     """放宽后仍守住下界：公共拍占比 < 0.6 不判同构（防误杀半相似场景）。"""
-    seq = _extract_beat_sequence("面板亮了，他离开。")
-    ledger = [_extract_beat_sequence("他进店查药粉，又替他诊脉，递上药包，随后离开。")]
-    # common = {面板, 离场} = 2 拍 < 3 拍下限 → False
+    seq = _extract_beat_sequence("他戳穿她，转身离开。")
+    ledger = [_extract_beat_sequence("她试探，他识破，装晕，跟上离开。")]
+    # common = {戳穿, 离场} = 2 拍 < 3 拍下限 → False
     assert _beats_scene_isomorphic(seq, ledger) is False
 
 

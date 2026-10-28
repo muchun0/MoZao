@@ -21,6 +21,7 @@ docs/*
 !docs/architecture.md
 !docs/filemap.md
 !docs/decisions.md
+!docs/techdebt.md
 
 # ===== 需求文档归档（不入库，飞书需求台账为权威管理入口，见 AGENTS.md §6） =====
 文档归档/
@@ -40,6 +41,7 @@ _*.sh
 .idea/
 .vscode/
 .workbuddy/
+.trae/
 
 # AI agent rules (local only)
 AGENTS.md

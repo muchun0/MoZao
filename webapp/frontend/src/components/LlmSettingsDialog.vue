@@ -1,7 +1,8 @@
 <template>
   <el-dialog v-model="visible" title="我的模型配置（BYOK）" width="520px">
     <el-alert type="success" :closable="false" style="margin-bottom: 16px">
-      配置自己的 API Key 后，生成将使用你的 Key，<b>不再从余额扣费</b>（平台未产生 LLM 费用）。
+      配置自备 Key 后，生成走你的 Key，<b>平台不扣费</b>；
+      不配置则使用平台默认 Key，<b>按 AI 实际生成字数从余额扣费</b>（统一 3 元/万字）。
       留空保存即回到平台默认 Key。
     </el-alert>
     <el-form :model="form" label-width="90px" size="default">

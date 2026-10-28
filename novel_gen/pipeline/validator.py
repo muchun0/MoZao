@@ -54,8 +54,9 @@ class LogicValidator:
     #: 机制卡三要素关键信号词（REQ-章内自洽与机制账本）
     #: 语义：数字/状态的确切含义；结算：增减/重置的动作规则；代价：上限/终局。
     #: 刻意排除宽泛词（如"数字""今日"），避免"无数字""今日剩余复活次数"等
-    #: 语义描述被误判为已覆盖对应要素。
-    _MECH_SEMANTIC = ("语义", "含义", "状态", "次数", "蚀痕", "面板", "进度", "可死")
+    #: 语义描述被误判为已覆盖对应要素。只放通用机制词，单书词（如"蚀痕/可死"）
+    #: 由设定账本声明，不预置。
+    _MECH_SEMANTIC = ("语义", "含义", "状态", "次数", "面板", "进度")
     _MECH_SETTLE = ("结算", "增减", "递减", "递增", "重置", "每死", "减一", "恢复")
     _MECH_END = ("代价", "上限", "终局", "触发", "成长", "封顶", "用尽", "永久")
 
@@ -63,7 +64,7 @@ class LogicValidator:
         """机制卡完整性（REQ-章内自洽与机制账本）：非空机制卡必须覆盖
         「机制语义 / 结算规则 / 代价与终局」三要素，缺失视为致命。
 
-        背景：面板数字 3→2→1→1、蚀痕长度与剩余次数矛盾、「今日」与跨天冲突，
+        背景：机制数字前后矛盾、状态与余量口径冲突、「今日/跨天」类时间口径冲突，
         均源于机制卡只写了个名目、没有无歧义的结算规则。
         """
         issues: list[IssueItem] = []
@@ -164,7 +165,7 @@ class LogicValidator:
         issues: list[IssueItem] = []
         mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
         # 机制卡有可视化数字，但缺结构化初始值 → major
-        if mechanism and any(k in mechanism for k in ("次数", "蚀痕", "进度", "面板")):
+        if mechanism and any(k in mechanism for k in ("次数", "进度", "面板", "状态")):
             mb = getattr(world, "mechanism_baseline", None)
             has_baseline = mb is not None and any(
                 (getattr(mb, f, "") or "").strip() for f in
@@ -173,7 +174,7 @@ class LogicValidator:
                 issues.append(IssueItem(
                     "major", "design_cards",
                     "机制卡含可视化数字，但缺 mechanism_baseline（数字标准答案卡）",
-                    "按 world_prompt 补 mechanism_baseline：旧痕当前长度/面板唯一写法/重置规则"))
+                    "按 world_prompt 补 mechanism_baseline：机制数字唯一写法/累积状态当前值/重置规则"))
         # 世界观散文提到怪物类生物，但没生物图鉴 → major
         wv = (getattr(world, "world_view", "") or "")
         enemies = getattr(world, "enemies", None) or []

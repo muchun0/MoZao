@@ -276,17 +276,21 @@ class Character:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Character":
-        def _s(v):
+        def _flatten_str(v):
             if isinstance(v, dict):
-                return " ".join(f"{k}:{_s(val)}" for k, val in v.items())
+                return " ".join(f"{k}:{_flatten_str(val)}" for k, val in v.items())
             if isinstance(v, list):
-                return "；".join(_s(x) for x in v)
+                return "；".join(_flatten_str(x) for x in v)
             return str(v) if v is not None else ""
         return cls(
-            name=_s(d.get("name", "")), role=_s(d.get("role", "")), desc=_s(d.get("desc", "")),
-            appearance=_s(d.get("appearance", "")), personality=_s(d.get("personality", "")),
-            desire=_s(d.get("desire", "")), wound=_s(d.get("wound", "")), arc=_s(d.get("arc", "")),
-            speech_style=_s(d.get("speech_style", "")), relations=_s(d.get("relations", "")),
+            name=_flatten_str(d.get("name", "")),
+            role=_flatten_str(d.get("role", "")),
+            desc=_flatten_str(d.get("desc", "")),
+            appearance=_flatten_str(d.get("appearance", "")), personality=_flatten_str(d.get("personality", "")),
+            desire=_flatten_str(d.get("desire", "")),
+            wound=_flatten_str(d.get("wound", "")),
+            arc=_flatten_str(d.get("arc", "")),
+            speech_style=_flatten_str(d.get("speech_style", "")), relations=_flatten_str(d.get("relations", "")),
         )
 
 
@@ -918,7 +922,8 @@ class World:
             setting_taboos=[_norm_str(x) for x in (d.get("setting_taboos", []) or [])],
             enemies=[EnemyCard.from_dict(e) for e in (d.get("enemies") or []) if isinstance(e, (dict, str))],
             locations=[LocationCard.from_dict(l) for l in (d.get("locations") or []) if isinstance(l, (dict, str))],
-            mechanism_baseline=MechanismBaseline.from_dict(mb) if isinstance(mb := d.get("mechanism_baseline"), dict) else None,
+            mechanism_baseline=MechanismBaseline.from_dict(mb)
+            if isinstance(mb := d.get("mechanism_baseline"), dict) else None,
             clock=ClockCard.from_dict(ck) if isinstance(ck := d.get("clock"), dict) else None,
             factions=[FactionCard.from_dict(f) for f in (d.get("factions") or []) if isinstance(f, (dict, str))],
             style_taboos=[_norm_str(x) for x in (d.get("style_taboos", []) or [])],

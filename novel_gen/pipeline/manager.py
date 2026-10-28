@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
+from ..llm.json_parse import parse_json_obj as _parse_json_obj
 from ..research.research import ResearchEngine
 from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
@@ -31,24 +32,6 @@ from .agents import (ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent
 from webapp.logger import get_logger
 
 logger = get_logger("pipeline")
-
-
-def _parse_json_obj(text: str) -> dict:
-    """容错解析 LLM 输出的 JSON 对象（去 ``` 围栏）；失败返回空 dict。"""
-    try:
-        import json
-        t = (text or "").strip()
-        if t.startswith("```"):
-            lines = t.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            t = "\n".join(lines).strip()
-        data = json.loads(t)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 
 class NovelPipeline:
@@ -132,7 +115,7 @@ class NovelPipeline:
             # 导致 key_nodes/volume_pacing/emotion_curve 真实数据全空；这里幂等补齐（只补缺失）。
             existing = self._backfill_pacing(existing, silent=silent)
             if not silent:
-                print(f"[大纲] 已存在，复用：{existing.title}（{len(existing.chapters)} 章）")
+                logger.info(f"[大纲] 已存在，复用：{existing.title}（{len(existing.chapters)} 章）")
             return existing
         # 扩写模式：从用户提供的大纲/简要内容生成章节大纲，跳过调研
         if self.is_expand_mode():
@@ -178,7 +161,7 @@ class NovelPipeline:
         for start in range(1, target + 1, batch_size):
             end = min(start + batch_size - 1, target)
             if not silent:
-                print(f"  [扩写大纲分批] 第 {start}—{end} 章 ...")
+                logger.info(f"  [扩写大纲分批] 第 {start}—{end} 章 ...")
             sys_p, usr_p = expand_outline_prompt(
                 self.cfg, user_input, batch=(start, end, prev_summary),
             )
@@ -202,7 +185,7 @@ class NovelPipeline:
         outline = self._backfill_pacing(outline, silent=silent)
         self.store.save_outline(outline)
         if not silent:
-            print(f"[扩写大纲完成] {outline.title}｜共 {len(outline.chapters)} 章")
+            logger.info(f"[扩写大纲完成] {outline.title}｜共 {len(outline.chapters)} 章")
         logger.info("阶段完成: 扩写大纲（%s，%d 章）", outline.title, len(outline.chapters))
         return outline
 
@@ -213,7 +196,7 @@ class NovelPipeline:
             return
         if outline.timelines:
             if not silent:
-                print(f"[时间线] 已存在，复用：{len(outline.timelines)} 条")
+                logger.info(f"[时间线] 已存在，复用：{len(outline.timelines)} 条")
             return
         try:
             from .templates import timeline_design_prompt
@@ -246,7 +229,7 @@ class NovelPipeline:
                             ch.timeline = side.name
             self.store.save_outline(outline)
             if not silent:
-                print(f"[时间线] 设计完成：{len(outline.timelines)} 条")
+                logger.info(f"[时间线] 设计完成：{len(outline.timelines)} 条")
             logger.info("时间线设计完成：%d 条", len(outline.timelines))
         except Exception as e:
             logger.warning("时间线设计失败（不阻塞）: %s", e)
@@ -258,7 +241,7 @@ class NovelPipeline:
             return
         if outline.units:
             if not silent:
-                print(f"[副本结构] 已存在，复用：{len(outline.units)} 个")
+                logger.info(f"[副本结构] 已存在，复用：{len(outline.units)} 个")
             return
         try:
             from .templates import unit_design_prompt
@@ -281,7 +264,7 @@ class NovelPipeline:
             outline.units = [StoryUnit.from_dict(x) for x in data.get("units", [])]
             self.store.save_outline(outline)
             if not silent:
-                print(f"[副本结构] 设计完成：{len(outline.units)} 个副本")
+                logger.info(f"[副本结构] 设计完成：{len(outline.units)} 个副本")
             logger.info("副本结构设计完成：%d 个", len(outline.units))
         except Exception as e:
             logger.warning("副本结构设计失败（不阻塞）: %s", e)
@@ -294,7 +277,7 @@ class NovelPipeline:
             existing = self.store.load_world()
             if existing is not None:
                 if not silent:
-                    print(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物，{len(existing.foreshadowing)} 条伏笔")
+                    logger.info(f"[人物/世界观] 已存在，复用：{len(existing.characters)} 个人物，{len(existing.foreshadowing)} 条伏笔")
                 return existing
             outline = self.run_outline(silent=True)
             self.run_timeline(silent=silent)
@@ -311,7 +294,7 @@ class NovelPipeline:
             try:
                 self.store.world_path().unlink(missing_ok=True)
                 if not silent:
-                    print("[StageGate] world 打回重生成（已清产物）")
+                    logger.info("[StageGate] world 打回重生成（已清产物）")
             except Exception:
                 pass
         # 底层锚点准出门禁：金手指五要素 / 伏笔闭环 / 主题锚点不合格自动重生成
@@ -337,7 +320,7 @@ class NovelPipeline:
             data = build_setting_cards(self.store, world, outline)
             self.store.save_setting_cards(data)
             if data and not silent:
-                print(f"[设定卡索引] 已构建：{len(data.get('chapters', []))} 章")
+                logger.info(f"[设定卡索引] 已构建：{len(data.get('chapters', []))} 章")
         except Exception:
             logger.exception("分章设定卡构建失败（降级为全量注入）")
 
@@ -360,7 +343,7 @@ class NovelPipeline:
             outline, _ = self.architect.pacing.plan_outline(outline)
             self.store.save_outline(outline)
             if not silent:
-                print("[节奏补齐] 已补齐 key_nodes/volume_pacing/emotion_curve/volume_cards")
+                logger.info("[节奏补齐] 已补齐 key_nodes/volume_pacing/emotion_curve/volume_cards")
         except Exception:
             logger.exception("节奏字段补齐失败（降级跳过）")
         return outline
@@ -380,7 +363,7 @@ class NovelPipeline:
             data = build_chapter_designs(self.store, world, outline)
             self.store.save_chapter_design(data)
             if data and not silent:
-                print(f"[章级设计卡] 已构建：{len(data.get('chapters', []))} 章")
+                logger.info(f"[章级设计卡] 已构建：{len(data.get('chapters', []))} 章")
         except Exception:
             logger.exception("章级设计卡构建失败（降级为不注入）")
 
@@ -391,7 +374,7 @@ class NovelPipeline:
             return
         if self.store.load_editor_review() is not None:
             if not silent:
-                print("[编辑质检] 已审阅，跳过")
+                logger.info("[编辑质检] 已审阅，跳过")
             return
         outline = self.store.load_outline()
         if outline is None:
@@ -399,7 +382,7 @@ class NovelPipeline:
         research = self.store.load_research()
         research_block = research.to_prompt_block() if research else ""
         if not silent:
-            print("[编辑质检] 正在审阅大纲...")
+            logger.info("[编辑质检] 正在审阅大纲...")
         logger.info("阶段开始: 编辑质检 editor_review")
         self._enter_scene("review")
         self._trace_step("编辑质检开始")
@@ -416,9 +399,9 @@ class NovelPipeline:
                 logger.warning("编辑建议沉淀指令库失败（降级跳过，不影响审稿）", exc_info=True)
         if not silent:
             verdict = "通过" if review.passed else "需修正"
-            print(f"[编辑质检] {verdict}｜评分 {review.score}/10｜问题 {len(review.issues)} 条")
+            logger.info(f"[编辑质检] {verdict}｜评分 {review.score}/10｜问题 {len(review.issues)} 条")
             for action in review.priority_actions[:3]:
-                print(f"  → {action}")
+                logger.info(f"  → {action}")
         logger.info("阶段完成: 编辑质检（%s，评分 %.1f，问题 %d 条）",
                     "通过" if review.passed else "需修正", review.score, len(review.issues))
         if not review.passed:
@@ -430,9 +413,6 @@ class NovelPipeline:
                     _cands = self.editor.revise_candidates(
                         self.cfg, outline, review, research_block)
                     self.store.save_outline_candidates(_cands)
-                    if not silent:
-                        print(f"[编辑质检] 已生成 {len(_cands)} 个修订候选，请在界面挑选"
-                              f"（未自动采用；见 outline_candidates）")
                     logger.info("编辑质检生成 %d 个修订候选，待用户挑选", len(_cands))
                 except Exception:
                     logger.exception("多版本候选生成失败（降级为自动修正）")
@@ -441,13 +421,13 @@ class NovelPipeline:
                         self.store.save_outline(revised)
                 return
             if not silent:
-                print("[编辑质检] 正在自动修正大纲...")
+                logger.info("[编辑质检] 正在自动修正大纲...")
             logger.info("编辑质检未通过，自动修正大纲")
             revised = self.editor.revise(self.cfg, outline, review, research_block)
             if revised is not outline:  # 修正成功
                 self.store.save_outline(revised)
                 if not silent:
-                    print(f"[编辑质检] 大纲已修正：{revised.title}（{len(revised.chapters)} 章）")
+                    logger.info(f"[编辑质检] 大纲已修正：{revised.title}（{len(revised.chapters)} 章）")
                 logger.info("大纲修正完成（%s，%d 章）", revised.title, len(revised.chapters))
 
     def write_chapter(self, no: int, silent: bool = False) -> Chapter:
@@ -655,19 +635,19 @@ class NovelPipeline:
                 if issues:
                     self.store.append_verify_issues(chapter_no, issues)
                     if not silent:
-                        print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                        logger.info(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
                     logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
                 reader = data.get("reader") or {}
                 r_issues = reader.get("issues") or []
                 if reader.get("confused") or r_issues:
                     self.store.append_verify_issues(chapter_no, r_issues)
                     if not silent:
-                        print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+                        logger.info(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
                 editor = data.get("editor") or {}
                 score = editor.get("score", 5)
                 churn = editor.get("reader_churn_risk", "中")
                 if not silent:
-                    print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
+                    logger.info(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
                 logger.info("编辑审稿: 第%d章 score=%s churn=%s", chapter_no, score, churn)
                 self._trace_step(f"第{chapter_no}章编辑审稿", {"score": score, "churn": churn})
                 try:
@@ -687,7 +667,7 @@ class NovelPipeline:
                 if issues:
                     self.store.append_verify_issues(chapter_no, issues)
                     if not silent:
-                        print(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
+                        logger.info(f"  [校验] 第{chapter_no}章后发现 {len(issues)} 个一致性问题，已记录供后续章节修正")
                     logger.info("一致性校验: 第%d章后发现 %d 个问题", chapter_no, len(issues))
                 from .templates import blind_check_prompt
                 sys_b, user_b = blind_check_prompt(
@@ -700,7 +680,7 @@ class NovelPipeline:
                 if b_data.get("confused") or b_data.get("issues"):
                     self.store.append_verify_issues(chapter_no, b_data.get("issues", []))
                     if not silent:
-                        print(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
+                        logger.info(f"  [自检] 第{chapter_no}章后读者视角发现信息传递问题")
                 from .templates import editor_review_text_prompt
                 if ch and ch.content:
                     sys_e, user_e = editor_review_text_prompt(
@@ -712,7 +692,7 @@ class NovelPipeline:
                     score = e_data.get("score", 5)
                     churn = e_data.get("reader_churn_risk", "中")
                     if not silent:
-                        print(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
+                        logger.info(f"  [编辑审稿] 第{chapter_no}章评分: {score}/10 弃书风险: {churn}")
                     logger.info("编辑审稿: 第%d章 score=%d churn=%s", chapter_no, score, churn)
                     self._trace_step(f"第{chapter_no}章编辑审稿", {"score": score, "churn": churn})
                     if score < 5 or churn == "高":
@@ -766,7 +746,7 @@ class NovelPipeline:
                     "level": "中改",
                 }])
                 if not silent:
-                    print(f"  [风格裁判] 第{chapter_no}章文风漂移 {len(drifted)} 维，已记录触发再锚定")
+                    logger.info(f"  [风格裁判] 第{chapter_no}章文风漂移 {len(drifted)} 维，已记录触发再锚定")
                 self._trace_step(f"第{chapter_no}章风格裁判", {"drifted": drifted, "summary": summary})
         except Exception as e:
             logger.warning("L3 风格裁判失败（降级跳过）: %s", e)
@@ -810,7 +790,7 @@ class NovelPipeline:
                 "summary": f"全书终审：发现 {len(issues)} 个整本层面问题（{'通过' if ok else '建议修复'}）",
             })
             if not silent:
-                print(f"[全书终审] 完成：{len(issues)} 个整本层面问题（不阻塞导出）")
+                logger.info(f"[全书终审] 完成：{len(issues)} 个整本层面问题（不阻塞导出）")
             self._trace_step("全书终审完成", {"issues": len(issues)})
         except Exception as e:
             logger.warning("全书终审失败（降级跳过，不阻塞导出）: %s", e)
@@ -880,7 +860,7 @@ class NovelPipeline:
         self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:
-            print(f"\n全部 {total} 章生成完毕。")
+            logger.info(f"\n全部 {total} 章生成完毕。")
         logger.info("流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
 
     # ---------- 续写 / 扩写已有内容 ----------
@@ -899,14 +879,14 @@ class NovelPipeline:
                 self.store.save_chapter(ch)
                 self.store.append_summary(ch.no, summary)
         if not silent:
-            print(f"[续写准备] 用户章节摘要：{len(self._user_chapters())} 章已就绪")
+            logger.info(f"[续写准备] 用户章节摘要：{len(self._user_chapters())} 章已就绪")
 
     def _world_from_content(self, silent: bool = False) -> World:
         """续写模式：基于用户正文提炼世界观/人物卡/伏笔（幂等：world.json 存在则复用）。"""
         existing = self.store.load_world()
         if existing is not None:
             if not silent:
-                print(f"[设定提炼] 已存在，复用：{len(existing.characters)} 个人物")
+                logger.info(f"[设定提炼] 已存在，复用：{len(existing.characters)} 个人物")
             return existing
         block = "\n\n".join(
             f"第{c.no}章《{c.title}》\n{c.content[:1500]}" for c in self._user_chapters()
@@ -919,7 +899,7 @@ class NovelPipeline:
             world.world_view = f"{self.cfg.genre}题材原创世界观"
         self.store.save_world(world)
         if not silent:
-            print(f"[设定提炼完成] {len(world.characters)} 个人物，{len(world.foreshadowing)} 条伏笔")
+            logger.info(f"[设定提炼完成] {len(world.characters)} 个人物，{len(world.foreshadowing)} 条伏笔")
         logger.info("阶段完成: 设定提炼 world_from_content")
         return world
 
@@ -928,7 +908,7 @@ class NovelPipeline:
         existing = self.store.load_outline()
         if existing is not None and len(existing.chapters) > len(self._user_chapters()):
             if not silent:
-                print(f"[续写大纲] 已存在，复用：{len(existing.chapters)} 章")
+                logger.info(f"[续写大纲] 已存在，复用：{len(existing.chapters)} 章")
             return existing
         user_chs = self._user_chapters()
         user_block = "\n".join(
@@ -954,7 +934,7 @@ class NovelPipeline:
         outline = self.outline_gen._normalize(outline)
         self.store.save_outline(outline)
         if not silent:
-            print(f"[续写大纲完成] 共 {len(outline.chapters)} 章（用户 {len(user_chs)} 章 + 续写 {remain} 章）")
+            logger.info(f"[续写大纲完成] 共 {len(outline.chapters)} 章（用户 {len(user_chs)} 章 + 续写 {remain} 章）")
         logger.info("阶段完成: 续写大纲（共 %d 章）", len(outline.chapters))
         return outline
 
@@ -974,7 +954,9 @@ class NovelPipeline:
         self._write_design_reports(silent)
         self._run_final_review(silent=silent)
         if not silent:
-            print(f"\n续写完成：用户 {len(self._user_chapters())} 章 + AI {total - len(self._user_chapters())} 章，共 {total} 章。")
+            logger.info(
+                f"\n续写完成：用户 {len(self._user_chapters())} 章 + "
+                f"AI {total - len(self._user_chapters())} 章，共 {total} 章。")
         logger.info("续写流水线完成: 《%s》共 %d 章", self.cfg.effective_title(), total)
 
     def _write_design_reports(self, silent: bool = False) -> None:
@@ -997,7 +979,7 @@ class NovelPipeline:
             paths = write_reports(self.store, world, outline, issues=collected,
                                   arbitrations=self.orchestrator.arbitrations)
             if paths and not silent:
-                print(f"[成果整合] 已生成设计文档 {len(paths)} 份 → design/")
+                logger.info(f"[成果整合] 已生成设计文档 {len(paths)} 份 → design/")
         except Exception:
             pass
 
@@ -1035,10 +1017,10 @@ class NovelPipeline:
         for ch in chapters:
             if len(ch.content) >= target_words:
                 if not silent:
-                    print(f"  第{ch.no}章《{ch.title}》已达标（{len(ch.content)} 字），跳过")
+                    logger.info(f"  第{ch.no}章《{ch.title}》已达标（{len(ch.content)} 字），跳过")
                 continue
             if not silent:
-                print(f"  扩写第{ch.no}章《{ch.title}》（{len(ch.content)} 字 → {target_words} 字）...")
+                logger.info(f"  扩写第{ch.no}章《{ch.title}》（{len(ch.content)} 字 → {target_words} 字）...")
             logger.info("扩写章节: no=%d from=%d to=%d", ch.no, len(ch.content), target_words)
             try:
                 system, user = expand_chapter_prompt(
@@ -1058,31 +1040,31 @@ class NovelPipeline:
                         self.store.append_summary(ch.no, new_summary)
                     self.store.save_chapter(ch)
                     if not silent:
-                        print(f"  第{ch.no}章扩写完成（{len(ch.content)} 字）")
+                        logger.info(f"  第{ch.no}章扩写完成（{len(ch.content)} 字）")
             except Exception:
                 logger.exception("扩写失败: no=%d", ch.no)
         self._mark_state("done", last_chapter=len(self.store.list_chapters()))
         self._write_design_reports(silent)
         if not silent:
-            print(f"\n扩写完成：共处理 {len(chapters)} 章。")
+            logger.info(f"\n扩写完成：共处理 {len(chapters)} 章。")
         logger.info("扩写完成: chapters=%d targets=%s", len(chapters), targets)
 
     def export(self, silent: bool = False):
         from pathlib import Path
         out = self.store.export_txt()
         if not silent:
-            print(f"[导出] {out}")
+            logger.info(f"[导出] {out}")
         logger.info("导出完成: %s", out)
         return Path(out)
 
     def _print_plan(self) -> None:
         cfg = self.cfg
-        print("=" * 56)
-        print(f"《{cfg.effective_title()}》生成计划")
-        print(f"  题材：{cfg.genre}｜目标 {cfg.total_words} 字 / 约 {cfg.num_chapters} 章"
+        logger.info("=" * 56)
+        logger.info(f"《{cfg.effective_title()}》生成计划")
+        logger.info(f"  题材：{cfg.genre}｜目标 {cfg.total_words} 字 / 约 {cfg.num_chapters} 章"
               f"（每章约 {cfg.chapter_words} 字）")
-        print(f"  模型：{cfg.llm.provider} / {cfg.llm.model}")
+        logger.info(f"  模型：{cfg.llm.provider} / {cfg.llm.model}")
         flow = "AI 扩写（用用户提供的大纲/内容直接扩写正文）" if self.is_expand_mode() \
             else "调研 → 大纲 → 编辑质检 → 人物世界观 → 逐章正文 → 导出 txt"
-        print(f"  流程：{flow}")
-        print("=" * 56)
+        logger.info(f"  流程：{flow}")
+        logger.info("=" * 56)

@@ -6,112 +6,20 @@ from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
+from ..version_recommend import attach_chapter_recommendations
 from novel_gen.pipeline.templates import _style_reference
 import time
 
 
-@app.post("/api/projects/{project_id}/chapters/{no}/rewrite")
-def rewrite_chapter(project_id: str, no: int, user: dict = Depends(_require_user)):
-    """单章重写：按当前大纲该章 goal/title 重新生成正文与摘要，后续章节不动。
-    重写后该章摘要自动覆盖（append_summary 幂等）；前文记忆上下文不含本章旧摘要（memory < no）。
-    """
-    _check_project_access(project_id, user)
-    store = _find_project(project_id)
-    outline = store.load_outline()
-    if not outline or no < 1 or no > len(outline.chapters):
-        raise HTTPException(status_code=400,
-                            detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
-    if store.load_chapter(no) is None:
-        raise HTTPException(status_code=400, detail=f"章节 {no} 尚未生成，无法重写")
-    if store.load_chapter(no).source == "user":
-        raise HTTPException(status_code=400, detail="该章为用户手写内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
-    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需重生成请先解锁")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-    _check_regen_limit(store, project_id)
-
-    plan = outline.chapters[no - 1]
-    prev_ch = store.load_chapter(no)  # 重写前的旧版（方案4：质检未通过时保留）
-    prev_content = prev_ch.content if prev_ch is not None else ""
-    try:
-        pipeline = _open_pipeline(store)
-        research = store.load_research()
-        # 大改风控：重写时自动加载 world + memory + verify_issues 作为硬约束
-        chapter = pipeline.chapter_writer.write(
-            no, plan.title, plan.goal, research, is_final=(no == len(outline.chapters)))
-        # 章末状态落盘（章间账本）：与写章循环一致，否则重写后账本不更新
-        try:
-            pipeline._update_chapter_state(no, silent=True)
-        except Exception:
-            logger.warning("重写后章末状态抽取失败（忽略）: no=%d", no)
-    except Exception as e:
-        logger.exception("单章重写失败: project=%s no=%d", project_id, no)
-        raise HTTPException(status_code=500, detail=f"重写失败：{e}")
-
-    # 方案4（落盘分流）：若本轮质检未通过，write() 已保留旧版正文不覆盖。
-    # 注意：若该章未被用户管理，store 保存后会自动选分（首次生成默认展示质检评分
-    # 最高的一版），HEAD 可能是旧高分版或本轮新稿——以实际 HEAD 为准计算 kept_previous
-    # 并返回 HEAD 内容，保证前端展示与后端选中一致。
-    try:
-        head = store.load_chapter(no)
-    except Exception:
-        head = chapter
-    kept_previous = bool(prev_content) and head is not None and head.content == prev_content
-    if head is not None:
-        chapter = head
-
-    logger.info("章节重写: uid=%d project=%s no=%d words=%d",
-                user["id"], project_id, no, len(chapter.content))
-    should_stop, stop_reason = _settle_incremental(store)
-    # P0-3：附上该章质检结果（review.json 最新记录），前端据此显示
-    # "本章质检未通过（score=0）"红标——检出≠修好也绝不再静默交付
-    quality = {}
-    try:
-        review_path = store.dir / "review.json"
-        if review_path.exists():
-            import json as _json
-            for r in reversed(_json.loads(review_path.read_text(encoding="utf-8"))):
-                if r.get("chapter") == no:
-                    qc = r.get("quality_check") or {}
-                    quality = {
-                        "passed": bool(qc.get("passed", True)),
-                        "score": int(qc.get("score", 100)),
-                        "issue_count": len(r.get("issues") or []),
-                        "auto_revised": bool(r.get("auto_revised", False)),
-                    }
-                    break
-    except Exception:
-        pass
-    # REQ-章节版本化：返回该章当前选中版本号（重写/质检重写已自动追加新版本；
-    # kept_previous 内容未变则不追加，version 保持原选中版本）
-    _version = 0
-    _candidate_version = 0
-    try:
-        for _v in store.list_versions(chapter.no):
-            if _v.get("selected"):
-                _version = _v.get("v") or 0
-            elif _v.get("source") == "rewrite" and (_v.get("v") or 0) > _candidate_version:
-                # kept_previous 时本轮重写新稿以候选版本入库（不顶替选中），
-                # 返回其版本号供前端提示"新版本已保留，可在版本列表查看/选择"
-                _candidate_version = _v.get("v") or 0
-    except Exception:
-        _version = 0
-    return {"no": chapter.no, "title": chapter.title, "content": chapter.content,
-            "summary": chapter.summary, "words": len(chapter.content),
-            "balance_warning": stop_reason if should_stop else "",
-            "quality": quality, "kept_previous": kept_previous, "version": _version,
-            "candidate_version": _candidate_version}
-
-
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")
 def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_require_user)):
-    """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记。"""
+    """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记 + 推荐徽章。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     if store.load_chapter(no) is None:
         raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
-    return {"no": no, "versions": store.list_versions(no)}
+    versions = attach_chapter_recommendations(store, no, store.list_versions(no))
+    return {"no": no, "versions": versions}
 
 
 @app.post("/api/projects/{project_id}/chapters/{no}/versions/{v}/select")
@@ -150,7 +58,8 @@ def delete_chapter_version(project_id: str, no: int, v: int,
     if not ok:
         raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在或为当前使用中版本，无法删除")
     logger.info("章节版本删除: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
-    return {"no": no, "deleted_version": v, "versions": store.list_versions(no)}
+    versions = attach_chapter_recommendations(store, no, store.list_versions(no))
+    return {"no": no, "deleted_version": v, "versions": versions}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")
@@ -394,73 +303,6 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     logger.info("章节编辑: uid=%d project=%s no=%d title=%s words=%d",
                 user["id"], project_id, no, ch.title, len(ch.content))
     return {"no": ch.no, "title": ch.title, "summary": ch.summary, "words": len(ch.content)}
-
-
-@app.post("/api/projects/{project_id}/regenerate-from/{no}")
-def regenerate_from(project_id: str, no: int, user: dict = Depends(_require_user)):
-    """从第 no 章重新生成（REQ-章节版本化，方案 a）：从 no 起为每章追加候选版本，
-    旧版本全部保留不删，由用户逐章选择/回退最优版本。"""
-    _check_project_access(project_id, user)
-    store = _find_project(project_id)
-    outline = store.load_outline()
-    if not outline or no < 1 or no > len(outline.chapters):
-        raise HTTPException(status_code=400, detail=f"章节号非法（大纲共 {len(outline.chapters) if outline else 0} 章）")
-    user_max = max((c.no for c in store.list_chapters() if c.source == "user"), default=0)
-    if user_max and no <= user_max:
-        raise HTTPException(status_code=400,
-                            detail=f"第 {no} 章为用户手写内容（到第 {user_max} 章），重新生成会覆盖手写内容，已禁止；"
-                                   f"请从第 {user_max + 1} 章开始")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-        handle = _RunHandle()
-        _RUNS[project_id] = handle
-    _check_regen_limit(store, project_id)
-    # P1 修复：原路径只 release 不 acquire，导致信号量永久泄漏。这里补 acquire。
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
-    try:
-        # REQ-章节版本化（方案 a）：不再删除 no 及之后章节文件（保留全部历史版本），
-        # 改为从 no 起逐章追加候选版本（save_chapter 自动追加），旧版保留，由用户逐章选择/回退。
-        # 仅清空 no 及之后的记忆摘要（正文版本不受影响，重生成后 append_summary 重新累积）。
-        summaries = [x for x in store.load_summaries() if int(x.get("no", 0)) < no]
-        store._write_json(store.memory_path(), summaries)
-
-        logger.info("章节重生成: uid=%d project=%s from_chapter=%d", user["id"], project_id, no)
-        t = threading.Thread(target=_run_generation, args=(store, handle, no), daemon=True)
-        handle.thread = t
-        t.start()
-    except Exception:
-        _GEN_SEMAPHORE.release()
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise
-    return {"started": True, "project_id": project_id, "from_chapter": no}
-
-
-@app.post("/api/projects/{project_id}/chapters/batch")
-def batch_generate(project_id: str, req: dict, user: dict = Depends(_require_user)):
-    """批量生成章节：指定起始章和结束章，后台逐章生成。"""
-    _check_project_access(project_id, user)
-    store = _find_project(project_id)
-    start = int(req.get("start", 1))
-    end = int(req.get("end", start))
-    if start < 1 or end < start:
-        raise HTTPException(status_code=400, detail="章节范围非法")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="系统繁忙，已有多个任务在生成，请稍后再试")
-    # P1 修复：用真 _RunHandle（含 stop_event/error），finally 清理 _RUNS，结束后结算
-    handle = _RunHandle()
-    t = threading.Thread(target=_run_batch, args=(store, handle, start, end), daemon=True)
-    handle.thread = t
-    _RUNS[project_id] = handle
-    t.start()
-    return {"msg": f"批量生成已启动：第{start}-{end}章"}
 
 
 # =====================================================================

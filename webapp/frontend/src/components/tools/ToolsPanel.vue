@@ -227,8 +227,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import * as toolsApi from '../../api/tools'
-import { getProject, getStatus } from '../../api/project'
-import { batchGenerate } from '../../api/novel'
+import { getProject, getStatus, startAgentRun } from '../../api/project'
 import { ElMessage } from 'element-plus'
 
 const props = defineProps({ pid: String })
@@ -380,7 +379,7 @@ async function doBatch() {
   if (batchRunning.value) return
   if (batchEnd.value < batchStart.value) { ElMessage.warning('结束章不能小于起始章'); return }
   try {
-    await batchGenerate(props.pid, { start: batchStart.value, end: batchEnd.value })
+    await startAgentRun(props.pid, { agent: 'writer.chapter', params: { scope: 'range', from_ch: batchStart.value, to_ch: batchEnd.value } })
     ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
     batchRunning.value = true
     batchError.value = ''

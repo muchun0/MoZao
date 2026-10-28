@@ -74,7 +74,8 @@ def save_outline(project_id: str, req: OutlineSaveReq, user: dict = Depends(_req
         volumes=volumes,
         chapters=chapters,
     )
-    store.save_outline(new_outline)
+    # 用户编辑大纲 = 一次用户提交（source="user" 置 user_managed；版本化关闭时只写 HEAD）
+    store.save_outline(new_outline, commit=True, source="user")
 
     changed, removed = _outline_diff(new_outline, store)
     logger.info("大纲编辑: uid=%d project=%s chapters=%d→%d changed=%s removed=%s",
@@ -94,39 +95,6 @@ def outline_diff(project_id: str, user: dict = Depends(_require_user)):
     changed, removed = _outline_diff(outline, store)
     return {"changed": changed, "removed": removed}
 
-
-@app.post("/api/projects/{project_id}/outline/regenerate")
-def regen_outline(project_id: str, user: dict = Depends(_require_user)):
-    """重新生成大纲：删除旧大纲，重新跑 outline 阶段。"""
-    _check_project_access(project_id, user)
-    store = _find_project(project_id)
-    _assert_not_locked(store, "outline")
-    with _LOCK:
-        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
-            raise HTTPException(status_code=409, detail="该项目正在生成中")
-        handle = _RunHandle()
-        _RUNS[project_id] = handle
-    if not _GEN_SEMAPHORE.acquire(blocking=False):
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise HTTPException(status_code=429, detail="系统繁忙")
-    try:
-        # 删除旧大纲文件（而非写空壳）：否则 run_outline 检测到"已有大纲对象"会直接复用，永不重新生成
-        _op = store.outline_path()
-        if _op.exists():
-            _backup_outline(store, "重生成前")  # 覆盖前自动备份上一版（一键还原）
-            _op.unlink()
-        logger.info("重生成大纲启动: project=%s user=%s", project_id, user["username"])
-        t = threading.Thread(target=_run_outline_only, args=(store, handle), daemon=True)
-        handle.thread = t
-        t.start()
-    except Exception:
-        logger.exception("重生成大纲启动失败: project=%s", project_id)
-        _GEN_SEMAPHORE.release()
-        with _LOCK:
-            _RUNS.pop(project_id, None)
-        raise
-    return {"started": True}
 
 
 def _snap_display(name: str) -> str:
@@ -208,5 +176,6 @@ def restore_outline_snapshot(project_id: str, snap_name: str, user: dict = Depen
     data = json.loads(snap_file.read_text(encoding="utf-8"))
     from novel_gen.store.schemas import Outline
     outline = Outline.from_dict(data)
-    store.save_outline(outline)
+    # 快照恢复同样是用户主动选择，记为用户提交版本
+    store.save_outline(outline, commit=True, source="user")
     return {"ok": True, "chapters": len(outline.chapters)}

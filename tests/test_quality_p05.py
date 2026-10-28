@@ -37,45 +37,45 @@ def _qc(store, llm):
     return QualityChecker(cfg, llm, store, trace=None, guard=None)
 
 
-# ---------- 修复1：_PANEL_RE 补蚀化（抽取层） ----------
+# ---------- 通用化：确定性兜底只含通用机制词（书级字段走设定账本注册表） ----------
 
 @pytest.mark.p1
-def test_deterministic_numbers_includes_蚀化():
-    """P0-5 回归：正文「距离蚀化：98%」必须进入确定性账本（此前 _PANEL_RE 缺蚀化后缀）。"""
-    text = "他低头看面板，距离蚀化：98%。今日可死次数：2。蚀痕：3/10。"
+def test_deterministic_numbers_generic_suffixes():
+    """确定性兜底抓通用机制标签（次数/进度/剩余）；书级字段名由注册表驱动，不预置。"""
+    text = "他低头看面板，累计进度：98%。今日可死次数：2。剩余次数：3/10。"
     nums = _deterministic_numbers(text)
-    assert "距离蚀化：98" in nums
+    assert "累计进度：98" in nums
     assert "今日可死次数：2" in nums
-    assert "蚀痕：3/10" in nums
+    assert "剩余次数：3/10" in nums
 
 
 @pytest.mark.p1
-def test_panel_baseline_dict_includes_蚀化_after_fix():
-    """P0-5 回归：账本 numbers 含蚀化后，基线 dict 必须带「蚀化」→ 防线4/质检层才能校验。"""
-    nums = _deterministic_numbers("距离蚀化：97%。可死次数：1。")
+def test_panel_baseline_dict_generic_labels():
+    """账本 numbers 含通用标签后，基线 dict 必须带对应字段 → 防线4/质检层才能校验。"""
+    nums = _deterministic_numbers("累计进度：97%。可死次数：1。")
     base = panel_baseline_dict(nums)
-    assert base == {"蚀化": 97, "次数": 1}
+    assert base == {"进度": 97, "次数": 1}
 
 
 @pytest.mark.p1
-def test_pdv_rollback_detected_with_new_baseline():
-    """基线含蚀化 → 正文 98→97 回退必须被 panel_direction_violations 检出（端到端）。"""
-    nums = _deterministic_numbers("上一场景结束，距离蚀化：97%。")
+def test_pdv_rollback_detected_generic_label():
+    """基线含累积字段 → 正文 98→97 回退必须被 panel_direction_violations 检出（端到端）。"""
+    nums = _deterministic_numbers("上一场景结束，累计进度：97%。")
     base = panel_baseline_dict(nums)
-    viols = panel_direction_violations("距离蚀化：98%。他运功压制，距离蚀化：97%。", base)
-    assert any("回退" in v and "蚀化" in v for v in viols)
+    viols = panel_direction_violations("累计进度：98%。他运功压制，累计进度：97%。", base)
+    assert any("回退" in v and "进度" in v for v in viols)
 
 
-# ---------- 修复2：QualityChecker.check 叠加 baseline 方向校验 ----------
+# ---------- QualityChecker.check 叠加 baseline 方向校验 ----------
 
 @pytest.mark.p1
 def test_quality_check_baseline_direction_violation(store):
-    """check(baseline={"蚀化": 97}) 必须检出正文 98→97 回退（质检层二次兜底）。"""
+    """check(baseline={"进度": 97}) 必须检出正文 98→97 回退（质检层二次兜底）。"""
     llm = MagicMock()
     llm.chat.return_value = '{"issues": [], "追更欲": 4}'
     qc = _qc(store, llm)
-    content = "距离蚀化：98%。他运功压制，距离蚀化：97%。"
-    result = qc.check(1, "第一章", "目标", content, baseline={"蚀化": 97})
+    content = "累计进度：98%。他运功压制，累计进度：97%。"
+    result = qc.check(1, "第一章", "目标", content, baseline={"进度": 97})
     types = [it["type"] for it in result["issues"]]
     assert "写作-机制数字方向违规" in types
     assert any("回退" in it["detail"] for it in result["issues"] if it["type"] == "写作-机制数字方向违规")
@@ -99,7 +99,9 @@ def test_ensure_quality_falls_back_to_best_when_rewrite_worse(store):
     坏稿不落盘（第四轮第 5 章：重写 1 后 4 个问题 > 初始 2 个问题，重写 2 无效 → 坏稿落盘的缺口）。"""
     llm = MagicMock()
     llm.chat.return_value = '{"issues": [], "追更欲": 4}'
-    qc = _qc(store, llm)
+    cfg = store.load_config()
+    cfg.auto_rewrite_rounds = 3  # 显式开启自动重写（默认 0=不重写，一次一版）
+    qc = QualityChecker(cfg, llm, store, trace=None, guard=None)
     init_content = "他站在铁匠铺门口，抬头看了一眼天色。"
     # 坏稿：同一长句重复 → 章内多稿自重复（大改）+ 字数不足 → 2 个问题（比初始更差）
     bad_draft = "他盯着面板数字看，心里盘算着接下来如何应对这场局面。" * 8

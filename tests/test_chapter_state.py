@@ -54,11 +54,11 @@ def _world():
 
 @pytest.mark.p1
 def test_deterministic_numbers_panel():
-    """确定性兜底能抓全面板数字：今日可死次数、蚀痕（无前缀后缀）。"""
-    t = "今日可死次数：3。他往墟口走。蚀痕：1/10 已经爬到小臂。"
+    """确定性兜底能抓全面板数字：今日可死次数、无前缀标签（进度）。"""
+    t = "今日可死次数：3。他往墟口走。进度：1/10 已经爬到小臂。"
     nums = _deterministic_numbers(t)
     assert "今日可死次数：3" in nums
-    assert "蚀痕：1/10" in nums
+    assert "进度：1/10" in nums
 
 
 @pytest.mark.p1
@@ -164,13 +164,13 @@ def test_extract_chapter_state_llm(store):
 def test_extract_chapter_state_llm_off(store):
     """chapter_state_llm=False → 仅确定性面板数字，不调用 LLM。"""
     w = _world()
-    ch = Chapter(no=1, title="第一章", content="今日可死次数：2。蚀痕：3/10。" * 20, summary="s")
+    ch = Chapter(no=1, title="第一章", content="今日可死次数：2。进度：3/10。" * 20, summary="s")
     cfg = store.load_config()
     cfg.chapter_state_llm = False
     llm = MagicMock()
     st = extract_chapter_state(llm, cfg, w, ch, 1)
     assert st["chapter"] == 1
-    assert st["numbers"] == ["今日可死次数：2", "蚀痕：3/10"]
+    assert st["numbers"] == ["今日可死次数：2", "进度：3/10"]
     llm.chat_json.assert_not_called()
 
 

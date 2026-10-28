@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h2>我的工作台</h2>
+    <h2>个人中心</h2>
     <el-tabs v-model="tab">
       <!-- ============ 概览 ============ -->
       <el-tab-pane label="概览" name="overview">
@@ -131,7 +131,7 @@
         <el-card>
           <template #header><b>我的模型配置（BYOK）</b></template>
           <p class="muted" style="margin-bottom:12px">
-            配置自己的 API Key 后，生成将使用你的 Key，<b>不再从余额扣费</b>；留空保存即回到平台默认 Key。
+            配置自备 Key 后，生成走你的 Key，<b>平台不扣费</b>；不配置则按 AI 实际生成字数从余额扣费（统一 3 元/万字）。
           </p>
           <el-button type="primary" @click="llmRef.open()">配置 / 修改模型</el-button>
         </el-card>

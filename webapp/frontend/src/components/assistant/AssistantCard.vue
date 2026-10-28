@@ -32,12 +32,16 @@
     <!-- 版本对比 -->
     <template v-else-if="card.type === 'versions'">
       <div class="a-kv">
-        <span>当前 v{{ card.current.v }}：{{ card.current.words }} 字 · 扣分 {{ card.current.defect_score ?? '—' }}</span>
-        <span>上一版 v{{ card.previous.v }}：{{ card.previous.words }} 字 · 扣分 {{ card.previous.defect_score ?? '—' }}</span>
+        <span>当前 v{{ card.current.v }}：{{ card.current.words }} 字 · 扣分 {{ card.current.defect_score ?? '—' }}<template v-if="card.current.hook_score != null"> · 追更 {{ card.current.hook_score }}/5</template></span>
+        <span>上一版 v{{ card.previous.v }}：{{ card.previous.words }} 字 · 扣分 {{ card.previous.defect_score ?? '—' }}<template v-if="card.previous.hook_score != null"> · 追更 {{ card.previous.hook_score }}/5</template></span>
       </div>
       <div class="a-muted">
         字数变化 {{ signed(card.word_delta) }}
         <template v-if="card.defect_delta != null"> · 扣分变化 {{ signed(card.defect_delta) }}（负值=缺陷减少）</template>
+      </div>
+      <div v-if="card.suggestion" class="a-suggestion">
+        <el-tag size="small" type="warning" effect="dark">小墨建议 v{{ card.suggestion.v }}</el-tag>
+        <span v-for="(r, i) in (card.suggestion.reasons || [])" :key="i" class="a-reason">✓ {{ r }}</span>
       </div>
     </template>
 
@@ -107,4 +111,6 @@ const sourceLabel = (g) => {
 .a-goods-cat { font-weight: 600; margin-right: 6px; }
 .a-goods-src { color: #909399; }
 .a-goods-text { line-height: 1.7; }
+.a-suggestion { margin-top: 6px; padding: 6px 8px; background: var(--el-color-warning-light-9); border-radius: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.a-reason { font-size: 12px; color: var(--el-color-warning-dark-2); }
 </style>

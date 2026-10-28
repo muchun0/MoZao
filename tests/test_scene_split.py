@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""P1-2 场景级生成下沉普通模式测试（P1）。
+"""场景级生成链路测试（P1）。
 
-覆盖：普通模式 ≥2000 字章节走场景链路、≤1500 字章节仍整章生成、
-scene_split 关闭回退整章、拆场景失败自动回退整章。
+覆盖：高质量模式拆场景→场景正文→摘要链路与动态模块轮换、拆场景事件边界互斥、
+事件清单先行 + 结构化校验、拆场景/写场景 prompt 硬规则注入。
+（普通模式路径测试已随高质量模式固化于 2026-10-28 删除）
 """
 from __future__ import annotations
 
@@ -38,132 +39,6 @@ _SCENES_JSON = (
 
 
 @pytest.mark.p1
-def test_normal_mode_long_chapter_uses_scenes(store):
-    """普通模式 2500 字章节：走拆场景→场景→摘要链路；
-    润色默认仅高质量模式（REQ-token优化 P0-3：普通模式不润色）。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    # 1) 拆场景 2) 场景正文 3) 摘要（普通模式不再调用润色）
-    llm.chat.side_effect = [
-        _SCENES_JSON,
-        "场景正文：林小满推开医馆的门。" * 190,          # ~2280 字
-        "场景链路摘要",
-    ]
-    ch = _writer(cfg, llm, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
-    assert llm.chat.call_count == 3
-    assert "场景正文：林小满推开医馆的门" in ch.content
-    assert ch.summary == "场景链路摘要"
-
-
-@pytest.mark.p1
-def test_normal_mode_polish_only_hq(store):
-    """polish_hq_only=True：普通模式无润色调用；False 时恢复润色。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    llm.chat.side_effect = [
-        _SCENES_JSON,
-        "场景正文：林小满推开医馆的门。" * 190,
-        "场景链路摘要",
-    ]
-    _writer(cfg, llm, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
-    assert llm.chat.call_count == 3  # 无润色
-
-    cfg.polish_hq_only = False
-    store.save_config(cfg)
-    llm2 = MagicMock()
-    llm2.chat.side_effect = [
-        _SCENES_JSON,
-        "场景正文：林小满推开医馆的门。" * 190,
-        "润色后完整正文：" + "场景正文：林小满推开医馆的门。" * 195,
-        "场景链路摘要",
-    ]
-    ch2 = _writer(cfg, llm2, store).write(1, "第一章", "林小满抵达落霞城", None, silent=True)
-    assert llm2.chat.call_count == 4
-    assert "润色后完整正文" in ch2.content
-
-
-@pytest.mark.p1
-def test_action_plan_from_scene_split(store):
-    """REQ-token优化 P0-2：拆场景输出 characters_action → 场景 prompt 收到行动表，
-    不再发起独立行动表调用。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False          # 默认：不独立调用
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    scenes_json = (
-        '{"scenes": [{"location": "落霞城", "event": "林小满抵达", "emotion": "疲惫", '
-        '"target_words": 1200}], '
-        '"characters_action": [{"name": "林小满", "goal": "查清玉佩来历", '
-        '"key_actions": ["去藏经阁"], "emotion": "警惕", "dialogue_intent": "套话"}]}'
-    )
-    llm.chat.side_effect = [
-        scenes_json,
-        "场景正文：林小满抵达。" * 280,     # ~2800 字，达标不触发扩写
-        "场景摘要",
-    ]
-    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 3        # 拆场景(含行动表) + 场景 + 摘要：无独立行动表调用
-    # 场景 prompt 应包含行动表文本（确定性格式化注入）
-    scene_call = llm.chat.call_args_list[1][0][1]
-    assert "查清玉佩来历" in scene_call
-    assert "去藏经阁" in scene_call
-
-
-@pytest.mark.p1
-def test_short_chapter_stays_whole(store):
-    """普通模式 1500 字章节：仍整章生成（不拆场景）。"""
-    cfg = NovelConfig(title="短章书", chapter_words=1500, total_words=6000)
-    s = ProjectStore.create(store.dir / "short", cfg)
-    cfg = s.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    s.save_config(cfg)
-    llm = MagicMock()
-    llm.chat.side_effect = ["整章正文。" * 400 + "【摘要】短章摘要"]
-    ch = _writer(cfg, llm, s).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 1
-    assert "整章正文" in ch.content
-
-
-@pytest.mark.p1
-def test_scene_split_off_whole(store):
-    """scene_split=False → 2500 字章节也整章生成。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.scene_split = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    llm.chat.side_effect = ["整章正文。" * 500 + "【摘要】整章摘要"]
-    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 1
-    assert "整章正文" in ch.content
-
-
-@pytest.mark.p1
-def test_split_fail_fallback(store):
-    """拆场景非法 JSON（字段兜底也救不回）→ 重试 1 次仍失败 → 自动回退整章生成（不中断）。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    # 拆场景 2 次都返回不可解析文本（第 1 次解析失败→字段兜底失败→重试 1 次，
-    # 第 2 次仍失败）→ 回退整章生成（第 3 次调用）
-    llm.chat.side_effect = ["不是JSON", "还不是JSON", "整章回退正文。" * 400 + "【摘要】回退摘要"]
-    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 3
-    assert "整章回退正文" in ch.content
-
-
-@pytest.mark.p1
 def test_hq_keeps_dynamic_module(store):
     """高质量模式仍带动态模块（_generate_chapter_scenes dynamic=True 时不回归）。"""
     cfg = store.load_config()
@@ -183,14 +58,6 @@ def test_hq_keeps_dynamic_module(store):
 
 
 # ---------- 拆场景事件边界互斥（P1-1） ----------
-
-_OVERLAP_SCENES_JSON = (
-    '{"scenes": [{"location": "墟口", "event": "陆沉冲回墟口救苏妄言，被三只赤尉围住，'
-    '苏妄言被学员架走", "emotion": "焦灼", "anchors": ["短刀"], "target_words": 1200},'
-    '{"location": "墟口", "event": "陆沉再次冲上前去救苏妄言，三只赤尉围阵，'
-    '苏妄言被架走撤离", "emotion": "绝望", "anchors": ["短刀"], "target_words": 1200}],'
-    '"characters_action": []}'
-)
 
 
 @pytest.mark.p1
@@ -212,20 +79,6 @@ def test_scene_events_overlap_detector():
         {"event": "陆沉在裂隙旁凿矿，铁镐崩出火花"},
         {"event": "苏妄言在学宫廊下等候，冷风灌进衣领"},
     ]) is False
-
-
-@pytest.mark.p1
-def test_scene_overlap_fallback(store):
-    """拆出重叠场景（同一事件两版本）→ 自动回退整章生成，杜绝拼接源头。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    llm.chat.side_effect = [_OVERLAP_SCENES_JSON, "整章回退正文。" * 400 + "【摘要】回退摘要"]
-    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 2  # 拆场景 1 次 + 整章回退 1 次（不逐场景生成）
-    assert "整章回退正文" in ch.content
 
 
 # ---------- 拆场景设计重构（2026-09-30）：事件清单先行 + 结构化校验 ----------
@@ -284,44 +137,6 @@ def test_scene_event_ref_expansion():
     assert not ok and "事件1" in why
 
 
-@pytest.mark.p1
-def test_scene_adjacent_repeat_retry(store):
-    """场景生成端兜底：场景 N 与上一场景全文高度相似（重演上一场景）→ 重试 1 次并强制
-    从上一场景结局后续写；重试结果不同则采用，从拼接发生点拦截（不整章重写）。"""
-    cfg = store.load_config()
-    cfg.action_plan_first = False
-    cfg.agent_guard.quality_check = False
-    store.save_config(cfg)
-    llm = MagicMock()
-    scenes_json = (
-        '{"scenes": [{"location": "墟口空地", "event": "陆沉引开赤尉救苏妄言", "emotion": "焦灼", '
-        '"target_words": 1300}, '
-        '{"location": "墟口坡地", "event": "陆沉带苏妄言撤往补给站", "emotion": "紧迫", '
-        '"target_words": 1200}], "characters_action": []}'
-    )
-    # 场景 1 正文（1300+ 字，避免触发字数兜底扩写）；场景 2 第一版 = 场景 1 原样复刻（重演）；
-    # 场景 2 重试版 = 全新推进（1200+ 字）；摘要
-    scene1 = ("陆沉伏在墟口边缘，苏妄言被三只赤尉围住，他攥紧短凿，心跳一下一下撞着肋骨。"
-              "碎石在指缝间滚落，他听见她急促的呼吸，面板还剩两次，蚀痕烧到小臂中段。" * 20)
-    scene2_new = ("陆沉已经冲到坡底，一把拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
-                  "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。" * 15)
-    llm.chat.side_effect = [
-        scenes_json,
-        scene1,
-        scene1,                    # 场景 2 第一版：整段复刻上一场景
-        scene2_new,                # 场景 2 重试版：全新推进
-        "摘要",
-    ]
-    ch = _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert llm.chat.call_count == 5  # 拆场景 + 场景1 + 场景2第一版 + 场景2重试 + 摘要
-    assert "拽住苏妄言的后领" in ch.content   # 采用重试版（全新推进）
-    # 重试 prompt 含强制从结局后续写规则
-    retry_call = llm.chat.call_args_list[3]
-    retry_user = retry_call.args[1] if retry_call.args else retry_call[1]
-    assert "本场景重试强制规则" in retry_user
-    assert "禁止重演上一场景" in retry_user
-
-
 # ---------- 事前防线：拆场景/写场景 prompt 硬规则注入（用户要求'事前解决'） ----------
 
 def test_split_prompt_event_dedup_rule():
@@ -342,35 +157,36 @@ def test_split_prompt_event_dedup_rule():
 
 
 def test_scene_events_semantic_slot_dedup():
-    """事件语义槽位互斥（2026-10-01）：同冲突对象+同动作=重复事件（救苏妄言石殿版/墟口外版），
-    即使 desc 措辞/地点不同；不同动作/不同冲突对象不误报。"""
+    """事件语义槽位互斥（2026-10-01）：同冲突对象+同动作=重复事件（救同伴石殿版/墟口外版），
+    即使 desc 措辞/地点不同；不同动作/不同冲突对象不误报。通用化后名单从 World 注入（names）。"""
     from novel_gen.pipeline.stages import _scene_events_semantically_overlap
+    names = ("陆沉", "苏妄言", "赤尉", "灰卒", "蚀核")
     # 同冲突（三头赤尉）+同动作（救援），地点不同 → 重复（4500 字版根因形态）
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉在穹顶石殿引开赤尉把苏妄言拖进窄缝", "conflict": "三头赤尉", "action": "救援"},
         {"id": "事件3", "desc": "陆沉在墟口外碎石坡从围阵中拽走苏妄言", "conflict": "三头赤尉", "action": "救援"},
-    ]) is True
+    ], names) is True
     # 无结构化字段时从 desc 兜底提取（救 vs 围）→ 救援/围攻不同动作不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件1", "desc": "陆沉被灰卒咬穿喉咙，面板3→2，复活"},
         {"id": "事件2", "desc": "陆沉在石殿救出苏妄言"},
-    ]) is False
+    ], names) is False
     # 同动作但冲突对象不同（救苏妄言 vs 救受伤弟子）→ 不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "救苏妄言", "conflict": "苏妄言", "action": "救援"},
         {"id": "事件3", "desc": "救受伤弟子", "conflict": "受伤弟子", "action": "救援"},
-    ]) is False
+    ], names) is False
     # 2026-10-01 第四版根因形态：同一"救苏妄言"事件，敌人措辞不同
     # （'三只灰卒' vs '三只赤尉伴生灰卒'）→ 人物优先判重（旧版按敌人词双漏检）
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、掰开咬住她左臂的灰卒，苏妄言获救", "action": "救援"},
         {"id": "事件3", "desc": "苏妄言被三只赤尉伴生灰卒围在巨石旁，陆沉冲出去用铁镐砸碎蚀核救她，苏妄言再次获救", "action": "救援"},
-    ]) is True
+    ], names) is True
     # 同一人物但动作不同（救 vs 察觉）→ 不误报
     assert _scene_events_semantically_overlap([
         {"id": "事件2", "desc": "陆沉救出苏妄言", "action": "救援"},
         {"id": "事件3", "desc": "苏妄言察觉陆沉死而复生的异常", "action": "察觉"},
-    ]) is False
+    ], names) is False
 
 
 def test_long_sentence_overlap_ratio():
@@ -418,8 +234,9 @@ def test_strip_json_block_robust():
 def test_scene_text_rewrites_event():
     """2026-10-01 场景正文事件级复写检测：场景正文把已发生事件换措辞又写一遍
     （坡顶救人版/墟口外救人版：conflict 措辞不同但同为'赤尉+救援'）→ 命中；
-    不同冲突对象（灰卒死亡 vs 救人）→ 不误报。"""
+    不同冲突对象（灰卒死亡 vs 救人）→ 不误报。通用化后名单从 World 注入（names）。"""
     from novel_gen.pipeline.stages import _scene_text_rewrites_event
+    names = ("陆沉", "苏妄言", "赤尉", "灰卒")
     # 已完成事件：场景1（灰卒死亡复活）、场景2（坡顶救人）
     done = [
         "陆沉被灰卒咬穿喉咙，面板 3/3→2/3，复活",
@@ -430,19 +247,19 @@ def test_scene_text_rewrites_event():
         "陆沉冲了出去，把铁精矿石抡圆砸向巨型赤尉的复眼，苏妄言趁机结印，"
         "金光直贯赤尉，三人退入裂隙。"
     )
-    assert _scene_text_rewrites_event(text_dup, done) == done[1]
+    assert _scene_text_rewrites_event(text_dup, done, names) == done[1]
     # 全新推进（无救援动作/不同冲突对象）→ 不命中
     text_new = (
         "裂隙深处一片死寂，陆沉靠着岩壁喘匀气，摸出火折子点上，"
         "他低头看了一眼面板，还剩两次。"
     )
-    assert _scene_text_rewrites_event(text_new, done) == ""
+    assert _scene_text_rewrites_event(text_new, done, names) == ""
     # 场景1 正文（灰卒死亡）不误报救人
     text_death = (
         "灰卒咬穿了他的喉管，血喷出来，他抬手去挡，视野发黑。"
         "面板浮现：今日可死次数：2/3。"
     )
-    assert _scene_text_rewrites_event(text_death, done) == ""
+    assert _scene_text_rewrites_event(text_death, done, names) == ""
     # 2026-10-01 第四版根因形态：场景正文复写"救苏妄言"但敌人措辞不同
     # （赤尉伴生灰卒 vs 灰卒）→ 人物优先命中；纯撤离场景不误报
     done4 = ["陆沉冲上岩台用半截镐柄救被三只灰卒围困的苏妄言，砸碎蚀核、苏妄言获救"]
@@ -450,12 +267,12 @@ def test_scene_text_rewrites_event():
         "墟口外的空地上，苏妄言被三只赤尉伴生灰卒围在巨石旁，"
         "陆沉再次冲出去，用铁镐砸碎蚀核救她，她脱险后喘着气看他。"
     )
-    assert _scene_text_rewrites_event(text_dup4, done4) == done4[0]
+    assert _scene_text_rewrites_event(text_dup4, done4, names) == done4[0]
     text_retreat = (
         "陆沉拽住苏妄言的后领往外拖，赤尉的甲壳在身后重新合拢，"
         "碎石顺着坡面滚下去，他吼她快带受伤的人往裂隙退。"
     )
-    assert _scene_text_rewrites_event(text_retreat, done4) == ""
+    assert _scene_text_rewrites_event(text_retreat, done4, names) == ""
 
 
 def test_scene_prompt_forbid_event():
@@ -494,23 +311,23 @@ def test_extract_json_field_partial():
 
 def test_scene_prompt_prevention_rules():
     """写场景 prompt 含事前硬规则：数字结算时机、术语锁定、同模式动作去重、死亡多样化、
-    面板显示纪律、状态度量单一口径、角色身份锁定、摘要覆盖最终状态。"""
+    机制数字显示纪律、状态度量单一口径、角色身份锁定、摘要覆盖最终状态。"""
     from novel_gen.pipeline.templates import scene_prompt
     cfg = NovelConfig(title="测试书", chapter_words=2500, total_words=10000)
     scene = {"location": "墟口", "event": "陆沉引开赤尉", "emotion": "焦灼",
              "anchors": [], "target_words": 1200, "final_state": "面板 2/3，蚀痕已越肘弯"}
     _, user = scene_prompt(cfg, 1, "第一章", 1, scene, "前情记忆", "", "")
-    assert "机制数字结算（硬约束）" in user             # 死亡瞬间 vs 复活后 数字口径
-    assert "术语与状态口径" in user                     # 禁止'光盾'变'命执盾'
+    assert "机制数字结算（硬约束）" in user             # 结算事件 数字口径
+    assert "术语与状态口径" in user                     # 术语固定写法
     assert "同模式动作不重复" in user                   # 冲回去救人不得原样 2 次
     assert "死因必须不同" in user                       # 连续死亡死因不同
-    assert "面板数字只出现一次且即时结算" in user       # 数字只在结算瞬间出现一次
-    assert "累积口径" in user                           # 蚀痕累积口径，禁止多处重新计量
-    assert "增长量只用" in user                         # 蚀痕增长只用'寸'，禁'三指/一指宽'
-    assert "外貌/服装/代称全局唯一" in user             # 苏妄言青袍短发不得第二套描述
-    assert "写本章最终结算后的面板状态" in user         # 摘要写最终结算数字，不写开篇状态
+    assert "数字只出现一次且即时结算" in user           # 数字只在结算瞬间出现一次
+    assert "累积口径" in user                           # 累积状态口径，禁止多处重新计量
+    assert "禁止同一状态多处从起点重新计量" in user     # 累积状态禁止多处从起点重新计量
+    assert "外貌/服装/代称全局唯一" in user             # 青袍短发代称不得第二套描述
+    assert "写本章最终结算后的机制状态" in user         # 摘要写最终结算数字，不写开篇状态
     assert "禁止再次描写同一事件" in user               # 本章已发生事件不得再次描写（两版本）
-    assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入（防蚀痕无增量）
+    assert "final_state" in user and "面板 2/3" in user  # 事件结束状态增量注入
 
 
 def test_split_prompt_word_count_hardcap():
@@ -572,3 +389,35 @@ def test_scene_done_events_injected_to_later_scene(store):
     assert "【本章已发生事件" in user2
     assert "陆沉引开赤尉救苏妄言" in user2
     assert "禁止再次发生" in user2 or "禁止重复描写" in user2
+
+
+@pytest.mark.p1
+def test_scene_split_writes_scenes_json(store):
+    """接线回归（修复 save_scenes 断链）：场景级生成后 scenes.json 必须真实落盘。
+
+    历史 bug：_generate_chapter_scenes 只返回 chapter_text，scenes 从未传回 write()，
+    write() 尾部 locals().get("scenes") 恒 None → save_scenes 从未执行 → scene_inspector
+    事件审查/前端场景回看/chain_of_thought 三个下游读到空数据空转。修复后 scenes 由
+    _write_body 透传到 _write_post_gates 落盘。此处断言生成后 load_scenes() 有本章场景。
+    """
+    cfg = store.load_config()
+    cfg.high_quality_mode = True
+    cfg.action_plan_first = False
+    cfg.agent_guard.quality_check = False
+    store.save_config(cfg)
+    llm = MagicMock()
+    scenes_json = (
+        '{"scenes": [{"location": "落霞城", "event": "林小满抵达寻医", "emotion": "疲惫", '
+        '"target_words": 1200}], "characters_action": []}'
+    )
+    llm.chat.side_effect = [
+        scenes_json,           # 拆场景
+        "场景正文。" * 300,     # 场景 1
+        "摘要",
+    ]
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    data = store.load_scenes()
+    assert "1" in data, "第 1 章场景应已落盘 scenes.json"
+    assert data["1"]["scenes"], "本章应有拆场景记录"
+    assert data["1"]["scenes"][0]["event"] == "林小满抵达寻医"
+    assert isinstance(data["1"].get("state"), dict)

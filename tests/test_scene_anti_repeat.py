@@ -100,9 +100,9 @@ def _save_outline(store, moves: str):
 
 @pytest.mark.p1
 def test_extract_beat_sequence_cycle_order():
-    """完整循环 → 归一化节拍序列（顺序保持、长词优先、去连续重复）。"""
+    """完整循环 → 归一化节拍序列（顺序保持、长词优先、去连续重复；书级拍已移除）。"""
     seq = _extract_beat_sequence(_CYCLE_A)
-    assert seq == ["盘问", "戳穿", "失控", "挡死", "死亡", "复活", "面板", "留牌", "离场"]
+    assert seq == ["盘问", "戳穿", "失控", "死亡", "复活", "离场"]
 
 
 @pytest.mark.p1
@@ -224,8 +224,8 @@ def test_beat_cycle_issues_detects_strong_shared_two_versions():
     """同一事件两版本共享 ≥2 种强情节拍且窗口等长
     （盘问→失控→死亡→面板 ×2）→ 仍报大改。"""
     content = (
-        "她盘问他，他失控，咽气倒下，面板显示可死次数。"
-        "她又逼问，执能爆裂，断气，面板又亮。"
+        "她盘问他，他失控，咽气倒下，又睁开眼爬了起来。"
+        "她又逼问，执能失控，断气，再次睁眼站起。"
     )
     issues = _beat_cycle_issues(content)
     assert len(issues) == 1
@@ -262,51 +262,6 @@ def test_scene_prompt_event_progress_absent_when_empty():
     cfg = NovelConfig(title="测试书", chapter_words=2500)
     user = _scene(cfg, progress=False)
     assert "事件进度（硬约束" not in user
-
-
-# ---------- 集成：节拍重演 → 重试 / 2 次仍重演 → 回退整章 ----------
-
-@pytest.mark.p1
-def test_scene_beat_rewrite_triggers_retry(store):
-    """场景2 正文节拍序列与场景1 高度重合（换措辞重演）→ 重试强制只写本场景事件，
-    重试版合规后采用；整章不再含重演循环。"""
-    _save_outline(store, _CH2_MOVES)
-    llm = MagicMock()
-    retry_ok = _NORMAL_SCENE + "她没再追问，转身走了。"   # 重试版：短序列，不再重演
-    expand_ok = retry_ok + "扩写补充：火炉里的炭火噼啪响了两声。" * 200  # 扩写保留原正文并更长
-    llm.chat.side_effect = [
-        _SPLIT_JSON,      # 0 拆场景
-        _CYCLE_A,         # 1 场景1（越权写完完整循环 → 登记长节拍序列）
-        _CYCLE_B,         # 2 场景2初版：与场景1节拍序列重合 → 命中重演
-        retry_ok,         # 3 场景2重试：合规（短序列）
-        "场景链路摘要",
-        expand_ok,        # 4 正文 < 目标90% → 扩写（保留原正文并扩充）
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert retry_ok in ch.content          # 重试版被采用
-    assert "执能再次失控" not in ch.content  # 重演初版被丢弃
-    # 拆场景 + 场景1 + 场景2初版 + 场景2重试 + 摘要 + 扩写 = 6
-    assert llm.chat.call_count == 6
-
-
-@pytest.mark.p1
-def test_scene_beat_retry_twice_falls_back_whole(store):
-    """场景2 连续 2 次重试仍重演完整循环 → 回退整章生成（整章单次生成无场景间越权消费）。"""
-    _save_outline(store, _CH2_MOVES)
-    llm = MagicMock()
-    whole = "整章回退正文：陆沉装傻糊弄苏妄言。" * 150 + "【摘要】回退摘要"
-    llm.chat.side_effect = [
-        _SPLIT_JSON,    # 0 拆场景
-        _CYCLE_A,       # 1 场景1（登记长序列）
-        _CYCLE_B,       # 2 场景2初版：重演
-        _CYCLE_B,       # 3 场景2重试1：仍重演
-        _CYCLE_B,       # 4 场景2重试2：仍重演 → 回退整章
-        whole,          # 5 整章回退
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert "整章回退正文" in ch.content
-    # 拆场景 + 场景1 + 场景2(初版+重试1+重试2) + 整章 = 6；整章含【摘要】→ 摘要不额外调用
-    assert llm.chat.call_count == 6
 
 
 @pytest.mark.p1
@@ -397,49 +352,3 @@ def test_scene_prompt_done_beats_absent_when_empty():
 
 # ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------
 
-@pytest.mark.p1
-def test_scene1_internal_cycle_triggers_retry(store):
-    """场景1（首个场景，无已登记序列可比对）自身正文内同一节拍序列出现 2 次
-    （_beat_cycle_issues 命中）→ 重试强制只写本场景事件；重试合规版被采用。"""
-    _save_outline(store, _CH2_MOVES)
-    llm = MagicMock()
-    scene1_bad = _CYCLE_A + "\n\n" + _CYCLE_B          # 场景1初版：内部两遍
-    scene1_ok = _NORMAL_SCENE + "她没再追问，转身走了。"  # 场景1重试：短序列合规
-    expand_ok = scene1_ok + "扩写补充：铁匠铺的门轴吱呀响了一声。" * 200  # 扩写保留原正文并更长
-    llm.chat.side_effect = [
-        _SPLIT_JSON,      # 0 拆场景
-        scene1_bad,       # 1 场景1初版：内部循环 → 命中重试
-        scene1_ok,        # 2 场景1重试：合规
-        "场景2正文：陆沉装晕，苏妄言以为他被震晕。" * 80,
-        "场景链路摘要",
-        expand_ok,        # 4 正文 < 目标90% → 扩写（保留原正文并扩充）
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert scene1_ok in ch.content            # 重试版被采用
-    assert "执能再次失控" not in ch.content     # 内部两遍初版被丢弃
-    assert llm.chat.call_count == 6
-
-
-# ---------- 集成：整章回退生成后节拍检测 → 重试 → 合规版采用 ----------
-
-@pytest.mark.p1
-def test_fallback_whole_retry_on_cycle(store):
-    """场景防线连续 2 次重试仍重演 → 回退整章；整章版1 内部仍两遍（生成端即时检测命中）
-    → 整章重试版2 合规被采用（生成端兜底，不再等质检重写）。"""
-    _save_outline(store, _CH2_MOVES)
-    llm = MagicMock()
-    whole_bad = _CYCLE_A + "\n\n" + _CYCLE_B                        # 整章版1：内部两遍
-    whole_ok = "整章重试合规：陆沉装傻糊弄苏妄言。" * 150 + "【摘要】回退摘要"  # 整章版2：合规
-    llm.chat.side_effect = [
-        _SPLIT_JSON,      # 0 拆场景
-        _CYCLE_A,         # 1 场景1（登记长序列）
-        _CYCLE_B,         # 2 场景2初版：重演
-        _CYCLE_B,         # 3 场景2重试1：仍重演
-        _CYCLE_B,         # 4 场景2重试2：仍重演 → 回退整章
-        whole_bad,        # 5 整章版1：内部两遍 → 生成端即时检测命中 → 重试
-        whole_ok,         # 6 整章版2：合规 → 采用
-    ]
-    ch = _writer(store.load_config(), llm, store).write(1, "第一章", "目标", None, silent=True)
-    assert "整章重试合规" in ch.content
-    assert "执能再次失控" not in ch.content
-    assert llm.chat.call_count == 7

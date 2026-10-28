@@ -121,6 +121,26 @@ def _notice(meta: dict, snap: dict, positive: dict) -> str:
     return "；".join(notes)
 
 
+def _assistant_limits(cfg) -> tuple[int, int, int]:
+    """从 cfg 解析小墨AI对话参数（turns/token_limit/max_tokens，带下限保护）。"""
+    turns = max(1, int(getattr(cfg, "assistant_history_turns", 6) or 6))
+    token_limit = max(2000, int(getattr(cfg, "assistant_context_token_limit", 20000) or 20000))
+    max_tokens = max(200, int(getattr(cfg, "assistant_max_tokens", 1500) or 1500))
+    return turns, token_limit, max_tokens
+
+
+def _build_assistant_context(store, cfg, chapter_no: int | None, mode: str,
+                            text: str, cid: int, turns: int, token_limit: int):
+    """构建小墨AI对话上下文：快照+正向快照+历史+组装 prompt。"""
+    snap = context.snapshot(store, chapter_no, target_words=cfg.chapter_words)
+    snap["bible"] = sanitize_system_text(snap.get("bible") or "")
+    positive = context.positive_snapshot(store, chapter_no, cfg, snap=snap)
+    history = _history(cid, turns)  # 落库前取历史，避免把本次提问算进上下文
+    built = context.build_prompt(load_persona(), snap, positive, history,
+                                text, mode, token_limit=token_limit)
+    return snap, positive, built, history
+
+
 def send_message(store, user: dict, conversation: dict, content: str, mode: str,
                  chapter_no: int | None = None) -> dict:
     """发一条消息：返回 {message_id, conversation_id, content, mode, chapter_no, ...}。"""
@@ -132,16 +152,10 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
     if not bool(getattr(cfg, "assistant_enabled", True)):
         raise HTTPException(status_code=403, detail="小墨AI 当前未开启")
     cid = int(conversation["id"])
-    turns = max(1, int(getattr(cfg, "assistant_history_turns", 6) or 6))
-    token_limit = max(2000, int(getattr(cfg, "assistant_context_token_limit", 20000) or 20000))
-    max_tokens = max(200, int(getattr(cfg, "assistant_max_tokens", 1500) or 1500))
+    turns, token_limit, max_tokens = _assistant_limits(cfg)
 
-    snap = context.snapshot(store, chapter_no, target_words=cfg.chapter_words)
-    snap["bible"] = sanitize_system_text(snap.get("bible") or "")
-    positive = context.positive_snapshot(store, chapter_no, cfg, snap=snap)
-    history = _history(cid, turns)  # 落库前取历史，避免把本次提问算进上下文
-    built = context.build_prompt(load_persona(), snap, positive, history,
-                                 text, mode, token_limit=token_limit)
+    snap, positive, built, history = _build_assistant_context(
+        store, cfg, chapter_no, mode, text, cid, turns, token_limit)
 
     llm = _build_llm(store, cfg, int(user["id"]))
     try:

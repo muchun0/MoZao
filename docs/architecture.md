@@ -35,12 +35,12 @@
 
 | 模块 | 职责 | 关键文件 |
 |---|---|---|
-| `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计 | `base.py`、`factory.py`、`providers.py`、`usage.py` |
+| `llm/` | LLM Provider 抽象：DeepSeek / 豆包(火山方舟) / OpenAI / mock；工厂创建；`base.py` chat 为模板方法（自动埋点 + 成本防护挂载）；`usage.py` Token 用量统计；`json_parse.py` LLM 输出 JSON 容错解析（§11.7 统一健壮封装，pipeline 各解析点收敛于此） | `base.py`、`factory.py`、`providers.py`、`usage.py`、`json_parse.py` |
 | `research/` | 调研阶段：内置知识库 `knowledge_base.json` + 可选联网搜索（博查/Serper）→ LLM 提炼共性报告；**P0-3 拆书库回流**：读取 store 的 `teardown_material.txt`（webapp 调研前写入的同题材爆款拆书条目）并入调研素材 | `research.py`、`sources.py`、`schemas.py` |
 | `pipeline/` | 生成流水线核心：多智能体编排 + 记忆系统 + 编辑质检 + 防重复 + 模板 | 见 2.2 |
 | `store/` | 项目落盘、状态机、断点续传、进度统计；`schemas.py` 的 `World` 含 `world_reveals`（世界观阶段揭示计划，跟随主角视角）；**P2** `ProjectStore` 新增场景落盘（`scenes.json` 分章场景清单+状态，供回看/编辑/复用）、`teardown_material.txt`（P0-3 拆书库回流素材）；**REQ-双锚** `teardown_style_anchor.txt`（题材文风锚，webapp 写/novel_gen 读）；`Chapter.user_edited`（用户编辑保存=人工修订标记，个人风格锚来源）；**REQ-借鉴webnovel A/B** `chapter_commit.json`（章节统一提交记录：pending/committed/incomplete + 失败项）+ `projection_log.jsonl`（投影一致性日志，JSONL 原子写）；**REQ-章节版本化（2026-10-16）** `chapter_versions.json` 版本索引（每章 versions/selected/history）+ `chapters/<no>/v<k>.json` 历史版本存档——`save_chapter` 追加版本语义（内容相同幂等不追加、不同则存档旧 HEAD 追加新版、每章上限 15 淘汰最旧且 HEAD 不淘汰；`quality` 质检结果写入版本 history、`promote=False` 候选版本只存档不顶 HEAD）、`load_chapter_version`/`list_versions`（透传 quality）/`select_version`（回退=复制回 HEAD，用户选择置 `user_managed`）/`_auto_select_best`（未用户管理时自动选 score 最高版）/`delete_version`（selected 不可删），`chapters/<no>.json` 继续作当前选中版本（HEAD），`load_chapter`/`list_chapters` 对外行为不变 | `project.py`（`ProjectStore`）、`schemas.py` |
 | `export/` | 多格式导出 + AI 封面 | `book_formats.py`（TXT/EPUB/DOCX）、`cover.py` |
-| `utils/` | 工具：章节切分、数据迁移、路径 | `chapter_splitter.py`、`migrate.py`、`paths.py` |
+| `utils/` | 工具：章节切分、数据迁移、路径、纯文本算法（`text.py` 最长公共子串，§11.2 单一权威源） | `chapter_splitter.py`、`migrate.py`、`paths.py`、`text.py` |
 | `config.py` | 配置加载（YAML + 环境变量补 Key）；`AgentGuardConfig` 生产级加固配置（模块0）；**功能开关注册表 `FEATURE_FLAGS`**：开关默认值唯一事实来源，按 memory/writing/review/guard 模块分组，store 的 save/load_config 注册表驱动自动落盘 | — |
 | `safety.py` | 输入防护（模块3）：Prompt 注入检测/System 清洗/输出合规校验（纯函数） | — |
 
@@ -93,14 +93,20 @@
 | 文件 | 职责 |
 |---|---|
 | `server.py` | **组装壳**：导入注册路由 + 静态托管 `frontend/dist` + 启动入口（`python -m webapp.server` / `run_web.py`）。不写业务逻辑 |
-| `core.py` | **核心层**：FastAPI 实例与 lifespan、鉴权（`_require_user`/`_require_admin`/`_check_project_access`）、项目工具（`_find_project`/`_open_pipeline`）、结算（`_compute_settle`/`_settle_incremental`/`_settle_price`）、生成线程（`_RunHandle`/信号量）、任务持久化（`_mark_task`/`_resume_interrupted_tasks`）、登录限流、项目创建/列表等公共逻辑；**P0-3 拆书库回流** `_inject_teardown_material`（调研前查同题材拆书条目写入 store 素材，供 ResearchEngine 消费）；**REQ-双锚** `_inject_teardown_style_anchor`（同题材拆书条目抽 styles/takeaways/excerpts 组装题材锚写入 store，供写手阶段消费，失败静默；`_run_generation` 入口统一注入——**含 start_from>0 从第 N 章重生成**，旧项目重生成也能拿到题材锚）；**用户级记忆库** `_inject_user_memory`（用户级画像→项目快照 `user_memory_snapshot.json`，webapp 写 / novel_gen 读，幂等+失败降级，接入全部生成入口）与 `_distill_user_memory`（书级→用户级蒸馏，生成完成/批量 finally 触发，幂等）；**后台开关管理** `_apply_global_overrides`（sys_config 表为准 → 内存态覆盖 cfg 顶层/agent_guard 子项/scene_limits，`_open_pipeline` 内 load_config 之后注入，DB 异常降级留痕） |
+| `core.py` | **核心层门面（组装壳，2026-10-28 拆分）**：FastAPI 实例/lifespan/CORS + 星号导入 6 个业务域子模块并统一再导出（`__all__ = [n for n in globals() if not n.startswith("__")]`），`from .core import *` / `from webapp.core import X` 导出面零变化；不再承载业务实现 |
+| `core_runtime.py` | **运行时**：路径常量（BASE_DIR/PROJECTS_DIR/OUTPUT_DIR/WEB_DIR/_MAX_UPLOAD/_TASK_FILE）、`_RunHandle`（含 task_id）/`_RUNS`/`_LOCK`/`_GEN_SEMAPHORE`、槽位 `_acquire_slot`/`_release_slot`、任务持久化 `_mark_task`/`_clear_task`/`_resume_interrupted_tasks`（agent_run 分支延迟 import generate_service） |
+| `core_models.py` | **Pydantic 请求/响应模型**：LLMReq…ChapterEditReq 全部请求模型（不含业务实现） |
+| `core_auth.py` | **鉴权**：`_require_user`/`_require_admin`/`_check_project_access`/`_assign_legacy_projects`/`_public_user` + 登录限流 `_login_ratelimit`/`_record_login_fail` |
+| `core_project.py` | **项目工具**：`_find_project`/`_list_projects`/`_cfg_to_dict`/`_resolve_llm`/`_server_api_key`/`_open_pipeline`（内含 `_apply_global_overrides` 后台开关覆盖）/`_project_use_user_llm`/`_user_llm_cfg`/封面工具/锁定 `_is_locked`/`_assert_not_locked`/摘要 `_regenerate_summary`/`_outline_diff`/`_guard_user_input`/`_backup_outline` |
+| `core_settle.py` | **结算链（P0 资金）**：`_compute_settle`/`_settle_billing_mode`/`_settle_incremental`/`_settle_price`/`_settle_product`/`_commit_and_settle`/`_grant_consume_commission`；被测试补丁的 `_project_use_user_llm` 经 `from . import core` 延迟解析保留 monkeypatch 接缝 |
+| `core_generate.py` | **生成线程**：注入 `_inject_teardown_material`（P0-3 拆书库回流）/`_inject_teardown_style_anchor`（REQ-双锚）/`_inject_user_memory`（用户级记忆库）+ `_distill_user_memory`；后台线程 `_run_generation`（含 start_from 从第 N 章重生成）/`_run_outline_only`/`_run_batch`/`_research_needed`；被测试补丁 helper 经 `from . import core` 延迟解析保留 monkeypatch 接缝 |
 | `user_memory.py` | **用户级记忆库服务（跨书创作偏好继承）**：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像 preferences/跨书纪律 disciplines/个人文风锚 style_anchors/stats），`record_project_signals`（新书显式输入，按项目幂等）、`record_edits`（人工修订跨书锚，上限 30）、`distill`（书级 pitfalls/taste 蒸馏，全量重算式幂等）、`build_snapshot`（题材匹配过滤+上限裁剪→注入快照）、`summary/clear`；全部写路径零额外 LLM |
 | `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 把 `sys_config` 实时值合并进 `NovelConfig`（顶层字段 + agent_guard 标量 + scene_limits），DB 异常回退快照/默认并 logger 留痕；生成链路（`core._open_pipeline`）与小墨AI 对话（`assistant/service.py`）共用，避免同一逻辑两处维护 |
 | `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装四层上下文：system 人设+Bible / 层2 事实块 / 层3 对话窗口 / 层4 提问；按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 组装 → LLM → 失败降级 → 输出合规 → 落库） |
 | `routers/` | 按域拆分路由（见 2.4） |
 | `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
-| `pricing.py` | 定价档位（普通 2 元/万字、高质量 3 元/万字） |
+| `pricing.py` | 定价档位（统一 3 元/万字，普通模式下线） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
 | `mailer.py` | 邮件通知（验证码/退款通知站长） |
 | `verify_code.py` | 邮箱验证码（6 位、10 分钟、60s 冷却、错 5 次作废） |
@@ -118,14 +124,15 @@
 | `skills.py` | Skills | 平台写作技能、技能市场 |
 | `style_roles.py` | 风格角色 | 风格师增删改 + 技能挂载 + `reference_text` 范文透传（P2-1） |
 | `projects_base.py` | 项目管理 | 列表/创建/详情/退费/归档/克隆/删除/下载（8）；建书快照 `style_role_reference` 进 config（P2-1） |
-| `projects_outline.py` | 大纲 | 三级大纲/快照/重生成（7） |
-| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写/批量（13）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记 |
+| `projects_outline.py` | 大纲 | 三级大纲/快照/差异（6）；`/outline/regenerate` 已删除，统一走 agent-runs `architect.outline` |
+| `projects_chapters.py` | 章节 | 章节 CRUD/审校/扩写（10）；/review 返回 `final_review`（P2-2）；**REQ-双锚** `expand-selection` 注入风格范文+个人旧稿锚、`edit_chapter` 落 `user_edited` 人工修订标记；`/chapters/{n}/rewrite`、`/regenerate-from/{n}`、`/chapters/batch` 已删除，统一走 agent-runs |
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
-| `projects_generation.py` | 生成控制 | 启动/停止/重跑（5） |
+| `projects_generation.py` | 生成控制 | **Agent 统一入口（唯一生成通道）**：`POST/GET /agent-runs`、`POST /agent-runs/{task_id}/stop`、`POST /agent-runs/estimate`（只读预估价，UX 评审 U2）、`GET/PUT /agent-prompts[/{agent}]`（人设不可变版本）、`/outline/candidates`、`/stop`（9）；业务全在 generate_service；旧生成接口（start/regenerate/rewrite/generate-outline/world-regenerate/volume-regenerate）已全部删除 |
+| `projects_versions.py` | 产物版本 | **阶段1C**：outline/world 版本列表（含每版计费金额）/受控回滚 select/rollback-impact 影响范围（3）；chapter 版本在 projects_chapters |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 
-> 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。
+> 拆分史：原 `webapp/server.py` 2853 行单文件 → `core.py` + `routers/`（2026-09-20，拆后 openapi 路由集合 96=96 逐字节一致）。**新增业务路由时按域放入对应 routers 模块，禁止回写 core.py/server.py 堆逻辑**。**2026-10-28 再拆 core.py 1377 行** → 薄门面 core.py + 6 业务域子模块（core_runtime/models/auth/project/settle/generate），行为零变化验证：全量 pytest 1053 绿 + /api 路由 127=127 逐字节一致 + 门面 161 符号再导出面完整。
 
 ### 2.5 前端 webapp/frontend/src/（Vue 3 + Element Plus + Vite）
 
@@ -147,10 +154,11 @@
 - `llm/factory.py`：按 provider 字符串创建客户端；`core._resolve_llm` 决定用平台 Key 还是用户 BYOK Key。
 
 ### 3.2 webapp（core.py 关键函数）
-- 鉴权链：`_require_user`（Header token）→ `_require_admin` → `_check_project_access`（项目归属/管理员全可见）。
-- 结算链：`_compute_settle`（统一口径：增量/整批）→ `_settle_incremental`（**先落盘结算基线再扣费**）→ `_grant_consume_commission`（返佣）。
-- 生成控制：`_acquire_slot`（全局信号量 3 并发）→ `_run_generation`/`_run_outline_only`/`_run_batch`（后台线程）→ `_mark_task`/`_clear_task`（task.json）。
-- 任务持久化：`_resume_interrupted_tasks`（lifespan 启动时重拾中断任务）。
+> 2026-10-28 拆分后这些函数分布在 6 个业务域子模块，经 `webapp.core` 门面统一再导出，调用面（routers / generate_service / server / 测试）不变。
+- 鉴权链：`_require_user`（Header token）→ `_require_admin` → `_check_project_access`（项目归属/管理员全可见）〔core_auth〕。
+- 结算链：`_compute_settle`（统一口径：增量/整批）→ `_settle_incremental`（**先落盘结算基线再扣费**）→ `_grant_consume_commission`（返佣）〔core_settle〕。
+- 生成控制：`_acquire_slot`（全局信号量 3 并发）→ `_run_generation`/`_run_outline_only`/`_run_batch`（后台线程）→ `_mark_task`/`_clear_task`（task.json）〔core_generate + core_runtime〕。
+- 任务持久化：`_resume_interrupted_tasks`（lifespan 启动时重拾中断任务）〔core_runtime〕。
 
 ### 3.3 数据库（MySQL，库 `mozao`）
 | 表 | 用途 |
@@ -208,7 +216,7 @@
 
 1. **新业务路由** → `webapp/routers/<对应域>.py`，数据操作走 `webapp/db/` 对应域子模块已有函数，或在该域子模块内新增（禁止回写 base.py 堆 SQL）。
 2. **改生成逻辑/提示词** → `novel_gen/pipeline/`（角色行为改 `agents/prompts/*.md`，编排改 `manager.py`）。
-3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core.py` 结算链。
+3. **改计费/返佣** → `webapp/pricing.py`、`webapp/referral.py`、`webapp/core_settle.py`（经 core.py 门面再导出）结算链。
 4. **改前端页面** → `webapp/frontend/src/views|components/`，接口封装在 `src/api/`。
 5. 不确定某文件干什么 → 先查 `docs/filemap.md`；涉及历史决策 → 查 `docs/decisions.md`。
 

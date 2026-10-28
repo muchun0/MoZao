@@ -143,7 +143,7 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
     old.mechanism_baseline = mb
     old.clock = ck
     old.style_taboos = style_taboos
-    store.save_world(old)
+    store.save_world(old, commit=True, source="user")
     logger.info("用户编辑世界观: project=%s chars=%d enemies=%d locations=%d factions=%d",
                 project_id, len(chars), len(enemies), len(locations), len(factions))
     return {
@@ -223,7 +223,7 @@ def add_foreshadowing(project_id: str, req: dict, user: dict = Depends(_require_
     if not item:
         raise HTTPException(status_code=400, detail="伏笔内容为空")
     world.foreshadowing.append(item)
-    store.save_world(world)
+    store.save_world(world, commit=True, source="user")
     return {"foreshadowing": [str(x) for x in world.foreshadowing]}
 
 
@@ -236,5 +236,5 @@ def delete_foreshadowing(project_id: str, index: int, user: dict = Depends(_requ
     if world is None or index < 0 or index >= len(world.foreshadowing):
         raise HTTPException(status_code=404, detail="伏笔不存在")
     world.foreshadowing.pop(index)
-    store.save_world(world)
+    store.save_world(world, commit=True, source="user")
     return {"foreshadowing": [str(x) for x in world.foreshadowing]}

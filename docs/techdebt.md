@@ -83,7 +83,7 @@
 
 | 函数 | 位置 | 行数 | 备注 |
 |---|---|---|---|
-| `_fs` | `memory.py:285` | **259** | 红线 5 倍，且为记忆核心构建 |
+| `_fs`（外层 `build_context` 已拆） | `memory.py:45` | 408（原 539） | ✅ 8 个独立层级已抽 helper（§11.1 先拆函数，2026-10-28）；L1 设定库含嵌套 `_fs` 仍 300 行待下轮 |
 | `init_db` | `db/base.py:392` | 92 | DDL + seed + 迁移全在这 |
 | `build_context` | `memory.py:45` | 75 | |
 | `build_setting_cards` | `setting_cards.py:47` | 60 | |

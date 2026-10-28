@@ -198,9 +198,22 @@ def _beat_cycle_issues(content: str) -> list[dict]:
     seq = _extract_beat_sequence(content)
     if len(seq) < _CYCLE_MIN * 2:
         return []
-    n = len(seq)
+    return _check_exact_sequence_cycle(seq) or _check_windowed_cycle(seq)
 
-    # 判据1：连续子序列重复（完整循环等长再现）
+
+def _cycle_issue(seq_slice: tuple | list) -> dict:
+    """构造情节循环重演 issue（两个判据共用同一返回结构）。"""
+    return {
+        "type": "情节-同事件循环重演",
+        "detail": f"同一情节节拍序列「{'→'.join(seq_slice)}」在章内出现 ≥2 次，"
+                  "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
+        "level": "大改",
+    }
+
+
+def _check_exact_sequence_cycle(seq: list) -> list[dict]:
+    """判据1：同一长度 ≥_CYCLE_MIN 的连续节拍子序列出现 ≥2 次且含 ≥2 种强情节拍。"""
+    n = len(seq)
     for L in range(_CYCLE_MIN, min(_CYCLE_MIN + 5, n) + 1):
         seen: dict[tuple, int] = {}
         for i in range(n - L + 1):
@@ -212,14 +225,13 @@ def _beat_cycle_issues(content: str) -> list[dict]:
             strong = sum(1 for b in set(t) if b in _CYCLE_STRONG_BEATS)
             if strong < _CYCLE_STRONG_MIN:
                 continue
-            return [{
-                "type": "情节-同事件循环重演",
-                "detail": f"同一情节节拍序列「{'→'.join(t)}」在章内出现 ≥2 次，"
-                          "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
-                "level": "大改",
-            }]
+            return [_cycle_issue(t)]
+    return []
 
-    # 判据2：容忍少量插入的窗口匹配（换措辞版本可能插入 1-2 拍）
+
+def _check_windowed_cycle(seq: list) -> list[dict]:
+    """判据2：容忍换措辞插入 1-2 拍的窗口匹配（LCS + 长度差 + 共享强拍三判据）。"""
+    n = len(seq)
     max_win = min(_CYCLE_MIN + 4, n)
     for i in range(n - _CYCLE_MIN + 1):
         for L in range(_CYCLE_MIN, max_win - i + 1):
@@ -238,10 +250,5 @@ def _beat_cycle_issues(content: str) -> list[dict]:
                 if strong < _CYCLE_STRONG_MIN:
                     # 仅高频骨架拍重复（不同事件共享行为词），非同一事件换措辞重演
                     continue
-                return [{
-                    "type": "情节-同事件循环重演",
-                    "detail": f"同一情节节拍序列「{'→'.join(sub)}」在章内出现 ≥2 次，"
-                              "疑似同事件多版本重演（换措辞循环，文本相似度漏检）",
-                    "level": "大改",
-                }]
+                return [_cycle_issue(sub)]
     return []

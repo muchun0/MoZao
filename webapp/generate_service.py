@@ -844,6 +844,32 @@ def _record_chapter_feedback(store: ProjectStore, no: int, results: list[dict],
                     "candidate_version": latest if kept else None})
 
 
+def _resolve_chapter_numbers(outline, params: dict, done: set) -> list[int]:
+    """按 scope 解析本次要生成的章节号列表（single/range/all）。"""
+    total = len(outline.chapters)
+    scope = params.get("scope")
+    if scope == "single":
+        return [params["ch_no"]]
+    if scope == "range":
+        end = min(int(params.get("to_ch") or total), total)
+        return list(range(params["from_ch"], end + 1))
+    # all：全部未完成章
+    return [n for n in range(1, total + 1) if n not in done]
+
+
+def _generate_one_chapter(store, pipeline, outline, research, no: int, total: int,
+                          billing: dict, project_id: str, outputs: list, entries: list) -> None:
+    """单章生成：快照版本 → 写章 → 结算新增版本 → 回读反馈。"""
+    plan = outline.chapters[no - 1]
+    prev = settle_ledger.snapshot_chapter_versions(store, no)
+    pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
+                                  is_final=(no == total))
+    results = settle_ledger.settle_chapter_versions(store, no, prev,
+                                                    mode=billing["mode"],
+                                                    project_id=project_id)
+    _record_chapter_feedback(store, no, results, outputs, entries)
+
+
 def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing: dict,
                    outputs: list[dict], entries: list[dict]) -> None:
     """章节：按 scope 循环（快照版本 → 写章 → 结算新增版本），章末判停止/余额。
@@ -862,14 +888,7 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
     existing = store.list_chapters()
     done = {c.no for c in existing}
     baseline_done = len(done)  # 运行前已完成章数（书级）
-    scope = params.get("scope")
-    if scope == "single":
-        numbers = [params["ch_no"]]
-    elif scope == "range":
-        end = min(int(params.get("to_ch") or total), total)
-        numbers = list(range(params["from_ch"], end + 1))
-    else:  # all：全部未完成章
-        numbers = [n for n in range(1, total + 1) if n not in done]
+    numbers = _resolve_chapter_numbers(outline, params, done)
     research = store.load_research()
     _update_task_progress(store, phase="chapter", chapters_total=total,
                           chapters_done=baseline_done, current_chapter=0,
@@ -887,17 +906,11 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
         if settle_ledger.should_stop_now(store, billing["mode"]):
             handle.error = "余额已耗尽，已停止生成。充值后可重新触发。"
             break
-        plan = outline.chapters[no - 1]
-        prev = settle_ledger.snapshot_chapter_versions(store, no)
         _update_task_progress(store, chapters_total=total,
                               chapters_done=len(done | written), current_chapter=no,
                               task_total=len(numbers), task_done=len(written))
-        pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
-                                      is_final=(no == total))
-        results = settle_ledger.settle_chapter_versions(store, no, prev,
-                                                        mode=billing["mode"],
-                                                        project_id=project_id)
-        _record_chapter_feedback(store, no, results, outputs, entries)
+        _generate_one_chapter(store, pipeline, outline, research, no, total,
+                              billing, project_id, outputs, entries)
         written.add(no)
         _update_task_progress(store, chapters_total=total,
                               chapters_done=len(done | written), current_chapter=no,

@@ -36,6 +36,8 @@ from .templates import (
     _pick_dynamic_module,
 )
 from .pitfall_inject import PitfallInjection, build_injection
+from .pitfall_reconcile import reconcile_pitfall_injection as _reconcile_injection
+from .pitfall_contract import CHANNEL_BLOCK, CHANNEL_NONE
 
 # --- 大纲/世界观生成器已抽出到 outline_generators.py（§11.1 文件拆分）---
 from .outline_generators import (
@@ -743,6 +745,22 @@ class ChapterWriter:
                 _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
             if _anchor_parts:
                 system = "\n\n".join(_anchor_parts) + "\n\n" + system
+            # REQ-踩坑账本注入对账 - 第 3 步（P2 保险路径）：埋对账、不补注入。
+            # 该分支现网不可达（high_quality_mode 恒 True）；一旦复活必须立刻报 L3。
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _inj_cp = self._build_pitfall_injection(chapter_no)
+                _reconcile_injection(
+                    expected=list(_inj_cp.patterns),
+                    params=dict(_inj_cp.params),
+                    prompt=(system or "") + "\n" + (user or ""),
+                    path_id="chapter_plain",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_NONE,
+                    trace=self.trace,
+                )
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -1363,6 +1381,20 @@ class ChapterWriter:
         # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）+ P0-8 机制数字
         # 方向/因果校验——命中 → 重试至多 2 次（注入重复节拍证据 + 压缩字数目标 +
         # 数字修复回灌），仍命中 → 返回交给质检 2.12 兜底（见 §7.4）。
+        # REQ-踩坑账本注入对账 - 第 3 步（P0 首要路径）：prompt 拼装完成、chat 之前
+        if getattr(self.cfg, "pitfall_reconcile", True):
+            _reconcile_injection(
+                expected=list(_inj.patterns),
+                params=dict(_inj.params),
+                prompt=(system or "") + "\n" + (user or ""),
+                path_id="fallback_whole",
+                chapter_no=chapter_no,
+                cfg=self.cfg,
+                store=self.store,
+                project_id=getattr(self.store, "project_id", "") or "",
+                inject_channel=CHANNEL_BLOCK,
+                trace=self.trace,
+            )
         _text = self.llm.chat(system, user, temperature=0.85,
                               frequency_penalty=0.3, presence_penalty=0.15) or ""
         for _try in (1, 2):
@@ -1647,6 +1679,26 @@ class ChapterWriter:
         # 拆场景失败的回退分支要用同一个块。
         _inj = pitfall if pitfall is not None else self._build_pitfall_injection(chapter_no)
 
+        # REQ-踩坑账本注入对账 - 第 3 步：场景路径对账埋点（5 点：初始+4 重试）。
+        # 对账入口不接收 memory，Expected 由注入侧 (_inj) 算好传入；prompt 取 chat 前最终文本。
+        def _reconcile_scene(scene_idx, retry_round, sys_text, user_text):
+            if not getattr(self.cfg, "pitfall_reconcile", True):
+                return
+            _reconcile_injection(
+                expected=list(_inj.patterns),
+                params=dict(_inj.params),
+                prompt=(sys_text or "") + "\n" + (user_text or ""),
+                path_id="scene",
+                chapter_no=chapter_no,
+                cfg=self.cfg,
+                store=self.store,
+                project_id=getattr(self.store, "project_id", "") or "",
+                scene_idx=scene_idx,
+                retry_round=retry_round,
+                inject_channel=CHANNEL_BLOCK,
+                trace=self.trace,
+            )
+
         # 1. 拆场景（低温 0.4；含派生事件骨架/JSON 健壮化/结构校验/字数归一/回退决策）
         scenes, events_list, fallback_events, action_plan_block = self._split_scenes(
             chapter_no, plan_title, plan_goal, prev_tail,
@@ -1797,6 +1849,7 @@ class ChapterWriter:
                 # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
                 # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）
                 _target_w = int(sc.get("target_words") or 1200)
+                _reconcile_scene(idx, 0, sys_c, user_c)
                 piece = self.llm.chat(
                     sys_c, user_c,
                     temperature=0.7,
@@ -1840,6 +1893,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 1, sys_c2, user_c2)
                         retry = self.llm.chat(
                             self._with_persona(sys_c2), user_c2,
                             temperature=0.7,
@@ -1888,6 +1942,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 2, sys_c3, user_c3)
                         retry3 = self.llm.chat(
                             self._with_persona(sys_c3), user_c3,
                             temperature=0.7,
@@ -1954,6 +2009,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 3, sys_c4, user_c4)
                         retry4 = self.llm.chat(
                             self._with_persona(sys_c4), user_c4,
                             temperature=0.7,
@@ -2044,6 +2100,7 @@ class ChapterWriter:
                                 user_memory_block=self._user_memory_block(),
                                 state_anchor=state_anchor_text,
                             )
+                            _reconcile_scene(idx, 4, sys_c5, user_c5)
                             retry5 = self.llm.chat(
                                 self._with_persona(sys_c5), user_c5,
                                 temperature=0.7,

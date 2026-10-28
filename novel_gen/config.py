@@ -142,6 +142,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "llm_semantic_beat_gate", True, "Beat 门禁 LLM 语义覆盖判定（REQ-词表换LLM 批次一 beat_gate.py）：整章一次 LLM 判大纲各拍动作/限定语义是否在正文兑现（输出 covered/hit/miss），替代 _ACTION_SYNONYMS/_MOD_SYNONYMS 近义词表判定；LLM 失败回退词表；False=纯词表"),
     FeatureFlag("writing", "llm_semantic_scene_events", True, "场景事件 LLM 语义判定（REQ-词表换LLM 批次一 scene_event_utils.py）：事件归一动作/冲突对象/因果粘连合并/场景正文事件复写 4 处 LLM 判断，替代 _SCENE_ACTION_NORM/_SCENE_RESCUE_VERBS/_CAUSAL_BEAT_RE；LLM 失败回退词表；False=纯词表"),
     FeatureFlag("review", "llm_semantic_mechanism", True, "机制卡三要素 LLM 语义校验（REQ-词表换LLM 批次一 validator.py）：开书时 LLM 判机制卡是否覆盖机制语义/结算规则/代价终局（每本 1 次），替代 _MECH_SEMANTIC/_MECH_SETTLE/_MECH_END 信号词表；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_ai_taste", True, "AI 痕迹四维度 LLM 语义判定（REQ-词表换LLM 批次二 ai_taste.py）：LLM 判连接词堆砌/情绪词直白宣告/填充词口头禅/直白点破句式（整章 1 次），替代 CONNECTIVE_WORDS/EMOTION_WORDS/_FILLER_WORDS/_DIRECT_PATTERN 词表命中判定；LLM 失败回退词表+统计；False=纯词表统计"),
+    FeatureFlag("review", "llm_semantic_panel_anchor", True, "面板结算事件锚点 LLM 判定（REQ-词表换LLM 批次二 quality.py）：LLM 判两处面板数字之间（seg 段）是否发生真实结算事件（非回忆/转述/他人语境/快死未死），替代 _PANEL_EVENT_ANCHORS/_PANEL_EVENT_RECALL 锚点正则；LLM 失败回退词表；False=纯词表"),
     # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期，只读诊断，不改稿不扣费）----
     FeatureFlag("assistant", "assistant_enabled", True, "小墨AI 总开关：项目页写作对话（章节评估/改稿建议），关闭后前后端入口隐藏"),
     FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
@@ -409,6 +411,8 @@ class NovelConfig:
     llm_semantic_beat_gate: bool = feature_default("llm_semantic_beat_gate")      # Beat 门禁 LLM 语义覆盖判定，失败回退词表
     llm_semantic_scene_events: bool = feature_default("llm_semantic_scene_events")  # 场景事件 LLM 语义槽/因果/复写判定，失败回退词表
     llm_semantic_mechanism: bool = feature_default("llm_semantic_mechanism")      # 机制卡三要素 LLM 语义校验，失败回退词表
+    llm_semantic_ai_taste: bool = feature_default("llm_semantic_ai_taste")        # AI 痕迹四维度 LLM 语义判定，失败回退词表+统计
+    llm_semantic_panel_anchor: bool = feature_default("llm_semantic_panel_anchor")  # 面板结算事件锚点 LLM 判定，失败回退词表
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

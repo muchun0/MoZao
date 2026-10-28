@@ -25,7 +25,7 @@ from ..llm.base import LLMClient
 from ..llm.json_parse import parse_json_obj
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter
-from .templates import reader_review_prompt, _output_discipline
+from .templates import reader_review_prompt, _output_discipline, panel_anchor_check_prompt
 from .beats import _beat_cycle_issues
 from .trace import TraceRecorder
 from ..utils.text import longest_common_substr_len as _lcs_len
@@ -67,6 +67,36 @@ _PANEL_EVENT_ANCHORS = re.compile(r"死了|死亡|复活|苏醒|睁眼|醒来|�
 # （《万墟之上》22:32 版实测 6 处误命中全部是"她看见他死了/你死了/她快死了/
 # 他应该已经死了/感知到了他死亡"等回忆指认，无一是主角实时结算）
 _PANEL_EVENT_RECALL = re.compile(r"看见|看过|见过|说|喊|叫|读|记得|梦见|听说|以为|感知|想起|回忆|幻觉|残留|应该|快死")
+
+
+def _seg_has_settle_event_regex(seg: str) -> bool:
+    """确定性兜底：seg 内出现结算事件锚点、且锚点前 16 字无回忆/转述/他人语境词。
+
+    原 _panel_progress_issues 内联逻辑原样抽出（行为零变化）：命中"死了"且前一字为
+    "快"=将死未死跳过；锚点前 16 字命中 _PANEL_EVENT_RECALL 视为回忆/转述不算结算。
+    """
+    for m in _PANEL_EVENT_ANCHORS.finditer(seg):
+        # 特判"快死了"=将死未死（非结算）：锚点"死了"前 1 字为"快"
+        if m.group() == "死了" and seg[max(0, m.start() - 1):m.start()] == "快":
+            continue
+        ctx = seg[max(0, m.start() - 16):m.start()]
+        if not _PANEL_EVENT_RECALL.search(ctx):
+            return True
+    return False
+
+
+def _llm_panel_seg_settle(seg: str, llm) -> bool | None:
+    """LLM 语义判定 seg 段是否发生「真实结算事件」（REQ-词表换LLM 批次二）。
+
+    True/False = LLM 明确判定（调用方直接采用，不回退词表）；
+    None = 输出非结构化 / has_settle_event 缺失或非 bool，调用方回退锚点正则兜底。
+    异常一律抛出由调用方捕获留痕（本函数不裸吞，§11.6）。
+    """
+    system, user = panel_anchor_check_prompt(seg)
+    raw = llm.chat(system, user, temperature=0.2, max_tokens=200, json_mode=True)
+    data = parse_json_obj(raw)
+    val = data.get("has_settle_event") if isinstance(data, dict) else None
+    return val if isinstance(val, bool) else None
 
 # 自动重写轮数（REQ-章内自洽与机制账本·扩展）：检出问题后最多重写 N 轮，通过即停；
 # 全部失败才标记放行（不再"1 次重写不通过即静默交付"）
@@ -470,9 +500,14 @@ class QualityChecker:
         return issues, score
 
     def _check_panel_progress(self, content: str) -> tuple[list, int]:
-        """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。"""
+        """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。
+
+        REQ-词表换LLM 批次二：事件锚点判定优先 LLM 语义（开关 llm_semantic_panel_anchor
+        默认开），失败/关闭回退 _PANEL_EVENT_ANCHORS 锚点正则。
+        """
         issues, score = [], 0
-        for it in self._panel_progress_issues(content):
+        use_llm_panel = bool(getattr(self.cfg, "llm_semantic_panel_anchor", True))
+        for it in self._panel_progress_issues(content, llm=self.llm, use_llm=use_llm_panel):
             issues.append(it)
             score -= 5
         return issues, score
@@ -698,6 +733,8 @@ class QualityChecker:
                 taste_issues = ai_taste_issues(
                     content,
                     threshold=int(getattr(self.cfg, "ai_taste_threshold", 60) or 60),
+                    llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_ai_taste", True)),
                 )
                 if taste_issues:
                     issues.extend(taste_issues)
@@ -875,7 +912,7 @@ class QualityChecker:
             })
         return issues
 
-    def _panel_progress_issues(self, content: str) -> list[dict]:
+    def _panel_progress_issues(self, content: str, llm=None, use_llm: bool = True) -> list[dict]:
         """机制数字结算校验（确定性）：同一面板数字（同标签同数值）跨段复现 = 结算未推进。
 
         如「剩余次数：2/3」在两次死亡后仍显示「2/3」——数字未随事件递减。
@@ -914,16 +951,22 @@ class QualityChecker:
                 if gap <= _PANEL_REPEAT_SPAN:
                     continue
                 seg = content[a:b]
-                # 事件锚点须跳过回忆/转述/他人语境（"她看见他死了"不算结算事件）
-                event = False
-                for m in _PANEL_EVENT_ANCHORS.finditer(seg):
-                    # 特判"快死了"=将死未死（非结算）：锚点"死了"前 1 字为"快"
-                    if m.group() == "死了" and seg[max(0, m.start() - 1):m.start()] == "快":
-                        continue
-                    ctx = seg[max(0, m.start() - 16):m.start()]
-                    if not _PANEL_EVENT_RECALL.search(ctx):
-                        event = True
-                        break
+                # 事件锚点判定（REQ-词表换LLM 批次二）：LLM 语义判定优先；
+                # llm 缺失/开关关/调用失败/输出非结构化 → 回退锚点+回忆正则兜底（行为零变化）
+                event: bool | None = None
+                if llm is not None and use_llm:
+                    try:
+                        event = _llm_panel_seg_settle(seg, llm)
+                    except Exception as exc:
+                        logger.warning(
+                            "panel seg settle LLM 判定失败，回退词表锚点正则: %s: %s",
+                            type(exc).__name__, exc)
+                        event = None
+                    else:
+                        if event is None:
+                            logger.warning("panel seg settle LLM 输出非结构化，回退词表锚点正则")
+                if event is None:
+                    event = _seg_has_settle_event_regex(seg)
                 if event:
                     major.append(f"{label}：{num}")
                 else:

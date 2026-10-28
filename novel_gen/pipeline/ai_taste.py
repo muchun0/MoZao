@@ -1,21 +1,29 @@
 # -*- coding: utf-8 -*-
 """AI 痕迹量化检测（P1-4）。
 
-确定性规则检测成文中的 AI 味（连接词堆砌 / 抽象情绪词直白宣告 / 句式排比 / 段落雷同），
-纯函数、不调 LLM，供 QualityChecker 作为计分项（只扣分、不单独阻断生成）。
+REQ-词表换LLM 批次二：连接词堆砌 / 情绪词直白宣告 / 填充词口头禅 / 零直白四维度
+改为 LLM 语义判定（整章 1 次），词表+统计作为确定性兜底——LLM 失败/非结构化/异常/
+开关关闭/未接 llm 时回退，兜底路径行为与旧版逐字节一致。明喻密度、句式排比、段落
+雷同、文风漂移量化仍为纯确定性计算（不换 LLM）。
 """
 from __future__ import annotations
 
+import logging
 import re
 
-# 网文 AI 腔高频连接词（堆砌即露馅）
+from ..llm.json_parse import parse_json_obj
+from .templates import ai_taste_check_prompt
+
+logger = logging.getLogger(__name__)
+
+# 网文 AI 腔高频连接词（堆砌即露馅；兜底 + 漂移量化共用，常量保留）
 CONNECTIVE_WORDS = [
     "然而", "因此", "不仅", "而且", "值得注意的是", "综上所述",
     "与此同时", "此外", "总之", "显而易见", "事实上", "确实",
     "毕竟", "更何况", "由此可见", "换句话说", "换言之",
 ]
 
-# 抽象情绪词直白宣告（点破允许：'他怕了'+动作支撑；密度过高=堆砌警示，见 _character_depth_rules）
+# 抽象情绪词直白宣告（点破允许：'他怕了'+动作支撑；密度过高=堆砌警示）
 EMOTION_WORDS = [
     "愤怒", "震惊", "无奈", "开心", "难过", "恐惧", "兴奋",
     "悲伤", "痛苦", "幸福", "激动", "失望", "害怕", "紧张",
@@ -38,10 +46,13 @@ _SENT_CV_TOO_LOW = 0.45
 _SENT_CV_TOO_HIGH = 1.20
 #: 词汇多样性 TTR 过低 → 用词单调
 _TTR_TOO_LOW = 0.35
-#: 无意义填充词（口头禅）占比过高 → 重复用词（主语名等正常高频词不判漂移）
+#: 无意义填充词（口头禅）占比过高 → 重复用词（兜底 + 漂移量化共用，常量保留）
 _FILLER_WORDS = ("然后", "于是", "只见", "当即", "顿时", "但是", "然而",
                  "因此", "不禁", "果然", "终于", "终于还是")
 _FILLER_LIMIT = 0.006
+
+#: LLM 判定四维度键（契约，与 ai_taste_check_prompt 输出一致）
+_JUDGE_KEYS = ("connective_excess", "emotion_excess", "filler_overuse", "zero_direct")
 
 
 def _sentences(text: str) -> list[str]:
@@ -141,19 +152,87 @@ def _para_similar(text: str) -> bool:
     return False
 
 
-def score_ai_taste(text: str) -> int:
-    """AI 痕迹分 0-100（越高越自然），各维度扣分叠加。"""
+def _zero_direct(text: str) -> bool:
+    """零直白：全文无一处直白点破句式（'他怕了'式）——情绪演过头、缺说三分。"""
+    return not _DIRECT_PATTERN.search(text)
+
+
+# ---------- REQ-词表换LLM 批次二：四维度 LLM 语义判定 ----------
+
+def _dict_judge(text: str, total: int) -> dict:
+    """确定性词表+统计兜底判定（= 旧版 score/issue 逻辑，逐字节一致）。
+
+    filler 旧版不计入 AI 痕迹扣分（其确定性归属在 drift_score），兜底恒 False。
+    """
+    return {
+        "connective_excess": _count(text, CONNECTIVE_WORDS) * 1000 / total >= CONN_DENSITY_LIMIT,
+        "emotion_excess": _count(text, EMOTION_WORDS) * 1000 / total >= EMO_DENSITY_LIMIT,
+        "filler_overuse": False,
+        "zero_direct": _zero_direct(text),
+    }
+
+
+def _llm_ai_taste(text: str, llm) -> dict | None:
+    """LLM 语义判定四维度（整章 1 次）。
+
+    返回 dict(4 bool)=成功；dict 为空 / 任一键缺失 / 值非 bool → None（调用方回退词表）。
+    空正文直接返回 None（不调 LLM）。
+    """
+    if not text:
+        return None
+    system, user = ai_taste_check_prompt(text)
+    raw = llm.chat(system, user, temperature=0.2, max_tokens=300, json_mode=True)
+    data = parse_json_obj(raw)
+    if not isinstance(data, dict) or not data:
+        return None
+    out: dict = {}
+    for k in _JUDGE_KEYS:
+        v = data.get(k)
+        if not isinstance(v, bool):
+            return None
+        out[k] = v
+    return out
+
+
+def _ai_taste_judge(text: str, llm, use_llm: bool) -> dict:
+    """四维度判定门面：LLM 语义优先；失败/非结构化/异常/未接 llm/开关关闭回退词表。
+
+    score 与 issues 共用本函数一次判定，保证整章仅 1 次 LLM 调用。
+    """
+    if not text:
+        return {k: False for k in _JUDGE_KEYS}
+    if llm is None or not use_llm:
+        return _dict_judge(text, len(text))
+    try:
+        res = _llm_ai_taste(text, llm)
+    except Exception as exc:
+        logger.warning("llm ai_taste judge failed, fallback dict: %s: %s",
+                       type(exc).__name__, exc)
+        return _dict_judge(text, len(text))
+    if res is None:
+        logger.warning("llm ai_taste unstructured, fallback dict")
+        return _dict_judge(text, len(text))
+    return res
+
+
+def _simile_hit(text: str, total: int) -> bool:
+    """明喻过密（永远确定性，不换 LLM）。"""
+    return text.count("像") * 1000 / total >= SIMILE_DENSITY_LIMIT
+
+
+def _score_from_judge(text: str, judge: dict) -> int:
+    """由共享 judge 计算 AI 痕迹分。扣分结构保持现状：conn25/emo20/simile10/zero10/排比15/雷同10。"""
     if not text:
         return 100
     total = len(text)
     score = 100
-    if _count(text, CONNECTIVE_WORDS) * 1000 / total >= CONN_DENSITY_LIMIT:
+    if judge["connective_excess"]:
         score -= 25
-    if _count(text, EMOTION_WORDS) * 1000 / total >= EMO_DENSITY_LIMIT:
+    if judge["emotion_excess"]:
         score -= 20
-    if text.count("像") * 1000 / total >= SIMILE_DENSITY_LIMIT:
+    if _simile_hit(text, total):
         score -= 10
-    if _zero_direct(text):
+    if judge["zero_direct"]:
         score -= 10
     if _parallel_issue(text):
         score -= 15
@@ -162,54 +241,55 @@ def score_ai_taste(text: str) -> int:
     return max(0, min(100, score))
 
 
-def _zero_direct(text: str) -> bool:
-    """零直白：全文无一处直白点破句式（'他怕了'式）——情绪演过头、缺说三分。"""
-    return not _DIRECT_PATTERN.search(text)
+def score_ai_taste(text: str, llm=None, use_llm: bool = True) -> int:
+    """AI 痕迹分 0-100（越高越自然），各维度扣分叠加。
+
+    llm/use_llm 缺省（或失败）回退词表统计，无参调用与旧版行为一致。
+    """
+    return _score_from_judge(text, _ai_taste_judge(text, llm, use_llm))
 
 
-def ai_taste_issues(text: str, threshold: int = 60) -> list[dict]:
-    """综合分低于 threshold 时，返回命中的 AI 痕迹维度 issue（level=中改，不阻断）。"""
-    if not text or score_ai_taste(text) >= threshold:
+#: LLM 命中维度的语义化 issue detail（不引用词表密度数字）
+_DETAIL_CONN = ("连接词扎堆（然而/因此/不仅…而且/值得注意的是等书面连接词高频复用），"
+                "读感像议论文转述而非网文叙事；收敛到动作/对话驱动叙事")
+_DETAIL_EMO = ("抽象情绪词直白宣告连发（愤怒/震惊/无奈等直说），缺动作/微表情承载；"
+               "情绪用动作+生理反应承载，点破只留给关键节点")
+_DETAIL_ZERO = ("全文无一处直白点破（'他怕了'式）——情绪只演不说，读者要自己猜；"
+                "铺垫到位处直接点破并紧跟动作/生理反应支撑")
+_DETAIL_FILLER = ("填充词口头禅高频复现（然后/于是/只见/当即等），读感啰嗦机械；"
+                  "按动作顺序直写，删掉口头禅")
+
+
+def ai_taste_issues(text: str, threshold: int = 60, llm=None, use_llm: bool = True) -> list[dict]:
+    """综合分低于 threshold 时返回命中维度 issue（level=中改，不阻断）。
+
+    judge 与 score 共享一次判定（整章 1 次 LLM）；simile/排比/雷同仍确定性生成。
+    """
+    if not text:
         return []
-    issues: list[dict] = []
+    judge = _ai_taste_judge(text, llm, use_llm)
+    if _score_from_judge(text, judge) >= threshold:
+        return []
     total = len(text)
-    conn = _count(text, CONNECTIVE_WORDS)
-    emo = _count(text, EMOTION_WORDS)
-    simile = text.count("像")
-    if conn * 1000 / total >= CONN_DENSITY_LIMIT:
-        issues.append({
-            "type": "AI痕迹-连接词堆砌",
-            "detail": f"连接词密度 {conn * 1000 / total:.1f}/千字，高于阈值（然而/因此/不仅…而且/值得注意的是等）",
-            "level": "中改",
-        })
-    if emo * 1000 / total >= EMO_DENSITY_LIMIT:
-        issues.append({
-            "type": "AI痕迹-情绪词堆砌（点破允许）",
-            "detail": f"抽象情绪词密度 {emo * 1000 / total:.1f}/千字——直白点破本身是好的写法（'他怕了'+动作支撑），但密度过高像情绪词连发；多数情绪用动作+微表情承载，点破留给关键节点",
-            "level": "中改",
-        })
-    if simile * 1000 / total >= SIMILE_DENSITY_LIMIT:
+    issues: list[dict] = []
+    if judge["connective_excess"]:
+        issues.append({"type": "AI痕迹-连接词堆砌", "detail": _DETAIL_CONN, "level": "中改"})
+    if judge["emotion_excess"]:
+        issues.append({"type": "AI痕迹-情绪词堆砌（点破允许）", "detail": _DETAIL_EMO, "level": "中改"})
+    if _simile_hit(text, total):
+        simile = text.count("像")
         issues.append({
             "type": "AI痕迹-明喻过密（警示）",
-            "detail": f"'像……'明喻密度 {simile * 1000 / total:.1f}/千字——白描重在传神、很少用比喻；收敛到 ≤2/千字，其余用动词链直写",
+            "detail": f"'像……'明喻密度 {simile * 1000 / total:.1f}/千字——白描重在传神、很少用比喻；"
+                      f"收敛到 ≤2/千字，其余用动词链直写",
             "level": "中改",
         })
-    if _zero_direct(text):
-        issues.append({
-            "type": "AI痕迹-全程演过头（零直白）",
-            "detail": "全文无一处直白点破（'他怕了'式）——情绪只演不说，读者要自己猜；铺垫到位处直接点破，点破处紧跟动作/生理反应作支撑",
-            "level": "中改",
-        })
+    if judge["zero_direct"]:
+        issues.append({"type": "AI痕迹-全程演过头（零直白）", "detail": _DETAIL_ZERO, "level": "中改"})
+    if judge["filler_overuse"]:
+        issues.append({"type": "AI痕迹-填充词口头禅堆砌", "detail": _DETAIL_FILLER, "level": "中改"})
     if _parallel_issue(text):
-        issues.append({
-            "type": "AI痕迹-句式排比",
-            "detail": "连续多句以相同词开头，句式对称明显，读感模板化",
-            "level": "中改",
-        })
+        issues.append({"type": "AI痕迹-句式排比", "detail": "连续多句以相同词开头，句式对称明显，读感模板化", "level": "中改"})
     if _para_similar(text):
-        issues.append({
-            "type": "AI痕迹-段落雷同",
-            "detail": "连续段落字数接近，段落结构模板化",
-            "level": "中改",
-        })
+        issues.append({"type": "AI痕迹-段落雷同", "detail": "连续段落字数接近，段落结构模板化", "level": "中改"})
     return issues

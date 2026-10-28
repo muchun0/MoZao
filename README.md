@@ -544,6 +544,12 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-28**：第三十次部署（服务器代码 = master，**已上线**）——**场景重演修复（方案一）：派生事件清单改通用 LLM 语义去重**（fix/scene-plan-align-dedup，d854092）：
+  - 消融定位重演成因 = `scene_plan_align`（重复事件源）× `scene_split`（重述发射端）协同，方案一修事件清单源。
+  - 弃纯字符判据前置（书级特化、新项目语义重演泛化不足），改**通用 LLM 语义去重**——复用既有 `_scene_split_review` 通用评审产出重复对 + 新增纯函数合并器 `_dedup_events_by_pairs`（确定性、零 LLM、可单测，接受任意来源重复对，供其他事件清单语义去重场景复用）；评审/去重失败降级保留原清单不阻塞。
+  - 回归：全量 pytest **1060 passed**；端到端真实回归 **3/3 不重演**（v20/v21/v22，纯字符版 2/3 中 round_03 曾复现已消除）。
+  - 部署：devtest 合并 master → `git archive master` 打包 → workbench upload → 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+
 - **2026-10-28**：第二十九次部署（服务器代码 = master，**已上线**）——**Agent 全链路上线 + 计费单一化 + 建书/详情页 UX 重构 + 大规模技术债清理**（devtest 87 提交合并 master 一次覆盖）：
   - **① Agent 面板全链路（feat/agent-run、agent-frontend、agent-panel-layout）**：产物版本化门面（chapter/outline/world 统一版本库，阶段 1A）→ Agent 统一触发入口与 run 上下文（阶段 1B）→ 前端 Agent 面板与产物版本 UI（阶段 1C）→ 面板 rail 左右分栏 → 生成入口统一收敛为单轨并删除 9 个旧生成接口 → Agent run UX 三轮修复（运行进度/重生成结果反馈/实时预估/每日上限 → 进度分母口径统一/预估首屏/非章节类进度条/进度原子写 → 任务视角 task_done/task_total + 书级并集防重复计数）。
   - **② 计费体系（feat/settle-per-version、fix/settle-byok-stop、feat/hq-mode-hardcode-pricing）**：计费改为**按产物版本按生成字数结算**（阶段 0.5）；BYOK 用户不按平台余额停止生成；**高质量模式固化与计费单一化**——移除 5 个开关与普通模式计费，统一每万字 3 元。

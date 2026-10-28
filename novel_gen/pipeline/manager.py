@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
+from ..llm.json_parse import parse_json_obj as _parse_json_obj
 from ..research.research import ResearchEngine
 from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
@@ -31,24 +32,6 @@ from .agents import (ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent
 from webapp.logger import get_logger
 
 logger = get_logger("pipeline")
-
-
-def _parse_json_obj(text: str) -> dict:
-    """容错解析 LLM 输出的 JSON 对象（去 ``` 围栏）；失败返回空 dict。"""
-    try:
-        import json
-        t = (text or "").strip()
-        if t.startswith("```"):
-            lines = t.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            t = "\n".join(lines).strip()
-        data = json.loads(t)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 
 class NovelPipeline:

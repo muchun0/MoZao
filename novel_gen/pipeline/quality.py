@@ -22,11 +22,13 @@ import time
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
+from ..llm.json_parse import parse_json_obj
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter
 from .templates import reader_review_prompt, _output_discipline
 from .beats import _beat_cycle_issues
 from .trace import TraceRecorder
+from ..utils.text import longest_common_substr_len as _lcs_len
 
 logger = logging.getLogger(__name__)
 
@@ -1087,7 +1089,7 @@ class QualityChecker:
                     "（冲突则加入 issues，type='人物一致性'）"
                 )
             raw = self.llm.chat(system, user, temperature=0.3, max_tokens=1200)
-            data = self._parse_json(raw)
+            data = parse_json_obj(raw)
             issues = [{
                 "pos": it.get("pos", ""),
                 "type": f"读者-{it.get('type', '')}",
@@ -1136,7 +1138,7 @@ class QualityChecker:
                 "请输出上述 JSON。"
             )
             raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
-            data = self._parse_json(raw)
+            data = parse_json_obj(raw)
             out = []
             for it in (data.get("contradictions") or []):
                 if not isinstance(it, dict):
@@ -1601,22 +1603,6 @@ class QualityChecker:
         except Exception:
             pass
 
-    @staticmethod
-    def _parse_json(text: str) -> dict:
-        t = (text or "").strip()
-        if t.startswith("```"):
-            lines = t.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            t = "\n".join(lines).strip()
-        try:
-            data = json.loads(t)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
 
 def _split_summary(text: str) -> tuple[str, str]:
     """按『【摘要】』标记拆分正文与摘要（与 stages 保持一致）。"""
@@ -1627,19 +1613,6 @@ def _split_summary(text: str) -> tuple[str, str]:
         summary = text[idx + len(marker):].strip().replace("\n", " ")
         return body, summary
     return text.strip(), ""
-
-
-def _lcs_len(a: str, b: str) -> int:
-    """两文本最长公共子串长度（≥2 字视为覆盖命中；小文本直算）。"""
-    if not a or not b:
-        return 0
-    if len(a) > len(b):
-        a, b = b, a
-    for w in range(len(a), 1, -1):
-        for i in range(len(a) - w + 1):
-            if a[i:i + w] in b:
-                return w
-    return 0
 
 
 def _core_event_missing(content: str, core_event: str) -> list[str]:

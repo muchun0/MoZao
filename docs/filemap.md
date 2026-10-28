@@ -37,6 +37,7 @@
 | `llm/factory.py` | Provider 工厂（deepseek/doubao/openai/mock） |
 | `llm/usage.py` | Token 用量统计（模块1/2：累计 + 最近一次调用） |
 | `llm/providers.py` | 各 Provider 实现 |
+| `llm/json_parse.py` | **LLM 输出 JSON 容错解析（§11.7 统一健壮封装）**：`parse_json_obj`（剥围栏/截断/尾逗号修复/失败返空 dict），manager/stages/quality 收敛到此处；与 `llm/base._parse_json_strict`（失败即抛）职责不同 |
 | `research/research.py` | 调研编排：内置知识库 + 可选联网搜索 → LLM 提炼共性报告；**P0-3** 读取 `store.load_teardown_material()`（拆书库回流素材）并入调研素材 |
 | `research/sources.py` | 搜索源（博查/Serper） |
 | `research/schemas.py` | 调研数据结构 |
@@ -89,6 +90,7 @@
 | `utils/chapter_splitter.py` | 章节切分 |
 | `utils/migrate.py` | 数据迁移 |
 | `utils/paths.py` | 路径解析（projects/output/logs 目录） |
+| `utils/text.py` | **纯文本算法工具（§11.2 单一权威源）**：`longest_common_substr_len`（最长公共子串，quality/stages 收敛到此处） |
 
 > 注：README 旧目录结构中的 `cli.py` / `__main__.py` 已不存在，当前入口为 Web 端。
 

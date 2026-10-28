@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 from ..config import NovelConfig
 from ..llm.base import LLMClient
+from ..llm.json_parse import parse_json_obj as _parse_json_obj
+from ..utils.text import longest_common_substr_len as _lcs_len
 from ..research.schemas import ResearchReport
 from ..store.project import ProjectStore
 from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
@@ -34,26 +36,6 @@ from .templates import (
     _pick_dynamic_module,
 )
 
-
-def _parse_json_obj(text) -> dict:
-    """健壮 LLM JSON 解析（REQ 11.7：剥代码块/截断/尾逗号/字段兜底，异常返回空 dict）。"""
-    import json as _json
-    try:
-        if not isinstance(text, str):
-            text = str(text)
-        t = text.strip()
-        m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
-        if m:
-            t = m.group(1).strip()
-        # 截断检测：尾部不完整 JSON 时去掉最后一段未闭合
-        if not t.startswith("{"):
-            i = t.find("{")
-            t = t[i:] if i >= 0 else t
-        # 尾逗号修复
-        t = re.sub(r",\s*([}\]])", r"\1", t)
-        return _json.loads(t) if isinstance(_json.loads(t), dict) else {}
-    except Exception:
-        return {}
 
 _CN_NUM = "一二三四五六七八九十"
 
@@ -3016,19 +2998,6 @@ def _validate_scene_plan(scenes: list, chapter_words: int = 0,
             if difflib.SequenceMatcher(None, a, b).ratio() > _SCENE_EVENT_OVERLAP_RATIO:
                 return False, "场景事件高度相似（同一事件换措辞拆成两场景）"
     return True, ""
-
-
-def _lcs_len(a: str, b: str) -> int:
-    """两文本最长公共子串长度（≥2 字视为「段被事件清单覆盖」；O(n*m) 小文本直算）。"""
-    if not a or not b:
-        return 0
-    if len(a) > len(b):   # 短串作窗口，长串作母串
-        a, b = b, a
-    for w in range(len(a), 1, -1):
-        for i in range(len(a) - w + 1):
-            if a[i:i + w] in b:
-                return w
-    return 0
 
 
 def _scene_events_overlap(scenes: list) -> bool:

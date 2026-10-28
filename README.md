@@ -544,6 +544,18 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-10-28**：第二十九次部署（服务器代码 = master，**已上线**）——**Agent 全链路上线 + 计费单一化 + 建书/详情页 UX 重构 + 大规模技术债清理**（devtest 87 提交合并 master 一次覆盖）：
+  - **① Agent 面板全链路（feat/agent-run、agent-frontend、agent-panel-layout）**：产物版本化门面（chapter/outline/world 统一版本库，阶段 1A）→ Agent 统一触发入口与 run 上下文（阶段 1B）→ 前端 Agent 面板与产物版本 UI（阶段 1C）→ 面板 rail 左右分栏 → 生成入口统一收敛为单轨并删除 9 个旧生成接口 → Agent run UX 三轮修复（运行进度/重生成结果反馈/实时预估/每日上限 → 进度分母口径统一/预估首屏/非章节类进度条/进度原子写 → 任务视角 task_done/task_total + 书级并集防重复计数）。
+  - **② 计费体系（feat/settle-per-version、fix/settle-byok-stop、feat/hq-mode-hardcode-pricing）**：计费改为**按产物版本按生成字数结算**（阶段 0.5）；BYOK 用户不按平台余额停止生成；**高质量模式固化与计费单一化**——移除 5 个开关与普通模式计费，统一每万字 3 元。
+  - **③ 小墨AI 版本卡片 + 版本 diff 推荐（feat/req-assistant-mvp P2 收尾、REQ-版本对比与推荐）**：小墨AI 版本卡片切装配层 + 推荐建议；版本 diff 与选版推荐——纯函数模块及单测、webapp 只读 diff 接口 + 推荐徽章、前端版本徽章 + 两版对比视图、移除'合规不可用'UI tag。
+  - **④ 建书流程与新建弹窗 UX（feat/ux-create-flow、feat/create-dialog-quality-simplify）**：新建弹窗重排书名置顶、详情页返回书架、工作台更名个人中心、进度口径统一为章节、章节进度上移顶栏元数据；新建小说弹窗统一高质量模式并精简质量选项。
+  - **⑤ 人设体验（feat/persona-prompt-single-version）**：人设弹窗 Markdown 渲染预览（默认阅读态可读）、存量默认人设升级自动刷新为完整 md、编辑人设暴露完整角色提示词并默认关闭章节自动重写、修复人设预览 Markdown 样式不生效。
+  - **⑥ 规则通用化（feat/rule-generalize-debook、feat/mechanism-registry）**：万墟书级规则通用化（提示词去书形/词典通用化/事件冲突动态注入）；机制正则书形去通用化（注册表驱动/方向基线推导/单字单位动态）；去掉封面生成的 pillow 依赖。
+  - **⑦ 项目详情页 UI 重构（feature/project-detail-layout-refactor）**：导航 SVG 图标、章节行去卡片化、底部数据条、人物关系图谱星型布局+图例+hover 高亮、世界观页左右分栏（关系图谱+世界观文本+人物列表+详情）、人物档案折叠面板、事前设计卡折叠。
+  - **⑧ 大规模技术债清理（§11 红线）**：核心链路 print → 统一 logger（§11.6）；JSON 解析与最长公共子串收敛单一权威源（§11.2/§11.7）；memory build_context 三级拆分 + db init_db 拆分 + stages/quality 超长函数拆分（提示词规则块外置 `prompts/rules/*.md`、stages 底部纯函数抽 `scene_event_utils.py`、OutlineGenerator/WorldGenerator 抽 `outline_generators.py`）；**webapp/core.py 按业务域拆分为薄门面 + 六子模块**（core_runtime/models/auth/project/settle/generate，行为零变化）；techdebt P2 债清理（命名表意化+超长行+死代码甄别）；**修复 save_scenes 链路断链**（scenes 未透传致场景落盘从未执行）。
+  - 回归：P0+P1 全量 **596 pytest 全绿**（457 deselected）。部署：devtest 合并 master → `git archive master` 打包 → workbench upload → 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+  - 备注：decisions 记录端到端真实回归遗留问题（章节质量三方判定割裂"待解决" + 本地陈旧进程按 2 元计费），不阻断本次发版；发版后确认线上运行进程为最新代码（计费 3 元/万字）。
+
 - **2026-10-21**：第二十八次部署（服务器代码 = master，**已上线**）——**小墨AI 一期（REQ-小墨AI v1.3 / TECH-小墨AI v1.1，feat/req-assistant-mvp）**：项目页新增「小墨AI」写作对话，只读项目产物、不写正文、不改稿、不扣费（一期不限次）。
   - 上线内容：① 服务层 `webapp/assistant/`——`prompt.py`（读 `agents/prompts/assistant.md`，mtime 缓存+降级）、`context.py`（四层上下文：人设+Bible / 事实块 / 对话窗口 / 提问，按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分 / 问题清单 / 版本对比 / 正向实测）、`service.py`（输入三闸→章节解析→组装→LLM→失败降级→输出合规→落库）；② 数据层 `conversations`/`messages` 建表 + 会话 CRUD/消息分页/最近 N 轮；③ 路由 `routers/assistant.py` 5 条（`_require_user` + 项目归属 + 会话归属）；④ 开关 assistant 模块 6 项（含 `assistant_require_user_key` 默认开：未配 BYOK 直接 400 提示去「模型设置」，不消耗平台额度；`assistant_quota_enabled=False` 一期不限次）；全局开关覆盖抽取 `webapp/config_overrides.py`，生成链路与小墨AI 共用；⑤ 前端「小墨AI」tab（会话/模式/章节/卡片/定位跳章）。
   - 口径红线：review score 只称「质检扣分（缺陷分）」；正向卡只给实测值 vs 阈值（阈值 import 自 `pipeline/ai_taste.py`，单一事实来源），不合成任何质量分；`writer.md` 写作方向仅作背景参考、非评价判据；未接入确定性检测的指标卡片明示缺口。

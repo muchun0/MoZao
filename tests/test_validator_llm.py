@@ -28,7 +28,8 @@ from novel_gen.pipeline.validator import (
 )
 from novel_gen.store.schemas import World
 
-#: 词表路径下三要素全缺的最简机制卡（不含任何信号词）
+#: 词表路径下最简纯概念机制卡（不含任何信号词；2026-10-29 分层放宽后仅缺「机制语义」，
+#: 结算/代价要素对纯概念机制不强制）
 _EMPTY_MECHANISM = "复活机制"
 #: 词表路径下三要素全齐的机制卡（故意含全部信号词，词表兜底应报 0 缺失）
 _FULL_MECHANISM = (
@@ -78,7 +79,7 @@ def test_llm_missing_empty_list_no_issue():
     """LLM 判定三要素齐全（[]）→ 无 issue，且不回退词表。"""
     llm = FakeLLM(response='{"missing": []}')
     v = LogicValidator(llm=llm)
-    # 故意用词表全缺的机制卡：若回退词表会报 3 缺失；LLM 路径下应 0 issue
+    # 故意用词表会报缺语义的机制卡：若回退词表会报 1 缺失；LLM 路径下应 0 issue
     issues = v._check_mechanism(_world(_EMPTY_MECHANISM))
     assert len(llm.calls) == 1
     assert issues == []
@@ -102,15 +103,16 @@ def test_llm_missing_non_fixed_text_dropped():
 
 @pytest.mark.p1
 def test_llm_empty_dict_falls_back_to_vocab(caplog):
-    """LLM 返回空 dict → 回退词表并留 warning。"""
+    """LLM 返回空 dict → 回退词表并留 warning。
+    词表路径下「复活机制」为纯概念机制：只缺机制语义，不强制结算/代价（2026-10-29 分层放宽）。"""
     llm = FakeLLM(response="{}")
     v = LogicValidator(llm=llm)
     with caplog.at_level(logging.WARNING, logger="novel_gen.pipeline.validator"):
         issues = v._check_mechanism(_world(_EMPTY_MECHANISM))
     assert len(issues) == 1
     assert _MISSING_SEMANTIC in issues[0].desc
-    assert _MISSING_SETTLE in issues[0].desc
-    assert _MISSING_END in issues[0].desc
+    assert _MISSING_SETTLE not in issues[0].desc
+    assert _MISSING_END not in issues[0].desc
     assert any("回退词表" in r.message for r in caplog.records)
 
 

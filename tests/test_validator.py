@@ -31,20 +31,35 @@ def validator():
 
 
 @pytest.mark.p1
-def test_goldfinger_missing_with_mechanism_is_fatal(validator):
-    w = World.from_dict({"world_view": "w", "mechanism_rules": "复活机制"})
+def test_goldfinger_missing_with_mechanism_is_minor(validator):
+    """机制卡存在但缺金手指说明书 → 仅提示（机制可能非金手指型，不强造金手指）。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：复活机制，能力定义与边界；结算规则：每死一次减一",
+    })
     issues = validator.validate_stage("bottom_anchors", w)
-    assert has_fatal(issues)
-    assert any(i.scope == "goldfinger" and i.severity == "fatal" for i in issues)
+    assert not has_fatal(issues)
+    assert any(i.scope == "goldfinger" and i.severity == "minor" for i in issues)
 
 
 @pytest.mark.p1
 def test_goldfinger_partial_missing_is_fatal(validator):
+    """金手指存在但缺 下限/成长路径 等必填要素 → 致命；cost 可按能力类型缺省。"""
     w = World.from_dict({"goldfinger_rules": {"trigger": "濒死", "upper_limit": "u"}})
     issues = validator.validate_stage("bottom_anchors", w)
     assert has_fatal(issues)
     fatal = [i for i in issues if i.severity == "fatal"]
     assert any("缺失" in i.desc for i in fatal)
+    assert any("lower_limit" in i.desc or "growth_path" in i.desc for i in fatal)
+
+
+@pytest.mark.p1
+def test_goldfinger_missing_cost_only_not_fatal(validator):
+    """金手指五要素仅缺 cost（无代价能力）→ 不致命。"""
+    w = World.from_dict({"goldfinger_rules": {
+        "trigger": "濒死", "upper_limit": "u", "lower_limit": "l", "growth_path": "g"}})
+    issues = validator.validate_stage("bottom_anchors", w)
+    assert not has_fatal(issues)
 
 
 @pytest.mark.p1
@@ -181,16 +196,39 @@ def test_mechanism_missing_settlement_fatal(validator):
 
 
 @pytest.mark.p1
-def test_mechanism_missing_cost_fatal(validator):
-    """有语义与结算但没有代价/终局 → 致命。"""
+def test_mechanism_no_cost_declared_passes(validator):
+    """有语义与结算但未声明代价 → 不报机制问题（无代价机制合法）。"""
     w = World.from_dict({
         "world_view": "w",
         "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；结算规则：每死一次减1",
     })
     issues = validator.validate_stage("bottom_anchors", w)
+    assert not any(i.scope == "mechanism" for i in issues)
+
+
+@pytest.mark.p1
+def test_mechanism_declared_cost_missing_end_fatal(validator):
+    """机制显式声明代价但缺终局/上限 → 致命。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：可死次数=今日剩余复活次数；结算规则：每死一次减1；"
+                           "代价：每次使用消耗寿命",
+    })
+    issues = validator.validate_stage("bottom_anchors", w)
     mech = [i for i in issues if i.scope == "mechanism"]
     assert mech and mech[0].severity == "fatal"
     assert "代价与终局" in mech[0].desc
+
+
+@pytest.mark.p1
+def test_mechanism_concept_only_requires_semantics(validator):
+    """纯概念型机制（无数字/状态/代价）→ 仅要求机制语义，不强制结算与代价。"""
+    w = World.from_dict({
+        "world_view": "w",
+        "mechanism_rules": "机制语义：他能听见死者未说完的话，只能听见死前最后一句话",
+    })
+    issues = validator.validate_stage("bottom_anchors", w)
+    assert not any(i.scope == "mechanism" for i in issues)
 
 
 @pytest.mark.p1

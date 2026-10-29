@@ -57,6 +57,7 @@ from novel_gen.pipeline.style_anchor import build_teardown_anchor
 from novel_gen.store.schemas import (
     Chapter, ChapterPlan, Outline, World, Character,
     EnemyCard, LocationCard, MechanismBaseline, ClockCard, FactionCard,
+    MechanismRule, GoldfingerRules, PowerLevelSystem,
 )
 from novel_gen.utils.chapter_splitter import split_chapters, summarize_preview
 from novel_gen.utils.paths import get_output_dir, get_projects_dir

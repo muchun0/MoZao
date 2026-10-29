@@ -127,3 +127,64 @@ def test_empty_types_entity_keeps_declared_types(store, routed):
     pw.update_world(project_id="x", payload=_rule_set_payload(), user={})
     pw.update_world(project_id="x", payload={"world_view": "再次保存"}, user={})
     assert pw.project_world(project_id="x", user={})["mechanism_types"] == ["rule_set"]
+
+
+# ---------- 类型判定口径：后端下发权威结果，前端不得自行推断（QA 分叉回归） ----------
+
+@pytest.mark.p1
+def test_resolved_types_matches_resolve_types(store, routed):
+    """`mechanism_types_resolved` 必须恒等于 `resolve_types(world)`。
+
+    守护口径唯一：前端一律以该字段分派，不再在前端重算判定（含中文别名归一与
+    旧书推断），避免前后端两套词表/两套推断规则漂移。
+    """
+    from novel_gen.pipeline.mechanism_types import resolve_types
+
+    cases = [
+        {},                                                              # 空 world → none
+        {"mechanism_types": ["规则怪谈"]},                                # 中文别名 → rule_set
+        {"mechanism_types": ["火星机制"]},                                # 全非法 → 推断 → none
+        {"mechanism_baseline": {"panel_format": "今日可死次数：N/3"}},     # 推断 numeric_panel
+        {"mechanism_baseline": {"scar_end": "蔓延至心脉"}},                # 只填非判定字段 → none
+        {"mechanism_types": ["ability"],
+         "mechanism_baseline": {"panel_format": "x"}},                    # 显式声明优先
+        {"goldfinger_rules": {"trigger": "接触", "upper_limit": "三次"}},  # 推断 ability
+        {"power_system": {"levels": [{"name": "炼气"}], "protagonist_level": "炼气三层"}},
+    ]
+    for i, payload in enumerate(cases):
+        pw.update_world(project_id="x", payload={"world_view": f"用例{i}", **payload}, user={})
+        body = pw.project_world(project_id="x", user={})
+        expected = resolve_types(store.load_world())
+        assert body["mechanism_types_resolved"] == expected, f"用例{i} 口径分叉: {payload}"
+        # 下发的 resolved 必须是合法枚举值，且 none 不与其他类型叠加
+        assert body["mechanism_types_resolved"]
+        assert not ("none" in body["mechanism_types_resolved"]
+                    and len(body["mechanism_types_resolved"]) > 1)
+
+
+@pytest.mark.p1
+def test_resolved_types_sent_on_put_too(store, routed):
+    """PUT 响应同样下发 resolved：保存后前端能立刻按权威口径重渲染，不用等下次 GET。"""
+    res = pw.update_world(project_id="x", payload={"world_view": "别名书",
+                                                   "mechanism_types": ["规则怪谈"]}, user={})
+    assert res["mechanism_types_resolved"] == ["rule_set"]
+    # 落库即归一化：中文别名经 normalize_types 清洗后写回，物与 resolved 一致，
+    # 不再出现"库里存别名、运行时归一"的两套数据
+    assert res["mechanism_types"] == ["rule_set"]
+
+
+@pytest.mark.p1
+def test_empty_type_list_means_undeclared_not_clear(store, routed):
+    """显式传空数组 / 全非法值 / null = 「未声明」，不得清空已声明类型。
+
+    守护 `update_world` 里的 `if declared:` 守卫：一旦把空列表当成「清空」，旧前端
+    （不带机制字段、或回传全非法值）每次保存都会把已声明类型抹掉，运行时分派退回
+    「按字段推断」，与用户/LLM 的显式声明不一致。上一版用例只覆盖了「不带该键」，
+    覆盖不到这条守卫，故补本例。
+    """
+    pw.update_world(project_id="x", payload=_rule_set_payload(), user={})
+    for raw in ([], ["火星机制"], None):
+        res = pw.update_world(project_id="x", payload={"world_view": "再次保存",
+                                                       "mechanism_types": raw}, user={})
+        assert res["mechanism_types"] == ["rule_set"], f"入参 {raw!r} 不应清空已声明类型"
+    assert store.load_world().mechanism_types == ["rule_set"]

@@ -172,7 +172,7 @@
 | `components/world/CharacterGraph.vue` | 人物关系图 |
 | `components/world/WorldEditor.vue` | **世界观编辑面板（2026-10-26 自 ProjectDetail 拆出）**：世界观/人物档案/事前设计卡（生物/地点/势力/机制/时钟/语言禁忌），数据自治（自行加载/保存），锁状态由父组件持有、经 `toggle-lock` 事件变更；**REQ-通用机制类型适配**：机制区块标题/显隐经 `mechanism.js` 按类型计算，本体渲染委托 MechanismEditor |
 | `components/world/MechanismEditor.vue` | **机制初始值编辑器（2026-10-30 自 WorldEditor 拆出，§11.1）**：按 `resolve_types` 分派渲染——`numeric_panel` 数字标尺（标记起点/每次触发增量/标记当前/终局/面板唯一写法/重置规则）、`rule_set` 条款清单（编号/作用域/条款/条件/后果/变更政策/首现章/状态）、`ability` 能力五要素、`power_level` 境界阶梯、`contract`/`temporal` 机制说明文本、`none` 不显示数值区块；旧数据经推断兜底不白屏 |
-| `components/world/mechanism.js` | **机制类型元数据与判定（REQ-通用机制类型适配，前端唯一事实来源）**：`MECHANISM_TYPES`/`TYPE_LABELS`/`TYPE_TITLES`/`POLICY_LABELS`/`STATUS_LABELS` + `normalizeTypes`/`inferTypes`/`resolveTypes`/`hasMechanism`，口径对齐 `novel_gen/pipeline/mechanism_types.py` |
+| `components/world/mechanism.js` | **机制类型元数据与展示判定（REQ-通用机制类型适配）**：`MECHANISM_TYPES`/`TYPE_LABELS`/`TYPE_TITLES`/`POLICY_LABELS`/`STATUS_LABELS` + `resolveTypes`/`dataTypes`/`showBlock`/`hasMechanism`。**类型判定不自算**：以后端下发的 `mechanism_types_resolved`（= `resolve_types`）为权威，本地 `inferTypes` 仅作"响应无该字段"的兜底且字段子集与后端一致；`dataTypes` 提供"有数据就看得见改得动"的展示兜底 |
 | `components/project/ProjectSideNav.vue` | **项目详情左侧栏导航（2026-10-26）**：「内容（章节/大纲/世界观）/ 智能（小墨AI/Agent/工具）」两组，选中金线标记，窄屏降级横向滚动 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |
 | `style.css` | 全局样式（深夜书房视觉语言） |

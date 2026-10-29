@@ -26,10 +26,33 @@ logger = logging.getLogger(__name__)
 _FS_LEVELS = {"small", "medium", "large"}
 
 #: 机制卡三要素固定文案（LLM 路径与词表兜底产出的 missing 必须完全一致）
-_MISSING_SEMANTIC = "机制语义（每个数字/状态的确切含义）"
+_MISSING_SEMANTIC = "机制语义（能力/数字/状态的确切含义）"
 _MISSING_SETTLE = "结算规则（何时增减/重置/与历史衔接）"
 _MISSING_END = "代价与终局（代价递增/上限/触发）"
 _MECH_FIXED_MISSING = (_MISSING_SEMANTIC, _MISSING_SETTLE, _MISSING_END)
+
+#: 数字/状态型机制触发词：机制含其一即视为「需要结算规则」。
+#: 刻意不含"数字"本身（"无数字/纯概念"不误判），只放具体数字载体词。
+_MECH_NUMERIC = ("次数", "进度", "面板", "状态", "累积", "剩余", "余量",
+                 "结算", "递减", "递增", "重置", "恢复", "增减", "减一", "叠加", "消耗值")
+
+#: 代价型机制触发词：机制含其一即视为「声明了代价」，此时才要求代价与终局。
+#: 无代价能力（纯辅助/被动/概念型）合法，不强行设计代价。
+_MECH_COST = ("代价", "上限", "终局", "封顶", "用尽", "永久", "消耗", "递增")
+
+#: 代价终局证据词：机制声明代价后，须含其一才算「代价与终局」要素齐全。
+#: 刻意不含"代价"本身——「代价：消耗寿命」只是声明了消耗什么，未写上限/终局。
+_MECH_END_EVIDENCE = ("上限", "终局", "封顶", "用尽", "永久", "触发", "递增", "耗尽")
+
+
+def _mechanism_is_numeric(mechanism: str) -> bool:
+    """机制是否数字/状态型（需要结算规则）。纯概念机制返回 False。"""
+    return any(k in mechanism for k in _MECH_NUMERIC)
+
+
+def _mechanism_declares_cost(mechanism: str) -> bool:
+    """机制是否声明了代价（需要代价与终局）。无代价机制返回 False。"""
+    return any(k in mechanism for k in _MECH_COST)
 
 
 def _llm_mechanism_missing(mechanism: str, llm) -> list[str] | None:
@@ -98,21 +121,25 @@ class LogicValidator:
         issues += self._check_design_cards(world)
         return issues
 
-    #: 机制卡三要素关键信号词（REQ-章内自洽与机制账本）
-    #: 语义：数字/状态的确切含义；结算：增减/重置的动作规则；代价：上限/终局。
+    #: 机制卡要素关键信号词（REQ-章内自洽与机制账本，2026-10-29 分层放宽）
+    #: 语义：能力/数字/状态的确切含义；结算：数字/状态型机制的增减/重置动作规则；
+    #: 代价终局证据词在模块级 `_MECH_END_EVIDENCE`（仅机制声明代价后才要求）。
     #: 刻意排除宽泛词（如"数字""今日"），避免"无数字""今日剩余复活次数"等
     #: 语义描述被误判为已覆盖对应要素。只放通用机制词，单书词（如"蚀痕/可死"）
     #: 由设定账本声明，不预置。
     _MECH_SEMANTIC = ("语义", "含义", "状态", "次数", "面板", "进度")
     _MECH_SETTLE = ("结算", "增减", "递减", "递增", "重置", "每死", "减一", "恢复")
-    _MECH_END = ("代价", "上限", "终局", "触发", "成长", "封顶", "用尽", "永久")
 
     def _check_mechanism(self, world: World) -> list[IssueItem]:
-        """机制卡完整性（REQ-章内自洽与机制账本）：非空机制卡必须覆盖
-        「机制语义 / 结算规则 / 代价与终局」三要素，缺失视为致命。
+        """机制卡完整性（REQ-章内自洽与机制账本，2026-10-29 分层放宽）：
+        非空机制卡按机制类型分层校验——
+        - 机制语义：任何机制都必须说清能力/数字/状态是什么，缺失视为致命；
+        - 结算规则：仅数字/状态型机制（含次数/进度/面板/增减/重置等）要求，纯概念机制不强制；
+        - 代价与终局：仅机制显式声明代价（代价/上限/终局/消耗等）时要求，无代价机制合法。
 
         背景：机制数字前后矛盾、状态与余量口径冲突、「今日/跨天」类时间口径冲突，
-        均源于机制卡只写了个名目、没有无歧义的结算规则。
+        均源于机制卡只写了个名目、没有无歧义的结算规则；但金手指/机制不必然
+        是数字面板型，纯概念能力与无代价能力同样是合法设定，不应被强制套数字与代价。
         """
         issues: list[IssueItem] = []
         mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
@@ -129,41 +156,50 @@ class LogicValidator:
             missing = []
             if not any(k in mechanism for k in self._MECH_SEMANTIC):
                 missing.append(_MISSING_SEMANTIC)
-            if not any(k in mechanism for k in self._MECH_SETTLE):
+            if _mechanism_is_numeric(mechanism) and not any(k in mechanism for k in self._MECH_SETTLE):
                 missing.append(_MISSING_SETTLE)
-            if not any(k in mechanism for k in self._MECH_END):
+            if (_mechanism_declares_cost(mechanism)
+                    and not any(k in mechanism for k in _MECH_END_EVIDENCE)):
                 missing.append(_MISSING_END)
         if missing:
             issues.append(IssueItem(
                 severity="fatal", scope="mechanism",
                 desc="金手指机制卡不完整，缺失：" + "、".join(missing),
-                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 八要素补全"
-                          "（机制语义/结算规则/代价终局/数字账本/时间词语义/多数字关系/历史衔接/正文要求）",
+                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 分层补全"
+                          "（机制语义必写；数字/状态型机制补结算规则；声明了代价的机制补代价终局；"
+                          "纯概念机制与无代价机制可省略对应要素）",
             ))
         return issues
 
     def _check_goldfinger(self, world: World) -> list[IssueItem]:
-        """金手指五要素齐全且与机制卡自洽（红线：不得模糊）。"""
+        """金手指五要素校验（2026-10-29 放宽：不强制所有书有金手指，代价可按能力缺省）。
+
+        - 机制卡存在但缺金手指说明书 → 仅 minor 提示（机制可能非金手指型，
+          如纯世界观规则/无金手指设定，不强造金手指）；
+        - 金手指五要素：trigger/upper_limit/lower_limit/growth_path 必填；
+          cost（使用代价）按能力类型缺省——无代价能力（纯辅助/被动/概念型）
+          不必硬造使用代价。
+        """
         issues: list[IssueItem] = []
         gf: GoldfingerRules | None = getattr(world, "goldfinger_rules", None)
         mechanism = getattr(world, "mechanism_rules", "") or ""
         has_mechanism = bool(mechanism.strip())
-        # 机制卡存在但五要素缺失 → 致命（能力边界必须明确）
+        # 机制卡存在但五要素缺失 → 仅提示（机制可能非金手指型）
         if has_mechanism and gf is None:
             issues.append(IssueItem(
-                severity="fatal", scope="goldfinger",
-                desc="有金手指机制卡（mechanism_rules）但缺金手指规则说明书（goldfinger_rules）",
-                suggestion="在主题/世界观 Agent 阶段补齐 goldfinger_rules 五要素"))
+                severity="minor", scope="goldfinger",
+                desc="有机制卡（mechanism_rules）但缺金手指规则说明书（goldfinger_rules）",
+                suggestion="若该机制是金手指/系统/独特能力，补齐 goldfinger_rules 五要素；"
+                          "若为纯世界观规则/无金手指设定，可忽略"))
         if gf is not None:
-            missing = [k for k, v in {
-                "trigger": gf.trigger, "upper_limit": gf.upper_limit,
-                "lower_limit": gf.lower_limit, "cost": gf.cost, "growth_path": gf.growth_path,
-            }.items() if not (v or "").strip()]
+            required = ("trigger", "upper_limit", "lower_limit", "growth_path")
+            missing = [k for k in required if not (getattr(gf, k, "") or "").strip()]
             if missing:
                 issues.append(IssueItem(
                     severity="fatal", scope="goldfinger",
-                    desc=f"金手指规则说明书五要素不完整，缺失：{'、'.join(missing)}",
-                    suggestion="补齐全部五要素（触发/上限/下限/代价/成长路径）"))
+                    desc=f"金手指规则说明书要素不完整，缺失：{'、'.join(missing)}",
+                    suggestion="补齐（触发/上限/下限/成长路径）；使用代价（cost）可按能力类型缺省——"
+                              "无代价能力不必硬造使用代价"))
         return issues
 
     def _check_theme_anchor(self, world: World) -> list[IssueItem]:

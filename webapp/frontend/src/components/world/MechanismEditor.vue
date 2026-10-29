@@ -15,6 +15,13 @@
         {{ TYPE_LABELS[t] || t }}
       </el-tag>
       <span v-if="inferred" class="mech-hint">（由既有设定推断，未显式声明）</span>
+      <!-- 类型标签编辑入口：让用户能显式声明/纠正类型，不必依赖推断（P2-3）。
+           不选 = 交回后端按既有设定推断；选中值由后端 normalize_types 清洗后落库。 -->
+      <el-select v-model="draft.mechanism_types" multiple collapse-tags collapse-tags-tooltip
+                 size="small" style="min-width:260px;margin-left:8px"
+                 placeholder="显式声明机制类型（不选=由既有设定推断）">
+        <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="label" :value="key" />
+      </el-select>
     </div>
 
     <!-- 数字面板/状态型：正文数字的唯一标准答案 -->

@@ -77,7 +77,7 @@ def _llm_scene_extract(llm, text: str) -> dict:
         '只输出合法 JSON：{"numbers":["剩余次数：2"],"characters":{"同伴":"已死"},'
         '"items":{"旧包袱":"被路人抢走"},"time":"同日午后，城郊旧巷",'
         '"body":["左臂肘部以下无知觉","衣袖焦黑翻卷"]}。\n'
-        "规则：只写正文明确呈现的状态；死亡/被抢等不可逆事件必须记录；"
+        "规则：只写正文明确呈现的状态；重伤、被抢等不可逆重大事件必须记录；"
         "身体状态必须写清部位与范围（'肘部以下'而非笼统'受伤'）；"
         "数字必须是正文出现的准确写法；无某项给空对象/空数组；只输出 JSON。"
     )
@@ -167,17 +167,45 @@ def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | N
     """
     if not chapter or not chapter.content:
         return None
+    old_state = old_state if isinstance(old_state, dict) else {}
     try:
         if getattr(cfg, "chapter_state_llm", True) and _should_llm_extract(no, cfg):
             state = _llm_chapter_extract(llm, chapter, no)
             state["chapter"] = no
+            _carry_rule_state(state, old_state)
             return state
     except Exception:
         logger.warning("章末状态 LLM 抽取失败，降级为确定性面板数字: no=%d", no)
     nums = _deterministic_numbers(chapter.content)
-    if not nums:
+    state: dict = {"chapter": no, "numbers": nums} if nums else {"chapter": no}
+    _carry_rule_state(state, old_state)
+    if not nums and not any(k in state for k in
+                            ("current_instance", "rules_active", "rule_events")):
         return None
-    return {"chapter": no, "numbers": nums}
+    return state
+
+
+def _carry_rule_state(state: dict, old_state: dict) -> None:
+    """规则状态跨章累积：生效条款取并集、规则事件追加去重；当前副本沿用旧值兜底。
+
+    数字/人物/物品/身体状态仍按章覆盖（既有行为不变）；规则一旦公布即长期有效，
+    只能由 rule_events 标记 broken/resolved，不能随章末抽取丢失。
+    """
+    if old_state.get("current_instance") and not state.get("current_instance"):
+        state["current_instance"] = old_state["current_instance"]
+    old_active = old_state.get("rules_active") or []
+    new_active = state.get("rules_active") or []
+    merged_active = list(dict.fromkeys([str(x) for x in old_active] + [str(x) for x in new_active]))
+    if merged_active:
+        state["rules_active"] = merged_active
+    old_events = old_state.get("rule_events") or []
+    new_events = state.get("rule_events") or []
+    seen = {(e.get("rule_id"), e.get("action"), e.get("detail")) for e in old_events if isinstance(e, dict)}
+    for ev in new_events:
+        if isinstance(ev, dict) and (ev.get("rule_id"), ev.get("action"), ev.get("detail")) not in seen:
+            old_events.append(ev)
+    if old_events:
+        state["rule_events"] = old_events
 
 
 def _should_llm_extract(no: int, cfg) -> bool:
@@ -192,15 +220,22 @@ def _should_llm_extract(no: int, cfg) -> bool:
 def _llm_chapter_extract(llm, chapter, no: int) -> dict:
     system = (
         "你是小说世界状态管理员。根据给定章节正文，把「机制数字、人物生死、物品归属、"
-        "时间锚点、已发生事实、主角身体状态」整理成状态清单，供下一章续写时承接。\n"
+        "时间锚点、已发生事实、主角身体状态、当前所在副本/场景、规则生效情况」整理成"
+        "状态清单，供下一章续写时承接。\n"
         '只输出合法 JSON：{"numbers":["剩余次数：1","累积进度：3/10"],'
         '"characters":{"同伴":"已死（死在旧巷尽头）"},'
         '"items":{"旧包袱":"被路人抢走"},'
         '"time":"第9天，夜间，城外坡底",'
         '"facts":["过河钱由同伴垫付，主角欠同伴"],'
-        '"body":["左臂肘部以下无知觉","左臂衣袖焦黑"]}。\n'
-        "规则：只写正文明确呈现的状态；死亡/被抢/负债等不可逆事件必须记录；"
+        '"body":["左臂肘部以下无知觉","左臂衣袖焦黑"],'
+        '"current_instance":"旧城区公寓（规则怪谈副本名；非规则怪谈留空字符串）",'
+        '"rules_active":["r1","r3"],'
+        '"rule_events":[{"rule_id":"r2","action":"broken","instance":"旧城区公寓",'
+        '"detail":"角色利用漏洞打破该规则"}]}。\n'
+        "规则：只写正文明确呈现的状态；重伤、被抢、负债等不可逆重大事件必须记录；"
         "身体状态写清部位与范围（伤口/知觉/服饰）；数字必须是正文出现的准确写法；"
+        "rules_active 只填本章结束时仍然生效的条款编号；rule_events 记录本章内条款被"
+        "打破/解除/新揭示的事件（action 取 broken/resolved/discovered）；"
         "无某项给空对象/空数组；只输出 JSON。"
     )
     data = llm.chat_json(
@@ -229,7 +264,32 @@ def _llm_chapter_extract(llm, chapter, no: int) -> dict:
     facts = data.get("facts")
     if isinstance(facts, list):
         out["facts"] = [str(x) for x in facts if str(x).strip()]
-    if not any(k in out for k in ("numbers", "characters", "items", "time", "facts", "body")):
+    instance = data.get("current_instance")
+    if isinstance(instance, str) and instance.strip():
+        out["current_instance"] = instance.strip()
+    rules_active = data.get("rules_active")
+    if isinstance(rules_active, list):
+        out["rules_active"] = [str(x).strip() for x in rules_active if str(x).strip()]
+    events = data.get("rule_events")
+    if isinstance(events, list):
+        parsed_events: list[dict] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            rule_id = str(ev.get("rule_id", "")).strip()
+            action = str(ev.get("action", "")).strip()
+            if not rule_id or not action:
+                continue
+            parsed_events.append({
+                "rule_id": rule_id,
+                "action": action,
+                "instance": str(ev.get("instance", "")).strip(),
+                "detail": str(ev.get("detail", "")).strip(),
+            })
+        if parsed_events:
+            out["rule_events"] = parsed_events
+    if not any(k in out for k in ("numbers", "characters", "items", "time", "facts",
+                                   "body", "current_instance", "rules_active", "rule_events")):
         raise ValueError("章末状态抽取结果为空")
     return out
 
@@ -255,6 +315,12 @@ def format_chapter_state(state: dict) -> str:
     body = state.get("body") or []
     if body:
         lines.append("主角身体状态：" + "；".join(str(x) for x in body))
+    if state.get("current_instance"):
+        lines.append(f"当前副本/场景：{state['current_instance']}")
+    rules_active = state.get("rules_active") or []
+    if rules_active:
+        lines.append("当前生效规则编号：" + "、".join(str(x) for x in rules_active)
+                     + "（条款内容以静态规则卡为准，不得改写或前后矛盾）")
     if not lines:
         return ""
     return (
@@ -707,11 +773,11 @@ def _check_no_event_consistency(core: str, rule: str, val: int, prev: int) -> st
     """
     if rule == "increase" and "寸" in core:
         if val < prev:
-            return (f"机制字段「{core}」本章无死亡结算但值 {val} 较上一章末 {prev} "
+            return (f"机制字段「{core}」本章无结算事件但值 {val} 较上一章末 {prev} "
                     "回退（未发生事件时累计类机制数字不得回退）")
         return None
     if val != prev:
-        return (f"机制字段「{core}」本章无死亡结算但值 {val} 与上一章末 {prev} 不一致"
+        return (f"机制字段「{core}」本章无结算事件但值 {val} 与上一章末 {prev} 不一致"
                 "（未发生事件时机制数字必须保持上一章末值不变）")
     return None
 
@@ -724,12 +790,35 @@ def _check_event_direction(core: str, rule: str, val: int, prev: int, deaths: in
     """
     if rule == "decrease":
         if val > prev:
-            return (f"机制字段「{core}」本章发生死亡但值 {val} 未从上一章末 {prev} 递减"
-                    "（死亡必须 -1）")
+            return (f"机制字段「{core}」本章发生结算事件但值 {val} 未从上一章末 {prev} 递减"
+                    "（应随事件递减）")
         if prev == 0 and val == 0:
-            return (f"机制字段「{core}」上一章末已为 0，本章仍发生死亡（次数用尽后"
-                    "不得再安排死亡，基线未声明该边界行为）")
+            return (f"机制字段「{core}」上一章末已为 0，本章仍触发结算事件（次数用尽后"
+                    "不得再安排同类事件，基线未声明该边界行为）")
     elif rule == "increase" and len(core) > 1 and val < prev + max(0, deaths):
-        return (f"机制字段「{core}」本章发生 {deaths} 次死亡，值 {val} 应 ≥ 上一章末"
-                f" {prev} + {deaths}（每死 +1，随死亡累计递增）")
+        return (f"机制字段「{core}」本章发生 {deaths} 次结算事件，值 {val} 应 ≥ 上一章末"
+                f" {prev} + {deaths}（随事件累计递增）")
     return None
+
+
+# ---------- REQ-通用机制类型适配：规则约束型条款作用域过滤 ----------
+
+def active_rules_for_instance(ruleset: list, instance: str = "") -> list:
+    """筛出当前副本/场景生效的条款：global + instance:<同名>，排除已解除/已打破。
+
+    - instance 为空：只返回 global 条款；
+    - `character:` / `ability:` 作用域条款不随副本切换，默认一并纳入全局上下文；
+    - status != active 的条款不参与一致性判定（已解除/已打破）。
+    """
+    instance = (instance or "").strip()
+    out: list = []
+    for rule in ruleset or []:
+        status = getattr(rule, "status", "active")
+        if status != "active":
+            continue
+        scope = getattr(rule, "scope", "global") or "global"
+        if scope == "global" or scope.startswith(("character:", "ability:")):
+            out.append(rule)
+        elif instance and scope == f"instance:{instance}":
+            out.append(rule)
+    return out

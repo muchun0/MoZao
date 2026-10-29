@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ..store.project import ProjectStore
 from ..store.schemas import World
+from .mechanism_types import has_type, resolve_types
 
 
 def predict_appearing_chars(world: World | None, goal: str, recent_summaries: list[str],
@@ -436,6 +437,7 @@ class Memory:
         """L1 用户强约束 + 全部事前设定卡（进强约束区，永不裁剪，prompt 末尾）。"""
         self._build_user_constraints(world, cfg_d, key_parts)
         self._build_theme_anchors(world, key_parts)
+        self._build_ruleset_cards(world, key_parts)
         self._build_mechanism_baseline_cards(world, key_parts)
         self._build_progression_cards(world, key_parts)
         self._build_ending_cards(world, cfg_d, up_to_chapter, key_parts)
@@ -560,11 +562,11 @@ class Memory:
                 key_parts.append("避雷（强约束）：" + "；".join(cfg_d.forbidden))
         if getattr(world, "locked_settings", None):
             key_parts.append("【核心设定锁定·绝对不可违背】：" + "；".join(world.locked_settings))
-        # 金手指机制卡（强约束区，永不裁剪）：机制语义/数字结算/代价递增/终局，全文必须自洽兑现
+        # 机制体系总述卡（强约束区，永不裁剪）：语义/结算/代价/规则边界，全文必须自洽兑现
         mechanism = getattr(world, "mechanism_rules", "") or ""
         if mechanism:
             key_parts.append(
-                "【金手指机制卡·绝对不可违背，数字与规则全文必须自洽，首章要实际用起来并兑现标题】\n" + mechanism
+                "【机制体系卡·绝对不可违背，规则与设定全文必须自洽，首章要实际用起来并兑现标题】\n" + mechanism
             )
 
     def _build_theme_anchors(self, world, key_parts: list[str]) -> None:
@@ -583,31 +585,81 @@ class Memory:
             key_parts.append(
                 "【主角弧光卡·人物关键选择必须符合当前弧光阶段，禁止工具化行为】\n" + "\n".join(arc_parts)
             )
+        # 能力规则说明书：仅 ability 类型（旧书推断命中）注入；规则怪谈/契约/无机制不硬凑五要素
         gf = getattr(world, "goldfinger_rules", None)
-        if gf is not None:
-            gf_lines = [
-                f"触发条件：{gf.trigger}", f"能力上限：{gf.upper_limit}",
-                f"能力下限：{gf.lower_limit}", f"使用代价：{gf.cost}",
-                f"成长路径：{gf.growth_path}",
-            ]
-            key_parts.append(
-                "【金手指规则说明书·五要素绝对不可违背，能力边界与代价全文必须自洽】\n" + "\n".join(gf_lines)
-            )
+        types = resolve_types(world)
+        if gf is not None and has_type(types, "ability"):
+            gf_lines = []
+            if getattr(gf, "trigger", ""):
+                gf_lines.append(f"触发条件：{gf.trigger}")
+            if getattr(gf, "upper_limit", ""):
+                gf_lines.append(f"能力上限：{gf.upper_limit}")
+            if getattr(gf, "lower_limit", ""):
+                gf_lines.append(f"能力下限：{gf.lower_limit}")
+            if getattr(gf, "cost", ""):
+                gf_lines.append(f"使用代价：{gf.cost}")
+            if getattr(gf, "growth_path", ""):
+                gf_lines.append(f"成长路径：{gf.growth_path}")
+            if gf_lines:
+                key_parts.append(
+                    "【能力规则说明书·边界与代价全文必须自洽，禁止越出上限/模糊代价】\n" + "\n".join(gf_lines)
+                )
         taboos = getattr(world, "setting_taboos", []) or []
         if taboos:
             key_parts.append("【设定禁忌·明确禁止出现的吃设定行为】\n" + "；".join(str(t) for t in taboos))
 
+    def _build_ruleset_cards(self, world, key_parts: list[str]) -> None:
+        """L1 规则条款卡（rule_set 类型，强约束区）：条款一经公布在其作用域内不得改写。"""
+        types = resolve_types(world)
+        if not has_type(types, "rule_set"):
+            return
+        ruleset = getattr(world, "mechanism_ruleset", None) or []
+        if not ruleset:
+            return
+        scope_label = {"global": "全书通用", "instance": "副本专属",
+                       "character": "角色专属", "ability": "能力专属"}
+        lines: list[str] = []
+        for rule in ruleset:
+            if getattr(rule, "status", "active") != "active":
+                continue
+            scope = getattr(rule, "scope", "global") or "global"
+            scope_kind = scope.split(":", 1)[0]
+            scope_text = scope_label.get(scope_kind, scope)
+            if ":" in scope:
+                scope_text += f"（{scope.split(":", 1)[1]}）"
+            bits = [f"条款[{getattr(rule, 'rule_id', '')}]：{getattr(rule, 'statement', '')}",
+                    f"适用范围：{scope_text}",
+                    f"触发条件：{getattr(rule, 'condition', '')}",
+                    f"违反后果：{getattr(rule, 'consequence', '')}"]
+            policy = getattr(rule, "change_policy", "fixed")
+            if policy == "fixed":
+                bits.append("条款性质：一经公布不可改写、不得前后矛盾")
+            elif policy == "discoverable":
+                bits.append("条款性质：随剧情逐步揭示，已公布部分不可改写")
+            elif policy == "negotiable":
+                bits.append("条款性质：可在剧情内谈判变更，变更须走声明渠道")
+            elif policy == "layered":
+                bits.append("条款性质：分层揭示，已公布层不可改写")
+            lines.append("｜".join(b for b in bits if b.split("：", 1)[-1].strip()))
+        if lines:
+            key_parts.append(
+                "【规则条款卡·在其适用范围内绝对不可违背；新规则只能通过剧情声明渠道出现，"
+                "禁止正文私增规则、跨副本串场】\n" + "\n".join(lines)
+            )
+
     def _build_mechanism_baseline_cards(self, world, key_parts: list[str]) -> None:
         """L1 机制初始值 + 时钟规则 + 语言风格禁忌（强约束区，写手不得自造数字/违背时间）。"""
-        # 机制初始值（REQ-事前设定卡）：正文里数字的唯一标准答案，写手不得自行发明数字
+        # 机制初始值（仅 numeric_panel 类型）：正文里数字的唯一标准答案，写手不得自行发明数字
         mb = getattr(world, "mechanism_baseline", None)
-        if mb is not None and any([getattr(mb, f, "") for f in
-                                   ("scar_start", "scar_per_death", "scar_current",
-                                    "scar_end", "panel_format", "reset_rule")]):
+        types = resolve_types(world)
+        if mb is not None and has_type(types, "numeric_panel") and any([
+                getattr(mb, f, "") for f in
+                ("scar_start", "scar_per_death", "scar_current",
+                 "scar_end", "panel_format", "reset_rule")]):
             mb_lines = []
-            if getattr(mb, "scar_start", ""): mb_lines.append(f"旧痕起点：{mb.scar_start}")
-            if getattr(mb, "scar_per_death", ""): mb_lines.append(f"每死延伸：{mb.scar_per_death}")
-            if getattr(mb, "scar_current", ""): mb_lines.append(f"旧痕当前：{mb.scar_current}")
+            if getattr(mb, "scar_start", ""): mb_lines.append(f"标记起点：{mb.scar_start}")
+            if getattr(mb, "scar_per_death", ""): mb_lines.append(f"每次触发增量：{mb.scar_per_death}")
+            if getattr(mb, "scar_current", ""): mb_lines.append(f"标记当前：{mb.scar_current}")
             if getattr(mb, "scar_end", ""): mb_lines.append(f"终局：{mb.scar_end}")
             if getattr(mb, "panel_format", ""): mb_lines.append(f"面板唯一写法：{mb.panel_format}")
             if getattr(mb, "reset_rule", ""): mb_lines.append(f"重置规则：{mb.reset_rule}")

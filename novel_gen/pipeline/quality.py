@@ -454,6 +454,10 @@ class QualityChecker:
         _it, _d = self._check_consistency(chapter_no, content)
         issues.extend(_it); score += _d
 
+        # 4.6 规则条款一致性（LLM，REQ-通用机制类型适配；仅 rule_set 类型启用）
+        _it, _d = self._check_rule_consistency(chapter_no, content)
+        issues.extend(_it); score += _d
+
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
 
@@ -504,9 +508,18 @@ class QualityChecker:
     def _check_panel_progress(self, content: str) -> tuple[list, int]:
         """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。
 
+        仅 numeric_panel 类型启用；规则/能力/契约等非数字类型不做面板数字判定。
         REQ-词表换LLM 批次二：事件锚点判定优先 LLM 语义（开关 llm_semantic_panel_anchor
         默认开），失败/关闭回退 _PANEL_EVENT_ANCHORS 锚点正则。
         """
+        try:
+            world = self.store.load_world()
+            if world is not None:
+                from .mechanism_types import has_type, resolve_types
+                if not has_type(resolve_types(world), "numeric_panel"):
+                    return [], 0
+        except Exception:
+            pass
         issues, score = [], 0
         use_llm_panel = bool(getattr(self.cfg, "llm_semantic_panel_anchor", True))
         for it in self._panel_progress_issues(content, llm=self.llm, use_llm=use_llm_panel):
@@ -689,6 +702,89 @@ class QualityChecker:
             issues.append(it)
             score -= 25
         return issues, score
+
+    #: 规则一致性 code → (问题级别, 扣分)；rule_conflict 与章内矛盾同级大改
+    _RULE_CODE_POLICY = {
+        "rule_conflict": ("大改", -25),
+        "rule_added": ("中改", -10),
+        "rule_scope": ("中改", -10),
+    }
+
+    def _check_rule_consistency(self, chapter_no: int, content: str) -> tuple[list[dict], int]:
+        """4.6 规则条款一致性 LLM judge（REQ-通用机制类型适配）。
+
+        启用条件（全部满足才调用）：开关开启；world 类型集合含 rule_set；ruleset 非空；
+        高质量模式每章执行，普通模式按 rule_consistency_every 降频。仅对当前副本生效
+        的条款（global + 当前实例 + 角色/能力作用域）做对照；抽取/LLM/解析失败一律
+        返回空列表并 warning 留痕，不阻塞主流程。
+        """
+        if not content:
+            return [], 0
+        try:
+            if not getattr(self.cfg, "rule_consistency_check", True):
+                return [], 0
+            world = self.store.load_world()
+            if world is None:
+                return [], 0
+            from .mechanism_types import has_type, resolve_types
+            if not has_type(resolve_types(world), "rule_set"):
+                return [], 0
+            ruleset = getattr(world, "mechanism_ruleset", None) or []
+            if not ruleset:
+                return [], 0
+            hq = getattr(self.cfg, "high_quality_mode", False)
+            every = max(1, int(getattr(self.cfg, "rule_consistency_every", 1) or 1))
+            if not (hq or chapter_no % every == 1):
+                return [], 0
+
+            from .chapter_state import active_rules_for_instance
+            state = self.store.load_chapter_state() or {}
+            instance = str(state.get("current_instance") or "").strip()
+            active = active_rules_for_instance(ruleset, instance)
+            if not active:
+                return [], 0
+
+            rule_lines = []
+            for rule in active:
+                rule_lines.append(
+                    f"[{getattr(rule, 'rule_id', '')}] scope={getattr(rule, 'scope', 'global')} "
+                    f"policy={getattr(rule, 'change_policy', 'fixed')}；"
+                    f"规则：{getattr(rule, 'statement', '')}；"
+                    f"条件：{getattr(rule, 'condition', '')}；"
+                    f"违反后果：{getattr(rule, 'consequence', '')}"
+                )
+            persona = _load_persona("rule_consistency")
+            sys = (persona + "\n\n" if persona else "") + (
+                "你是规则条款一致性裁判，只输出规定 JSON，不附加解释。")
+            user = (
+                f"当前副本/场景：{instance or '全局场景'}\n\n"
+                "【当前生效规则清单】\n" + "\n".join(rule_lines) + "\n\n"
+                f"【第{chapter_no}章正文】\n{content[:_CONSISTENCY_CHARS]}\n\n"
+                "请对照规则清单检查，输出 violations JSON。"
+            )
+            raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
+            data = parse_json_obj(raw)
+            issues: list[dict] = []
+            score = 0
+            for item in (data.get("violations") or []):
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("code", "")).strip()
+                level, delta = self._RULE_CODE_POLICY.get(code, ("中改", -10))
+                detail = str(item.get("detail", "")).strip()
+                if not detail:
+                    continue
+                issues.append({
+                    "type": f"规则一致性-{code}",
+                    "detail": detail,
+                    "level": level,
+                    "fix_suggestion": str(item.get("suggestion") or "").strip(),
+                })
+                score += delta
+            return issues, score
+        except Exception as exc:
+            logger.warning("[quality] 规则一致性校验降级跳过（ch=%s）：%s", chapter_no, exc)
+            return [], 0
 
     def _finalize_issues(self, issues: list[dict], score: int) -> tuple[bool, list[dict], int]:
         """去重 + 排序（大改在前）+ 诊断回喂，返回 (passed, uniq, score)。"""
@@ -977,8 +1073,8 @@ class QualityChecker:
         if major:
             out.append({
                 "type": "写作-机制数字未结算推进",
-                "detail": "面板数字「" + "；".join(major[:3]) + "」在死亡/结算事件后仍未变化，"
-                          "数值未随事件结算推进（如死亡次数未递减）；建议按机制卡随事件结算，"
+                "detail": "面板数字「" + "；".join(major[:3]) + "」在结算事件后仍未变化，"
+                          "数值未随事件结算推进（如次数未递减）；建议按机制卡随事件结算，"
                           "避免同值跨结算点复现（改稿建议，不强制重写）",
                 "level": "小改",
             })
@@ -1701,18 +1797,38 @@ class QualityChecker:
         （如"每死一次减 1"），重写后数字与矛盾修不动，复检仍是同样的 5 条。
         """
         parts: list[str] = []
+        types: list[str] = []
+        instance = ""
         try:
             world = self.store.load_world()
             if world:
+                from .mechanism_types import has_type, resolve_types
+                types = resolve_types(world)
                 wv = getattr(world, "world_view", None)
                 if wv:
                     parts.append("【世界设定（正文必须遵守）】" + str(wv)[:800])
                 mr = getattr(world, "mechanism_rules", None)
                 if mr:
-                    parts.append("【金手指机制卡（机制数字结算的唯一权威）】" + str(mr)[:1000])
-                mb = getattr(world, "mechanism_baseline", None)
-                if mb:
-                    parts.append("【机制初始值/面板标准答案（正文数字的唯一来源）】" + str(mb)[:600])
+                    parts.append("【机制体系卡（正文必须遵守）】" + str(mr)[:1000])
+                # 数字基线仅 numeric_panel 类型注入；规则型走条款清单块
+                if has_type(types, "numeric_panel"):
+                    mb = getattr(world, "mechanism_baseline", None)
+                    if mb:
+                        parts.append("【机制初始值/面板标准答案（正文数字的唯一来源）】" + str(mb)[:600])
+                if has_type(types, "rule_set"):
+                    st0 = self.store.load_chapter_state() or {}
+                    instance = str(st0.get("current_instance") or "").strip()
+                    from .chapter_state import active_rules_for_instance
+                    active = active_rules_for_instance(
+                        getattr(world, "mechanism_ruleset", None) or [], instance)
+                    if active:
+                        rule_lines = [
+                            f"[{getattr(r, 'rule_id', '')}] {getattr(r, 'statement', '')}"
+                            for r in active if getattr(r, "statement", "")
+                        ]
+                        if rule_lines:
+                            parts.append("【当前生效规则条款（不得改写/不得私增/不得串场）】"
+                                         + "；".join(rule_lines)[:800])
                 chars = getattr(world, "characters", None) or []
                 if chars:
                     blk = "；".join(

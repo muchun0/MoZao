@@ -552,7 +552,7 @@ def test_rewrite_whole_injects_context(store):
     qc._rewrite_whole(2, "第二章", "推进", "原正文" * 200,
                       [{"type": "大改", "detail": "面板数字未结算推进"}])
     user = llm.chat.call_args[0][1]
-    assert "金手指机制卡" in user
+    assert "机制体系卡" in user
     assert "每死一次面板数字递减一" in user          # 机制结算规则注入
     assert "今日可死次数：1/3" in user                # 上一章账本数字注入
     assert "人物卡" in user
@@ -573,7 +573,7 @@ def test_rewrite_whole_skips_own_chapter_state(store):
     qc._rewrite_whole(1, "第一章", "推进", "原正文" * 200,
                       [{"type": "大改", "detail": "面板数字未结算推进"}])
     user = llm.chat.call_args[0][1]
-    assert "金手指机制卡" in user
+    assert "机制体系卡" in user
     assert "上一章机制数字" not in user          # 本章旧账本 2/3 不得注入
     assert "今日可死次数：2/3" not in user
 

@@ -60,7 +60,7 @@ def test_build_reports_four_docs(world, outline):
     assert set(docs) == {"core-settings.md", "skeleton-outline.md",
                          "pacing-manual.md", "quality-report.md"}
     assert "核心主题命题" in docs["core-settings.md"]
-    assert "金手指规则说明书" in docs["core-settings.md"]
+    assert "能力规则说明书" in docs["core-settings.md"]
     assert "关键节点时间线" in docs["skeleton-outline.md"]
     assert "伏笔回收总表" in docs["pacing-manual.md"]
     assert "问题分级清单" in docs["quality-report.md"]

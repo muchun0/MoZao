@@ -1255,12 +1255,21 @@ class ChapterWriter:
         return True
 
     def _panel_whitelist_block(self) -> str:
-        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world）。
+        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world，仅 numeric_panel）。
 
-        基线声明的字段才允许出现在正文面板，禁止累计死亡次数类自造标签；
-        次数/剩余类字段为 0 时本章不得再安排死亡。从 memory canon 注册表派生，
-        任何书通用；无记忆/无基线 → 空串。
+        基线声明的字段才允许出现在正文面板，禁止自造标签；次数/剩余类字段为 0 时
+        本章不得再安排对应结算事件。从 memory canon 注册表派生；非数字面板类型、
+        无记忆/无基线 → 空串。
         """
+        # 类型门控：能读到 world 时，非 numeric_panel 直接跳过；world 不可用（旧单测/
+        # 无 store 注入）时回退注册表非空判定，保持存量行为。
+        try:
+            from .mechanism_types import has_type, resolve_types
+            world_w = self.store.load_world()
+            if world_w is not None and not has_type(resolve_types(world_w), "numeric_panel"):
+                return ""
+        except Exception:
+            world_w = None
         try:
             _mem_w = self._memory()
             if _mem_w is not None:
@@ -1270,14 +1279,13 @@ class ChapterWriter:
                 if _regw:
                     _blk = (
                         "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下字段："
-                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如「累计死亡次数」"
-                        "「死亡总次数」等自造标签）；字段格式必须为「字段名：数字」（带分母"
-                        "写法禁止）。"
+                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如基线未声明的"
+                        "累计/总次数等自造标签）；字段格式必须为「字段名：数字」（带分母写法禁止）。"
                     )
                     if any(k.endswith("次数") or "剩余" in k for k in _regw):
                         _blk += (
-                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生死亡结算"
-                            "（次数用尽后死亡=违规）；如确有死亡，必须先声明字段为 1 以上。"
+                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生对应结算事件"
+                            "（次数用尽后再触发=违规）；如确有结算，必须先声明字段为 1 以上。"
                         )
                     return _blk
         except Exception:

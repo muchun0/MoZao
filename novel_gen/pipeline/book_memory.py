@@ -314,7 +314,7 @@ class BookMemory:
         mb = data["canon"].get("mechanism_baseline") or {}
         if mb:
             lines = [f"- {k}：{v}" for k, v in mb.items()]
-            parts.append("【本作机制基线（背景参考：机制数字与身体状态的当前口径，"
+            parts.append("【本作机制基线（背景参考：机制数字与状态的当前口径，"
                          "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
         joined = "\n\n".join(parts)
         return joined[:max_chars]
@@ -329,7 +329,7 @@ class BookMemory:
         if not mb:
             return ""
         lines = [f"- {k}：{v}" for k, v in mb.items()]
-        return ("【本作机制基线（背景参考：机制数字与身体状态/蚀痕的当前口径，"
+        return ("【本作机制基线（背景参考：机制数字与状态的当前口径，"
                 "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
 
     # ---------- 事件账本（跨章消费状态）----------

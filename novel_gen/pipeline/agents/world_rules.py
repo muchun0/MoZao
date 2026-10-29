@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """WorldRulesAgent：世界观与规则 Agent（设定体系生产者）。
 
-REQ-多Agent协作分层优化：负责「世界观核心法则 + 金手指规则说明书（强制五要素）+
+REQ-多Agent协作分层优化：负责「世界观核心法则 + 能力规则说明书 + 规则条款 +
 设定禁忌清单 + 世界观揭示计划」的认领与结构化规范化。是全文的「底层宪法」，
 只写自身领域，不越权修改主题/人物字段。
 
@@ -9,7 +9,8 @@ REQ-多Agent协作分层优化：负责「世界观核心法则 + 金手指规�
 """
 from __future__ import annotations
 
-from ...store.schemas import (GoldfingerRules, World, WorldReveal)
+from ...store.schemas import (GoldfingerRules, MechanismRule, World, WorldReveal)
+from ..mechanism_types import normalize_types
 from .base import BaseAgent
 
 
@@ -29,6 +30,15 @@ class WorldRulesAgent(BaseAgent):
         """
         world.world_view = (getattr(world, "world_view", "") or "").strip()
         world.mechanism_rules = (getattr(world, "mechanism_rules", "") or "").strip()
+
+        # REQ-通用机制类型适配：类型集合清洗（非法值剔除、none 互斥），条款结构化规范化
+        world.mechanism_types = normalize_types(getattr(world, "mechanism_types", None))
+        ruleset = []
+        for r in (getattr(world, "mechanism_ruleset", None) or []):
+            rr = MechanismRule.from_dict(r) if isinstance(r, dict) else r
+            if isinstance(rr, MechanismRule) and (rr.statement or "").strip():
+                ruleset.append(rr)
+        world.mechanism_ruleset = ruleset
 
         gf = getattr(world, "goldfinger_rules", None)
         if gf is not None and not isinstance(gf, GoldfingerRules):
@@ -55,6 +65,8 @@ class WorldRulesAgent(BaseAgent):
         summary = {
             "world_view": bool(world.world_view),
             "mechanism_rules": bool(world.mechanism_rules),
+            "mechanism_types": list(world.mechanism_types),
+            "mechanism_ruleset": len(world.mechanism_ruleset),
             "goldfinger_rules": gf.is_complete() if gf is not None else False,
             "setting_taboos": len(world.setting_taboos),
             "world_reveals": len(world.world_reveals),

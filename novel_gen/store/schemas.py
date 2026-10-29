@@ -560,6 +560,24 @@ def _norm_str(v):
     return str(v) if v is not None else ""
 
 
+def _norm_type_list(v) -> list[str]:
+    """机制类型集合规范化：去空、去重保序；枚举合法性由 pipeline.mechanism_types 校验。"""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        v = [x.strip() for x in v.replace("，", ",").replace("、", ",").split(",")]
+    if not isinstance(v, (list, tuple, set)):
+        return []
+    out: list[str] = []
+    for item in v:
+        if item is None:
+            continue
+        key = str(item).strip()
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
 def _list_to_dicts(items: list, cls):
     """列表元素兼容 str / dict / dataclass 对象 → dict（支持直接构造的旧数据）。"""
     out = []
@@ -652,6 +670,66 @@ class MechanismBaseline:
             panel_format=_norm_str(d.get("panel_format", "")),
             reset_rule=_norm_str(d.get("reset_rule", "")),
         )
+
+
+@dataclass
+class MechanismRule:
+    """规则约束型机制条款（REQ-通用机制类型适配）：规则怪谈守则 / 副本规则 / 场所禁忌。
+
+    条款是静态宪法，一经公布不得改写；动态状态（当前副本 / 生效规则 / 规则事件）
+    由章级状态账本承接，不在本卡里反复存长文本。
+
+    - scope：global（全书通用）/ instance:<副本名>（仅该副本生效）/
+      character:<角色名> / ability:<能力名>
+    - change_policy：fixed 不可改 / discoverable 随剧情揭示 / negotiable 可谈判 /
+      layered 分层揭示
+    - status：active 生效 / resolved 已解除 / broken 已被打破
+    """
+    rule_id: str = ""
+    scope: str = "global"
+    statement: str = ""
+    condition: str = ""
+    consequence: str = ""
+    change_policy: str = "fixed"
+    source: str = ""
+    first_ch: int = 0
+    status: str = "active"
+
+    _VALID_SCOPES_PREFIX = ("global", "instance:", "character:", "ability:")
+    _VALID_POLICIES = ("fixed", "discoverable", "negotiable", "layered")
+    _VALID_STATUS = ("active", "resolved", "broken")
+
+    def to_dict(self) -> dict:
+        return {
+            "rule_id": self.rule_id, "scope": self.scope, "statement": self.statement,
+            "condition": self.condition, "consequence": self.consequence,
+            "change_policy": self.change_policy, "source": self.source,
+            "first_ch": self.first_ch, "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, d) -> "MechanismRule":
+        if not isinstance(d, dict):
+            return cls()
+        scope = _norm_str(d.get("scope", "global") or "global") or "global"
+        policy = _norm_str(d.get("change_policy", "fixed") or "fixed") or "fixed"
+        status = _norm_str(d.get("status", "active") or "active") or "active"
+        return cls(
+            rule_id=_norm_str(d.get("rule_id", "")),
+            scope=scope if scope.startswith(cls._VALID_SCOPES_PREFIX) else "global",
+            statement=_norm_str(d.get("statement", "")),
+            condition=_norm_str(d.get("condition", "")),
+            consequence=_norm_str(d.get("consequence", "")),
+            change_policy=policy if policy in cls._VALID_POLICIES else "fixed",
+            source=_norm_str(d.get("source", "")),
+            first_ch=int(d.get("first_ch", 0) or 0),
+            status=status if status in cls._VALID_STATUS else "active",
+        )
+
+    def is_complete(self) -> bool:
+        """开书必填校验：条款原文 / 适用范围 / 触发条件 / 违反后果四项非空。"""
+        return all([self.statement.strip(), self.scope.strip(),
+                    self.condition.strip(), self.consequence.strip()])
 
 
 @dataclass
@@ -844,7 +922,10 @@ class World:
     characters: list[Character] = field(default_factory=list)
     foreshadowing: list[ForeshadowItem] = field(default_factory=list)
     locked_settings: list[str] = field(default_factory=list)  # 核心设定锁定，AI不得违背
-    mechanism_rules: str = ""  # 金手指机制卡：机制语义/数字结算/代价递增/终局，AI 不得违背且必须自洽
+    mechanism_rules: str = ""  # 金手指/规则体系自由文本总述（散文口径，与结构化条款并存）
+    # ---- REQ-通用机制类型适配：机制类型集合 + 规则条款结构化载体 ----
+    mechanism_types: list[str] = field(default_factory=list)  # 类型集合（可叠加，枚举见 mechanism_types.py）
+    mechanism_ruleset: list[MechanismRule] = field(default_factory=list)  # 规则约束型结构化条款
     world_reveals: list[WorldReveal] = field(default_factory=list)  # 世界观逐步揭示计划（跟随主角视角）
     # ---- 底层锚点（REQ 多Agent协作分层优化）----
     theme_proposition: str = ""                 # 核心主题命题（一句话内核）
@@ -877,6 +958,8 @@ class World:
             "foreshadowing": _list_to_dicts(self.foreshadowing, ForeshadowItem),
             "locked_settings": list(self.locked_settings),
             "mechanism_rules": self.mechanism_rules,
+            "mechanism_types": list(self.mechanism_types),
+            "mechanism_ruleset": [r.to_dict() for r in self.mechanism_ruleset],
             "world_reveals": [r.to_dict() for r in self.world_reveals],
             "theme_proposition": self.theme_proposition,
             "conflict_matrix": _list_to_dicts(self.conflict_matrix, ConflictLayer),
@@ -913,6 +996,10 @@ class World:
             foreshadowing=foreshadowing,
             locked_settings=locked,
             mechanism_rules=_norm_str(d.get("mechanism_rules", "")),
+            mechanism_types=_norm_type_list(d.get("mechanism_types", [])),
+            mechanism_ruleset=[MechanismRule.from_dict(r)
+                               for r in (d.get("mechanism_ruleset", []) or [])
+                               if isinstance(r, dict)],
             world_reveals=reveals,
             theme_proposition=_norm_str(d.get("theme_proposition", "")),
             conflict_matrix=[ConflictLayer.from_dict(c) for c in (d.get("conflict_matrix", []) or [])],

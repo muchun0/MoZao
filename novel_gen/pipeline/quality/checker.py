@@ -46,6 +46,11 @@ from .text_tools import (
     _iter_sentences, _norm_sentence, _is_panel_line, _iter_repeat_groups,
     _locate_problem_spans, _merge_spans, _align_to_paras,
 )
+from . import aggregate as _aggregate
+from .reviewers import (
+    ReviewContext, DimensionResult, ReviewerResult, ReviewerIssue,
+    PlotReviewer,
+)
 
 logger = logging.getLogger("novel_gen.pipeline.quality")
 
@@ -373,14 +378,92 @@ class QualityChecker:
         _it, _d = self._check_rule_consistency(chapter_no, content)
         issues.extend(_it); score += _d
 
+        # L2 新增评委：plot 情节结构（唯一新增 LLM 调用，开关 + 普通模式降频；
+        # reader/consistency/prose 复用上方已发起的现有调用，不重复计费，TECH §3.2）。
+        plot_result: ReviewerResult | None = None
+        layered = bool(getattr(self.cfg, "reviewer_layered", True))
+        if layered:
+            plot_result = self._run_plot_reviewer(
+                chapter_no, plan_title, plan_goal, content, core_event)
+            if plot_result and plot_result.dimension.available:
+                for ri in plot_result.raw_issues:
+                    issues.append(ri.to_dict())
+
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
 
-        return {
+        result = {
             "passed": passed,
             "issues": uniq,
             "score": max(0, min(100, score)),
             "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
+        }
+
+        # L3 附加快照（D-1：不接管旧 score/门禁，仅附加 dimensions/recommendations/layers）
+        if layered:
+            result.update(self._build_layered_snapshot(uniq, score, hook_score, plot_result))
+        return result
+
+    def _run_plot_reviewer(self, chapter_no: int, plan_title: str, plan_goal: str,
+                           content: str, core_event: str) -> ReviewerResult | None:
+        """调用 plot 情节评委；无 llm / 开关关闭 / 降频跳过时返回 None（不发起调用）。"""
+        if self.llm is None:
+            return None
+        ctx = ReviewContext(
+            chapter_no=chapter_no, plan_title=plan_title, plan_goal=plan_goal,
+            content=content, core_event=core_event, cfg=self.cfg, llm=self.llm,
+            store=self.store, guard=self.guard, memory=self.memory,
+        )
+        try:
+            return PlotReviewer().review(ctx)
+        except Exception:  # noqa: BLE001 —— 评委失败已在基类降级，此处兜底不阻塞
+            logger.exception("[quality] plot 评委调度失败（降级跳过，不阻塞主链路）")
+            return None
+
+    def _build_layered_snapshot(self, uniq: list[dict], score: int,
+                                hook_score: int | None,
+                                plot_result: ReviewerResult | None) -> dict:
+        """L3 附加快照：把现有 issue 归类到四维度，组装 dimensions / recommendations / layers。
+
+        旧 `score` / `passed` / issues 口径不变；维度分仅作附加信号（D-1）。
+        reader/consistency/prose 维度由现有 issue 归类映射，plot 来自新评委结果。
+        """
+        reviewer_results: list[ReviewerResult] = []
+        if plot_result is not None:
+            reviewer_results.append(plot_result)
+
+        # 现有 issue 按维度归类，构造 reader/consistency/prose 占位维度快照（available=True，
+        # 不重复发起 LLM；维度分本期留空，仅承载问题清单与亮点位）。
+        grouped: dict[str, list[dict]] = {"reader": [], "plot": [],
+                                          "consistency": [], "prose": []}
+        for it in uniq:
+            dim = _aggregate.classify_dimension(it)
+            grouped.setdefault(dim, []).append(it)
+
+        for key, label in (("reader", "读者体验"), ("consistency", "逻辑一致性"),
+                           ("prose", "文风自然度")):
+            dim_issues = [ReviewerIssue(
+                type=str(x.get("type", "")), detail=str(x.get("detail", "")),
+                level=str(x.get("level", "小改")),
+                fix_suggestion=str(x.get("fix_suggestion") or ""),
+                evidence=str(x.get("evidence", "") or ""),
+            ) for x in grouped.get(key, [])]
+            reviewer_results.append(ReviewerResult(
+                dimension=DimensionResult(key=key, label=label, score=None,
+                                          available=True, issues=dim_issues),
+                raw_issues=dim_issues))
+
+        agg = _aggregate.aggregate(
+            l1_issues=[], reviewer_results=reviewer_results, score=score,
+            diag_feedback=False, hook_score=hook_score,
+        )
+        # recommendations 面向全部合并后 issue；layers 统计确定性/评委来源
+        agg.recommendations = _aggregate._build_recommendations(uniq)
+        agg.layers["deterministic"]["issue_count"] = len(uniq)
+        return {
+            "dimensions": {k: _aggregate.dimension_to_dict(v) for k, v in agg.dimensions.items()},
+            "recommendations": agg.recommendations,
+            "layers": agg.layers,
         }
 
     def _check_structure(self, content: str, target: int) -> tuple[list, int]:

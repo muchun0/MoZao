@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""章节质检三层体系门面包（REQ-质检三层重构）。
+"""章节质检三层体系门面包（REQ-质检三层重构，2026-10-29）。
 
 结构（TECH §3）：
 - `checker.py`      —— `QualityChecker`：`check()` / `ensure_quality()` 编排、版本快照、落盘；
-- `deterministic/`  —— L1 确定性闸门（零 LLM、纯函数）；
 - `reviewers/`      —— L2 维度评委（reader / plot / consistency / prose）；
 - `aggregate.py`    —— L3 聚合器（合并去重 / 维度归类 / 排序 / 门禁 / 建议清单）；
 - `constants.py`    —— 阈值、面板正则、维度权重与元数据（唯一事实来源）；
-- `text_tools.py`   —— 无状态纯文本工具；
-- `rewrite_support.py` —— 重写上下文组装与三类重写方法。
+- `text_tools.py`   —— 无状态纯文本工具。
+
+后续专项债务（见 decisions.md 2026-10-29）：checker.py 内旧确定性方法将迁入
+`deterministic/`、三类重写方法迁入 `rewrite_support.py`，本期保持行为零变化未剥离。
 
 兼容契约：`from novel_gen.pipeline.quality import QualityChecker, _MAX_REWRITE, ...`
 与重构前逐字一致（I-1）；旧路径符号在本模块命名空间全部可用。
@@ -17,6 +18,13 @@ from __future__ import annotations
 
 # ---- 门面类 ----
 from .checker import QualityChecker
+
+# ---- L3 聚合器与 L2 评委（新链路公开类型） ----
+from . import aggregate
+from .reviewers import (
+    ReviewContext, ReviewerResult, DimensionResult, ReviewerIssue,
+    ReaderReviewer, PlotReviewer, ConsistencyReviewer, ProseReviewer,
+)
 
 # ---- 兼容导出：旧 quality.py 模块级常量 ----
 from .constants import (
@@ -38,7 +46,10 @@ from .text_tools import (
 )
 
 __all__ = [
-    "QualityChecker",
+    "QualityChecker", "aggregate",
+    # L2 评委与类型
+    "ReviewContext", "ReviewerResult", "DimensionResult", "ReviewerIssue",
+    "ReaderReviewer", "PlotReviewer", "ConsistencyReviewer", "ProseReviewer",
     # 常量
     "_MIN_WORDS_RATIO", "_NGRAM", "_DUP_RATIO", "_MAX_RECENT",
     "_SELF_NGRAM", "_SELF_DUP_RATIO", "_SALVAGE_MIN_LINE", "_SALVAGE_MAX_LINE",

@@ -265,6 +265,29 @@ def load_persona(name: str) -> str:
 _load_persona = load_persona
 
 
+def load_review_prompt(key: str) -> str:
+    """加载 L2 评委提示词 `agents/prompts/review/<key>.md`（TECH §9）。
+
+    带缓存；文件缺失/读取失败返回空串（评委内部回退内置兜底指令，不阻塞主链路）。
+    `key` 只允许 `reader/plot/consistency/prose` 等安全文件名，禁止路径穿越。
+    """
+    if "/" in key or "\\" in key or ".." in key:
+        logger.warning("review prompt key 非法（拒绝路径穿越）: %s", key)
+        return ""
+    cache_key = f"review/{key}"
+    if cache_key not in _PERSONA_CACHE:
+        try:
+            _p = Path(__file__).resolve().parent.parent / "agents" / "prompts" / "review" / f"{key}.md"
+            _PERSONA_CACHE[cache_key] = _p.read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("review prompt 加载失败（%s），回退内置兜底", key, exc_info=True)
+            _PERSONA_CACHE[cache_key] = ""
+    return _PERSONA_CACHE[cache_key]
+
+
+_load_review_prompt = load_review_prompt
+
+
 def has_type(issues, keyword: str) -> bool:
     """issues 中是否存在 type 含指定关键词的问题。"""
     return any(keyword in (it.get("type", "") or "") for it in issues)

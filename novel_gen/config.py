@@ -159,6 +159,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "llm_semantic_mechanism", True, "机制卡三要素 LLM 语义校验（REQ-词表换LLM 批次一 validator.py）：开书时 LLM 判机制卡是否覆盖机制语义/结算规则/代价终局（每本 1 次），替代 _MECH_SEMANTIC/_MECH_SETTLE/_MECH_END 信号词表；LLM 失败回退词表；False=纯词表"),
     FeatureFlag("review", "llm_semantic_ai_taste", True, "AI 痕迹四维度 LLM 语义判定（REQ-词表换LLM 批次二 ai_taste.py）：LLM 判连接词堆砌/情绪词直白宣告/填充词口头禅/直白点破句式（整章 1 次），替代 CONNECTIVE_WORDS/EMOTION_WORDS/_FILLER_WORDS/_DIRECT_PATTERN 词表命中判定；LLM 失败回退词表+统计；False=纯词表统计"),
     FeatureFlag("review", "llm_semantic_panel_anchor", True, "面板结算事件锚点 LLM 判定（REQ-词表换LLM 批次二 quality.py）：LLM 判两处面板数字之间（seg 段）是否发生真实结算事件（非回忆/转述/他人语境/快死未死），替代 _PANEL_EVENT_ANCHORS/_PANEL_EVENT_RECALL 锚点正则；LLM 失败回退词表；False=纯词表"),
+    # ---- REQ-质检三层重构：L1 确定性闸门 / L2 多维评委 / L3 聚合 ----
+    FeatureFlag("review", "reviewer_layered", True, "质检三层链路总开关（REQ-质检三层重构）：True=L1 确定性闸门→L2 多维评委→L3 聚合器；False=回退重构前旧编排路径（紧急回退）"),
+    FeatureFlag("review", "plot_reviewer", False, "情节结构评委（L2 plot 维度）：大纲核心事件兑现/事件推进/场景同构/节奏松紧/断章张力；默认关（本期保守上线，开启后高质量每章、普通模式降频），False=该维度不可用、不发起调用"),
+    FeatureFlag("review", "plot_reviewer_every", 3, "情节评委普通模式降频：每 N 章跑 1 次（1=每章；高质量模式不受此限）"),
     # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期，只读诊断，不改稿不扣费）----
     FeatureFlag("assistant", "assistant_enabled", True, "小墨AI 总开关：项目页写作对话（章节评估/改稿建议），关闭后前后端入口隐藏"),
     FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
@@ -435,6 +439,9 @@ class NovelConfig:
     llm_semantic_mechanism: bool = feature_default("llm_semantic_mechanism")      # 机制卡三要素 LLM 语义校验，失败回退词表
     llm_semantic_ai_taste: bool = feature_default("llm_semantic_ai_taste")        # AI 痕迹四维度 LLM 语义判定，失败回退词表+统计
     llm_semantic_panel_anchor: bool = feature_default("llm_semantic_panel_anchor")  # 面板结算事件锚点 LLM 判定，失败回退词表
+    reviewer_layered: bool = feature_default("reviewer_layered")                # 质检三层链路总开关（REQ-质检三层重构），False 回退旧编排
+    plot_reviewer: bool = feature_default("plot_reviewer")                     # 情节结构评委开关（L2 plot）
+    plot_reviewer_every: int = feature_default("plot_reviewer_every")           # 情节评委普通模式降频（每 N 章 1 次）
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

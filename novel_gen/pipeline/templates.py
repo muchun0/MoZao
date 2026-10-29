@@ -1413,6 +1413,7 @@ def chapter_prompt(
     teardown_anchor: str = "",
     user_memory_block: str = "",
     panel_baseline: str = "",
+    book_pitfalls: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1436,6 +1437,13 @@ def chapter_prompt(
     constraints = _chapter_constraints(cfg)
     de_ai_block = _de_ai_rules() if cfg.de_ai else ""
     ending_block = _ending_requirements() if is_final else ""
+    # REQ-踩坑账本注入对账：本作历史错误（踩坑账本 Top-N）走独立形参 + 独立段落，
+    # 与 scene_prompt（:1043-1045/:1087）同构——不拼进 memory_context，规避后续场景
+    # 分层注入时 memory_context 被整体替换导致注入块静默消失（决定性论据）。
+    # 不另起标题：pitfall_block 自带标题，与场景路径逐字相同。
+    book_pitfalls_block = (
+        f"\n{book_pitfalls}\n"
+    ) if book_pitfalls else ""
     # ---- REQ-超长篇攻坚 S4.1 前缀缓存对齐 ----
     # 稳定块（同书跨章逐字节一致：单章字数硬指标 + 硬约束 + 题材共性参考）前置到 user 最前，
     # 变化块（章号/目标/事件/记忆/衔接）置后 → 同书所有章共享最大稳定前缀，命中 DeepSeek 前缀缓存价。
@@ -1462,6 +1470,7 @@ def chapter_prompt(
         f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
         f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
         f"{_panel_baseline_block(panel_baseline)}"
+        f"{book_pitfalls_block}"
         f"写作要求：\n"
         f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
         f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"
@@ -1500,6 +1509,7 @@ def chapter_prompt(
             f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
             f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
             f"{_panel_baseline_block(panel_baseline)}"
+            f"{book_pitfalls_block}"
             f"写作要求：\n"
             f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
             f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"

@@ -29,6 +29,8 @@ from .templates import reader_review_prompt, _output_discipline, panel_anchor_ch
 from .beats import _beat_cycle_issues
 from .trace import TraceRecorder
 from ..utils.text import longest_common_substr_len as _lcs_len
+from .pitfall_reconcile import reconcile_pitfall_injection as _reconcile_injection
+from .pitfall_contract import contract_for, expected_params, CHANNEL_REWRITE
 
 logger = logging.getLogger(__name__)
 
@@ -1505,6 +1507,30 @@ class QualityChecker:
                 + self._clean_rewrite_block(chapter_no, issues, content, skip_original)
             )
             _persona = _load_persona("writer")
+            # REQ-踩坑账本注入对账 - 第 3 步（P1 重写路径 whole）：prompt 拼装完成、chat 之前
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _rew_patterns = []
+                if self.memory is not None and getattr(self.cfg, "book_memory", True):
+                    try:
+                        _rew_top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
+                        _, _rew_patterns = self.memory.pitfall_injection(
+                            top_n=_rew_top_n, for_rewrite=True, self_ch=chapter_no)
+                    except Exception:
+                        _rew_patterns = []
+                _rew_contract = contract_for("rewrite_whole", self.cfg, chapter_no)
+                _recon_prompt = ((_persona + "\n\n") if _persona else "") + "\n" + prompt
+                _reconcile_injection(
+                    expected=list(_rew_patterns),
+                    params=dict(expected_params(_rew_contract)),
+                    prompt=_recon_prompt,
+                    path_id="rewrite_whole",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_REWRITE,
+                    trace=self.trace,
+                )
             text = self.llm.chat(
                 (_persona + "\n\n" if _persona else "")
                 + "你是资深网络小说写手，擅长按质检意见重写章节。\n\n"
@@ -1633,6 +1659,30 @@ class QualityChecker:
                 f"3. 只输出替换后的这一个段落，不要解释，不要输出【摘要】\n"
                 f"4. 以句末标点完整收尾"
             )
+            # REQ-踩坑账本注入对账 - 第 3 步（P1 重写路径 span）：prompt 拼装完成、chat 之前
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _rew_patterns = []
+                if self.memory is not None and getattr(self.cfg, "book_memory", True):
+                    try:
+                        _rew_top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
+                        _, _rew_patterns = self.memory.pitfall_injection(
+                            top_n=_rew_top_n, for_rewrite=True, self_ch=chapter_no)
+                    except Exception:
+                        _rew_patterns = []
+                _rew_contract = contract_for("rewrite_span", self.cfg, chapter_no)
+                _recon_prompt = "你是资深网络小说写手，擅长按质检意见局部修改章节段落。\n" + prompt
+                _reconcile_injection(
+                    expected=list(_rew_patterns),
+                    params=dict(expected_params(_rew_contract)),
+                    prompt=_recon_prompt,
+                    path_id="rewrite_span",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_REWRITE,
+                    trace=self.trace,
+                )
             text = (self.llm.chat(
                 "你是资深网络小说写手，擅长按质检意见局部修改章节段落。",
                 prompt, temperature=0.8, max_tokens=4000,

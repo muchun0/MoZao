@@ -268,6 +268,7 @@ function normalizeWorldDraft() {
   d.clock = d.clock || {}
   // REQ-通用机制类型适配：类型标签/条款/结构化卡缺省补齐，编辑器才能按类型分派渲染
   d.mechanism_types = Array.isArray(d.mechanism_types) ? d.mechanism_types : []
+  d.mechanism_types_resolved = Array.isArray(d.mechanism_types_resolved) ? d.mechanism_types_resolved : []
   d.mechanism_ruleset = Array.isArray(d.mechanism_ruleset) ? d.mechanism_ruleset : []
   d.goldfinger_rules = d.goldfinger_rules || {}
   d.power_system = d.power_system || {}
@@ -275,9 +276,11 @@ function normalizeWorldDraft() {
   d.mechanism_rules = d.mechanism_rules || ''
 }
 
-/** 保存前清理空壳条款：没有任何内容的条目不入库（与后端 _merge_sub_card 同口径）。 */
+/** 保存前清理：空壳条款不入库（与后端 _merge_sub_card 同口径），并剔除编辑态辅助字段。 */
 function pruneMechanismDraft(d) {
-  d.mechanism_ruleset = (d.mechanism_ruleset || []).filter(r => String(r.statement || '').trim())
+  d.mechanism_ruleset = (d.mechanism_ruleset || [])
+    .filter(r => String(r.statement || '').trim())
+    .map(({ _scopeKind, _scopeName, ...rest }) => rest)   // scope 由两控件拼装，辅助字段不入库
   d.power_system = d.power_system || {}
   d.power_system.levels = (d.power_system.levels || []).filter(
     l => [l.name, l.range, l.requirement, l.capability].some(v => String(v ?? '').trim()))

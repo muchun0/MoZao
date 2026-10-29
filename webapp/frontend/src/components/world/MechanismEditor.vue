@@ -1,13 +1,14 @@
 <template>
-  <!-- 机制初始值区块（REQ-通用机制类型适配）：按 books 的机制类型分派渲染。
-       类型 Source of Truth 在 novel_gen/pipeline/mechanism_types.py，这里只做展示/编辑：
+  <!-- 机制初始值区块（REQ-通用机制类型适配）：按本书的机制类型分派渲染。
+       类型判定的唯一事实来源是后端 `novel_gen/pipeline/mechanism_types.py`：
+       直接用它下发的 `mechanism_types_resolved`（= resolve_types，含中文别名归一与
+       旧书推断），前端不复制别名表、不自造口径（§11.2/§11.3）。
          numeric_panel → mechanism_baseline 数字标尺
          rule_set      → mechanism_ruleset 条款清单
          ability       → goldfinger_rules 能力规则五要素
          power_level   → power_system 境界阶梯
          contract/temporal → 复用人物/物品/事实账本，此处只展示机制说明文本
-         none          → 不显示本区块
-       旧 world（无 mechanism_types）按后端同一套口径推断，保证不白屏（详见 resolveTypes）。 -->
+         none          → 不显示数值区块（但该类型仍有数据时兜底展示，防改不了） -->
   <div v-if="draft">
     <div class="mech-head">
       <el-tag v-for="t in types" :key="t" size="small" :type="t === 'none' ? 'info' : 'warning'" style="margin-right:6px">
@@ -17,8 +18,11 @@
     </div>
 
     <!-- 数字面板/状态型：正文数字的唯一标准答案 -->
-    <div v-if="hasType('numeric_panel')" class="mech-block">
-      <div class="mech-title">数字标尺（初始值 · 正文数字唯一标准答案）</div>
+    <div v-if="show('numeric_panel')" class="mech-block">
+      <div class="mech-title">
+        数字标尺（初始值 · 正文数字唯一标准答案）
+        <span v-if="isFallback('numeric_panel')" class="mech-hint">（数据兜底展示：未纳入类型判定）</span>
+      </div>
       <div class="char-fields">
         <div class="char-row"><span class="char-label">标记起点</span>
           <el-input v-model="draft.mechanism_baseline.scar_start" size="small" placeholder="机制计数/进度的起始值" /></div>
@@ -36,20 +40,24 @@
     </div>
 
     <!-- 规则约束型：条款一经公布在其作用域内不得改写 -->
-    <div v-if="hasType('rule_set')" class="mech-block">
-      <div class="mech-title">规则条款清单（{{ (draft.mechanism_ruleset || []).length }} 条 · 作用域内绝对不可违背）</div>
+    <div v-if="show('rule_set')" class="mech-block">
+      <div class="mech-title">
+        规则条款清单（{{ (draft.mechanism_ruleset || []).length }} 条 · 作用域内绝对不可违背）
+        <span v-if="isFallback('rule_set')" class="mech-hint">（数据兜底展示：未纳入类型判定）</span>
+      </div>
       <div v-for="(r, i) in (draft.mechanism_ruleset || [])" :key="'rule' + i" class="rule-card">
         <div class="rule-row">
           <span class="char-label">编号</span>
           <el-input v-model="r.rule_id" size="small" style="width:100px" placeholder="R1" />
           <span class="char-label">适用范围</span>
-          <el-select v-model="r.scope" size="small" filterable allow-create style="width:220px"
-                     placeholder="global / instance:副本名 / character:角色名 / ability:能力名">
-            <el-option label="全书通用" value="global" />
-            <el-option label="副本专属（instance:副本名）" value="instance:" />
-            <el-option label="角色专属（character:角色名）" value="character:" />
-            <el-option label="能力专属（ability:能力名）" value="ability:" />
+          <!-- scope 形如 global / instance:副本名 / character:角色名 / ability:能力名：
+               拆成"前缀 + 对象名"两控件拼装，避免用户选中残缺前缀存成畸形 scope -->
+          <el-select v-model="r._scopeKind" size="small" style="width:140px" @change="onScopeKind(r)">
+            <el-option v-for="(v, k) in SCOPE_KINDS" :key="k" :label="v" :value="k" />
           </el-select>
+          <el-input v-if="r._scopeKind !== 'global'" v-model="r._scopeName" size="small"
+                    style="width:160px" :placeholder="SCOPE_NAME_PLACEHOLDER[r._scopeKind] || '对象名'"
+                    @change="syncScope(r)" />
           <el-button type="danger" size="small" link @click="removeRule(i)">删除</el-button>
         </div>
         <div class="char-row"><span class="char-label">条款内容</span>
@@ -75,8 +83,11 @@
     </div>
 
     <!-- 能力/概念金手指型：五要素 -->
-    <div v-if="hasType('ability')" class="mech-block">
-      <div class="mech-title">能力规则（五要素 · 缺项会在阶段准出被打回）</div>
+    <div v-if="show('ability')" class="mech-block">
+      <div class="mech-title">
+        能力规则（五要素 · 缺项会在阶段准出被打回）
+        <span v-if="isFallback('ability')" class="mech-hint">（数据兜底展示：未纳入类型判定）</span>
+      </div>
       <div class="char-fields">
         <div class="char-row"><span class="char-label">触发条件</span>
           <el-input v-model="draft.goldfinger_rules.trigger" size="small" placeholder="什么条件下可发动" /></div>
@@ -92,8 +103,11 @@
     </div>
 
     <!-- 等级境界型：阶梯 + 主角当前境界 -->
-    <div v-if="hasType('power_level')" class="mech-block">
-      <div class="mech-title">等级/境界阶梯（防后期战力崩坏）</div>
+    <div v-if="show('power_level')" class="mech-block">
+      <div class="mech-title">
+        等级/境界阶梯（防后期战力崩坏）
+        <span v-if="isFallback('power_level')" class="mech-hint">（数据兜底展示：未纳入类型判定）</span>
+      </div>
       <div class="char-row"><span class="char-label">主角当前境界</span>
         <el-input v-model="draft.power_system.protagonist_level" size="small" placeholder="开书时主角所处境界" /></div>
       <div class="char-row"><span class="char-label">突破规则</span>
@@ -115,7 +129,7 @@
     </div>
 
     <!-- 契约/时间循环型：无独立数值结构，展示机制说明（动态调整走既有账本） -->
-    <div v-if="hasType('contract', 'temporal') || draft.mechanism_rules" class="mech-block">
+    <div v-if="show('contract') || show('temporal') || draft.mechanism_rules" class="mech-block">
       <div class="mech-title">机制说明（契约/时间循环类机制的数值走人物·物品·事实账本）</div>
       <el-input v-model="draft.mechanism_rules" type="textarea" :rows="4" placeholder="用自然语言写清契约/循环的初始状态与结算口径" />
     </div>
@@ -125,28 +139,69 @@
 <script setup>
 /**
  * 机制初始值编辑器（自 WorldEditor 拆出，§11.1 文件规模红线）。
- * 类型判定口径与 novel_gen/pipeline/mechanism_types.py 保持一致：
- * 显式 mechanism_types 优先 → 缺失时按既有字段推断 → 仍无则 none。
+ *
+ * 类型判定**不自算**：直接用后端下发的 `mechanism_types_resolved`
+ * （= novel_gen/pipeline/mechanism_types.py 的 resolve_types，含中文别名归一与旧书
+ * 推断），前端只负责展示与编辑（§11.2 单一权威源、§11.3 同一份规则不写两处）。
  */
-import { computed } from 'vue'
-import { POLICY_LABELS, STATUS_LABELS, TYPE_LABELS, normalizeTypes, inferTypes } from './mechanism'
+import { computed, watch } from 'vue'
+import {
+  POLICY_LABELS, STATUS_LABELS, TYPE_LABELS, dataTypes, isInferred,
+  resolveTypes, showBlock,
+} from './mechanism'
 
 const props = defineProps({
   draft: { type: Object, required: true },  // 世界观草稿（整体对象，内部字段增量编辑）
 })
 
-const declaredTypes = computed(() => normalizeTypes(props.draft?.mechanism_types))
-const inferred = computed(() => declaredTypes.value.length === 0)
-const types = computed(() => declaredTypes.value.length ? declaredTypes.value : inferTypes(props.draft || {}))
+// scope 拆成「前缀 + 对象名」两控件拼装，避免用户选中残缺前缀存成畸形 scope
+const SCOPE_KINDS = { global: '全书通用', 'instance:': '副本专属', 'character:': '角色专属', 'ability:': '能力专属' }
+const SCOPE_NAME_PLACEHOLDER = { 'instance:': '副本名', 'character:': '角色名', 'ability:': '能力名' }
 
-const hasType = (...names) => names.some(n => types.value.includes(n))
+const types = computed(() => resolveTypes(props.draft || {}))
+const fallbackTypes = computed(() => dataTypes(props.draft || {}))
+const inferred = computed(() => isInferred(props.draft || {}))
+
+/** 区块是否渲染：类型判定命中，或该类型数据确实存在（兜底，防"改不了"）。 */
+const show = name => showBlock(props.draft || {}, name)
+/** 是否属于"没被类型判定纳入、但有数据"的兜底展示。 */
+const isFallback = name => !types.value.includes(name) && fallbackTypes.value.includes(name)
+
+/** 加载/刷新后把 scope 字符串拆回两控件，保证编辑态与库值一致。 */
+function syncScopeFromRaw(r) {
+  const raw = String(r.scope || 'global')
+  const idx = raw.indexOf(':')
+  if (idx > 0 && SCOPE_KINDS[raw.slice(0, idx + 1)]) {
+    r._scopeKind = raw.slice(0, idx + 1)
+    r._scopeName = raw.slice(idx + 1)
+  } else {
+    r._scopeKind = 'global'
+    r._scopeName = ''
+  }
+}
+function syncScope(r) {
+  r.scope = r._scopeKind === 'global' ? 'global' : `${r._scopeKind}${String(r._scopeName || '').trim()}`
+}
+function onScopeKind(r) {
+  if (r._scopeKind === 'global') r._scopeName = ''
+  syncScope(r)
+}
+
+// 草稿被整体替换（重新加载/保存后回填）时也要重拆，故监听数组引用而非长度
+watch(
+  () => props.draft?.mechanism_ruleset,
+  list => (list || []).forEach(syncScopeFromRaw),
+  { immediate: true },
+)
 
 function addRule() {
   const list = props.draft.mechanism_ruleset || (props.draft.mechanism_ruleset = [])
-  list.push({
-    rule_id: `R${props.draft.mechanism_ruleset.length + 1}`, scope: 'global', statement: '',
+  const rule = {
+    rule_id: `R${list.length + 1}`, scope: 'global', statement: '',
     condition: '', consequence: '', change_policy: 'fixed', source: 'user', first_ch: 0, status: 'active',
-  })
+  }
+  syncScopeFromRaw(rule)
+  list.push(rule)
 }
 function removeRule(i) { (props.draft.mechanism_ruleset || []).splice(i, 1) }
 

@@ -2,7 +2,9 @@
 """projects_world路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
-from novel_gen.pipeline.mechanism_types import normalize_types  # noqa: F401  机制类型枚举清洗（唯一事实源）
+from novel_gen.pipeline.mechanism_types import (  # noqa: F401  机制类型清洗/判定（唯一事实源）
+    normalize_types, resolve_types,
+)
 
 
 @app.post("/api/projects/{project_id}/cover")
@@ -85,13 +87,18 @@ def _public_world(world) -> dict:
     REQ-通用机制类型适配：机制类型标签 `mechanism_types`、规则条款 `mechanism_ruleset`
     与既有结构化卡（金手指五要素 / 等级境界）必须一并下发，前端才能按类型分派渲染
     初始数值；旧 world 缺字段全部回落空值，不报错（from_dict 已兼容）。
+
+    `mechanism_types_resolved` = `resolve_types(world)` 的权威结果（显式声明 → 中文别名归一 →
+    旧书按字段推断 → 兜底 none）。前端一律以它分派，**不在前端重算判定口径**
+    （§11.2 单一权威源；别名表只在后端一份，前端不复制，避免两处漂移）。
     """
     if world is None:
         return {
             "world_view": "", "characters": [], "foreshadowing": [], "locked_settings": [],
             "enemies": [], "locations": [], "factions": [],
             "mechanism_baseline": {}, "clock": {}, "style_taboos": [],
-            "mechanism_types": [], "mechanism_ruleset": [], "goldfinger_rules":
+            "mechanism_types": [], "mechanism_types_resolved": ["none"],
+            "mechanism_ruleset": [], "goldfinger_rules":
             GoldfingerRules().to_dict(), "power_system": PowerLevelSystem().to_dict(),
             "mechanism_rules": "",
         }
@@ -110,6 +117,7 @@ def _public_world(world) -> dict:
         "style_taboos": list(getattr(world, "style_taboos", None) or []),
         # ---- REQ-通用机制类型适配：七类机制各自的「初始数值」承载字段 ----
         "mechanism_types": list(getattr(world, "mechanism_types", None) or []),
+        "mechanism_types_resolved": resolve_types(world),
         "mechanism_ruleset": [r.to_dict() for r in (getattr(world, "mechanism_ruleset", None) or [])],
         # 缺省下发空骨架（含全部字段键），前端 v-model 绑定不会碰到 undefined
         "goldfinger_rules": (gold.to_dict()

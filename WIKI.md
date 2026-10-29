@@ -73,7 +73,7 @@ D:\PythonProjects\DouBao\
 │   │   ├── chapter_state.py    # 章内/章间状态账本（机制数字确定性闭环）
 │   │   ├── character_state.py  # 人物动态状态（逐章出场/状态追踪）
 │   │   ├── book_memory.py      # 小说级记忆（设定/事件/踩坑/经验四账本）
-│   │   ├── quality.py          # 结果自校验（确定性规则 + 定点重写 + 记忆注入）
+│   │   ├── quality/           # 章节质检三层体系：checker.py 门面编排 + aggregate.py(L3 聚合) + reviewers/(L2 四评委) + constants/text_tools；确定性闸门 → 多维评委 → 汇总建议/维度分
 │   │   ├── review_summary.py   # 全书质量汇总
 │   │   ├── ai_taste.py         # AI 痕迹评分
 │   │   ├── style_anchor.py     # 双锚风格锚定（个人旧稿锚 + 题材锚）

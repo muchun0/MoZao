@@ -102,19 +102,15 @@
             <template v-if="isRunningAgent(currentAgent.key)">
               <el-button type="danger" @click="stopRun">停止运行</el-button>
               <span class="action-hint">已完成部分保留，未完成章节不提交</span>
-              <!-- U1：运行进度（progress 来自 get_agent_run running 态） -->
-              <div v-if="runProgress" class="run-progress">
-                <!-- N2：进度条用任务视角 task_done/task_total（任意 scope 0→100%），
-                     重生成已完成章不虚增；N1：非章节类无 task_total 用 indeterminate 动画 -->
-                <el-progress v-if="runProgress.task_total" :percentage="runPercent" :stroke-width="6" :show-text="false" />
-                <el-progress v-else :percentage="100" :stroke-width="6" :show-text="false" indeterminate :duration="2" />
-                <div class="run-progress-text">
-                  <span>{{ runPhaseText }}</span>
-                  <span v-if="runProgress.chapters_total" class="run-progress-ch">
-                    第 {{ runCurrentText }} / {{ runProgress.chapters_total }} 章
-                  </span>
-                  <span class="run-progress-elapsed">已用 {{ elapsedText }}</span>
-                </div>
+              <!-- U1：运行进度统一收敛到顶部 GenerationProgress 组件（单一进度条）。
+                   此处只保留紧凑文字状态行，不再渲染第二个进度条（修复双进度条）。 -->
+              <div v-if="runProgress" class="run-statusline">
+                <span>{{ runPhaseText }}</span>
+                <span v-if="runProgress.chapters_total" class="run-status-ch">
+                  第 {{ runCurrentText }} / {{ runProgress.chapters_total }} 章
+                </span>
+                <span class="run-status-elapsed">已用 {{ elapsedText }}</span>
+                <span class="action-hint">进度见顶部进度条</span>
               </div>
             </template>
             <template v-else>
@@ -179,6 +175,7 @@ import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance, estimat
 import { getAgentPrompts, saveAgentPrompt } from '../../api/novel'
 import SkillPicker from './SkillPicker.vue'
 import MarkdownIt from 'markdown-it'
+import { applyAgentProgress } from '../../composables/useGenerationProgress'
 
 // 人设 Markdown 预览：html=false 转义原始 HTML（防 XSS），linkify 自动识别链接
 const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
@@ -256,15 +253,6 @@ const PHASE_TEXT = {
 }
 const runPhaseText = computed(() =>
   PHASE_TEXT[runProgress.value?.phase] || '运行中…')
-// N2：进度条优先任务视角（task_done/task_total，任意 scope 0→100%）；
-// 兼容旧返回体（无 task_total 时回退书级完成度）
-const runPercent = computed(() => {
-  const p = runProgress.value
-  if (!p) return 0
-  if (p.task_total) return Math.min(100, Math.round((p.task_done / p.task_total) * 100))
-  if (p.chapters_total) return Math.min(100, Math.round((p.chapters_done / p.chapters_total) * 100))
-  return 0
-})
 const runCurrentText = computed(() => {
   const p = runProgress.value
   if (!p) return 0
@@ -330,7 +318,11 @@ async function poll() {
     const body = await getAgentRun(props.pid, runningTaskId.value)
     if (body.status === 'running' || body.status === 'resumed') {
       // U1：刷新进度（后端 task.json progress + elapsed）；成功轮询清零失败计数
-      if (body.progress) runProgress.value = body.progress
+      if (body.progress) {
+        runProgress.value = body.progress
+        // 同步到统一进度 store：让顶部单一进度条跟随真实进度（不再依赖任务视角推断）
+        applyAgentProgress(body.progress, body.agent)
+      }
       if (body.started_at) runStartedAt.value = body.started_at * 1000
       pollFailCount.value = 0
       return
@@ -590,9 +582,8 @@ onBeforeUnmount(() => {
 .action-hint { font-size: 12px; color: var(--muted); }
 .action-hint.danger { color: var(--danger); }
 
-/* ---------- U1：运行进度条（get_agent_run running 态 progress） ---------- */
-.run-progress { width: 100%; max-width: 420px; margin-top: 8px; }
-.run-progress-text {
+/* ---------- U1：运行文字状态行（进度条已统一到顶部 GenerationProgress，此处不重复渲染） ---------- */
+.run-statusline {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -602,7 +593,13 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.run-progress-ch { color: var(--ink-soft); }
+.run-status-ch { color: var(--ink-soft); }
+.run-status-elapsed { color: var(--muted); }
+
+/* 窄屏：状态行换行，避免与「停止运行」挤在一行溢出 */
+@media (max-width: 520px) {
+  .run-statusline { gap: 8px; }
+}
 
 /* ---------- 技能挂载：默认折叠，避免长期占据首屏 ---------- */
 .stage-skills { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--card-line); }

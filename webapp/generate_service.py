@@ -435,6 +435,41 @@ def resume_agent_run(store: ProjectStore, handle, meta: dict) -> None:
     logger.info("agent run 重拾: project=%s agent=%s task=%s", store.dir.name, agent, task_id)
 
 
+def current_task_progress(store: ProjectStore) -> dict:
+    """读取当前运行中任务的进度快照（供 GET /projects/{id} 暴露真实进度）。
+
+    前端原先只能拿 chapters_done/chapters_total：大纲/世界观阶段 chapters_done 恒为 0，
+    进度条长期停在 0% 后突跳 100%。真实阶段与 task_done/task_total 只存在 task.json 里，
+    这里把它一并带回，让项目详情接口成为单一进度来源（轮询不依赖 task_id）。
+
+    只读 + 全程兜底：任何异常都降级为空字典，绝不影响项目详情本身的返回。
+    """
+    try:
+        task_file = store.dir / "task.json"
+        if not task_file.exists():
+            return {}
+        meta = json.loads(task_file.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict) or meta.get("kind") != "agent_run":
+            return {}
+        progress = dict(meta.get("progress") or {})
+        started_at = meta.get("started_at")
+        if started_at:
+            try:
+                progress["elapsed"] = round(max(0.0, time.time() - float(started_at)), 1)
+            except (TypeError, ValueError):
+                pass
+        return {
+            "task_id": meta.get("task_id", ""),
+            "agent": meta.get("agent", ""),
+            "started_at": started_at,
+            "progress": progress,
+        }
+    except Exception:
+        # 进度是增强信息：读不到只降级，不能让项目详情 500
+        logger.exception("task.json 进度读取失败（降级）: project=%s", store.dir.name)
+        return {}
+
+
 def get_agent_run(store: ProjectStore, task_id: str) -> dict:
     """四态状态机：running / resumed / done|stopped|failed / not_found。"""
     from . import core  # 延迟 import：避免循环引用

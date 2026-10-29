@@ -5,6 +5,7 @@ import re  # noqa: F401  用户大纲导入：标题/章节解析
 
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from .. import generate_service  # noqa: F401  Agent 运行进度快照（GET /projects/{id} 暴露真实阶段/进度）
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 
 
@@ -229,16 +230,23 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
     chapters = store.list_chapters()
     total = len(outline.chapters) if outline else cfg.num_chapters
     handle = _RUNS.get(project_id)
+    running = bool(handle and handle.thread and handle.thread.is_alive())
+    # 真实进度快照（阶段/任务完成度只在 task.json 里）：仅运行中才带，避免过期进度误导前端
+    # 前端据此驱动单一进度条，不再只用 chapters_done/chapters_total 反推（大纲阶段恒为 0%）
+    task_snap = generate_service.current_task_progress(store) if running else {}
     return {
         "id": store.dir.name,
         "config": _cfg_to_dict(cfg),
         "state": state.to_dict(),
+        "task_id": task_snap.get("task_id", ""),
+        "agent": task_snap.get("agent", ""),
+        "progress": task_snap.get("progress", {}),
         "outline_title": outline.title if outline else "",
         "has_outline": bool(outline and outline.chapters),
         "outline_intro": outline.intro if outline else "",
         "chapters_done": len(chapters),
         "chapters_total": total,
-        "running": bool(handle and handle.thread and handle.thread.is_alive()),
+        "running": running,
         "error": (handle.error if handle and handle.error else state.error),
         "generated_words": sum(len(c.content) for c in chapters),
         "has_txt": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.txt").exists(),

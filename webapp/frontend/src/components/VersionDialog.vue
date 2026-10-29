@@ -9,44 +9,54 @@
 
     <div v-if="!diffView" class="ver-list">
       <div v-for="v in versionList" :key="v.v" class="ver-item" :class="{ active: v.selected }">
-        <el-checkbox class="ver-check" :model-value="compareSel.includes(v.v)"
-                     :disabled="compareSel.length >= 2 && !compareSel.includes(v.v)"
-                     @change="toggleCompare(v.v)" />
-        <div class="ver-main">
-          <div class="ver-info">
-            <span class="ver-no">v{{ v.v }}</span>
+        <!-- 第一层：版本号 + 状态徽章 + 生成时间 -->
+        <div class="ver-head">
+          <el-checkbox class="ver-check" :model-value="compareSel.includes(v.v)"
+                       :disabled="compareSel.length >= 2 && !compareSel.includes(v.v)"
+                       @change="toggleCompare(v.v)" />
+          <span class="ver-no">v{{ v.v }}</span>
+          <div class="ver-badges">
             <el-tag v-if="v.badge === 'recommended'" size="small" type="warning" effect="dark">推荐</el-tag>
             <el-tag v-else-if="v.badge === 'user_managed'" size="small" type="primary">你的选择</el-tag>
             <!-- blocked_compliance 理论不入版本库（quality 合规命中不落盘），后端兜底不推荐，UI 不展示 -->
-            <el-tag size="small" :type="v.selected ? 'success' : 'info'">{{ v.selected ? '当前' : sourceText(v.source) }}</el-tag>
-            <el-tag v-if="v.quality && v.quality.score !== undefined && v.quality.score !== null"
-                    size="small" :type="v.quality.passed ? 'success' : 'danger'">
-              质检 {{ v.quality.score }}{{ v.quality.passed ? ' ✓' : ' ✗' }}
-            </el-tag>
-            <el-tag v-if="v.quality && v.quality.hook_score !== undefined && v.quality.hook_score !== null"
-                    size="small" type="success">追更 {{ v.quality.hook_score }}/5</el-tag>
-            <el-tag v-if="v.quality && v.quality.auto_revised" size="small" type="warning">自动改</el-tag>
-            <span class="ver-words">{{ v.words }}字</span>
-            <span v-if="v.charged !== undefined" class="ver-charge">扣费 ¥{{ Number(v.charged).toFixed(2) }}</span>
-            <span class="ver-ts">{{ fmtVerTime(v.ts) }}</span>
+            <el-tag v-if="v.selected" size="small" type="success">当前</el-tag>
+            <el-tag v-else size="small" type="info">{{ sourceText(v.source) }}</el-tag>
           </div>
-          <!-- 推荐理由 -->
-          <div v-if="v.badge === 'recommended' && v.reasons && v.reasons.length" class="ver-reasons">
-            <div v-for="(r, i) in v.reasons" :key="i" class="ver-reason">✓ {{ r }}</div>
-          </div>
-          <div v-if="v.fatal_issue" class="ver-fatal">⚠ {{ v.fatal_issue }}</div>
-          <div v-if="v.quality && (v.quality.issues || []).length" class="ver-issues">
-            <div class="ver-issues-head">改稿建议（{{ v.quality.issue_count || v.quality.issues.length }} 处）</div>
-            <div v-for="(it, i) in v.quality.issues.slice(0, 8)" :key="i" class="ver-issue">
-              <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
-              <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
-              <span>{{ it.detail }}</span>
-              <el-button v-if="kind === 'chapter'" size="small" link type="warning" @click="$emit('appeal', it)">申诉</el-button>
-            </div>
-            <div v-if="(v.quality.issues || []).length > 8" class="ver-issue-more">… 其余 {{ v.quality.issues.length - 8 }} 条见版本质检记录</div>
-          </div>
-          <div v-else-if="kind === 'chapter'" class="ver-noq">该版本无质检问题记录</div>
+          <span v-if="v.ts" class="ver-ts">{{ fmtVerTime(v.ts) }}</span>
         </div>
+        <!-- 第二层：元信息（字数 / 扣费 / 质检 / 追更 / 自动改 / 来源），弱化分隔，避免一行挤爆 -->
+        <div class="ver-meta">
+          <span class="ver-words">{{ v.words }}字</span>
+          <span v-if="v.charged !== undefined" class="ver-charge">扣费 ¥{{ Number(v.charged).toFixed(2) }}</span>
+          <el-tag v-if="v.quality && v.quality.score !== undefined && v.quality.score !== null"
+                  size="small" :type="v.quality.passed ? 'success' : 'danger'">
+            质检 {{ v.quality.score }}{{ v.quality.passed ? ' ✓' : ' ✗' }}
+          </el-tag>
+          <el-tag v-if="v.quality && v.quality.hook_score !== undefined && v.quality.hook_score !== null"
+                  size="small" type="success">追更 {{ v.quality.hook_score }}/5</el-tag>
+          <el-tag v-if="v.quality && v.quality.auto_revised" size="small" type="warning">自动改</el-tag>
+        </div>
+        <!-- 推荐理由 -->
+        <div v-if="v.badge === 'recommended' && v.reasons && v.reasons.length" class="ver-reasons">
+          <div v-for="(r, i) in v.reasons" :key="i" class="ver-reason">✓ {{ r }}</div>
+        </div>
+        <div v-if="v.fatal_issue" class="ver-fatal">⚠ {{ v.fatal_issue }}</div>
+        <!-- 改稿建议：默认折叠，避免长列表刷屏（窄屏尤为拥挤） -->
+        <div v-if="v.quality && (v.quality.issues || []).length" class="ver-issues">
+          <div class="ver-issues-head">改稿建议（{{ v.quality.issue_count || v.quality.issues.length }} 处）</div>
+          <div v-for="(it, i) in visibleIssues(v)" :key="i" class="ver-issue">
+            <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
+            <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
+            <span class="ver-issue-detail">{{ it.detail }}</span>
+            <el-button v-if="kind === 'chapter'" size="small" link type="warning" @click="$emit('appeal', it)">申诉</el-button>
+          </div>
+          <el-button v-if="(v.quality.issues || []).length > 3" size="small" link type="primary"
+                     class="ver-issue-toggle" @click="toggleIssues(v.v)">
+            {{ expanded[v.v] ? '收起' : `展开其余 ${(v.quality.issues || []).length - 3} 条` }}
+          </el-button>
+        </div>
+        <div v-else-if="kind === 'chapter'" class="ver-noq">该版本无质检问题记录</div>
+        <!-- 第四层：操作（切换 / 采用 / 删除） -->
         <div class="ver-actions">
           <el-button v-if="v.badge === 'recommended' && !v.selected" size="small" link type="warning"
                      @click="onSelect(v.v)">采用建议</el-button>
@@ -99,7 +109,7 @@
 // - chapter：章节版本（质检分/改稿建议/申诉/删除），行为与 ProjectDetail 原内联弹窗一致；
 // - outline/world：产物版本列表（每版字数 + 结算金额），回滚前展示影响范围
 //   （受影响章节 + 需重生成起始章 + 派生视图过期清单），确认后受控回滚。
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getChapterVersions, selectChapterVersion, deleteChapterVersion,
@@ -117,6 +127,16 @@ const emit = defineEmits(['update:modelValue', 'changed', 'appeal'])
 const versionList = ref([])
 const compareSel = ref([])   // 勾选待对比的两个版本号
 const diffView = ref(null)   // diff 接口响应
+const expanded = reactive({})  // 各版本改稿建议的折叠态（按版本号 v 记录）
+
+// 改稿建议默认只露前 3 条，展开后显示全部（避免面板拥挤）
+function visibleIssues(v) {
+  const list = (v.quality && v.quality.issues) || []
+  return expanded[v.v] ? list : list.slice(0, 3)
+}
+function toggleIssues(no) {
+  expanded[no] = !expanded[no]
+}
 
 const KIND_LABELS = { chapter: '章节', outline: '大纲', world: '世界观' }
 const title = computed(() => props.kind === 'chapter'
@@ -239,37 +259,48 @@ watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
 <style scoped>
 .ver-list { max-height: 55vh; overflow-y: auto; }
 .ver-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  margin-bottom: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--card);
 }
-.ver-item.active { border-color: var(--el-color-success); background: var(--el-color-success-light-9); }
-.ver-main { flex: 1; min-width: 0; }
-.ver-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ver-no { font-weight: 700; }
-.ver-words { color: var(--el-text-color-regular); font-size: 12px; }
-.ver-charge { color: var(--el-color-warning); font-size: 12px; }
-.ver-ts { color: var(--el-text-color-secondary); font-size: 12px; }
-.ver-issues { margin-top: 6px; }
-.ver-issues-head { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 4px; }
-.ver-issue { font-size: 12px; display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; }
-.lv-big { color: var(--el-color-danger); }
-.lv-mid { color: var(--el-color-warning); }
-.lv-small { color: var(--el-text-color-secondary); }
-.ver-issue-type { color: var(--el-text-color-secondary); }
-.ver-issue-more { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }
-.ver-noq { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 6px; }
-.ver-actions { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
-.ver-tip { margin-top: 8px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; white-space: pre-line; }
-.ver-check { margin-right: 8px; }
-.ver-reasons { margin-top: 4px; font-size: 12px; color: var(--el-color-warning); }
+.ver-item.active { border-color: var(--ok); background: rgba(60, 122, 78, .06); }
+/* 第一层：版本号 + 徽章 + 时间 */
+.ver-head { display: flex; align-items: center; gap: 10px; }
+.ver-check { margin-right: 2px; }
+.ver-no { font-size: 16px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ver-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ver-ts { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 第二层：元信息 */
+.ver-meta { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin-top: 8px; }
+.ver-words { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ver-charge { color: var(--gold-deep); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ver-issues { margin-top: 8px; }
+.ver-issues-head { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.ver-issue { font-size: 12px; display: flex; gap: 6px; align-items: baseline; margin-bottom: 3px; }
+.ver-issue-detail { flex: 1; min-width: 0; }
+.lv-big { color: var(--danger); flex-shrink: 0; }
+.lv-mid { color: var(--gold-deep); flex-shrink: 0; }
+.lv-small { color: var(--muted); flex-shrink: 0; }
+.ver-issue-type { color: var(--muted); flex-shrink: 0; }
+.ver-issue-toggle { padding-left: 0; margin-top: 2px; }
+.ver-noq { font-size: 12px; color: var(--muted); margin-top: 8px; }
+/* 第四层：操作 */
+.ver-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--card-line); }
+.ver-tip { margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.6; white-space: pre-line; }
+.ver-reasons { margin-top: 6px; font-size: 12px; color: var(--gold-deep); }
 .ver-reason { line-height: 1.6; }
-.ver-fatal { margin-top: 4px; font-size: 12px; color: var(--el-text-color-secondary); }
+.ver-fatal { margin-top: 6px; font-size: 12px; color: var(--muted); }
 .compare-bar { margin-top: 8px; text-align: center; }
+
+/* 窄屏：徽章与时间换行、操作铺满，避免横向挤压 */
+@media (max-width: 700px) {
+  .ver-head { flex-wrap: wrap; }
+  .ver-ts { margin-left: 0; flex-basis: 100%; }
+  .ver-meta { gap: 6px 10px; }
+  .ver-actions { gap: 8px; }
+}
 .diff-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .diff-title { font-weight: 700; }
 .diff-trunc { font-size: 12px; color: var(--el-text-color-secondary); }

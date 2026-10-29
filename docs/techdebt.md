@@ -8,7 +8,7 @@
 
 ## 0. 结论速览（Top 债）
 
-1. **4 个超红线文件仍在持续膨胀，而非偿还**——`decisions.md` 早于 2026-10 已把 `stages.py`/`templates.py`/`quality.py`/`core.py` 列为"待办重构"，但至今 `stages.py` 2228→**3157**（+929）、`quality.py` 1306→**1796**（+490）、`core.py` 1207→**1377**、`templates.py` 1784→**1968**。**红线形同虚设，债在滚雪球。**
+1. **超红线文件仍在持续膨胀，而非偿还**——`decisions.md` 早于 2026-10 已把 `stages.py`/`templates.py`/`quality.py`/`core.py` 列为"待办重构"；2026-10-29 `quality.py` 已拆为 `quality/` 包（L2 评委/L3 聚合器/常量/纯函数已抽出），但门面 `checker.py` 仍 1757 行超红线；其余 `stages.py` 2228→**3157**（+929）、`core.py` 1207→**1377**、`templates.py` 1784→**1968**。**红线形同虚设，债在滚雪球。**
 2. **核心业务代码违规使用 `print` 共 91 处**（stages 40 + manager 46 + quality 5），未走统一 logger，生产环境无法按 trace_id/场景检索，属观测性债且违反 `§11.6`。
 3. **同一逻辑多份实现**（LCS 三份、JSON 健壮解析四份、鉴权两份），违反 `§11.2`"收敛单一权威源"，正是历史"排除词表分家/两套正则不同步"同款坑的复发。
 4. **提示词文本仍硬编码在 `templates.py`**（1968 行主体即提示词字符串），违反 `§11.3`"提示词放 agents/prompts/*.md"。
@@ -26,7 +26,7 @@
 |---|---|---|---|
 | **2338** | `pipeline/stages.py` | 🔴 **>1000 禁新增** | wave2 拆函数后 3157→2341，wave3 抽 `_split_scenes` 后 2338 |
 | **1723** | `pipeline/templates.py` | 🔴 **>1000 禁新增** | wave2 抽规则 .md 后 1968→1722，本轮微增 1723 |
-| **1836** | `pipeline/quality.py` | 🔴 **>1000 禁新增** | wave2 拆函数后 1796→1783，wave3 `check()` 拆 15 helper 后微增 1836 |
+| **1757** | `pipeline/quality/checker.py` | 🔴 **>1000 禁新增** | 2026-10-29 质检三层重构：旧 `quality.py` 拆为 `quality/` 包，已抽出 `aggregate.py`(214)/`reviewers/`(5 评委)/`constants.py`(65)/`text_tools.py`(222)；checker.py 仍残留旧确定性规则方法与三类重写方法，待迁入 `deterministic/` 与 `rewrite_support.py`（后续专项，见 decisions.md 2026-10-29） |
 | **1069** | `pipeline/manager.py` | 🔴 **>1000 禁新增** | — |
 | **1068** | `store/project.py` | 🔴 **>1000 禁新增** | — |
 | **1038** | `pipeline/book_memory.py` | 🔴 **>1000 禁新增** | — |
@@ -68,8 +68,8 @@
 
 | 逻辑 | 重复位置 | 说明 |
 |---|---|---|
-| `_lcs_len`（最长公共子序列） | `beats.py:76`、`quality.py:1632`、`stages.py:3021` **三份** | beats.py 是权威源，另两处各自实现 |
-| `_parse_json_obj` / `_parse_json` | `manager.py:36`、`stages.py:38`、`quality.py:1605`、`reviser.py:104`、`reviser.py:184`（后者同文件两份） | `§11.7` 要求健壮 JSON 解析统一封装，现散落四份 |
+| `_lcs_len`（最长公共子序列） | `beats.py:76`、`quality/checker.py`、`stages.py:3021` **三份** | beats.py 是权威源，另两处各自实现 |
+| `_parse_json_obj` / `_parse_json` | `manager.py:36`、`stages.py:38`、`quality/checker.py`、`reviser.py:104`、`reviser.py:184`（后者同文件两份） | `§11.7` 要求健壮 JSON 解析统一封装，现散落四份 |
 | 鉴权 `_require_user` | `core.py:432`、`admin_cli.py:28` | 两处实现 |
 | `_read_json` | `store/project.py:1061`、`user_memory.py:57` | 重复 |
 | `_normalize` | `stages.py:234`、`outline_parser.py:119` | 重复 |
@@ -102,7 +102,7 @@
 
 - `stages.py`：**40 处** print（自校验/回退整章/拆场景/行动表补全等**核心生成路径**）
 - `manager.py`：**46 处** print（大纲完成/自检/编辑审稿/全书终审/导出等）
-- `quality.py`：**5 处** print（自校验路径）
+- `quality/checker.py`：print 已清零（2026-10-28 观测性专项统一 logger，2026-10-29 拆包后复核为 0）
 - 另有 `admin_cli.py` 30 处（命令行工具，属 §11.6 例外）、`config.py` 4、`reviser.py` 4、`research.py` 6。
 
 **影响**：核心链路输出走 stdout，生产 docker 环境无法按 trace_id/场景/项目检索，与 `agent_trace` 全链路快照体系割裂；排障只能看裸日志。**建议统一替换为 `webapp/logger.py` / novel_gen 统一 logger。**
@@ -118,8 +118,8 @@
 
 ## 7. 死代码 / 注释掉的逻辑（`§11.5` 自查项）
 
-- 连续 ≥10 行注释块（含代码特征）共 5+ 处：`stages.py`、`quality.py`、`chapter_state.py`、`config.py`。
-- 典型：`quality.py:421` 整段"ch4 蚀化 106…P0-14 改为链式"方案注释；`stages.py:1100` "方案4（落盘分流）"注释；`chapter_state.py:448` "做通用机制 # ①②③"整段方案。
+- 连续 ≥10 行注释块（含代码特征）共 5+ 处：`stages.py`、`quality/checker.py`、`chapter_state.py`、`config.py`。
+- 典型：`quality/checker.py` 内"ch4 蚀化 106…P0-14 改为链式"整段方案注释；`stages.py:1100` "方案4（落盘分流）"注释；`chapter_state.py:448` "做通用机制 # ①②③"整段方案。
 - 影响：增加认知负担、误导后续维护者；建议按 `§11.5` 清理或收敛进 `decisions.md`。
 
 ---
@@ -135,9 +135,9 @@
 
 ## 9. 流程债（元问题，优先级最高）
 
-`decisions.md`（2026-10）已明确把 `stages.py`/`templates.py`/`quality.py`/`core.py` 列为"**待办（已识别债，非本次范围）**"并给出行为零变化拆分标准（server/db 拆分史成功标准），但此后：
+`decisions.md`（2026-10）已明确把 `stages.py`/`templates.py`/`quality.py`/`core.py` 列为"**待办（已识别债，非本次范围）**"并给出行为零变化拆分标准（server/db 拆分史成功标准）；2026-10-29 `quality.py` 已先行拆为 `quality/` 包（L2/L3/常量/纯函数抽出），门面 `checker.py` 1757 行待二次剥离，其余大文件此后：
 
-- `stages.py` +929、`quality.py` +490、`core.py` +170、`templates.py` +184；
+- `stages.py` +929、`core.py` +170、`templates.py` +184；
 - 期间 `manager.py`、`store/project.py`、`book_memory.py`、`generate_service.py` 陆续越过 1000/900 线。
 
 **根因**：`§11.1`"超 1000 行禁止继续新增"作为**评审准出闸**（`§11.5`）未被真正执行——新功能仍往超红线大文件里堆。**单独立会按行为零变化标准偿还大文件债，是偿还全部债务的前提**；否则本报告其余债会继续叠加。
@@ -148,7 +148,7 @@
 
 | 优先级 | 债项 | 建议 | 成本 |
 |---|---|---|---|
-| **P0** | 大文件重构流程失效 | 单独立会，按 §11.1 行为零变化标准拆 `stages.py`/`quality.py`/`core.py`/`manager.py`；拆分前**冻结向这些文件新增** | 高（跨模块，需全量 pytest + openapi 一致 + 端到端冒烟） |
+| **P0** | 大文件重构流程失效 | 单独立会，按 §11.1 行为零变化标准拆 `stages.py`/`quality/checker.py`/`core.py`/`manager.py`；拆分前**冻结向这些文件新增** | 高（跨模块，需全量 pytest + openapi 一致 + 端到端冒烟） |
 | **P0** | 核心链路 print → logger | 将 stages/manager/quality 的 91 处 print 替换为结构化 logger（带 trace_id/场景） | 低（机械替换，低风险） |
 | **P1** | 重复逻辑收敛 | 抽 `_lcs_len`/`_parse_json_obj`/`_read_json`/鉴权 到单一权威模块，其余改为 import | 低–中（行为零变化） |
 | **P1** | 提示词外置 | `templates.py` 提示词迁往 `agents/prompts/*.md` / 独立模板文件 | 中（涉及大量回归） |

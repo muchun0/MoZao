@@ -105,6 +105,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "stage_gate_retries", 2, "阶段门禁最大自动重生成轮次，超限由总控仲裁放行（REQ 多Agent协作分层优化）"),
     FeatureFlag("review", "consistency_llm_check", False, "章内前后矛盾 LLM 自检（REQ-token优化 P1-3）：默认仅高质量模式开启；普通模式按 consistency_llm_every 降频兜底"),
     FeatureFlag("review", "consistency_llm_every", 3, "章内矛盾 LLM 自检降频（REQ-章内自洽与机制账本·扩展）：普通模式每 N 章抽 1 次（1=每章；高质量模式不受此限）"),
+    FeatureFlag("review", "rule_consistency_check", True, "规则条款一致性 LLM 校验（REQ-通用机制类型适配）：含规则集（rule_set）的书每章对照当前生效规则检查矛盾/私增/跨副本串场；False=关闭返回空问题；失败降级不阻塞"),
+    FeatureFlag("review", "rule_consistency_every", 1, "规则一致性校验降频（REQ-通用机制类型适配）：普通模式每 N 章检查 1 次（1=每章；高质量模式不受此限）"),
     FeatureFlag("review", "targeted_rewrite", True, "定点重写（REQ-token优化 P1-4）：质检触发重写时只重写问题段落窗口，不整章重出；无定位点退回复核回整章"),
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
@@ -399,6 +401,8 @@ class NovelConfig:
     stage_gate_retries: int = feature_default("stage_gate_retries")  # 阶段门禁最大自动重生成轮次（REQ 多Agent协作分层优化）
     consistency_llm_check: bool = feature_default("consistency_llm_check")  # 章内矛盾 LLM 自检：默认仅高质量模式（REQ-token优化 P1-3）
     consistency_llm_every: int = feature_default("consistency_llm_every")   # 章内矛盾 LLM 自检降频：普通模式每 N 章 1 次（REQ-章内自洽与机制账本·扩展）
+    rule_consistency_check: bool = feature_default("rule_consistency_check")  # 规则条款一致性 LLM 校验（REQ-通用机制类型适配）：仅 rule_set 类型启用
+    rule_consistency_every: int = feature_default("rule_consistency_every")   # 规则一致性降频：普通模式每 N 章 1 次（高质量模式不受此限）
     targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）

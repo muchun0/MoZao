@@ -238,8 +238,8 @@ class TestV10Regression:
         blk = stages.ChapterWriter.__dict__["_panel_whitelist_block"]
         out = blk(fake)
         assert "可死次数" in out and "蚀化" in out and "寸" in out
-        assert "累计死亡次数" in out
-        assert "0 时，本章不得再发生死亡结算" in out
+        assert "自造标签" in out
+        assert "0 时，本章不得再发生对应结算事件" in out
 
     def test_ledger_ch6_no_false_4_deaths(self):
         # v11 ch6：ch5 无面板断链 → 质检 _base 回落起始 97 → 蚀化差 101-97=4 误报；

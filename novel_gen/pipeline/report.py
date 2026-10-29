@@ -51,14 +51,12 @@ def render_core_settings(world: World) -> str:
                 [[m.name, m.goal, m.behavior_logic, m.link_to_protagonist] for m in world.character_motives])
     s += _h1("四、世界观核心法则")
     s += (world.world_view or "（未设定）") + "\n\n"
-    s += _h1("五、金手指规则说明书（五要素）")
     gf = world.goldfinger_rules
     if gf is not None:
+        s += _h1("五、能力规则说明书")
         s += _table(["要素", "规则"], [
             ["触发条件", gf.trigger], ["能力上限", gf.upper_limit],
             ["能力下限", gf.lower_limit], ["使用代价", gf.cost], ["成长路径", gf.growth_path]])
-    else:
-        s += "（未设定）\n\n"
     s += _h1("六、设定禁忌清单")
     s += "\n".join(f"- {t}" for t in world.setting_taboos) or "（无）"
     s += "\n"

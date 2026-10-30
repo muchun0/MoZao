@@ -26,9 +26,11 @@ export const getProductVersions = (pid, kind) => request.get(`/projects/${pid}/p
 export const selectProductVersion = (pid, kind, v) => request.post(`/projects/${pid}/products/${kind}/versions/${v}/select`)
 // 切换影响面：选择某版后哪些章会与上游不一致（只读评估，不写盘）
 export const getVersionSelectImpact = (pid, kind, v) => request.get(`/projects/${pid}/products/${kind}/select-impact`, { params: { v } })
-// 两版只读对比（REQ-版本对比与推荐）：chapter 需 chapter_no
-export const getProductDiff = (pid, kind, v1, v2, chapterNo) =>
-  request.get(`/projects/${pid}/products/${kind}/versions/diff`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
+// 两版只读评审（REQ-版本对比与推荐）：chapter 需 chapter_no
+// 返回审校/评审两视角的评论（引用原文 + 好在哪 / 问题定性 + 具体改法），
+// 不再是 git 式的行级增删
+export const getVersionReview = (pid, kind, v1, v2, chapterNo) =>
+  request.get(`/projects/${pid}/products/${kind}/versions/review`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
 
 // Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
 export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)

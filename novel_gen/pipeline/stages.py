@@ -21,7 +21,7 @@ from ..store.schemas import Chapter, ChapterPlan, Outline, Volume, World
 from .memory import Memory
 from .style_anchor import extract_personal_anchor
 from .beats import (
-    _extract_beat_sequence, _beats_rewrite_detected, _beats_local_rewrite_detected,
+    _extract_beat_sequence, extract_beats, _beats_rewrite_detected, _beats_local_rewrite_detected,
     _beats_scene_isomorphic, _beat_cycle_issues,
 )
 from .templates import (
@@ -35,6 +35,9 @@ from .templates import (
     verify_prompt,
     _pick_dynamic_module,
 )
+from .pitfall_inject import PitfallInjection, build_injection
+from .pitfall_reconcile import reconcile_pitfall_injection as _reconcile_injection
+from .pitfall_contract import CHANNEL_BLOCK, CHANNEL_NONE
 
 # --- 大纲/世界观生成器已抽出到 outline_generators.py（§11.1 文件拆分）---
 from .outline_generators import (
@@ -118,7 +121,12 @@ class ChapterWriter:
         """P0-7：本作历史错误（场景生成纪律）注入块——只注入已反复出现（≥2 次）
         的踩坑，避免低频问题过度束缚正常生成。self_ch：当前章号（P3 去污染——
         last_ch==当前章 的本轮错误降权到尾部，避免把本章刚犯的错当历史教训回灌）。
-        空则空串。"""
+        空则空串。
+
+        保留说明（REQ-踩坑账本注入对账）：签名与默认值**不得变更**
+        （`tests/test_book_memory.py:384/389` 直接断言本方法）。生成链路一律走
+        `_build_pitfall_injection()`。
+        """
         mem = self._memory()
         if mem is None:
             return ""
@@ -127,6 +135,14 @@ class ChapterWriter:
                                      self_ch=self_ch)
         except Exception:
             return ""
+
+    def _build_pitfall_injection(self, chapter_no: int) -> PitfallInjection:
+        """生成侧踩坑注入的唯一决策点（REQ-踩坑账本注入对账 · 第 2 步）。
+
+        由 `_write_body` 在 `_inject_memory_blocks` 返回后、场景/整章分支前调用一次，
+        结果向下游透传，各下游不再自取参数。取值见 pitfall_inject.build_injection。
+        """
+        return build_injection(self.cfg, self._memory(), chapter_no)
 
     def _teardown_anchor(self) -> str:
         """REQ-双锚风格锚定：懒读取拆书库题材锚（webapp 在生成线程启动时写入 store）。
@@ -679,6 +695,10 @@ class ChapterWriter:
             chapter_no, world, memory_context, plan_title, plan_goal,
         )
 
+        # REQ-踩坑账本注入对账 · 第 2 步：踩坑注入唯一决策点，一次算好向下游透传
+        # （消灭原 top_n/min_count/self_ch 三处取值分叉）。
+        inj = self._build_pitfall_injection(chapter_no)
+
         # 场景级生成：高质量模式始终启用；普通模式单章目标 ≥2000 字自动拆场景（P1-2）
         hq_mode = getattr(self.cfg, "high_quality_mode", False)
         scene_split = getattr(self.cfg, "scene_split", True)
@@ -692,6 +712,7 @@ class ChapterWriter:
                 plan_moves=plan_moves,
                 conflict_names=_world_conflict_names(world),
                 silent=silent,
+                pitfall=inj,
             )
             system = ""
         else:
@@ -724,6 +745,22 @@ class ChapterWriter:
                 _anchor_parts.append(f"【本作固定风格锚（风格原点，参考语感勿复制）】\n{_fa}")
             if _anchor_parts:
                 system = "\n\n".join(_anchor_parts) + "\n\n" + system
+            # REQ-踩坑账本注入对账 - 第 3 步（P2 保险路径）：埋对账、不补注入。
+            # 该分支现网不可达（high_quality_mode 恒 True）；一旦复活必须立刻报 L3。
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _inj_cp = self._build_pitfall_injection(chapter_no)
+                _reconcile_injection(
+                    expected=list(_inj_cp.patterns),
+                    params=dict(_inj_cp.params),
+                    prompt=(system or "") + "\n" + (user or ""),
+                    path_id="chapter_plain",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_NONE,
+                    trace=self.trace,
+                )
             text = self.llm.chat(system, user, temperature=0.85)
         # 清洗模型偶尔夹带的 HTML 标签（<p>、<br> 等），保证落盘正文是纯文本
         text = _strip_html_tags(text)
@@ -990,6 +1027,8 @@ class ChapterWriter:
                     warn_coverage=float(getattr(self.cfg, "beat_gate_warn_coverage", 0.4)),
                     chapter_type=_ctype, priorities=_priorities, loose=_loose,
                     far_beats=_far,
+                    llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beat_gate", True)),
                 )
                 self.store.save_beat_gate(chapter_no, _bg)
                 # P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往
@@ -1188,7 +1227,8 @@ class ChapterWriter:
             if _reg_h and _unk_h(content, _reg_h):
                 return False
             # 2) 重复节拍（同事件循环重演）
-            if _beat_cycle_issues(content):
+            if _beat_cycle_issues(content, llm=self.llm,
+                                  use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))):
                 return False
             # 3) 链式账本（蚀化差口径，与质检 2.8c 一致）
             if _reg_h:
@@ -1215,12 +1255,21 @@ class ChapterWriter:
         return True
 
     def _panel_whitelist_block(self) -> str:
-        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world）。
+        """P0-15/16 通用版：机制面板字段白名单注入块（closed-world，仅 numeric_panel）。
 
-        基线声明的字段才允许出现在正文面板，禁止累计死亡次数类自造标签；
-        次数/剩余类字段为 0 时本章不得再安排死亡。从 memory canon 注册表派生，
-        任何书通用；无记忆/无基线 → 空串。
+        基线声明的字段才允许出现在正文面板，禁止自造标签；次数/剩余类字段为 0 时
+        本章不得再安排对应结算事件。从 memory canon 注册表派生；非数字面板类型、
+        无记忆/无基线 → 空串。
         """
+        # 类型门控：能读到 world 时，非 numeric_panel 直接跳过；world 不可用（旧单测/
+        # 无 store 注入）时回退注册表非空判定，保持存量行为。
+        try:
+            from .mechanism_types import has_type, resolve_types
+            world_w = self.store.load_world()
+            if world_w is not None and not has_type(resolve_types(world_w), "numeric_panel"):
+                return ""
+        except Exception:
+            world_w = None
         try:
             _mem_w = self._memory()
             if _mem_w is not None:
@@ -1230,14 +1279,13 @@ class ChapterWriter:
                 if _regw:
                     _blk = (
                         "\n\n【机制面板字段白名单（硬约束）】正文面板只允许出现以下字段："
-                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如「累计死亡次数」"
-                        "「死亡总次数」等自造标签）；字段格式必须为「字段名：数字」（带分母"
-                        "写法禁止）。"
+                        f"{sorted(_regw)}；禁止出现基线未声明的面板字段（如基线未声明的"
+                        "累计/总次数等自造标签）；字段格式必须为「字段名：数字」（带分母写法禁止）。"
                     )
                     if any(k.endswith("次数") or "剩余" in k for k in _regw):
                         _blk += (
-                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生死亡结算"
-                            "（次数用尽后死亡=违规）；如确有死亡，必须先声明字段为 1 以上。"
+                            "\n【边界规则】次数/剩余类字段为 0 时，本章不得再发生对应结算事件"
+                            "（次数用尽后再触发=违规）；如确有结算，必须先声明字段为 1 以上。"
                         )
                     return _blk
         except Exception:
@@ -1247,7 +1295,8 @@ class ChapterWriter:
     def _fallback_whole_chapter(self, chapter_no, plan_title, plan_goal,
                                 memory_context, prev_tail, is_final,
                                 plan_core_event, fallback_events, silent=False,
-                                panel_baseline: dict | None = None) -> str:
+                                panel_baseline: dict | None = None,
+                                pitfall: PitfallInjection | None = None) -> str:
         """拆场景失败 / 场景正文重演重试耗尽的整章回退路径。
 
         2026-10-01：events 已从拆场景输出救回时注入整章 prompt（拆场景失败不再丢事件）；
@@ -1256,6 +1305,9 @@ class ChapterWriter:
         2026-10-10 P0-8：新增 panel_baseline——回退整章路径生成后同样做面板方向 +
         死亡-结算因果校验（v6 第 6 章蚀化 99→97 跨章回跳正是整章路径绕过基线校验的
         实证），违反 → 带错重试（数字修复回灌），堵"回退路径 = 数字失控通道"。
+        REQ-踩坑账本注入对账 · 第 2 步：新增 pitfall——踩坑块由上游 `_write_body`
+        统一透传（与场景路径同一段渲染文本），不再在本方法内自取参数、也不再拼进
+        memory_context；未传时回退自建一次，保证既有直接调用行为不变。
         """
         from .templates import chapter_prompt
         ev_block = ""
@@ -1265,12 +1317,12 @@ class ChapterWriter:
                 f"{'｜结束时机制状态：' + str(e.get('final_state', '')) if e.get('final_state') else ''}"
                 for i, e in enumerate(fallback_events) if isinstance(e, dict) and e.get("desc")
             ) or ""
-        # P0-7 小说级记忆：回退整章路径同样注入本作历史错误（重写措辞 + 数字回灌
-        # 由 quality 层做；这里注入场景级纪律，防整章单次生成重演本书高频错误）
+        # REQ-踩坑账本注入对账 · 第 2 步：踩坑块改由 chapter_prompt 的独立形参承载，
+        # 不再拼进 memory_context（走私）——后者在第 2 个及以后场景会被 mem_for_this
+        # 整体替换而静默丢失（:1700-1707）；并规避同一 pattern 双通道的 duplicated 误判。
         _mem = memory_context
-        _bmem = self._book_pitfalls(top_n=5, min_count=1)
-        if _bmem:
-            _mem = (_mem + "\n\n" if _mem else "") + _bmem
+        # 未传 pitfall 时自建一次，保证既有直接调用（测试/外部）行为不变
+        _inj = pitfall if pitfall is not None else self._build_pitfall_injection(chapter_no)
         # REQ-写作正向引导 5.3 权威基线补盲（2026-10-15）：一期把「权威当前值·只抄
         # 不推」只接进了场景路径（scene_prompt），而本书 high_quality_mode 下拆场景
         # 频繁失败、主路径实为回退整章 → 整章路径缺权威基线，机制数字纪律靠 LLM 运气
@@ -1322,6 +1374,7 @@ class ChapterWriter:
             personal_anchor=self._personal_anchor(),
             user_memory_block=self._user_memory_block(),
             panel_baseline=_pbt,
+            book_pitfalls=_inj.block,
         )
         system = self._with_persona(system)
         # P0-15/16 通用版（2026-10-10）：回退整章路径同样注入机制面板字段白名单
@@ -1336,11 +1389,26 @@ class ChapterWriter:
         # 情节级重演（_beat_cycle_issues）+ 字数超限（>1.35×目标）+ P0-8 机制数字
         # 方向/因果校验——命中 → 重试至多 2 次（注入重复节拍证据 + 压缩字数目标 +
         # 数字修复回灌），仍命中 → 返回交给质检 2.12 兜底（见 §7.4）。
+        # REQ-踩坑账本注入对账 - 第 3 步（P0 首要路径）：prompt 拼装完成、chat 之前
+        if getattr(self.cfg, "pitfall_reconcile", True):
+            _reconcile_injection(
+                expected=list(_inj.patterns),
+                params=dict(_inj.params),
+                prompt=(system or "") + "\n" + (user or ""),
+                path_id="fallback_whole",
+                chapter_no=chapter_no,
+                cfg=self.cfg,
+                store=self.store,
+                project_id=getattr(self.store, "project_id", "") or "",
+                inject_channel=CHANNEL_BLOCK,
+                trace=self.trace,
+            )
         _text = self.llm.chat(system, user, temperature=0.85,
                               frequency_penalty=0.3, presence_penalty=0.15) or ""
         for _try in (1, 2):
             _text = _strip_html_tags(_text)
-            _issues = _beat_cycle_issues(_text)
+            _issues = _beat_cycle_issues(_text, llm=self.llm,
+                                         use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True)))
             _over = len(_text) > max(self.cfg.chapter_words, 500) * 1.35
             _viols: list[str] = []
             if _text:
@@ -1421,6 +1489,8 @@ class ChapterWriter:
                 plan_moves,
                 int(getattr(self.cfg, "chapter_words", 0) or 0),
                 names=conflict_names,
+                llm=self.llm,
+                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
             )
             # 2026-10-28 场景重演修复（REQ-场景重演修复-事件清单去重，方案一，通用 LLM 语义去重）：
             # 派生事件经通用 LLM 语义评审（_scene_split_review，判事件同构/跨场景重叠）产出
@@ -1591,7 +1661,8 @@ class ChapterWriter:
                                  plan_core_event: str = "",
                                  plan_moves: str = "",
                                  conflict_names: tuple[str, ...] = (),
-                                 silent: bool = False):
+                                 silent: bool = False,
+                                 pitfall: PitfallInjection | None = None):
         """场景级生成公共链路（P1-2）：拆场景 → 逐场景 → 润色。
 
         高质量模式（dynamic_module_used=True）额外注入动态模块与参数分层；
@@ -1610,6 +1681,32 @@ class ChapterWriter:
             _pick_dynamic_module,
         )
 
+        # REQ-踩坑账本注入对账 · 第 2 步：统一使用上游 `_write_body` 透传的注入块
+        # （原为 1682 行本地 `self._book_pitfalls(self_ch=章号)` 自取）。未传时自建一次，
+        # 保证既有直接调用（测试/外部）行为不变；必须在拆场景之前解析——
+        # 拆场景失败的回退分支要用同一个块。
+        _inj = pitfall if pitfall is not None else self._build_pitfall_injection(chapter_no)
+
+        # REQ-踩坑账本注入对账 - 第 3 步：场景路径对账埋点（5 点：初始+4 重试）。
+        # 对账入口不接收 memory，Expected 由注入侧 (_inj) 算好传入；prompt 取 chat 前最终文本。
+        def _reconcile_scene(scene_idx, retry_round, sys_text, user_text):
+            if not getattr(self.cfg, "pitfall_reconcile", True):
+                return
+            _reconcile_injection(
+                expected=list(_inj.patterns),
+                params=dict(_inj.params),
+                prompt=(sys_text or "") + "\n" + (user_text or ""),
+                path_id="scene",
+                chapter_no=chapter_no,
+                cfg=self.cfg,
+                store=self.store,
+                project_id=getattr(self.store, "project_id", "") or "",
+                scene_idx=scene_idx,
+                retry_round=retry_round,
+                inject_channel=CHANNEL_BLOCK,
+                trace=self.trace,
+            )
+
         # 1. 拆场景（低温 0.4；含派生事件骨架/JSON 健壮化/结构校验/字数归一/回退决策）
         scenes, events_list, fallback_events, action_plan_block = self._split_scenes(
             chapter_no, plan_title, plan_goal, prev_tail,
@@ -1625,7 +1722,8 @@ class ChapterWriter:
                 chapter_no, plan_title, plan_goal,
                 memory_context, prev_tail, is_final,
                 plan_core_event, fallback_events, silent,
-                panel_baseline=self._scene_state_acc or None), []
+                panel_baseline=self._scene_state_acc or None,
+                pitfall=_inj), []
 
         # 2. 逐场景生成（中温 0.7 + penalty）
         genre = getattr(self.cfg, "genre", "") or "default"
@@ -1669,11 +1767,8 @@ class ChapterWriter:
         # REQ-token优化 P1-2：场景 prompt 分层注入——首场景注入全量记忆，后续场景只注入
         # 增量块（已推进状态独立参数 + 行动表），不重复全量 memory_context，降每章输入 token。
         scene_delta_on = getattr(self.cfg, "scene_delta_inject", True)
-        # P0-7 小说级记忆：本作历史错误（已反复出现 ≥2 次的踩坑）注入场景 prompt，
-        # 在生成点抑制已知高频错误（换措辞重演/数字回退等）；空账本 → 空串不注入。
-        # P3 去污染：传 self_ch=当前章——last_ch==本章 的本轮错误降权到尾部，避免把
-        # 本章刚犯的错当历史教训回灌（第1章重写循环自我污染的根因之一）。
-        book_pitfalls_text = self._book_pitfalls(self_ch=int(chapter_no))
+        # REQ-踩坑账本注入对账 · 第 2 步：场景路径统一使用上游透传的注入块。
+        book_pitfalls_text = _inj.block
         # P0-8 小说级记忆：机制基线注入块（蚀痕位置等权威口径；拆场景已注入 canon 全文，
         # 场景层只注入机制基线，避免 terms/disciplines 重复刷屏）
         book_canon_text = ""
@@ -1762,6 +1857,7 @@ class ChapterWriter:
                 # 场景输出上限按目标字数自适应：中文 1 字 ≈ 1.5-2.2 token，
                 # 固定 2000 会在长场景中途截断（《万墟之上》6202 字版截断根因之一）
                 _target_w = int(sc.get("target_words") or 1200)
+                _reconcile_scene(idx, 0, sys_c, user_c)
                 piece = self.llm.chat(
                     sys_c, user_c,
                     temperature=0.7,
@@ -1805,6 +1901,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 1, sys_c2, user_c2)
                         retry = self.llm.chat(
                             self._with_persona(sys_c2), user_c2,
                             temperature=0.7,
@@ -1829,7 +1926,11 @@ class ChapterWriter:
                 # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
                 # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
                 if piece and done_events:
-                    dup_ev = _scene_text_rewrites_event(piece, done_events, conflict_names)
+                    dup_ev = _scene_text_rewrites_event(
+                        piece, done_events, conflict_names,
+                        llm=self.llm,
+                        use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                    )
                     if dup_ev:
                         if not silent:
                             logger.warning(f"  [场景] 第{idx}个场景复写了已发生事件"
@@ -1849,6 +1950,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 2, sys_c3, user_c3)
                         retry3 = self.llm.chat(
                             self._with_persona(sys_c3), user_c3,
                             temperature=0.7,
@@ -1857,7 +1959,10 @@ class ChapterWriter:
                             presence_penalty=0.2,
                         )
                         retry3 = _strip_html_tags(retry3)
-                        if retry3 and not _scene_text_rewrites_event(retry3, done_events, conflict_names):
+                        if retry3 and not _scene_text_rewrites_event(
+                                retry3, done_events, conflict_names,
+                                llm=self.llm,
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
                             piece = retry3
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
@@ -1869,8 +1974,12 @@ class ChapterWriter:
                 #  ③ _beats_local_rewrite_detected：局部子序列重合（重试稿压缩重演段/插序逃逸兜底）。
                 # 命中 → 重试（forbid_event=本场景唯一事件，强制只推进本场景事件）；
                 # 同一场景连续 2 次重试仍重演 → 整章回退（整章单次生成无场景间越权消费）。
-                _inner_issue = _beat_cycle_issues(piece) if piece else None
-                _seq = _extract_beat_sequence(piece) if piece else []
+                _inner_issue = _beat_cycle_issues(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else None
+                _seq = extract_beats(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else []
                 _dup_beat = bool(
                     _seq and done_beat_seqs
                     and (_beats_rewrite_detected(_seq, done_beat_seqs)
@@ -1908,6 +2017,7 @@ class ChapterWriter:
                             user_memory_block=self._user_memory_block(),
                             state_anchor=state_anchor_text,
                         )
+                        _reconcile_scene(idx, 3, sys_c4, user_c4)
                         retry4 = self.llm.chat(
                             self._with_persona(sys_c4), user_c4,
                             temperature=0.7,
@@ -1916,8 +2026,12 @@ class ChapterWriter:
                             presence_penalty=0.25,
                         )
                         retry4 = _strip_html_tags(retry4)
-                        _seq4 = _extract_beat_sequence(retry4) if retry4 else []
-                        _inner4 = _beat_cycle_issues(retry4) if retry4 else None
+                        _seq4 = extract_beats(
+                            retry4, llm=self.llm,
+                            use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if retry4 else []
+                        _inner4 = _beat_cycle_issues(
+                            retry4, llm=self.llm,
+                            use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if retry4 else None
                         _dup4 = bool(
                             _seq4 and done_beat_seqs
                             and (_beats_rewrite_detected(_seq4, done_beat_seqs)
@@ -1940,7 +2054,8 @@ class ChapterWriter:
                             chapter_no, plan_title, plan_goal,
                             memory_context, prev_tail, is_final,
                             plan_core_event, fallback_events, silent,
-                            panel_baseline=scene_state_acc or None)
+                            panel_baseline=scene_state_acc or None,
+                            pitfall=_inj)
                 # P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮，治面板账本崩坏）：
                 # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
                 # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；
@@ -1993,6 +2108,7 @@ class ChapterWriter:
                                 user_memory_block=self._user_memory_block(),
                                 state_anchor=state_anchor_text,
                             )
+                            _reconcile_scene(idx, 4, sys_c5, user_c5)
                             retry5 = self.llm.chat(
                                 self._with_persona(sys_c5), user_c5,
                                 temperature=0.7,
@@ -2032,7 +2148,9 @@ class ChapterWriter:
                 # 下一场景的衔接用本场景结尾
                 running_tail = piece[-120:] if piece else running_tail
                 # 正文级节拍序列登记（措施3）：最终采用场景正文的节拍指纹，供后续场景比对
-                _bs = _extract_beat_sequence(piece) if piece else []
+                _bs = extract_beats(
+                    piece, llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_beats", True))) if piece else []
                 if _bs:
                     done_beat_seqs.append(_bs)
                     scene_beat_ledger.append(_bs)  # P0-10 跨场景同构账本

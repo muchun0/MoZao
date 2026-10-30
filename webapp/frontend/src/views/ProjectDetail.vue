@@ -30,23 +30,14 @@
       </div>
     </header>
 
-    <!-- 生成中横幅：仅生成/出错时出现，全宽承载进度条 + 阶段 + 取消，替代原顶部局部小进度条 -->
-    <div v-if="genRunning || genError" class="gen-banner" :class="{ 'is-error': !genRunning && genError }">
-      <template v-if="genRunning">
-        <div class="gen-banner-top">
-          <span class="pulse" />
-          <span class="gen-banner-status">{{ genStatus || '正在生成…' }}</span>
-          <span class="gen-banner-pct">{{ genPct }}%</span>
-          <el-button size="small" plain @click="cancelGen">取消</el-button>
-        </div>
-        <el-progress :percentage="genPct" :stroke-width="6" :show-text="false"
-          :indeterminate="inPrePhase" :duration="2" />
+    <!-- 生成中横幅：全项目唯一的进度指示组件（统一进度条 + 阶段文案 + 取消/继续），
+         各阶段共用，不再出现第二个进度条；状态/进度/文案由 useGenerationProgress 统一驱动 -->
+    <GenerationProgress>
+      <template #actions>
+        <el-button v-if="isRunning" size="small" plain @click="cancelGen">取消</el-button>
+        <el-button v-else-if="resumable" type="primary" size="small" @click="startGen">继续生成</el-button>
       </template>
-      <div v-else class="gen-error-wrap">
-        <span class="gen-error">{{ genError }}</span>
-        <el-button v-if="resumable" type="primary" size="small" @click="startGen">继续生成</el-button>
-      </div>
-    </div>
+    </GenerationProgress>
 
     <!-- 主体：左侧栏导航 + 工作区 -->
     <div class="pd-body">
@@ -204,6 +195,10 @@ import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
+import GenerationProgress from '../components/common/GenerationProgress.vue'
+import {
+  begin, applyStatus, isRunning, errorText, reset, AGENT_PHASE,
+} from '../composables/useGenerationProgress'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
@@ -248,22 +243,14 @@ const editContent = ref('')
 const saving = ref(false)
 const readerTheme = ref('light')
 const fontSize = ref(16)
-const generating = ref(false)
-const genDone = ref(false)
-const genPct = ref(0)
-const genStatus = ref('')
-const genError = ref('')
 const exporting = ref(false)
-let genStartTs = 0
 const regenNo = ref(0)
 // 生成完成后自增，强制重新挂载 OutlineEditor（它只在 onMounted 时拉一次大纲）
 const outlineReloadKey = ref(0)
-// 当前后端阶段（research/outline/editor_review/world/writing）：前置阶段用动画进度条
-const currentPhase = ref('')
-const PRE_PHASES = ['research', 'outline', 'editor_review', 'world']
-const inPrePhase = computed(() => PRE_PHASES.includes(currentPhase.value))
-// 生成中（未完成）：驱动横幅显示与按钮置灰
-const genRunning = computed(() => generating.value && !genDone.value)
+// 生成中（驱动横幅显示与按钮置灰）：直接复用统一进度 store 的运行态
+const genRunning = isRunning
+// 错误文案（断点继续/成本防护提示）：统一进度 store
+const genError = errorText
 // 成本防护/异常终止后可断点继续：后端提示含「可从断点继续」时，展示醒目的「继续生成」入口
 const resumable = computed(() =>
   genError.value.includes('可从断点继续') || genError.value.includes('成本防护'))
@@ -286,15 +273,10 @@ function fmtWords(n) {
   return n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, '') + ' 万字' : n + ' 字'
 }
 
-// 点击启动类按钮后立即给出进行中的横幅，不必等 3 秒后轮询
+// 点击启动类按钮后立即给出进行中的横幅，不必等轮询
 function beginGenUI(statusText) {
-  generating.value = true
-  genDone.value = false
-  genError.value = ''
-  genPct.value = 0
-  genStatus.value = statusText
-  currentPhase.value = ''
-  genStartTs = 0  // 重新计时
+  reset()
+  begin({ label: statusText })
 }
 
 // 按分卷分组的章节菜单：以 outline.volumes 为骨架，已生成章节按 no 合并状态
@@ -400,64 +382,31 @@ async function loadAll() {
   } finally { loading.value = false }
 }
 
-const PHASE_LABEL = {
-  research: '正在调研热门题材',
-  outline: '正在生成大纲（分批进行，约几分钟）',
-  editor_review: '正在审稿优化大纲',
-  world: '正在生成人物与世界观',
-  writing: '正在逐章写作',
-  done: '已完成'
-}
-function phaseText(s) {
-  const ph = s.state && s.state.phase
-  const label = PHASE_LABEL[ph] || '正在生成'
-  if (genStartTs) {
-    const m = Math.floor((Date.now() - genStartTs) / 60000)
-    if (m >= 1) return `${label}（已 ${m} 分钟）`
-  }
-  return label + '…'
-}
-
 async function checkStatus() {
   try {
     const s = await getStatus(pid)
-    generating.value = s.running
-    genDone.value = !s.running && s.chapters_done > 0
-    currentPhase.value = (s.state && s.state.phase) || ''
-    if (s.chapters_total) {
-      genTotal.value = s.chapters_total
-      genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
-    }
+    applyStatus(s)
+    if (s.chapters_total) genTotal.value = s.chapters_total
     genDoneCount.value = s.chapters_done ?? genDoneCount.value
-    genError.value = s.error || ''
-    genStatus.value = s.running && !s.error ? phaseText(s) : ''
     if (s.running) startPolling()
   } catch {}
 }
 
 function startPolling(onDone, quiet = false) {
-  if (!genStartTs) genStartTs = Date.now()
   if (pollTimer) clearInterval(pollTimer)
   let lastDone = -1
   pollTimer = setInterval(async () => {
     try {
       const s = await getStatus(pid)
-      generating.value = s.running
-      currentPhase.value = (s.state && s.state.phase) || ''
-      if (s.chapters_total) {
-        genTotal.value = s.chapters_total
-        genPct.value = Math.round(s.chapters_done / s.chapters_total * 100)
-      }
+      applyStatus(s)
+      if (s.chapters_total) genTotal.value = s.chapters_total
       genDoneCount.value = s.chapters_done ?? genDoneCount.value
-      genError.value = s.error || ''
-      genStatus.value = s.running && !s.error ? phaseText(s) : ''
       // 每生成完一章就刷新章节列表，让用户实时看到进度
       if (s.chapters_done !== lastDone) {
         lastDone = s.chapters_done
         loadChapters()
       }
       if (!s.running) {
-        genDone.value = true
         clearInterval(pollTimer)
         // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应面板仍是旧空数据
         if (s.error) {
@@ -498,8 +447,14 @@ const AGENT_GEN_LABEL = {
   'architect.volume': '正在重写卷纲',
   'writer.chapter': '正在逐章写作',
 }
-function onAgentStarted({ agent }) {
-  beginGenUI(AGENT_GEN_LABEL[agent] || '正在生成…')
+function onAgentStarted({ agent, task_id }) {
+  // U1：Agent 面板启动运行 → 立即给出顶部横幅；带真实阶段与 task_id，首个轮询到达后被精确进度接管
+  reset()
+  begin({
+    label: AGENT_GEN_LABEL[agent] || '正在生成…',
+    phase: AGENT_PHASE[agent] || '',
+    taskId: task_id || '',
+  })
   startPolling(null, true)
 }
 
@@ -664,8 +619,8 @@ async function cancelGen() {
   try {
     await cancelGenerate(pid)
     ElMessage.info('已取消')
-    generating.value = false
-    if (pollTimer) clearInterval(pollTimer)
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    reset()  // 立即收起横幅（运行态置否），不依赖后续轮询
   } catch (e) { ElMessage.error('取消失败') }
 }
 

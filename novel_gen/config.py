@@ -57,6 +57,19 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),
     FeatureFlag("memory", "book_memory", True, "小说级记忆系统（P0-7）：质检出问题→踩坑账本→重写/场景 prompt 注入本作历史错误+修复指令，同模式≥2次升级永久纪律，针对本书持续进化；False=关闭（管线行为与 P0-5 一致）"),
     FeatureFlag("memory", "book_memory_top_n", 5, "踩坑账本注入 Top-N 条数（P0-7）：按出现次数×最近频率排序取前 N 条注入重写/场景 prompt"),
+    FeatureFlag("memory", "pitfall_inject_min_count", 2,
+                "踩坑账本注入最小出现次数（REQ-踩坑账本注入对账）：只注入 count>=N 的踩坑，与 "
+                "escalate() 的 count>=2 同口径，防单次低频问题过度束缚正常生成"),
+    FeatureFlag("memory", "pitfall_reconcile", True,
+                "踩坑账本注入对账开关（REQ-踩坑账本注入对账）：各注入点落盘 expected vs actual "
+                "明细；False=只注入不对账（注入行为完全不变）"),
+    FeatureFlag("memory", "pitfall_reconcile_fail_fast", False,
+                "注入对账 Fail Fast（REQ-踩坑账本注入对账）：True=连续 L3 达阈值时抛错中断生成；"
+                "默认 False——本项目按生成字数收费，不用只读观测函数的判定掐断用户已付费的生成"),
+    FeatureFlag("memory", "pitfall_reconcile_streak", 3,
+                "注入对账 L3 连续章数阈值（REQ-踩坑账本注入对账）：连续 N 章 L3 才升级告警；0=关闭该判定"),
+    FeatureFlag("memory", "pitfall_reconcile_book_limit", 5,
+                "注入对账 L3 单书累计章数阈值（REQ-踩坑账本注入对账）：单书累计 N 章 L3 升级告警；0=关闭该判定"),
     FeatureFlag("memory", "user_memory", True, "用户级记忆库（跨书创作偏好继承）：从用户全部作品蒸馏偏好/跨书纪律/文风锚，新书创建与生成时自动继承注入；False=关闭（不蒸馏不记录）"),
     FeatureFlag("memory", "user_memory_inject_top", 5, "用户级跨书纪律注入 Top-N 条数：按次数×跨书数排序取前 N 条注入正文 prompt"),
     FeatureFlag("memory", "reader_ledger", True, "读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）：写章时注入读者已知/在等/误认、临期/超时伏笔收束提醒、爽点节奏缺口提示；False=全部关闭（不读不写不注入）"),
@@ -92,6 +105,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "stage_gate_retries", 2, "阶段门禁最大自动重生成轮次，超限由总控仲裁放行（REQ 多Agent协作分层优化）"),
     FeatureFlag("review", "consistency_llm_check", False, "章内前后矛盾 LLM 自检（REQ-token优化 P1-3）：默认仅高质量模式开启；普通模式按 consistency_llm_every 降频兜底"),
     FeatureFlag("review", "consistency_llm_every", 3, "章内矛盾 LLM 自检降频（REQ-章内自洽与机制账本·扩展）：普通模式每 N 章抽 1 次（1=每章；高质量模式不受此限）"),
+    FeatureFlag("review", "rule_consistency_check", True, "规则条款一致性 LLM 校验（REQ-通用机制类型适配）：含规则集（rule_set）的书每章对照当前生效规则检查矛盾/私增/跨副本串场；False=关闭返回空问题；失败降级不阻塞"),
+    FeatureFlag("review", "rule_consistency_every", 1, "规则一致性校验降频（REQ-通用机制类型适配）：普通模式每 N 章检查 1 次（1=每章；高质量模式不受此限）"),
     FeatureFlag("review", "targeted_rewrite", True, "定点重写（REQ-token优化 P1-4）：质检触发重写时只重写问题段落窗口，不整章重出；无定位点退回复核回整章"),
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
@@ -137,6 +152,17 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "suggestion_lib", True, "P1-3 EditorReviewer 建议指令库：编辑审稿建议按手法分类(对话/战斗/情绪/环境/叙事)沉淀进 book_memory.suggestion_lib，写章生成时注入复用；False=建议仅审稿时展示，不入库不注入"),
     FeatureFlag("review", "beat_positive_supply", True, "P1-4 BeatGate 正向供给：missing 拍不仅列「漏了」，同时给「该拍可往哪个方向写」的示范指引(零LLM规则模板)存入 beat_gate，下一章生成时注入兑现；False=beat_gate 仅负向报漏不供给方向"),
     FeatureFlag("review", "repetition_direction", True, "P2-1 RepetitionDetector 正向替换供给：重复类问题命中重写时，除「每事件只写一遍」禁令外，注入「新方向候选」（未兑现承诺/伏笔/场景多样化），让模型知道往哪走；False=重写仅禁重复不给新方向"),
+    # ---- REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，词表保留确定性兜底 ----
+    FeatureFlag("review", "llm_semantic_beats", True, "节拍序列 LLM 语义抽取（REQ-词表换LLM 批次一 beats.py）：正文按规范节拍标签（盘问/戳穿/失控/死亡/复活/对峙/包扎/装晕/离场/约定）LLM 抽取节拍序列供重演检测；LLM 失败/非结构化自动回退 _BEAT_DICT 词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_beat_gate", True, "Beat 门禁 LLM 语义覆盖判定（REQ-词表换LLM 批次一 beat_gate.py）：整章一次 LLM 判大纲各拍动作/限定语义是否在正文兑现（输出 covered/hit/miss），替代 _ACTION_SYNONYMS/_MOD_SYNONYMS 近义词表判定；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("writing", "llm_semantic_scene_events", True, "场景事件 LLM 语义判定（REQ-词表换LLM 批次一 scene_event_utils.py）：事件归一动作/冲突对象/因果粘连合并/场景正文事件复写 4 处 LLM 判断，替代 _SCENE_ACTION_NORM/_SCENE_RESCUE_VERBS/_CAUSAL_BEAT_RE；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_mechanism", True, "机制卡三要素 LLM 语义校验（REQ-词表换LLM 批次一 validator.py）：开书时 LLM 判机制卡是否覆盖机制语义/结算规则/代价终局（每本 1 次），替代 _MECH_SEMANTIC/_MECH_SETTLE/_MECH_END 信号词表；LLM 失败回退词表；False=纯词表"),
+    FeatureFlag("review", "llm_semantic_ai_taste", True, "AI 痕迹四维度 LLM 语义判定（REQ-词表换LLM 批次二 ai_taste.py）：LLM 判连接词堆砌/情绪词直白宣告/填充词口头禅/直白点破句式（整章 1 次），替代 CONNECTIVE_WORDS/EMOTION_WORDS/_FILLER_WORDS/_DIRECT_PATTERN 词表命中判定；LLM 失败回退词表+统计；False=纯词表统计"),
+    FeatureFlag("review", "llm_semantic_panel_anchor", True, "面板结算事件锚点 LLM 判定（REQ-词表换LLM 批次二 quality.py）：LLM 判两处面板数字之间（seg 段）是否发生真实结算事件（非回忆/转述/他人语境/快死未死），替代 _PANEL_EVENT_ANCHORS/_PANEL_EVENT_RECALL 锚点正则；LLM 失败回退词表；False=纯词表"),
+    # ---- REQ-质检三层重构：L1 确定性闸门 / L2 多维评委 / L3 聚合 ----
+    FeatureFlag("review", "reviewer_layered", True, "质检三层链路总开关（REQ-质检三层重构）：True=L1 确定性闸门→L2 多维评委→L3 聚合器；False=回退重构前旧编排路径（紧急回退）"),
+    FeatureFlag("review", "plot_reviewer", False, "情节结构评委（L2 plot 维度）：大纲核心事件兑现/事件推进/场景同构/节奏松紧/断章张力；默认关（本期保守上线，开启后高质量每章、普通模式降频），False=该维度不可用、不发起调用"),
+    FeatureFlag("review", "plot_reviewer_every", 3, "情节评委普通模式降频：每 N 章跑 1 次（1=每章；高质量模式不受此限）"),
     # ---- assistant：小墨AI 写作对话（REQ-小墨AI 一期，只读诊断，不改稿不扣费）----
     FeatureFlag("assistant", "assistant_enabled", True, "小墨AI 总开关：项目页写作对话（章节评估/改稿建议），关闭后前后端入口隐藏"),
     FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
@@ -334,6 +360,11 @@ class NovelConfig:
     reveal_tracking: bool = feature_default("reveal_tracking")                         # 揭示执行跟踪（REQ-揭示执行跟踪）：每章检测真相锚定词兑现，落 reveal_status.json
     book_memory: bool = feature_default("book_memory")                                 # 小说级记忆系统（P0-7）：质检出问题→踩坑账本→注入本作历史错误
     book_memory_top_n: int = feature_default("book_memory_top_n")                      # 踩坑账本注入 Top-N 条数（P0-7）
+    pitfall_inject_min_count: int = feature_default("pitfall_inject_min_count")        # 踩坑账本注入最小出现次数（≥N 才注入）
+    pitfall_reconcile: bool = feature_default("pitfall_reconcile")                     # 踩坑账本注入对账开关（只读观测）
+    pitfall_reconcile_fail_fast: bool = feature_default("pitfall_reconcile_fail_fast")  # 对账 Fail Fast（默认关，见 FEATURE_FLAGS）
+    pitfall_reconcile_streak: int = feature_default("pitfall_reconcile_streak")         # 对账 L3 连续章数阈值
+    pitfall_reconcile_book_limit: int = feature_default("pitfall_reconcile_book_limit")  # 对账 L3 单书累计章数阈值
     user_memory: bool = feature_default("user_memory")                                 # 用户级记忆库（跨书创作偏好继承）：新书创建与生成时继承注入
     user_memory_inject_top: int = feature_default("user_memory_inject_top")            # 用户级跨书纪律注入 Top-N 条数
     reader_ledger: bool = feature_default("reader_ledger")                             # 读者认知账本+伏笔承诺状态机+爽点配额（REQ-reader-ledger）
@@ -374,6 +405,8 @@ class NovelConfig:
     stage_gate_retries: int = feature_default("stage_gate_retries")  # 阶段门禁最大自动重生成轮次（REQ 多Agent协作分层优化）
     consistency_llm_check: bool = feature_default("consistency_llm_check")  # 章内矛盾 LLM 自检：默认仅高质量模式（REQ-token优化 P1-3）
     consistency_llm_every: int = feature_default("consistency_llm_every")   # 章内矛盾 LLM 自检降频：普通模式每 N 章 1 次（REQ-章内自洽与机制账本·扩展）
+    rule_consistency_check: bool = feature_default("rule_consistency_check")  # 规则条款一致性 LLM 校验（REQ-通用机制类型适配）：仅 rule_set 类型启用
+    rule_consistency_every: int = feature_default("rule_consistency_every")   # 规则一致性降频：普通模式每 N 章 1 次（高质量模式不受此限）
     targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）
@@ -399,6 +432,16 @@ class NovelConfig:
     suggestion_lib: bool = feature_default("suggestion_lib")                      # P1-3 建议指令库
     beat_positive_supply: bool = feature_default("beat_positive_supply")          # P1-4 BeatGate 正向供给
     repetition_direction: bool = feature_default("repetition_direction")          # P2-1 重复正向替换供给
+    # ---- REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，词表保留确定性兜底 ----
+    llm_semantic_beats: bool = feature_default("llm_semantic_beats")              # 节拍序列 LLM 语义抽取（重演检测），失败回退词表
+    llm_semantic_beat_gate: bool = feature_default("llm_semantic_beat_gate")      # Beat 门禁 LLM 语义覆盖判定，失败回退词表
+    llm_semantic_scene_events: bool = feature_default("llm_semantic_scene_events")  # 场景事件 LLM 语义槽/因果/复写判定，失败回退词表
+    llm_semantic_mechanism: bool = feature_default("llm_semantic_mechanism")      # 机制卡三要素 LLM 语义校验，失败回退词表
+    llm_semantic_ai_taste: bool = feature_default("llm_semantic_ai_taste")        # AI 痕迹四维度 LLM 语义判定，失败回退词表+统计
+    llm_semantic_panel_anchor: bool = feature_default("llm_semantic_panel_anchor")  # 面板结算事件锚点 LLM 判定，失败回退词表
+    reviewer_layered: bool = feature_default("reviewer_layered")                # 质检三层链路总开关（REQ-质检三层重构），False 回退旧编排
+    plot_reviewer: bool = feature_default("plot_reviewer")                     # 情节结构评委开关（L2 plot）
+    plot_reviewer_every: int = feature_default("plot_reviewer_every")           # 情节评委普通模式降频（每 N 章 1 次）
     # ---- 三期产品化能力（Beat 门禁/场景体检/思维链/三分支续写）----
     beat_gate: bool = feature_default("beat_gate")                   # F1 正文对章计划 beat 覆盖自检门禁
     beat_gate_min_coverage: float = feature_default("beat_gate_min_coverage")   # F1 通过阈值

@@ -145,6 +145,62 @@ def test_guard_user_chapter(store):
     gs.guard_user_chapter(store, "architect.outline", {})
 
 
+@pytest.mark.p1
+def test_guard_user_chapter_select_ai_version_not_blocked(store):
+    """用户 select 的是 AI 重生成版本 → 不算手写，守卫放行。
+
+    回归场景：AI 生成 v1 → 重生成 v2 候选（质检未过保留旧稿）→ 用户在版本弹窗选中 v2。
+    `select_version` 只改 selected + user_managed，选中版本 source 仍为 ai；
+    旧判定误用 user_managed 标记会把纯版本选择当成手写（真实 bug）。
+    """
+    # 初始 AI 生成 v1（selected=1）
+    store.save_chapter(Chapter(no=1, title="一", content="AI版一" * 200))
+    # 重生成 v2 候选（promote=False：质检未过保留旧稿，selected 仍=1）
+    store.save_chapter(Chapter(no=1, title="一", content="AI版二" * 200),
+                       source="ai", promote=False)
+    # 用户在版本弹窗选中 v2（置 user_managed=True，但选中版本 source=ai）
+    store.select_version(1, 2)
+    rec = store.load_chapter_versions().get("1") or {}
+    assert rec.get("user_managed") is True  # 版本管理标记保留（防自动选分覆盖）
+    # 手写判定只看 selected 版本 source：v2 是 ai → 不算手写
+    assert gs._is_user_chapter(store, 1) is False
+    assert 1 not in gs._user_chapter_numbers(store)
+    gs.guard_user_chapter(store, "writer.chapter", {"scope": "single", "ch_no": 1})
+    gs.guard_user_chapter(store, "writer.chapter", {"scope": "all"})
+    gs.guard_user_chapter(store, "writer.chapter", {"scope": "range", "from_ch": 1})
+
+
+@pytest.mark.p1
+def test_guard_user_chapter_edited_blocked_until_ai_selected(store):
+    """用户编辑保存（source=user）→ 拦截；随后 select 回 AI 版本 → 放行（当前 HEAD 为 AI）。"""
+    store.save_chapter(Chapter(no=2, title="二", content="AI初稿" * 200))
+    # 用户编辑保存 v2（source=user, promote=True → selected 版本 source=user）
+    store.save_chapter(Chapter(no=2, title="二", content="用户手写稿" * 200), source="user")
+    assert gs._is_user_chapter(store, 2) is True
+    assert 2 in gs._user_chapter_numbers(store)
+    assert _err_code(gs.guard_user_chapter, store, "writer.chapter",
+                     {"scope": "single", "ch_no": 2}) == 400
+    # 用户主动 select 回 AI 初稿 v1（source=ai）→ 当前 HEAD 是 AI，守卫放行
+    store.select_version(2, 1)
+    assert gs._is_user_chapter(store, 2) is False
+    assert 2 not in gs._user_chapter_numbers(store)
+    gs.guard_user_chapter(store, "writer.chapter", {"scope": "single", "ch_no": 2})
+
+
+@pytest.mark.p1
+def test_guard_user_chapter_legacy_head_source_fallback(tmp_path):
+    """无版本索引（存量 legacy 项目）：HEAD source=="user" 兜底仍拦截。"""
+    cfg = NovelConfig(title="测试书", total_words=10000, genre="玄幻")
+    store = ProjectStore.create(tmp_path / "p2", cfg)
+    # 直接写 HEAD、不建版本索引，模拟 legacy 项目
+    store._write_json(store.chapter_path(1),
+                      Chapter(no=1, title="一", content="手写" * 200, source="user").to_dict())
+    assert store.load_chapter_versions() == {}
+    assert gs._is_user_chapter(store, 1) is True
+    assert _err_code(gs.guard_user_chapter, store, "writer.chapter",
+                     {"scope": "single", "ch_no": 1}) == 400
+
+
 # ---------- Skill 上限守卫 ----------
 
 @pytest.mark.p1

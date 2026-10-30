@@ -11,9 +11,14 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 
+from ..llm.json_parse import parse_json_obj
 from ..utils.text import longest_common_substr_len as _lcs_len
+from .templates import scene_event_derive_prompt, scene_rewrite_prompt
+
+logger = logging.getLogger(__name__)
 
 
 #: 场景事件互斥校验（P1-1）：event 文本相似度阈值（归一化后 55% 相同即判重叠）
@@ -49,6 +54,8 @@ _SCENE_ADJACENT_SPAN_RATIO = 0.20
 _SCENE_ADJACENT_MIN_SENT = 15
 #: 因果粘连拍标记
 _CAUSAL_BEAT_RE = re.compile(r"复活|苏醒|醒来|回神|缓过神|回过神来|睁眼|醒转")
+#: 规范动作白名单：词表归一表的值即权威集合，LLM derive 的 action 须落在此集合内
+_SCENE_ACTION_SET = set(_SCENE_ACTION_NORM.values())
 
 
 def _format_action_plan(chars: list) -> str:
@@ -99,8 +106,31 @@ def _event_conflict(text: str, names: tuple[str, ...] = ()) -> str:
 
 
 def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
-                               names: tuple[str, ...] = ()) -> str:
-    """场景正文事件级复写检测（零 LLM、确定性）。"""
+                               names: tuple[str, ...] = (),
+                               llm=None, use_llm: bool = True) -> str:
+    """场景正文事件级复写检测。
+
+    优先走 LLM 语义判定（`scene_rewrite_prompt`，识别换措辞复写）；无 llm /
+    use_llm=False / 调用异常 / 无已发生事件时，回退确定性词表逻辑
+    （`_event_conflict` + `_SCENE_RESCUE_VERBS`）。命中则返回复写的事件原文，否则 ""。
+    """
+    if not done_event_descs:
+        return ""
+    if llm is not None and use_llm:
+        try:
+            system, user = scene_rewrite_prompt(text or "", list(done_event_descs))
+            raw = llm.chat(system, user, temperature=0.2, max_tokens=256)
+            data = parse_json_obj(raw)
+            if not isinstance(data, dict) or "rewrite_of" not in data:
+                logger.warning("scene_rewrite LLM 输出非结构化，回退词表逻辑")
+            else:
+                idx = int(data["rewrite_of"])
+                if 0 <= idx < len(done_event_descs):
+                    return done_event_descs[idx]
+                return ""  # LLM 明确判定不复写（如 -1），不回退词表
+        except Exception as e:
+            logger.warning("scene_rewrite LLM 判定失败，回退词表逻辑: %s", e)
+    # 词表兜底（确定性）
     c = _event_conflict(text, names)
     if not c or not any(v in text for v in _SCENE_RESCUE_VERBS):
         return ""
@@ -142,9 +172,46 @@ def _scene_count_for_words(chapter_words: int) -> int:
     return 4
 
 
+def _llm_event_derive(beats: list[str], names: tuple[str, ...], llm
+                      ) -> tuple[list[tuple[str, str]], set[int]] | None:
+    """一次 LLM 调用产出全部节拍的语义槽 + 因果合并决策。
+
+    返回 (slots, merge_set)：slots 与 beats 一一对应 [(conflict, action)]，
+    action 不在规范动作集合内置 ""；merge_set 为 0 基节拍下标集合（该拍并入前一拍）。
+    beats 不足 2 拍、输出非 dict、events 缺失/非 list/长度不符等任一校验失败 → None（调用方走词表）。
+    """
+    if not beats or len(beats) < 2:
+        return None
+    system, user = scene_event_derive_prompt(list(beats), tuple(names))
+    raw = llm.chat(system, user, temperature=0.2, max_tokens=1024)
+    data = parse_json_obj(raw)
+    events = data.get("events")
+    if not isinstance(events, list) or len(events) != len(beats):
+        return None
+    slots: list[tuple[str, str]] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            return None
+        conflict = str(ev.get("conflict") or "").strip()
+        action = str(ev.get("action") or "").strip()
+        if action not in _SCENE_ACTION_SET:
+            action = ""
+        slots.append((conflict, action))
+    merge_set: set[int] = set()
+    for v in (data.get("merge") or []):
+        try:
+            i0 = int(v) - 1  # LLM 输出 1 基 → 内部 0 基
+        except Exception:
+            continue
+        if 1 <= i0 < len(beats):
+            merge_set.add(i0)
+    return slots, merge_set
+
+
 def _derive_events_from_moves(moves: str, chapter_words: int = 0,
-                              names: tuple[str, ...] = ()) -> list[dict]:
-    """把大纲 character_moves 确定性切分为事件清单。"""
+                              names: tuple[str, ...] = (),
+                              llm=None, use_llm: bool = True) -> list[dict]:
+    """大纲 character_moves 切分事件清单；有 llm 用语义槽+因果合并，失败回退确定性词表。"""
     if not moves or not str(moves).strip():
         return []
     text = str(moves).strip()
@@ -155,11 +222,26 @@ def _derive_events_from_moves(moves: str, chapter_words: int = 0,
     beats = [b for b in beats if b]
     if len(beats) < 2:
         return []
+    llm_slots: list[tuple[str, str]] | None = None
+    merge_set: set[int] = set()
+    if llm is not None and use_llm:
+        try:
+            derived = _llm_event_derive(beats, names, llm)
+            if derived is not None:
+                llm_slots, merge_set = derived
+            else:
+                logger.warning("scene_event LLM derive 输出校验失败，回退词表路径")
+        except Exception as e:
+            logger.warning("scene_event LLM derive 失败，回退词表路径: %s", e)
+            llm_slots, merge_set = None, set()
     n_target = _scene_count_for_words(chapter_words)
     i = len(beats) - 1
     while i >= 1 and len(beats) > n_target:
-        if _CAUSAL_BEAT_RE.search(beats[i]):
+        causal = (i in merge_set) if llm_slots is not None else bool(_CAUSAL_BEAT_RE.search(beats[i]))
+        if causal:
             beats[i - 1] = f"{beats[i - 1]}→{beats[i]}"
+            if llm_slots is not None:
+                del llm_slots[i]  # 保留前一拍槽位，与 beats 同步收缩
             del beats[i]
             i -= 2
         else:
@@ -167,11 +249,13 @@ def _derive_events_from_moves(moves: str, chapter_words: int = 0,
     while len(beats) > n_target:
         j = min(range(1, len(beats)), key=lambda k: len(beats[k]))
         beats[j - 1] = f"{beats[j - 1]}→{beats[j]}"
+        if llm_slots is not None:
+            del llm_slots[j]
         del beats[j]
     events = []
-    for i, b in enumerate(beats, start=1):
-        c, a = _event_semantic_slots(b, names=names)
-        events.append({"id": f"事件{i}", "desc": b, "conflict": c, "action": a, "final_state": ""})
+    for idx, b in enumerate(beats, start=1):
+        c, a = llm_slots[idx - 1] if llm_slots is not None else _event_semantic_slots(b, names=names)
+        events.append({"id": f"事件{idx}", "desc": b, "conflict": c, "action": a, "final_state": ""})
     return events
 
 

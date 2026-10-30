@@ -2,6 +2,9 @@
 """projects_world路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
+from novel_gen.pipeline.mechanism_types import (  # noqa: F401  机制类型清洗/判定（唯一事实源）
+    normalize_types, resolve_types,
+)
 
 
 @app.post("/api/projects/{project_id}/cover")
@@ -75,11 +78,30 @@ def get_cover(project_id: str, token: str = "", authorization: str = Header(defa
 def project_world(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
     store = _find_project(project_id)
-    world = store.load_world()
-    if not world:
-        return {"world_view": "", "characters": [], "foreshadowing": [],
-                "enemies": [], "locations": [], "factions": [],
-                "mechanism_baseline": {}, "clock": {}, "style_taboos": []}
+    return _public_world(store.load_world())
+
+
+def _public_world(world) -> dict:
+    """世界观编辑面板序列化（GET/PUT 共用的唯一出口，§11.3 单一事实来源）。
+
+    REQ-通用机制类型适配：机制类型标签 `mechanism_types`、规则条款 `mechanism_ruleset`
+    与既有结构化卡（金手指五要素 / 等级境界）必须一并下发，前端才能按类型分派渲染
+    初始数值；旧 world 缺字段全部回落空值，不报错（from_dict 已兼容）。
+
+    `mechanism_types_resolved` = `resolve_types(world)` 的权威结果（显式声明 → 中文别名归一 →
+    旧书按字段推断 → 兜底 none）。前端一律以它分派，**不在前端重算判定口径**
+    （§11.2 单一权威源；别名表只在后端一份，前端不复制，避免两处漂移）。
+    """
+    if world is None:
+        return {
+            "world_view": "", "characters": [], "foreshadowing": [], "locked_settings": [],
+            "enemies": [], "locations": [], "factions": [],
+            "mechanism_baseline": {}, "clock": {}, "style_taboos": [],
+            "mechanism_types": [], "mechanism_types_resolved": resolve_types(None),
+            "mechanism_ruleset": [], "goldfinger_rules":
+            GoldfingerRules().to_dict(), "power_system": PowerLevelSystem().to_dict(),
+            "mechanism_rules": "",
+        }
     return {
         "world_view": world.world_view,
         "characters": [c.to_dict() for c in world.characters],
@@ -93,6 +115,18 @@ def project_world(project_id: str, user: dict = Depends(_require_user)):
         "clock": (getattr(world, "clock", None).to_dict()
                   if getattr(world, "clock", None) else {}),
         "style_taboos": list(getattr(world, "style_taboos", None) or []),
+        # ---- REQ-通用机制类型适配：七类机制各自的「初始数值」承载字段 ----
+        "mechanism_types": list(getattr(world, "mechanism_types", None) or []),
+        "mechanism_types_resolved": resolve_types(world),
+        "mechanism_ruleset": [r.to_dict() for r in (getattr(world, "mechanism_ruleset", None) or [])],
+        # 缺省下发空骨架（含全部字段键），前端 v-model 绑定不会碰到 undefined
+        "goldfinger_rules": (gold.to_dict()
+                             if (gold := getattr(world, "goldfinger_rules", None))
+                             else GoldfingerRules().to_dict()),
+        "power_system": (ps.to_dict()
+                         if (ps := getattr(world, "power_system", None))
+                         else PowerLevelSystem().to_dict()),
+        "mechanism_rules": getattr(world, "mechanism_rules", "") or "",
     }
 
 
@@ -129,6 +163,25 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
     ck = ClockCard.from_dict(ck_raw) if isinstance(ck_raw, dict) else getattr(old, "clock", None)
     style_taboos = [str(x) for x in (payload.get("style_taboos") or getattr(old, "style_taboos", []) or [])]
 
+    # ---- REQ-通用机制类型适配：机制类型/条款/能力/境界体系的用户编辑 ----
+    # 类型标签走 pipeline.mechanism_types.normalize_types（枚举清洗唯一事实源，§11.2）；
+    # 空列表视为"未声明"而非"清空"（旧前端不带该字段时不误清，运行时按字段推断兜底）。
+    if "mechanism_types" in payload:
+        declared = normalize_types(payload.get("mechanism_types"))
+        if declared:
+            old.mechanism_types = declared
+    if "mechanism_ruleset" in payload and isinstance(payload.get("mechanism_ruleset"), list):
+        old.mechanism_ruleset = [
+            MechanismRule.from_dict(r) for r in payload["mechanism_ruleset"]
+            if isinstance(r, dict) and (r.get("statement") or "").strip()
+        ]
+    old.goldfinger_rules = _merge_sub_card(
+        getattr(old, "goldfinger_rules", None), payload.get("goldfinger_rules"), GoldfingerRules)
+    old.power_system = _merge_sub_card(
+        getattr(old, "power_system", None), payload.get("power_system"), PowerLevelSystem)
+    if "mechanism_rules" in payload:
+        old.mechanism_rules = str(payload.get("mechanism_rules") or "").strip()
+
     fs = [str(x) for x in (payload.get("foreshadowing", old.foreshadowing) or [])]
     ls = [str(x) for x in (payload.get("locked_settings", old.locked_settings) or [])]
 
@@ -144,20 +197,26 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
     old.clock = ck
     old.style_taboos = style_taboos
     store.save_world(old, commit=True, source="user")
-    logger.info("用户编辑世界观: project=%s chars=%d enemies=%d locations=%d factions=%d",
-                project_id, len(chars), len(enemies), len(locations), len(factions))
-    return {
-        "world_view": old.world_view,
-        "characters": [c.to_dict() for c in old.characters],
-        "foreshadowing": fs,
-        "locked_settings": ls,
-        "enemies": [e.to_dict() for e in enemies],
-        "locations": [l.to_dict() for l in locations],
-        "factions": [f.to_dict() for f in factions],
-        "mechanism_baseline": mb.to_dict() if mb else {},
-        "clock": ck.to_dict() if ck else {},
-        "style_taboos": style_taboos,
-    }
+    logger.info("用户编辑世界观: project=%s chars=%d enemies=%d locations=%d factions=%d "
+                "types=%s rules=%d", project_id, len(chars), len(enemies), len(locations),
+                len(factions), ",".join(getattr(old, "mechanism_types", []) or []) or "-",
+                len(getattr(old, "mechanism_ruleset", []) or []))
+    return _public_world(old)
+
+
+def _merge_sub_card(old_card, raw, cls):
+    """结构化子卡增量合并：前端没传/传空则保留旧值，避免写空壳污染既有卡。
+
+    §11.7：空壳（字段全空）不落盘——`from_dict({})` 会产出全空对象，直接写回会让
+    下游校验把"有卡但字段空"当成真实数据。
+    """
+    if not isinstance(raw, dict):
+        return old_card
+    new_card = cls.from_dict(raw)
+    if not any(str(v).strip() for v in new_card.to_dict().values()
+               if isinstance(v, str)) and not getattr(new_card, "levels", None):
+        return old_card
+    return new_card
 
 
 @app.get("/api/projects/{project_id}/lock")

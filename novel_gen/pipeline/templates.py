@@ -542,17 +542,35 @@ def world_prompt(
         f"- foreshadowing：2-5 条贯穿全文的伏笔/悬念数组，每项 {{\"id\":伏笔编号, \"name\":伏笔名, "
         f"\"buried_ch\":埋点章号, \"reveal_ch\":回收章号, \"level\":\"small\"(章内)/\"medium\"(卷内)/\"large\"(全篇), "
         f"\"content\":伏笔内容}}；每条必须同时给出埋点与回收章号，禁止只埋不收（只埋不收视为设计缺陷）\n"
-        f"- mechanism_rules：金手指/核心机制的规则卡（本书有金手指/系统/独特设定则必填，否则空字符串）。"
-        f"必须写到无歧义、可自洽，至少覆盖：①机制名称与语义（每个数字/状态的确切含义，禁止'感知敏锐'类模糊表述）；"
-        f"②结算规则（何时增减、何时重置、与历史状态如何衔接，杜绝自相矛盾）；③代价/成长（每次使用代价递增、上限/终局条件）；"
-        f"④正文要求（首章必须把机制实际用起来、兑现标题，数字与规则全书一致）；"
-        f"⑤数字账本写法：若机制有可视化数字（数值/进度/累积状态），给出正文中数字的准确写法"
+        f"- mechanism_types：本书机制类型数组（先判断、再填后面的机制字段；可叠加多个，"
+        f"枚举取值：numeric_panel=数字面板/状态型（次数/进度/积分/血量/累积值/余量等可视化数字）；"
+        f"power_level=等级境界型（境界阶梯/职业途径，走 power_system，不进数字账本）；"
+        f"rule_set=规则约束型（规则怪谈守则/副本规则/场所禁忌，条款写入 mechanism_ruleset）；"
+        f"ability=能力/概念金手指型（被动/主动异能，无可视化数字）；"
+        f"contract=契约/关系/身份型（与人物/阵营/契约绑定，无独立数字）；"
+        f"temporal=时间/循环/因果型（读档/轮回/时间回溯）；none=无机制（纯剧情，不填机制卡）。"
+        f"判定依据是本书真实机制形态，禁止一律套用数字面板；叠加类型时两类规则都要满足\n"
+        f"- mechanism_rules：核心机制的自由文本总述（本书有机制则写，none 类型填空字符串）。"
+        f"先写①机制名称与语义（数字型写清每个数字/状态的确切含义；"
+        f"概念型机制写清能力定义与边界，禁止'感知敏锐'类模糊表述）；"
+        f"②结算规则【仅 numeric_panel 必填】：何时增减、何时重置、"
+        f"与历史状态如何衔接，杜绝自相矛盾；其他类型省略；"
+        f"③代价/成长（有代价机制必写每次使用代价递增、上限/终局条件；"
+        f"无代价能力显式声明'无代价'即可，不强行设计代价）；"
+        f"④正文要求（首章必须把机制实际用起来、兑现标题，规则与设定全书一致）；"
+        f"⑤数字账本写法【仅 numeric_panel 必填】：若机制有可视化数字（数值/进度/累积状态），给出正文中数字的准确写法"
         f"（如'剩余次数：3'）并定义每个数字的当前语义与递减/递增规则；"
-        f"⑥时间词语义：标题或机制含'今日''每日'等时间词时，必须明确是否每日重置、跨天如何结算"
+        f"⑥时间词语义【仅 numeric_panel 必填】：标题或机制含'今日''每日'等时间词时，必须明确是否每日重置、跨天如何结算"
         f"（如'每日子时重置；一日内按机制卡递减'），禁止标题口径与机制冲突；"
-        f"⑦多数字关系：存在多套数字（如剩余次数与累积进度）时必须交代两者关系与各自语义，"
-        f"禁止并列无关联；⑧历史衔接：开篇已有历史痕迹（旧疤/累积状态/已有消耗）必须与当前数字自洽"
-        f"（如累积进度=累计触发次数，则剩余=上限-累计），禁止开篇状态与机制数字矛盾\n"
+        f"⑦多数字关系【仅 numeric_panel 必填】：存在多套数字时交代两者关系与各自语义，禁止并列无关联；"
+        f"⑧历史衔接【仅 numeric_panel 必填】：开篇已有历史痕迹必须与当前数字自洽，禁止开篇状态与机制数字矛盾\n"
+        f"- mechanism_ruleset：规则条款数组【仅 rule_set 类型填写，其他类型空数组】。"
+        f"每条 {{\"rule_id\":\"编号（如 R1）\", \"scope\":\"global(全局)/character:<角色>/ability:<能力>/instance:<副本名>\", "
+        f"\"statement\":\"规则原文（禁令/要求本身）\", \"condition\":\"触发范围与适用条件\", "
+        f"\"consequence\":\"违反后果（可为处罚/代价/惩罚，不要求是数字）\", \"change_policy\":\"fixed(副本内不可改写)/"
+        f"discoverable(随剧情揭示)/negotiable(可谈判)/layered(分层揭示)\", \"source\":\"公布渠道（纸条/公告/屏幕/NPC 告诫等）\", "
+        f"\"first_ch\":\"首次出现章节\", \"status\":\"active/inactive\"}}。fixed 条款一旦公布，同一副本内不得改写、不得自相矛盾；"
+        f"新规则只能经由 source 声明渠道公布；其他副本的规则不得套用到当前副本\n"
         f"- theme_proposition：核心主题命题（一句话内核，全书剧情与人物关键选择最终回归的主题，如'失去一切后如何重新定义自我'）\n"
         f"- conflict_matrix：三层冲突矩阵数组，每项 {{\"level\":\"personal\"(个人内心)/\"interpersonal\"(人际对抗)/\"world\"(世界层面), "
         f"\"description\":该层核心冲突}}，三层各一条且层层递进\n"
@@ -560,8 +578,11 @@ def world_prompt(
         f"\"change_nodes\":[关键转变节点数组, 至少2个], \"final_insight\":最终认知}}\n"
         f"- character_motives：核心配角动机数组，每项 {{\"name\":姓名, \"goal\":核心目标, "
         f"\"behavior_logic\":行为逻辑, \"link_to_protagonist\":与主角的核心关联}}，至少覆盖主要配角与反派\n"
-        f"- goldfinger_rules：金手指规则说明书五要素 {{\"trigger\":触发条件, \"upper_limit\":能力上限, "
-        f"\"lower_limit\":能力下限, \"cost\":使用代价, \"growth_path\":成长路径}}（无金手指则空对象；有则五要素必填且无歧义）\n"
+        f"- goldfinger_rules：能力规则说明书对象 {{\"trigger\":触发条件, \"upper_limit\":能力上限, "
+        f"\"lower_limit\":能力下限, \"cost\":使用代价, \"growth_path\":成长路径}}（仅 ability 类型填写；"
+        f"rule_set/contract/temporal/none 类型填空对象）。ability 类型 trigger/upper_limit/growth_path 必填；"
+        f"lower_limit 与 cost 按能力实际填写，无下限/无代价能力不必硬造，cost 可填'无代价'；"
+        f"禁止为规则怪谈/纯剧情书硬凑金手指五要素\n"
         f"- setting_taboos：设定禁忌清单数组（明确禁止出现的吃设定行为/能力，如'复活无代价''时间可随意倒流'）\n"
         f"- enemies：前期实际出场的怪物/敌对生物图鉴数组（3-6 个，只列前 10 章会写到的，不要大而全百科）。"
         f"每项 {{\"name\":名称, \"form\":外形解剖（有无固定形态、几条肢体、有无眼睛/口器/触须/核心，写死一句话，禁止'形态模糊'这类模糊词）, "
@@ -572,7 +593,7 @@ def world_prompt(
         f"每项 {{\"name\":地点名, \"terrain\":地形结构, \"light\":光线规则（地下无光/光源是什么/天光在何处，写死；后续正文不得与光线规则矛盾，如地下不得写暮色/晚霞）, "
         f"\"sound_smell\":声音气味, \"exits\":连通与出口（哪里是死路/通哪，写死）, \"danger\":危险来源}}；"
         f"空间关系一经写死，正文不得矛盾\n"
-        f"- mechanism_baseline：机制初始值对象（若 mechanism_rules 含可视化数字/进度条，必填；否则空对象）。"
+        f"- mechanism_baseline：机制初始值对象【仅 numeric_panel 必填，其他类型空对象】。"
         f"把机制卡里的数字落成结构化'当前标准答案'，字段：{{\"scar_start\":代价标记起点（如旧痕/消耗起点）, "
         f"\"scar_per_death\":代价累积标记的每次触发增量（无则留空）, "
         f"\"scar_current\":代价标记当前累计长度/次数, \"scar_end\":终局位置（代价蔓延至何处=失败/终局）, "
@@ -1413,6 +1434,7 @@ def chapter_prompt(
     teardown_anchor: str = "",
     user_memory_block: str = "",
     panel_baseline: str = "",
+    book_pitfalls: str = "",
 ) -> tuple[str, str]:
     system = (
         "你是一位高产的网络小说签约写手，擅长按大纲与既定设定稳定产出正文。"
@@ -1436,6 +1458,13 @@ def chapter_prompt(
     constraints = _chapter_constraints(cfg)
     de_ai_block = _de_ai_rules() if cfg.de_ai else ""
     ending_block = _ending_requirements() if is_final else ""
+    # REQ-踩坑账本注入对账：本作历史错误（踩坑账本 Top-N）走独立形参 + 独立段落，
+    # 与 scene_prompt（:1043-1045/:1087）同构——不拼进 memory_context，规避后续场景
+    # 分层注入时 memory_context 被整体替换导致注入块静默消失（决定性论据）。
+    # 不另起标题：pitfall_block 自带标题，与场景路径逐字相同。
+    book_pitfalls_block = (
+        f"\n{book_pitfalls}\n"
+    ) if book_pitfalls else ""
     # ---- REQ-超长篇攻坚 S4.1 前缀缓存对齐 ----
     # 稳定块（同书跨章逐字节一致：单章字数硬指标 + 硬约束 + 题材共性参考）前置到 user 最前，
     # 变化块（章号/目标/事件/记忆/衔接）置后 → 同书所有章共享最大稳定前缀，命中 DeepSeek 前缀缓存价。
@@ -1462,6 +1491,7 @@ def chapter_prompt(
         f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
         f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
         f"{_panel_baseline_block(panel_baseline)}"
+        f"{book_pitfalls_block}"
         f"写作要求：\n"
         f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
         f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"
@@ -1500,6 +1530,7 @@ def chapter_prompt(
             f"【前情记忆】\n{memory_context if memory_context else '（本作首章，无前情）'}\n\n"
             f"【上一章结尾（衔接用，保持文气连贯）】\n{prev_tail if prev_tail else '（本作首章）'}\n\n"
             f"{_panel_baseline_block(panel_baseline)}"
+            f"{book_pitfalls_block}"
             f"写作要求：\n"
             f"1. 严格按本章目标推进剧情，不跑题、不提前揭穿后续伏笔\n"
             f"2. 人物言行符合人物卡设定；对话要有性格辨识度\n"
@@ -1572,16 +1603,21 @@ def world_from_content_prompt(cfg: NovelConfig, chapters_block: str) -> tuple[st
         f"- foreshadowing：2-5 条从正文中存在的伏笔/悬念数组，每项 {{\"id\":编号, \"name\":伏笔名, "
         f"\"buried_ch\":埋点章号, \"reveal_ch\":回收章号, \"level\":\"small\"/\"medium\"/\"large\", "
         f"\"content\":伏笔内容}}；每条必须给出埋点与回收章号，正文没有悬念时提炼潜在冲突\n"
-        f"- mechanism_rules：从正文提炼的金手指/核心机制规则卡（正文有金手指/系统/独特设定则必填，否则空字符串）。"
-        f"必须无歧义、与正文一致，覆盖：机制语义（每个数字/状态的确切含义）、结算规则（何时增减/重置/衔接历史）、"
-        f"代价与终局（代价递增/上限）、正文要求（首章兑现标题，数字与规则全书一致）、"
-        f"数字账本写法（正文中数字的准确写法与每个数字语义）、时间词语义（'今日'等是否每日重置、跨天结算）、"
-        f"多数字关系（多套数字必须交代关联）、历史衔接（开篇已有痕迹与当前数字自洽）\n"
+        f"- mechanism_types：从正文判定的机制类型数组（枚举：numeric_panel/power_level/"
+        f"rule_set/ability/contract/temporal/none；判定依据正文真实形态，可叠加）\n"
+        f"- mechanism_rules：从正文提炼的核心机制自由文本总述（无机制填空字符串）。"
+        f"先写机制语义（能力/数字/状态/规则体系的确切含义）；"
+        f"结算规则、数字账本写法、时间词语义、多数字关系、历史衔接仅 numeric_panel 填写；"
+        f"代价与终局（有代价机制写代价递增/上限；无代价机制显式声明'无代价'，不强行设计代价）；"
+        f"rule_set 类型的具体条款写入 mechanism_ruleset\n"
+        f"- mechanism_ruleset：规则条款数组（仅 rule_set 类型；其他类型空数组）。"
+        f"每条 {{\"rule_id\",\"scope\",\"statement\",\"condition\",\"consequence\",\"change_policy\","
+        f"\"source\",\"first_ch\",\"status\"}}，口径与开书世界卡一致\n"
         f"- theme_proposition：核心主题命题（一句话内核，从正文提炼）\n"
         f"- conflict_matrix：三层冲突矩阵数组，每项 {{\"level\":\"personal\"/\"interpersonal\"/\"world\", \"description\":该层冲突}}，三层各一条\n"
         f"- protagonist_arc：主角完整弧光卡 {{\"belief\":开篇信念, \"flaw\":核心缺陷, \"change_nodes\":[关键转变], \"final_insight\":最终认知}}\n"
         f"- character_motives：核心配角动机数组，每项 {{\"name\", \"goal\", \"behavior_logic\", \"link_to_protagonist\"}}\n"
-        f"- goldfinger_rules：金手指五要素 {{\"trigger\", \"upper_limit\", \"lower_limit\", \"cost\", \"growth_path\"}}（无金手指则空对象）\n"
+        f"- goldfinger_rules：能力规则对象 {{\"trigger\", \"upper_limit\", \"lower_limit\", \"cost\", \"growth_path\"}}（仅 ability 类型；其他类型空对象）\n"
         f"- setting_taboos：设定禁忌清单数组（正文明确禁止出现的吃设定行为）\n"
         f"- items：从正文提炼的重要道具/物品卡数组（正文有关键道具则产出 1-5 个，否则空数组）。"
         f"每项 {{\"name\":道具名, \"origin\":来源, \"cost\":使用代价, \"restriction\":限制/边界, "
@@ -1718,5 +1754,216 @@ def final_review_prompt(cfg: NovelConfig, outline: Outline, chapters_block: str,
         "5. 结局完整性：结局是否完整收束主线与核心冲突，有无烂尾或强行团圆\n\n"
         '输出 JSON：{"issues": [{"type": "剧情连贯/伏笔回收/人物弧光/节奏结构/结局完整性", '
         '"problem": "具体问题（对应章节）", "suggestion": "改进建议"}], "ok": true/false}'
+    )
+    return system, user
+
+
+# =====================================================================
+# REQ-词表换LLM 批次一（2026-10-28）：4 处写死语义词表换 LLM 语义判断，
+# 词表保留确定性兜底。prompt 全部收敛于此（AGENTS §11.3 代码数据分离）。
+# 调用方（beats/beat_gate/scene_event_utils/validator）只消费规范 JSON，
+# 任何解析失败/异常在调用方回退词表（logger.warning 留痕，不阻塞）。
+# =====================================================================
+
+
+def beats_extract_prompt(text: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 beats.py：正文 → 规范节拍标签序列（重演检测输入）。
+
+    原 `_BEAT_DICT` 词表只认固定行为词，换措辞（"他被问得哑口无言" vs "盘问"）
+    即漏抽。LLM 按语义抽取节拍，但标签必须限定在规范集合内，保证下游
+    LCS/循环检测（_beats_rewrite_detected/_beats_local_rewrite_detected/
+    _beat_cycle_issues/_beats_scene_isomorphic）可消费。
+    """
+    system = (
+        "你是小说结构分析员。把给定正文按时间顺序抽取「情节节拍序列」——"
+        "每个节拍 = 正文中一个关键行为/剧情转折/特殊事件。\n"
+        "节拍标签只能从以下规范集合中原样选用（不得自造、不得改写）：\n"
+        "盘问（逼问/质问/试探）、戳穿（识破/看穿）、失控、死亡（咽气/毙命/断气，"
+        "不包括普通倒下）、复活（醒来/睁眼/爬起/回神）、对峙（别动/盯着/冷笑）、"
+        "包扎（按住/撕布/止血/换药）、装晕（装死）、离场（离开/跟上/消失/转身/离去）、"
+        "约定（约在）。\n"
+        "判定规则：\n"
+        "1. 按正文出现的时间顺序输出，一个节拍只记一次（连续重复/换措辞重申同一行为不重复计数）\n"
+        "2. 只有正文确实发生了该行为才记；没有对应行为的不要生造\n"
+        "3. 宁缺毋滥：拿不准的节拍不输出；正文无关键行为时输出空列表\n"
+        '只输出合法 JSON：{"beats": ["盘问", "死亡", "复活"]}；无节拍输出 '
+        '{"beats": []}。不要输出代码块标记、解释或省略号。'
+    )
+    user = f"【待分析正文】\n{text}\n\n请抽取该正文的情节节拍序列。"
+    return system, user
+
+
+def beat_gate_coverage_prompt(content: str, planned_beats: list[str]) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 beat_gate.py：整章一次 LLM 判各计划拍是否在正文兑现。
+
+    替代 `_ACTION_SYNONYMS`/`_MOD_SYNONYMS` 近义词表的子串命中判定——近义改写
+    （清晨↔蒙蒙亮、咬喉↔咬穿）与语序调整在词表路径漏判，LLM 按语义判。
+    一次调用覆盖全部拍（成本：每章 1 次），输出与 planned_beats 一一对应。
+    """
+    beats_block = "\n".join(f"{i}. {b}" for i, b in enumerate(planned_beats))
+    system = (
+        "你是小说编辑，检查大纲「计划拍」是否在正文中兑现。\n"
+        "对每个计划拍（一个动作/事件片段），判断其动作与限定语义是否在正文出现：\n"
+        "- 换措辞、近义改写、语序调整都算兑现（如计划拍写「清晨出门」，正文写"
+        "「天刚蒙蒙亮，他走出院门」算兑现）\n"
+        "- 同一动作以更具体方式呈现算兑现（计划「前往」，正文写「踏入密林深处」算）\n"
+        "- 计划拍的核心限定（时间/地点/对象）缺失则不算完整兑现\n"
+        "- 正文完全没体现该拍的动作语义 → covered=false\n"
+        "hit 列出正文中兑现该拍的语义点（动作/限定各一项即可），miss 列出缺失的语义点。\n"
+        '只输出合法 JSON：{"beats": [{"covered": true, "hit": ["前往"], "miss": []}, '
+        '{"covered": false, "hit": [], "miss": ["清晨"]}]}。'
+        "beats 数组长度必须与计划拍数量一致、顺序一一对应。不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【本章正文】\n" + (content[:3000] if content else "") + "\n\n"
+        "【大纲计划拍】\n" + beats_block + "\n\n"
+        "请逐拍判断是否在正文兑现，输出 covered/hit/miss。"
+    )
+    return system, user
+
+
+def scene_event_derive_prompt(beats: list[str], names: tuple[str, ...] = ()) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 scene_event_utils.py：事件语义槽 + 因果粘连（一次调用）。
+
+    替代 `_SCENE_ACTION_NORM`（动作归一表）与 `_CAUSAL_BEAT_RE`（因果粘连正则）：
+    - 每个节拍片段提取「冲突对象」与「归一化动作」（语义槽，供事件清单与互斥校验）；
+    - 相邻片段因果粘连判定（后一片段是前一片段结果的直接延续 → 合并为同一事件）。
+    """
+    beats_block = "\n".join(f"{i}. {b}" for i, b in enumerate(beats))
+    names_block = ("；".join(names)) if names else "（无固定名单，按文本实际人物/称谓）"
+    system = (
+        "你是小说结构编辑。给出一章从大纲人物动线切出的节拍片段列表，做两件事：\n"
+        "1. 为每个片段提取语义槽：\n"
+        "   - conflict（冲突对象）：片段中被救援/攻击/对峙/追杀的核心人物或对象，"
+        "优先从给定名单中选准确名字；名单外按文本实际出现的人物名/身份称谓"
+        "（如 学员/弟子/少年/少女）；没有明确对象输出空串\n"
+        "   - action（归一化动作）：把片段的核心动作归一到规范动作集合——"
+        "救援/围攻/击杀/逃离/撤离/追击/抵挡/偷袭/刺杀/对峙/埋伏/侦查/探索；"
+        "无匹配输出空串\n"
+        "2. 判定相邻片段因果粘连：后一片段（下标 i）是前一片段（下标 i-1）结果的"
+        "直接延续（同一事件的自然推进，如「遭遇袭击→受伤昏迷→苏醒」），需要合并为"
+        "同一事件时，把后一片段下标 i 加入 merge 数组；正常递进/换地点/新对手不算粘连。\n"
+        '只输出合法 JSON：{"events": [{"conflict": "苏妄言", "action": "救援"}, '
+        '{"conflict": "", "action": "探索"}], "merge": [2, 4]}。'
+        "events 长度必须与片段数一致；merge 下标从 1 开始。不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【节拍片段列表】\n" + beats_block + "\n\n"
+        f"【冲突对象候选名单】{names_block}\n\n"
+        "请提取每个片段的 conflict/action，并输出需要因果合并的相邻对。"
+    )
+    return system, user
+
+
+def scene_rewrite_prompt(text: str, done_events: list[str]) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 scene_event_utils.py：场景正文是否复写已发生事件。
+
+    替代 `_SCENE_RESCUE_VERBS` + `_event_conflict` 称谓兜底的字符串判定——
+    换措辞（救援→施救/帮/拉开）在词表路径漏检。输出命中事件下标，未命中 -1。
+    宁可漏报不误杀（防正常递进/呼应误判为复写）。
+    """
+    ev_block = "\n".join(f"{i}. {e}" for i, e in enumerate(done_events)) if done_events else "（无）"
+    system = (
+        "你是小说质检编辑。判断一段场景正文是否「换措辞重写」了某个已发生事件。\n"
+        "判定标准：正文与某已发生事件本质是同一人物 + 同一冲突 + 同一结果，"
+        "仅措辞/切入点/细节不同（如已写「救出苏妄言」，正文又写「把苏妄言从废墟里拉出来」"
+        "→ 复写）；正文若是在事件后续推进/新信息揭示/正常呼应（一句话带过），不算复写。\n"
+        "宁可漏报不误杀：拿不准输出 -1。\n"
+        '只输出合法 JSON：{"rewrite_of": -1} 或 {"rewrite_of": 0}（0=复写第1个已发生事件）。'
+        "不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【已发生事件清单】\n" + ev_block + "\n\n"
+        "【待检查场景正文】\n" + (text[:3000] if text else "") + "\n\n"
+        "该场景正文是否复写了某个已发生事件？输出命中下标或 -1。"
+    )
+    return system, user
+
+
+def mechanism_check_prompt(mechanism: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次一 validator.py：机制卡三要素 LLM 语义校验（每本 1 次）。
+
+    替代 `_MECH_SEMANTIC`/`_MECH_SETTLE`/`_MECH_END` 信号词表——"今日剩余复活次数"
+    这类含数字的语义描述旧词表会漏判为缺「机制语义」。missing 文案必须与词表
+    兜底输出完全一致（调用方按固定文案判定三要素缺失）。
+    """
+    system = (
+        "你是小说设定编辑。检查机制体系卡要素是否完整（按机制类型分层判定）：\n"
+        "1. 机制语义：能力/数字/状态的确切含义（数字型如「蚀痕=死亡累计次数」「今日=自然日」；"
+        "纯概念型如「他能听见死者未说完的话」即算语义清楚）\n"
+        "2. 结算规则：何时增减/重置/与历史衔接（如「每死一次蚀痕+1」「次日清零」）。"
+        "仅当机制含数字/进度/状态/增减/重置类内容时才检查此项；纯概念机制（无数字无状态变化）不算缺失\n"
+        "3. 代价与终局：代价递增/上限/触发/永久（如「蚀痕满十死亡不可逆」「上限九次」）。"
+        "仅当机制显式声明了代价/上限/消耗时才检查此项；无代价能力（纯辅助/被动/概念型）不算缺失\n"
+        "判定规则：\n"
+        "- 机制卡对某要素有明确描述（含数字/状态的语义说明、结算动作、代价规则）就不算缺失\n"
+        "- 只把「确实没有描述且按类型应当描述」的要素列入 missing，宁可少判不可多判\n"
+        "- missing 只能使用以下三个固定文案之一：\n"
+        '  "机制语义（能力/数字/状态的确切含义）" / "结算规则（何时增减/重置/与历史衔接）" / '
+        '"代价与终局（代价递增/上限/触发）"\n'
+        '只输出合法 JSON：{"missing": ["结算规则（何时增减/重置/与历史衔接）"]}；'
+        "要素齐全输出 {\"missing\": []}。不要代码块标记、解释或省略号。"
+    )
+    user = f"【机制体系卡】\n{mechanism}\n\n请判断该机制卡缺失哪些要素。"
+    return system, user
+
+
+def ai_taste_check_prompt(text: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次二 ai_taste.py：AI 写作痕迹四维度 LLM 语义判定（整章 1 次）。
+
+    替代 CONNECTIVE_WORDS/EMOTION_WORDS/_FILLER_WORDS/_DIRECT_PATTERN 词表的
+    子串/正则命中判定——换措辞的 AI 腔（"事情推进得很顺利" vs 直接写"然而"）在
+    词表路径漏判。输出四个维度的布尔命中；密度统计（每千字）与句式排比/段落
+    雷同仍由确定性计算承担，不在此 prompt 范围。
+    """
+    system = (
+        "你是网文编辑，判断一段正文是否露出 AI 写作痕迹。只看以下四个维度：\n"
+        "1. connective_excess：连接词堆砌——「然而/因此/不仅…而且/值得注意的是/"
+        "综上所述/与此同时/此外/总之/显而易见/事实上/确实/毕竟/更何况/由此可见/"
+        "换句话说/换言之」这类书面连接词高频扎堆，读感像议论文转述而非网文叙事；"
+        "少量使用且服务于转折、上下文自然不算\n"
+        "2. emotion_excess：抽象情绪词直白宣告过度——「愤怒/震惊/无奈/开心/难过/"
+        "恐惧/兴奋/悲伤/痛苦/幸福/激动/失望/害怕/紧张」等情绪词连发直说，缺动作/"
+        "微表情承载；情绪词有动作支撑或只偶尔点破不算\n"
+        "3. filler_overuse：填充词口头禅堆砌——「然后/于是/只见/当即/顿时/但是/"
+        "然而/因此/不禁/果然/终于」等连接填充词高频复现，读感啰嗦机械；正常叙事"
+        "节奏下少量不算\n"
+        "4. zero_direct：全程演过头零直白——全文没有一处「他怕了/她恨得发颤」式"
+        "直白点破（代词+情绪），情绪全靠动作暗示、读者要自己猜\n"
+        "判定规则：维度确实成立才 true，宁可少判不可多判；拿不准输出 false。\n"
+        '只输出合法 JSON：{"connective_excess": true, "emotion_excess": false, '
+        '"filler_overuse": false, "zero_direct": false}。不要代码块标记、解释或省略号。'
+    )
+    user = (
+        "【待检查正文】\n" + (text[:3000] if text else "") + "\n\n"
+        "请判断该正文的 AI 写作痕迹维度命中情况。"
+    )
+    return system, user
+
+
+def panel_anchor_check_prompt(seg: str) -> tuple[str, str]:
+    """REQ-词表换LLM 批次二 quality.py：两处面板数字之间是否发生真实结算事件。
+
+    替代 _PANEL_EVENT_ANCHORS（死了/死亡/复活/苏醒/睁眼/醒来/结算/重置）+
+    _PANEL_EVENT_RECALL（看见/回忆/快死…）锚点+语境排除正则——换措辞的真实结算
+    （"他咽了气"）在词表路径漏判，"她看见他死了/他应该已经死了"这类回忆转述误判。
+    输出布尔+一句话理由（仅作诊断留痕，判定只取布尔）。
+    """
+    system = (
+        "你是机制面板校对员。小说中同一面板数字在正文相隔较远处出现了两次，"
+        "需要判断这两次出现之间的正文段里是否发生了「真实结算事件」——即相关人物"
+        "的机制状态真实变化（如死亡、复活、苏醒、状态刷新、数值重置）。\n"
+        "以下情况**不算**真实结算事件：\n"
+        "- 回忆/转述/他人语境：只是看见/听说/梦见/感知某人死了，或复述他人死亡"
+        "（如「她看见他死了」「他应该已经死了」）\n"
+        "- 将死未死：「快死了/差点死」等未真正结算\n"
+        "- 设定陈述/解说：只是说明面板机制本身（如「面板刷新的时候」）\n"
+        '只输出合法 JSON：{"has_settle_event": true, "reason": "……"} 或 '
+        '{"has_settle_event": false, "reason": "……"}。'
+        "reason 一句话说明依据（≤40字）。不要代码块标记、解释或省略号。"
+    )
+    user = (
+        "【两处面板数字之间的正文】\n" + (seg[:2000] if seg else "") + "\n\n"
+        "这段正文里是否发生了真实结算事件？"
     )
     return system, user

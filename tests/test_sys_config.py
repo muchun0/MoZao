@@ -204,6 +204,77 @@ def test_valid_items_normalized():
     ]
 
 
+# ---------- GET/PUT 回路：范围下发 + 以库为准回填（fix/admin-config-switch-persist） ----------
+
+@pytest.mark.p1
+@_NEED_DB
+def test_admin_config_api_roundtrip_bool():
+    """开关双向切换：PUT 返回库值为准的行快照；GET 下发 min/max 供前端预校验。
+
+    修复动机：前端此前只按 @change 事件标脏 + 保存后乐观显示，一旦改动项未提交或
+    回填失败，界面状态与 sys_config 真值不一致，刷新后"回到旧值"。
+    """
+    from fastapi.testclient import TestClient
+    from webapp.server import app
+
+    admin = db.get_user_by_name("admin")
+    token = db.create_session(admin["id"])
+    c = TestClient(app)
+    h = {"Authorization": f"Bearer {token}"}
+
+    body = c.get("/api/admin/config", headers=h).json()
+    key = "book_memory"
+    row = next(i for g in body["groups"] for i in g["items"] if i["key"] == key)
+    assert row["config_type"] == "bool"
+    # 范围/枚举随行下发：无范围约束的 bool 为 None
+    assert row["min"] is None and row["max"] is None
+    ranged = next(i for g in body["groups"] for i in g["items"] if i["key"] == "max_loops")
+    assert ranged["min"] == 1 and ranged["max"] is None
+
+    old = row["value"]
+    try:
+        for target in ("false" if old == "true" else "true", old):
+            r = c.put("/api/admin/config", json={"items": [{"key": key, "value": target}]}, headers=h)
+            assert r.status_code == 200, r.text
+            payload = r.json()
+            # PUT 返回的行快照必须等于库中真值
+            assert payload["items"][0]["value"] == target
+            assert payload["items"][0]["updated_by"] == "admin"
+            fresh = cfg_db.get_config(key)["config_value"]
+            assert fresh == target
+            listed = c.get("/api/admin/config", headers=h).json()
+            after = next(i for g in listed["groups"] for i in g["items"] if i["key"] == key)
+            assert after["value"] == target          # 刷新页面读到的也是新值
+    finally:
+        cfg_db.update_configs([{"key": key, "value": old}], "test_restore")
+
+
+@pytest.mark.p1
+@_NEED_DB
+def test_bool_switch_writes_audit_and_takes_effect():
+    """bool 开关两个方向都落库 + 写审计，且立即可被覆盖注入读到（切换即生效）。"""
+    from novel_gen.config import NovelConfig
+    from webapp.config_overrides import apply_global_overrides
+
+    key = "json_schema_output"
+    old = cfg_db.get_config(key)["config_value"]
+    try:
+        for target in ("false" if old == "true" else "true", old):
+            assert cfg_db.update_configs([{"key": key, "value": target}], "tester") == 1
+            assert cfg_db.get_config(key)["config_value"] == target
+            cfg = NovelConfig()
+            apply_global_overrides(cfg)
+            assert getattr(cfg, key) is (target == "true")
+        with db._connect() as conn:
+            rows = conn.execute(
+                "SELECT old_value, new_value FROM sys_config_log WHERE config_key=%s "
+                "ORDER BY id DESC LIMIT 2", (key,),
+            ).fetchall()
+        assert len(rows) == 2, "一次双向切换应留 2 条审计"
+    finally:
+        cfg_db.update_configs([{"key": key, "value": old}], "test_restore")
+
+
 # ---------- 覆盖注入 ----------
 
 @pytest.mark.p0

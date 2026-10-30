@@ -169,13 +169,13 @@
               <el-table-column prop="description" label="说明" min-width="320" />
               <el-table-column label="当前值" width="220">
                 <template #default="{ row }">
-                  <el-switch v-if="row.config_type === 'bool'" v-model="row._val" @change="markDirty(row)" />
-                  <el-input-number v-else-if="row.config_type === 'int'" v-model="row._val" :step="1" :min="0" controls-position="right" style="width:150px" @change="markDirty(row)" />
-                  <el-input-number v-else-if="row.config_type === 'float'" v-model="row._val" :step="0.1" :min="0" controls-position="right" style="width:150px" @change="markDirty(row)" />
-                  <el-select v-else-if="row.config_type === 'select'" v-model="row._val" style="width:150px" @change="markDirty(row)">
+                  <el-switch v-if="row.config_type === 'bool'" v-model="row._val" />
+                  <el-input-number v-else-if="row.config_type === 'int'" v-model="row._val" :step="1" :min="rowMin(row)" :max="rowMax(row)" controls-position="right" style="width:150px" />
+                  <el-input-number v-else-if="row.config_type === 'float'" v-model="row._val" :step="0.1" :precision="2" :min="rowMin(row)" :max="rowMax(row)" controls-position="right" style="width:150px" />
+                  <el-select v-else-if="row.config_type === 'select'" v-model="row._val" style="width:150px">
                     <el-option v-for="o in row.options || []" :key="o" :label="o" :value="o" />
                   </el-select>
-                  <el-input v-else v-model="row._val" size="small" style="width:150px" @change="markDirty(row)" />
+                  <el-input v-else v-model="row._val" size="small" style="width:150px" />
                 </template>
               </el-table-column>
               <el-table-column label="默认" width="90">
@@ -189,7 +189,7 @@
               </el-table-column>
               <el-table-column label="状态" width="80">
                 <template #default="{ row }">
-                  <el-tag v-if="row._dirty" type="warning" size="small">未保存</el-tag>
+                  <el-tag v-if="isDirty(row)" type="warning" size="small">未保存</el-tag>
                   <el-tag v-else type="success" size="small">已同步</el-tag>
                 </template>
               </el-table-column>
@@ -287,7 +287,10 @@ const skillForm = ref({ name: '', role: '', description: '', prompt_append: '', 
 // 系统设置（生成引擎开关）
 const configGroups = ref([])
 const configModule = ref('memory')
-const MODULE_LABELS = { memory: '记忆与一致性', writing: '正文生成', review: '审校质检', guard: '成本防护', assistant: '小墨AI' }
+const MODULE_LABELS = {
+  memory: '记忆与一致性', writing: '正文生成', review: '审校质检',
+  guard: '成本防护', assistant: '小墨AI', version: '产物版本',
+}
 const moduleLabel = m => MODULE_LABELS[m] || m
 
 function fmtDefault(row) {
@@ -297,11 +300,51 @@ function fmtDefault(row) {
   return d ?? '-'
 }
 
+// 服务端下发的取值范围（GET /api/admin/config 带 min/max，唯一事实来源在后端 _RANGE_RULES）
+const rowMin = row => (row.min === null || row.min === undefined ? 0 : row.min)
+const rowMax = row => (row.max === null || row.max === undefined ? Infinity : row.max)
+
+function numOr(raw, fallback) {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/** 库值 → 控件值：任何脏数据都回落到默认值，杜绝 NaN / undefined 流入 v-model。 */
 function normVal(row) {
   if (row.config_type === 'bool') return row.value === 'true'
-  if (row.config_type === 'int' || row.config_type === 'float') return Number(row.value)
+  if (row.config_type === 'int' || row.config_type === 'float') return numOr(row.value, numOr(row.default, 0))
   if (row.config_type === 'json') { try { return JSON.parse(row.value) } catch { return {} } }
-  return row.value
+  return row.value ?? ''
+}
+
+/** 控件值 → 库值（一律定长字符串，与后端 coerce_config_type 口径一致）。 */
+function serVal(row) {
+  if (row.config_type === 'bool') return row._val ? 'true' : 'false'
+  if (row.config_type === 'int') return String(Math.round(numOr(row._val, numOr(row.default, 0))))
+  if (row.config_type === 'float') return String(numOr(row._val, numOr(row.default, 0)))
+  if (row.config_type === 'json') {
+    return JSON.stringify(row._val && typeof row._val === 'object' ? row._val : {})
+  }
+  return String(row._val ?? '')
+}
+
+/** 是否改动只看「当前值 vs 服务端基线值」，不再依赖 @change 事件标记，
+ *  也不会出现"控件动了却没标脏→保存时被静默漏掉→回填后又回到旧值"的情况。 */
+function isDirty(row) {
+  const base = row._base
+  const t = row.config_type
+  if (t === 'bool') return !!row._val !== (String(base) === 'true')
+  if (t === 'int') {
+    return Math.round(numOr(row._val, 0)) !== Math.round(numOr(base, numOr(row.default, 0)))
+  }
+  if (t === 'float') {
+    return numOr(row._val, 0) !== numOr(base, numOr(row.default, 0))
+  }
+  if (t === 'json') {
+    try { return JSON.stringify(row._val || {}) === JSON.stringify(JSON.parse(base || '{}')) }
+    catch { return serVal(row) !== String(base ?? '') }
+  }
+  return String(row._val ?? '') !== String(base ?? '')
 }
 
 async function loadConfig() {
@@ -309,33 +352,71 @@ async function loadConfig() {
     const r = await adminApi.getConfig()
     configGroups.value = (r.groups || []).map(g => ({
       ...g,
-      items: (g.items || []).map(it => ({ ...it, _val: normVal(it), _dirty: false })),
+      items: (g.items || []).map(it => ({
+        ...it,
+        _val: normVal(it),
+        _base: it.value ?? '',   // 服务端基线（原始存储串），字段缺失时按空串比较
+      })),
     }))
-  } catch (e) { ElMessage.error('开关加载失败：' + (e?.response?.data?.detail || e.message)) }
+    return true
+  } catch (e) {
+    ElMessage.error('开关加载失败：' + (e?.response?.data?.detail || e.message))
+    return false
+  }
 }
 
-function markDirty(row) { row._dirty = true }
 function dirtyCount(mod) {
-  return (configGroups.value.find(g => g.module === mod)?.items || []).filter(i => i._dirty).length
+  return (configGroups.value.find(g => g.module === mod)?.items || []).filter(isDirty).length
 }
 
-function serVal(row) {
-  if (row.config_type === 'bool') return row._val ? 'true' : 'false'
-  if (row.config_type === 'int' || row.config_type === 'float') return String(row._val)
-  if (row.config_type === 'json') return JSON.stringify(row._val)
-  return String(row._val ?? '')
+/** 提交前按服务端下发的约束做本地预校验：返回错误文案（''=通过）。
+ *  用途：非法项单独剔出并明确提示，不再让一个非法输入连累整组开关保存失败。 */
+function validateRow(row) {
+  const v = serVal(row)
+  if (row.config_type === 'int' || row.config_type === 'float') {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return '不是合法数字'
+    if (n < rowMin(row)) return `不能小于 ${rowMin(row)}`
+    if (n > rowMax(row)) return `不能大于 ${rowMax(row)}`
+  }
+  if (row.config_type === 'select' && (row.options || []).length) {
+    if (!row.options.includes(v)) return `取值必须为 ${row.options.join('/')}`
+  }
+  return ''
 }
 
 async function saveGroup(mod) {
   const g = configGroups.value.find(x => x.module === mod)
   if (!g) return
-  const items = g.items.filter(i => i._dirty).map(i => ({ key: i.key, value: serVal(i) }))
-  if (!items.length) return
+  const changed = g.items.filter(isDirty)
+  if (!changed.length) return
+
+  const bad = changed.filter(i => validateRow(i))
+  const ok = changed.filter(i => !validateRow(i))
+  if (bad.length) {
+    ElMessage.warning(`${bad.length} 项输入不合法已跳过：${bad.map(i => `${i.label || i.key}（${validateRow(i)}）`).join('、')}`)
+  }
+  if (!ok.length) return
+
   try {
-    const r = await adminApi.updateConfig(items)
-    ElMessage.success(`已保存 ${r.updated || items.length} 项开关，全局生效`)
+    const r = await adminApi.updateConfig(ok.map(i => ({ key: i.key, value: serVal(i) })))
+    // 以服务端返回的行（库为真值）回填本组，避免前端乐观显示与库值不一致
+    const saved = new Map((r.items || []).map(it => [it.key, it]))
+    for (const it of ok) {
+      const s = saved.get(it.key)
+      if (!s) continue
+      it.value = s.value
+      it.updated_by = s.updated_by
+      it.updated_at = s.updated_at
+      it._val = normVal(s)
+      it._base = s.value
+    }
+    // 再拉一次全量做最终校验（回填失败/他人并发改动都能被纠正）
     await loadConfig()
-  } catch (e) { ElMessage.error('保存失败：' + (e?.response?.data?.detail || e.message)) }
+    ElMessage.success(`已保存 ${r.updated ?? ok.length} 项开关，全局生效`)
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e?.response?.data?.detail || e.message))
+  }
 }
 
 const STAGE_LABELS = { research: '调研', outline: '大纲', world: '世界观', chapter: '正文', review: '审校' }

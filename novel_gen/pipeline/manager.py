@@ -27,6 +27,8 @@ from .templates import (continue_outline_prompt, expand_chapter_prompt,
 from .trace import TraceRecorder
 from .editor import EditorReviewer
 from .orchestrator import Orchestrator
+from .pitfall_reconcile import reconcile_pitfall_injection as _reconcile_injection
+from .pitfall_contract import contract_for, expected_params, CHANNEL_NONE
 from .agents import (ResearcherAgent, ArchitectAgent, WriterAgent, ReviewerAgent,
                      ReaderAgent, StylistAgent)
 from webapp.logger import get_logger
@@ -1030,6 +1032,22 @@ class NovelPipeline:
                     user_memory_block=self.chapter_writer._user_memory_block(),
                 )
                 system = self._with_stylist(system)
+                # REQ-踩坑账本注入对账 - 第 3 步（P1 扩写路径 expand，契约 wired=false）：
+                # 本期只观测不补注入；每章去重、不计 streak、不进 fail_fast（L1u）。
+                if getattr(self.cfg, "pitfall_reconcile", True):
+                    _exp_contract = contract_for("expand", self.cfg, ch.no)
+                    _reconcile_injection(
+                        expected=[],
+                        params=dict(expected_params(_exp_contract)),
+                        prompt=(system or "") + "\n" + (user or ""),
+                        path_id="expand",
+                        chapter_no=ch.no,
+                        cfg=self.cfg,
+                        store=self.store,
+                        project_id=getattr(self.store, "project_id", "") or "",
+                        inject_channel=CHANNEL_NONE,
+                        trace=self.trace,
+                    )
                 text = self.llm.chat(system, user, temperature=0.8)
                 text = _strip_html_tags(text)
                 if len(text) > len(ch.content) + 50:

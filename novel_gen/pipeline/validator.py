@@ -6,17 +6,82 @@ REQ-多Agent协作分层优化：收敛 manager._run_verify 等分散校验，�
 （设定一致性 / 人物OOC / 主线偏移 / 重复情节 / 伏笔完整性），输出分级问题清单
 （fatal/major/minor，见 issue_triage.IssueItem），供 StageGate 阶段门禁与最终质量报告复用。
 
-设计：确定性结构化校验为主（零 LLM 成本、可复现单测），语义级校验（主线偏移、
-人物OOC 的深层判断）由上层 StageGate 可选叠加 LLM（异常降级），本类保持纯函数安全。
+设计：确定性结构化校验为主（零 LLM 成本、可复现单测）；仅「机制卡三要素」属语义
+判断，由 REQ-词表换LLM 批次一改为可选 LLM 语义判定（llm+llm_semantic 双开关），
+失败/非结构化时回退原信号词表兜底，其余校验保持纯函数安全。
 """
 from __future__ import annotations
 
+import logging
+
+from ..llm.json_parse import parse_json_obj
 from ..store.schemas import GoldfingerRules, Outline, World
 from .issue_triage import IssueItem
+from .mechanism_types import has_type, normalize_types, resolve_types
+from .templates import mechanism_check_prompt
+
+logger = logging.getLogger(__name__)
 
 
 #: 伏笔三级合法值
 _FS_LEVELS = {"small", "medium", "large"}
+
+#: 机制卡三要素固定文案（LLM 路径与词表兜底产出的 missing 必须完全一致）
+_MISSING_SEMANTIC = "机制语义（能力/数字/状态的确切含义）"
+_MISSING_SETTLE = "结算规则（何时增减/重置/与历史衔接）"
+_MISSING_END = "代价与终局（代价递增/上限/触发）"
+_MECH_FIXED_MISSING = (_MISSING_SEMANTIC, _MISSING_SETTLE, _MISSING_END)
+
+#: 数字/状态型机制触发词：机制含其一即视为「需要结算规则」。
+#: 刻意不含"数字"本身（"无数字/纯概念"不误判），只放具体数字载体词。
+_MECH_NUMERIC = ("次数", "进度", "面板", "状态", "累积", "剩余", "余量",
+                 "结算", "递减", "递增", "重置", "恢复", "增减", "减一", "叠加", "消耗值")
+
+#: 代价型机制触发词：机制含其一即视为「声明了代价」，此时才要求代价与终局。
+#: 无代价能力（纯辅助/被动/概念型）合法，不强行设计代价。
+_MECH_COST = ("代价", "上限", "终局", "封顶", "用尽", "永久", "消耗", "递增")
+
+#: 代价终局证据词：机制声明代价后，须含其一才算「代价与终局」要素齐全。
+#: 刻意不含"代价"本身——「代价：消耗寿命」只是声明了消耗什么，未写上限/终局。
+_MECH_END_EVIDENCE = ("上限", "终局", "封顶", "用尽", "永久", "触发", "递增", "耗尽")
+
+
+def _mechanism_is_numeric(mechanism: str) -> bool:
+    """机制是否数字/状态型（需要结算规则）。纯概念机制返回 False。"""
+    return any(k in mechanism for k in _MECH_NUMERIC)
+
+
+def _mechanism_declares_cost(mechanism: str) -> bool:
+    """机制是否声明了代价（需要代价与终局）。无代价机制返回 False。"""
+    return any(k in mechanism for k in _MECH_COST)
+
+
+def _llm_mechanism_missing(mechanism: str, llm) -> list[str] | None:
+    """LLM 语义判定机制卡三要素缺失（REQ-词表换LLM 批次一，开书时每本 1 次）。
+
+    返回：
+    - None：LLM 调用失败 / 返回非结构化（dict 空、无 missing、missing 非 list）
+      → 调用方回退词表兜底；
+    - list[str]：LLM 判定结果（可为 [] = 三要素齐全，不回退）。
+    规范化：逐条 strip，只保留三个固定文案之一（非固定文案丢弃），去重。
+    """
+    if not mechanism:
+        return []
+    try:
+        system, user = mechanism_check_prompt(mechanism)
+        raw = llm.chat(system, user, temperature=0.2, max_tokens=300, json_mode=True)
+    except Exception:
+        return None
+    data = parse_json_obj(raw)
+    missing = data.get("missing") if isinstance(data, dict) else None
+    if not isinstance(missing, list):
+        return None
+    kept: list[str] = []
+    for item in missing:
+        text = str(item).strip()
+        if text in _MECH_FIXED_MISSING and text not in kept:
+            kept.append(text)
+    return kept
 
 
 class LogicValidator:
@@ -27,6 +92,12 @@ class LogicValidator:
     - stage="skeleton"：骨架（Outline）——主线 / 重复 / 分卷归属
     - stage="pacing"：节奏（Outline）——关键节点 / 分卷节奏 / 弧光落点
     """
+
+    def __init__(self, llm=None, llm_semantic: bool = True):
+        # REQ-词表换LLM 批次一：仅机制卡三要素可选 LLM 语义判定；
+        # llm 为 None 或 llm_semantic=False 时行为与改造前完全一致（纯词表）。
+        self.llm = llm
+        self.llm_semantic = llm_semantic
 
     def validate_stage(self, stage: str, product) -> list[IssueItem]:
         try:
@@ -44,71 +115,214 @@ class LogicValidator:
     # ---------- 阶段一：底层锚点（World） ----------
     def _validate_bottom_anchors(self, world: World) -> list[IssueItem]:
         issues: list[IssueItem] = []
-        issues += self._check_goldfinger(world)
-        issues += self._check_mechanism(world)
+        types = resolve_types(world)
+        explicit = normalize_types(getattr(world, "mechanism_types", None))
+        issues += self._check_goldfinger(world, types, explicit)
+        issues += self._check_mechanism(world, types, explicit)
+        issues += self._check_rule_set(world, types)
         issues += self._check_theme_anchor(world)
         issues += self._check_foreshadow(world)
-        issues += self._check_design_cards(world)
+        issues += self._check_design_cards(world, types)
         return issues
 
-    #: 机制卡三要素关键信号词（REQ-章内自洽与机制账本）
-    #: 语义：数字/状态的确切含义；结算：增减/重置的动作规则；代价：上限/终局。
+    #: 机制卡要素关键信号词（REQ-章内自洽与机制账本，2026-10-29 分层放宽）
+    #: 语义：能力/数字/状态的确切含义；结算：数字/状态型机制的增减/重置动作规则；
+    #: 代价终局证据词在模块级 `_MECH_END_EVIDENCE`（仅机制声明代价后才要求）。
     #: 刻意排除宽泛词（如"数字""今日"），避免"无数字""今日剩余复活次数"等
     #: 语义描述被误判为已覆盖对应要素。只放通用机制词，单书词（如"蚀痕/可死"）
     #: 由设定账本声明，不预置。
     _MECH_SEMANTIC = ("语义", "含义", "状态", "次数", "面板", "进度")
     _MECH_SETTLE = ("结算", "增减", "递减", "递增", "重置", "每死", "减一", "恢复")
-    _MECH_END = ("代价", "上限", "终局", "触发", "成长", "封顶", "用尽", "永久")
 
-    def _check_mechanism(self, world: World) -> list[IssueItem]:
-        """机制卡完整性（REQ-章内自洽与机制账本）：非空机制卡必须覆盖
-        「机制语义 / 结算规则 / 代价与终局」三要素，缺失视为致命。
+    def _check_mechanism(self, world: World, types: list[str] | None = None,
+                         explicit: list[str] | None = None) -> list[IssueItem]:
+        """机制卡完整性：按机制类型分派校验（REQ-通用机制类型适配）。
 
-        背景：机制数字前后矛盾、状态与余量口径冲突、「今日/跨天」类时间口径冲突，
-        均源于机制卡只写了个名目、没有无歧义的结算规则。
+        - numeric_panel：保留原三要素全流程（语义/结算/代价终局，LLM 判定 + 词表兜底，
+          行为零变化）；
+        - rule_set / ability / contract / temporal / power_level：仅要求机制语义说清
+          能力/规则/状态是什么，不强制结算规则与代价终局；规则条款完整性由
+          `_check_rule_set` 单独校验；
+        - none（显式声明无机制）：跳过；
+        - 旧书兼容：未显式声明类型、且结构化字段推断不出类型时，沿用旧版内容启发式
+          三要素路径，保证存量项目行为不变。
         """
         issues: list[IssueItem] = []
+        if types is None:
+            types = resolve_types(world)
+        if explicit is None:
+            explicit = normalize_types(getattr(world, "mechanism_types", None))
         mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
         if not mechanism:
             return issues
-        missing = []
+        # 显式声明无机制：不做任何机制完整性校验
+        if explicit == ["none"]:
+            return issues
+        # 数字面板型：原三要素全流程（LLM + 词表兜底），行为与改造前一致
+        if has_type(types, "numeric_panel"):
+            return self._check_mechanism_numeric(mechanism)
+        # 旧书兼容：未显式声明且推断不出类型 → 旧版内容启发式路径
+        if not explicit and types == ["none"]:
+            return self._check_mechanism_legacy(mechanism)
+        # 其余类型：仅机制语义必填
         if not any(k in mechanism for k in self._MECH_SEMANTIC):
-            missing.append("机制语义（每个数字/状态的确切含义）")
-        if not any(k in mechanism for k in self._MECH_SETTLE):
-            missing.append("结算规则（何时增减/重置/与历史衔接）")
-        if not any(k in mechanism for k in self._MECH_END):
-            missing.append("代价与终局（代价递增/上限/触发）")
-        if missing:
             issues.append(IssueItem(
                 severity="fatal", scope="mechanism",
-                desc="金手指机制卡不完整，缺失：" + "、".join(missing),
-                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 八要素补全"
-                          "（机制语义/结算规则/代价终局/数字账本/时间词语义/多数字关系/历史衔接/正文要求）",
+                desc="机制卡不完整，缺失：" + _MISSING_SEMANTIC,
+                suggestion="在主题/世界观 Agent 阶段补全机制语义（能力/规则/状态的确切含义）；"
+                          "本机制类型不强制结算规则与代价终局",
             ))
         return issues
 
-    def _check_goldfinger(self, world: World) -> list[IssueItem]:
-        """金手指五要素齐全且与机制卡自洽（红线：不得模糊）。"""
+    def _check_mechanism_numeric(self, mechanism: str) -> list[IssueItem]:
+        """数字面板型机制三要素校验（原 LLM + 词表兜底流程，行为零变化）。"""
         issues: list[IssueItem] = []
+        missing: list[str] | None = None
+        if self.llm is not None and self.llm_semantic:
+            missing = _llm_mechanism_missing(mechanism, self.llm)
+            if missing is None:
+                logger.warning("[validator] 机制卡 LLM 语义判定失败/非结构化，回退词表兜底")
+        if missing is None:
+            missing = []
+            if not any(k in mechanism for k in self._MECH_SEMANTIC):
+                missing.append(_MISSING_SEMANTIC)
+            if _mechanism_is_numeric(mechanism) and not any(k in mechanism for k in self._MECH_SETTLE):
+                missing.append(_MISSING_SETTLE)
+            if (_mechanism_declares_cost(mechanism)
+                    and not any(k in mechanism for k in _MECH_END_EVIDENCE)):
+                missing.append(_MISSING_END)
+        if missing:
+            issues.append(IssueItem(
+                severity="fatal", scope="mechanism",
+                desc="机制体系卡不完整，缺失：" + "、".join(missing),
+                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 分层补全"
+                          "（机制语义必写；数字/状态型机制补结算规则；声明了代价的机制补代价终局；"
+                          "纯概念机制与无代价机制可省略对应要素）",
+            ))
+        return issues
+
+    def _check_mechanism_legacy(self, mechanism: str) -> list[IssueItem]:
+        """旧书兼容路径：LLM 语义判定 + 内容启发式三要素兜底（改造前行为，
+        仅用于无显式类型、结构化字段推断不出类型的存量书）。"""
+        issues: list[IssueItem] = []
+        missing: list[str] | None = None
+        if self.llm is not None and self.llm_semantic:
+            missing = _llm_mechanism_missing(mechanism, self.llm)
+            if missing is None:
+                logger.warning("[validator] 机制卡 LLM 语义判定失败/非结构化，回退词表兜底")
+        if missing is None:
+            missing = []
+            if not any(k in mechanism for k in self._MECH_SEMANTIC):
+                missing.append(_MISSING_SEMANTIC)
+            if _mechanism_is_numeric(mechanism) and not any(k in mechanism for k in self._MECH_SETTLE):
+                missing.append(_MISSING_SETTLE)
+            if (_mechanism_declares_cost(mechanism)
+                    and not any(k in mechanism for k in _MECH_END_EVIDENCE)):
+                missing.append(_MISSING_END)
+        if missing:
+            issues.append(IssueItem(
+                severity="fatal", scope="mechanism",
+                desc="机制体系卡不完整，缺失：" + "、".join(missing),
+                suggestion="在主题/世界观 Agent 阶段按 world_prompt 的 mechanism_rules 分层补全"
+                          "（机制语义必写；数字/状态型机制补结算规则；声明了代价的机制补代价终局；"
+                          "纯概念机制与无代价机制可省略对应要素）",
+            ))
+        return issues
+
+    def _check_goldfinger(self, world: World, types: list[str] | None = None,
+                          explicit: list[str] | None = None) -> list[IssueItem]:
+        """能力规则说明书校验（仅 ability 类型；REQ-通用机制类型适配）。
+
+        - ability（显式声明，或已存在 goldfinger_rules 对象）：
+          trigger/upper_limit/growth_path 必填，缺失 → fatal；
+          lower_limit/cost 非必填，缺失 → minor 提示；
+        - rule_set / contract / temporal / power_level / none 等非能力类型：
+          不要求 goldfinger_rules，也不再出"缺金手指"提示；
+        - 旧书兼容：未显式声明类型、推断不出类型但机制卡存在且无说明书 → 保留旧版 minor。
+        """
+        issues: list[IssueItem] = []
+        if types is None:
+            types = resolve_types(world)
+        if explicit is None:
+            explicit = normalize_types(getattr(world, "mechanism_types", None))
         gf: GoldfingerRules | None = getattr(world, "goldfinger_rules", None)
-        mechanism = getattr(world, "mechanism_rules", "") or ""
-        has_mechanism = bool(mechanism.strip())
-        # 机制卡存在但五要素缺失 → 致命（能力边界必须明确）
-        if has_mechanism and gf is None:
+        mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
+        is_ability = has_type(types, "ability") or gf is not None
+        # 非能力类型：完全跳过金手指校验（规则怪谈/契约/时间循环等不强制能力说明书）
+        if explicit and not is_ability:
+            return issues
+        if not is_ability:
+            # 旧书兼容：机制卡存在但无说明书 → 仅 minor 提示
+            if mechanism and gf is None:
+                issues.append(IssueItem(
+                    severity="minor", scope="goldfinger",
+                    desc="有机制卡（mechanism_rules）但缺能力规则说明书（goldfinger_rules）",
+                    suggestion="若该机制是独特能力/系统，补齐 goldfinger_rules；"
+                              "若为纯世界观规则/无能力设定，可忽略"))
+            return issues
+        if gf is None:
+            issues.append(IssueItem(
+                severity="minor", scope="goldfinger",
+                desc="能力型机制缺规则说明书（goldfinger_rules）",
+                suggestion="补齐 trigger/upper_limit/growth_path；lower_limit 与 cost 可按能力类型缺省"))
+            return issues
+        required = ("trigger", "upper_limit", "growth_path")
+        missing = [k for k in required if not (getattr(gf, k, "") or "").strip()]
+        if missing:
             issues.append(IssueItem(
                 severity="fatal", scope="goldfinger",
-                desc="有金手指机制卡（mechanism_rules）但缺金手指规则说明书（goldfinger_rules）",
-                suggestion="在主题/世界观 Agent 阶段补齐 goldfinger_rules 五要素"))
-        if gf is not None:
-            missing = [k for k, v in {
-                "trigger": gf.trigger, "upper_limit": gf.upper_limit,
-                "lower_limit": gf.lower_limit, "cost": gf.cost, "growth_path": gf.growth_path,
-            }.items() if not (v or "").strip()]
-            if missing:
+                desc=f"能力规则说明书要素不完整，缺失：{'、'.join(missing)}",
+                suggestion="补齐触发条件（trigger）/能力上限（upper_limit）/成长路径（growth_path）；"
+                          "下限（lower_limit）与使用代价（cost）可按能力类型缺省"))
+        optional_missing = [k for k in ("lower_limit", "cost")
+                            if not (getattr(gf, k, "") or "").strip()]
+        if optional_missing:
+            issues.append(IssueItem(
+                severity="minor", scope="goldfinger",
+                desc=f"能力规则说明书可选要素未填写：{'、'.join(optional_missing)}",
+                suggestion="无下限/无代价能力可忽略；若存在使用代价或下限，建议补全以避免正文口径漂移"))
+        return issues
+
+    def _check_rule_set(self, world: World, types: list[str]) -> list[IssueItem]:
+        """规则约束型（rule_set）条款完整性校验：仅 rule_set 类型执行。
+
+        - 声明 rule_set 但条款为空 → fatal；
+        - 每条 active 条款四要素（statement/scope/condition/consequence）缺一 → fatal；
+        - rule_id 重复 → major；scope 合法性由 schema 层枚举兜底。
+        """
+        issues: list[IssueItem] = []
+        if not has_type(types, "rule_set"):
+            return issues
+        ruleset = getattr(world, "mechanism_ruleset", None) or []
+        active = [r for r in ruleset if getattr(r, "status", "active") == "active"]
+        if not active:
+            issues.append(IssueItem(
+                severity="fatal", scope="rule_set",
+                desc="规则约束型机制（rule_set）缺结构化条款（mechanism_ruleset）",
+                suggestion="按 world_prompt 的 mechanism_ruleset 逐条登记：范围/条件/禁令/后果，"
+                          "fixed 条款在副本内不可改写"))
+            return issues
+        seen_ids: dict[str, int] = {}
+        for rule in active:
+            rid = (getattr(rule, "rule_id", "") or "").strip() or "（无编号）"
+            seen_ids[rid] = seen_ids.get(rid, 0) + 1
+            incomplete = [name for name, val in (
+                ("statement", getattr(rule, "statement", "")),
+                ("scope", getattr(rule, "scope", "")),
+                ("condition", getattr(rule, "condition", "")),
+                ("consequence", getattr(rule, "consequence", ""))
+            ) if not (str(val or "").strip())]
+            if incomplete:
                 issues.append(IssueItem(
-                    severity="fatal", scope="goldfinger",
-                    desc=f"金手指规则说明书五要素不完整，缺失：{'、'.join(missing)}",
-                    suggestion="补齐全部五要素（触发/上限/下限/代价/成长路径）"))
+                    severity="fatal", scope="rule_set",
+                    desc=f"规则条款『{rid}』要素不完整，缺失：{'、'.join(incomplete)}",
+                    suggestion="补全该条款的适用范围、触发条件、禁令内容与违反后果"))
+        dup = [rid for rid, cnt in seen_ids.items() if cnt > 1]
+        if dup:
+            issues.append(IssueItem(
+                severity="major", scope="rule_set",
+                desc=f"规则条款编号重复：{'、'.join(dup)}",
+                suggestion="为每条规则分配唯一 rule_id，便于跨章一致性追踪"))
         return issues
 
     def _check_theme_anchor(self, world: World) -> list[IssueItem]:
@@ -159,13 +373,19 @@ class LogicValidator:
                                         "level 应为 small/medium/large"))
         return issues
 
-    def _check_design_cards(self, world: World) -> list[IssueItem]:
+    def _check_design_cards(self, world: World, types: list[str] | None = None) -> list[IssueItem]:
         """事前设计卡完整性（REQ-事前设定卡）：把怪物/地点/机制数字落成结构化卡，
-        防止写手在正文自行发明形态、空间、数字。缺失降为 major（不阻塞旧项目）。"""
+        防止写手在正文自行发明形态、空间、数字。缺失降为 major（不阻塞旧项目）。
+
+        mechanism_baseline（数字标准答案卡）仅 numeric_panel 类型要求；规则怪谈、
+        能力、契约等非数字类型不强制结构化数字基线。
+        """
         issues: list[IssueItem] = []
+        if types is None:
+            types = resolve_types(world)
         mechanism = (getattr(world, "mechanism_rules", "") or "").strip()
-        # 机制卡有可视化数字，但缺结构化初始值 → major
-        if mechanism and any(k in mechanism for k in ("次数", "进度", "面板", "状态")):
+        # 数字面板型：机制卡有可视化数字，但缺结构化初始值 → major
+        if has_type(types, "numeric_panel") and mechanism:
             mb = getattr(world, "mechanism_baseline", None)
             has_baseline = mb is not None and any(
                 (getattr(mb, f, "") or "").strip() for f in

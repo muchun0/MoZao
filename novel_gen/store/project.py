@@ -578,7 +578,7 @@ class ProjectStore:
         return Chapter.from_dict(d) if d else None
 
     def select_version(self, no: int, ver: int) -> Optional[Chapter]:
-        """回退/选中某版本：把 v{ver} 复制回 HEAD 并更新 selected；置 user_managed。"""
+        """选中某版本（旧版/新版一视同仁）：把 v{ver} 复制回 HEAD 并更新 selected；置 user_managed。"""
         d = self._chapter_facade().select(str(no), ver)
         return Chapter.from_dict(d) if d else None
 
@@ -947,6 +947,44 @@ class ProjectStore:
         entries = self.load_projection_log()
         entries.append(dict(entry or {}))
         path = self.projection_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in entries) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+
+    # ---------- 踩坑账本注入对账（REQ-踩坑账本注入对账） ----------
+    def pitfall_reconcile_path(self) -> Path:
+        return self.dir / "pitfall_reconcile.jsonl"
+
+    def load_pitfall_reconcile(self) -> list[dict]:
+        """返回注入对账全部条目（JSONL，逐行容错解析）。"""
+        path = self.pitfall_reconcile_path()
+        if not path.exists():
+            return []
+        out: list[dict] = []
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                out.append(json.loads(ln))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return out
+
+    def append_pitfall_reconcile(self, entry: dict) -> None:
+        """追加一条注入对账明细（写法逐字复用 append_projection_log：读全量 + 原子写回）。
+
+        上限 2000 条：超出按插入顺序淘汰最旧条目，防长篇项目 jsonl 无限膨胀（PRD §5.3 / R-T3）。
+        """
+        entries = self.load_pitfall_reconcile()
+        entries.append(dict(entry or {}))
+        if len(entries) > 2000:
+            entries = entries[-2000:]
+        path = self.pitfall_reconcile_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(

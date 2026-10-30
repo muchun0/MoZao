@@ -5,6 +5,7 @@ from .. import db  # noqa: F401  数据层
 from ..db import config as cfg_db  # noqa: F401  系统开关配置数据层
 
 from pydantic import BaseModel
+from typing import Any
 
 
 class ConfigUpdateItem(BaseModel):
@@ -310,6 +311,29 @@ def admin_handle_refund(request_id: int, req: RefundHandleReq,
     return {"ok": True, "message": why}
 
 
+def _serialize_config_row(row: dict, default: Any = None) -> dict:
+    """单行序列化（GET 列表与 PUT 回填共用的唯一出口，防两端口径漂移）。
+
+    min/max 取自本模块的 `_RANGE_RULES`，options 取自 `SELECT_ENUMS`——范围与枚举
+    的唯一事实来源保持在后端，前端只做展示与提交前预校验，不复制常量（§11.3）。
+    """
+    lo, hi = _RANGE_RULES.get(row["config_key"], (None, None))
+    return {
+        "key": row["config_key"],
+        "label": row["label"],
+        "description": row["description"],
+        "config_type": row["config_type"],
+        "value": row["config_value"],
+        "default": default,
+        "updated_by": row["updated_by"],
+        "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
+        if row["updated_at"] else None,
+        "options": cfg_db.SELECT_ENUMS.get(row["config_key"]) or None,
+        "min": lo,
+        "max": hi,
+    }
+
+
 @app.get("/api/admin/config")
 def admin_config_list(user: dict = Depends(_require_admin)):
     """开关列表（REQ-后台开关管理）：按模块分组，含当前值/代码默认值/类型/说明/修改信息。"""
@@ -319,22 +343,8 @@ def admin_config_list(user: dict = Depends(_require_admin)):
     defaults = {f.key: f.default for f in FEATURE_FLAGS}
     groups = []
     for m in cfg_db.FLAG_MODULES:
-        items = []
-        for r in rows:
-            if r["config_group"] != m:
-                continue
-            items.append({
-                "key": r["config_key"],
-                "label": r["label"],
-                "description": r["description"],
-                "config_type": r["config_type"],
-                "value": r["config_value"],
-                "default": defaults.get(r["config_key"]),
-                "updated_by": r["updated_by"],
-                "updated_at": r["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
-                if r["updated_at"] else None,
-                "options": cfg_db.SELECT_ENUMS.get(r["config_key"]) or None,
-            })
+        items = [_serialize_config_row(r, defaults.get(r["config_key"])) for r in rows
+                 if r["config_group"] == m]
         groups.append({"module": m, "items": items})
     return {"groups": groups, "total": len(rows)}
 
@@ -346,9 +356,19 @@ def admin_config_update(req: ConfigUpdateReq, user: dict = Depends(_require_admi
     以表中数据为准：保存后对所有项目生成实时生效（内存态覆盖），config.json 快照不动。
     """
     if not req.items:
-        return {"ok": True, "updated": 0}
+        return {"ok": True, "updated": 0, "items": []}
     validated = _validate_config_items(req.items)
     updated = cfg_db.update_configs(validated, user["username"])
     logger.info("后台开关保存: by=%s updated=%d keys=%s", user["username"], updated,
                 ",".join(v["key"] for v in validated))
-    return {"ok": True, "updated": updated}
+    # 回填：把本次提交涉及的开关行以「库为真值」原样返回，前端据此刷新本地状态，
+    # 避免仅在前端乐观标记「已同步」却与库值不一致（fix/admin-config-switch-persist）。
+    from novel_gen.config import FEATURE_FLAGS
+
+    defaults = {f.key: f.default for f in FEATURE_FLAGS}
+    saved = []
+    for v in validated:
+        row = cfg_db.get_config(v["key"])
+        if row is not None:
+            saved.append(_serialize_config_row(row, defaults.get(v["key"])))
+    return {"ok": True, "updated": updated, "items": saved}

@@ -3,7 +3,7 @@ import request from './request'
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
 export const getChapter = (pid, no) => request.get(`/projects/${pid}/chapters/${no}`)
 export const updateChapterContent = (pid, no, data) => request.put(`/projects/${pid}/chapters/${no}`, data)
-// REQ-章节版本化：章节版本列表 / 选择回退 / 删除版本
+// REQ-章节版本化：章节版本列表 / 选择版本 / 删除版本
 export const getChapterVersions = (pid, no) => request.get(`/projects/${pid}/chapters/${no}/versions`)
 export const selectChapterVersion = (pid, no, v) => request.post(`/projects/${pid}/chapters/${no}/versions/${v}/select`)
 export const deleteChapterVersion = (pid, no, v) => request.delete(`/projects/${pid}/chapters/${no}/versions/${v}`)
@@ -21,13 +21,16 @@ export const overturnAppeal = (pid, appealId) => request.post(`/projects/${pid}/
 export const importOutline = (pid, data) => request.post(`/projects/${pid}/outline/import`, data)
 export const expandSelection = (pid, data) => request.post(`/projects/${pid}/expand-selection`, data)
 
-// 产物级版本库（阶段 1C，TECH §10.1）：outline/world 版本列表 / 受控回滚 / 回滚影响范围
+// 产物级版本库（阶段 1C，TECH §10.1）：outline/world 版本列表 / 选择版本 / 切换影响范围
 export const getProductVersions = (pid, kind) => request.get(`/projects/${pid}/products/${kind}/versions`)
 export const selectProductVersion = (pid, kind, v) => request.post(`/projects/${pid}/products/${kind}/versions/${v}/select`)
-export const getRollbackImpact = (pid, kind, v) => request.get(`/projects/${pid}/products/${kind}/rollback-impact`, { params: { v } })
-// 两版只读对比（REQ-版本对比与推荐）：chapter 需 chapter_no
-export const getProductDiff = (pid, kind, v1, v2, chapterNo) =>
-  request.get(`/projects/${pid}/products/${kind}/versions/diff`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
+// 切换影响面：选择某版后哪些章会与上游不一致（只读评估，不写盘）
+export const getVersionSelectImpact = (pid, kind, v) => request.get(`/projects/${pid}/products/${kind}/select-impact`, { params: { v } })
+// 两版只读评审（REQ-版本对比与推荐）：chapter 需 chapter_no
+// 返回审校/评审两视角的评论（引用原文 + 好在哪 / 问题定性 + 具体改法），
+// 不再是 git 式的行级增删
+export const getVersionReview = (pid, kind, v1, v2, chapterNo) =>
+  request.get(`/projects/${pid}/products/${kind}/versions/review`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
 
 // Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
 export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)

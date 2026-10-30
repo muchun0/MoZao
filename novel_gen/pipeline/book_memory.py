@@ -314,7 +314,7 @@ class BookMemory:
         mb = data["canon"].get("mechanism_baseline") or {}
         if mb:
             lines = [f"- {k}：{v}" for k, v in mb.items()]
-            parts.append("【本作机制基线（背景参考：机制数字与身体状态的当前口径，"
+            parts.append("【本作机制基线（背景参考：机制数字与状态的当前口径，"
                          "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
         joined = "\n\n".join(parts)
         return joined[:max_chars]
@@ -329,7 +329,7 @@ class BookMemory:
         if not mb:
             return ""
         lines = [f"- {k}：{v}" for k, v in mb.items()]
-        return ("【本作机制基线（背景参考：机制数字与身体状态/蚀痕的当前口径，"
+        return ("【本作机制基线（背景参考：机制数字与状态的当前口径，"
                 "正文按需自然呈现，不要求刻意展示）】\n" + "\n".join(lines))
 
     # ---------- 事件账本（跨章消费状态）----------
@@ -943,6 +943,14 @@ class BookMemory:
         pits = self.top_pitfalls(top_n, min_count, self_ch=self_ch)
         if not pits:
             return ""
+        return self._render_pitfalls(pits, for_rewrite=for_rewrite)
+
+    def _render_pitfalls(self, pits: list[dict], for_rewrite: bool = False) -> str:
+        """把已选定的踩坑条目渲染成注入块文本（渲染体唯一事实来源）。
+
+        `pitfall_block` 与 `pitfall_injection` 共用本方法，保证两条路径的渲染文本
+        逐字一致（`pitfall_block` 输出相对改造前行为零变化，见 §11.1）。
+        """
         lines = []
         for i, p in enumerate(pits, 1):
             lines.append(
@@ -958,6 +966,26 @@ class BookMemory:
             "本书已反复出现的问题，本场景严禁重犯）】"
         )
         return header + "\n" + "\n".join(lines)
+
+    def pitfall_injection(self, top_n: int = 5, min_count: int = 1,
+                          self_ch: int | None = None,
+                          for_rewrite: bool = False) -> tuple[str, list[str]]:
+        """踩坑注入的「单一取样」入口：返回 (渲染块, pattern 列表)。
+
+        与 `pitfall_block` 的区别：后者只给渲染文本（供重写/只读场景），本方法额外
+        把本次入选的 pattern 一起返回，供注入对账（第 3 步）取 Expected——
+        两者来自**同一次 `top_pitfalls` 选择**，物理上杜绝二次取样漂移。
+
+        patterns 已去空串/纯空白（对账侧无需再过滤）。空账本/关闭 → ("", [])。
+        """
+        if not self.enabled:
+            return "", []
+        pits = self.top_pitfalls(top_n, min_count, self_ch=self_ch)
+        if not pits:
+            return "", []
+        block = self._render_pitfalls(pits, for_rewrite=for_rewrite)
+        patterns = [str(p.get("pattern") or "").strip() for p in pits]
+        return block, [p for p in patterns if p]
 
     def numeric_backfill(self, violations: list[str]) -> str:
         """数字修复回灌：把面板方向违规 detail 转成确定性修复指令

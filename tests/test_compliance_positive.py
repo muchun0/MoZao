@@ -133,7 +133,10 @@ def test_ensure_quality_compliance_rejected(store):
                   '"rule_category": "未成年人性化", "detail": "含对幼女做爱的描写"}], '
                   '"追更欲": 1, "一句话感受": "违规"}')
     llm, _ = _llm_compliance_always_bad(reader_bad, "正常内容" * 200 + "幼女做爱。")
-    qc = QualityChecker(store.load_config(), llm, store)
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False  # 词表换LLM 批次一：P0-1 合规测试依赖固定 mock 响应序列，关新开关保持原调用布局
+    cfg.llm_semantic_ai_taste = False  # 词表换LLM 批次二：ai_taste LLM 判定会挤入 mock 响应序列，关开关保持原布局
+    qc = QualityChecker(cfg, llm, store)
     chapter, result = qc.ensure_quality(2, "第二章", "推进", "第一章标题",
                                         "正常内容" * 200, None, None)
     assert result["passed"] is False

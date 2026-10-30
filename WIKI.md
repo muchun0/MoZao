@@ -64,7 +64,8 @@ D:\PythonProjects\DouBao\
 │   ├── pipeline/
 │   │   ├── manager.py          # 流水线编排（校验合并/终审/双锚注入）
 │   │   ├── orchestrator.py     # 架构总控（StageGate 阶段门禁/冲突仲裁）
-│   │   ├── validator.py        # 独立逻辑校验（5 类专项 + 机制卡三要素）
+│   │   ├── validator.py        # 独立逻辑校验（5 类专项 + 机制类型分派校验）
+│   │   ├── mechanism_types.py   # 七类机制类型注册表与分派判定（纯函数零 LLM）
 │   │   ├── stages.py           # 场景级章节写作（拆场景→逐场景→润色，防重演闭环）
 │   │   ├── beats.py            # 情节节拍序列检测（LCS 重演判定，零 LLM）
 │   │   ├── memory.py           # 章节记忆（设定库+摘要回填+分章设定卡注入）
@@ -72,7 +73,7 @@ D:\PythonProjects\DouBao\
 │   │   ├── chapter_state.py    # 章内/章间状态账本（机制数字确定性闭环）
 │   │   ├── character_state.py  # 人物动态状态（逐章出场/状态追踪）
 │   │   ├── book_memory.py      # 小说级记忆（设定/事件/踩坑/经验四账本）
-│   │   ├── quality.py          # 结果自校验（确定性规则 + 定点重写 + 记忆注入）
+│   │   ├── quality/           # 章节质检三层体系：checker.py 门面编排 + aggregate.py(L3 聚合) + reviewers/(L2 四评委) + constants/text_tools；确定性闸门 → 多维评委 → 汇总建议/维度分
 │   │   ├── review_summary.py   # 全书质量汇总
 │   │   ├── ai_taste.py         # AI 痕迹评分
 │   │   ├── style_anchor.py     # 双锚风格锚定（个人旧稿锚 + 题材锚）
@@ -110,10 +111,10 @@ D:\PythonProjects\DouBao\
 | Researcher 调研 | researcher.py | 内置知识库 + 联网调研 → 提炼热门小说共性报告 | research |
 | Architect 架构 | architect.py | 三级大纲、人物世界观、时间线；收敛为骨架生产者，编排生产层与专项 Agent | outline/world |
 | theme_character 主题人物 | theme_character.py | 主题命题 / 三层冲突 / 主角弧光 / 配角动机 | world |
-| world_rules 世界观规则 | world_rules.py | 世界观 / 金手指五要素 / 设定禁忌 | world |
+| world_rules 世界观规则 | world_rules.py | 世界观 / 机制类型与规则条款承接 / 设定禁忌 | world |
 | pacing 节奏伏笔 | pacing.py | 关键节点 / 分卷节奏 / 伏笔回收闭环 | outline |
 | Writer 写手 | writer.py | 逐章正文（场景级生成，叠加 Stylist 风格人设） | chapter |
-| Reviewer 审校 | reviewer.py | 一致性/逻辑/合规审校（5 类专项 + 机制卡三要素） | review |
+| Reviewer 审校 | reviewer.py | 一致性/逻辑/合规审校（5 类专项 + 机制类型分派） | review |
 | Reader 读者 | reader.py | 追更读者视角审校（代入感/爽点/钩子） | review |
 | Stylist 风格师 | stylist.py | 写作风格角色（人设 + 挂载技能），注入写手正文与扩写路径 | chapter/expand |
 | opening 开篇 | opening.py | 黄金三章强开篇设计（回填前三章 core_event/goal） | outline |
@@ -208,6 +209,21 @@ D:\PythonProjects\DouBao\
 - **二期**：`ledger_stalled`（伏笔埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ `foreshadow_semantic_check`（LLM 语义判推进，默认关）；`fixed_style_anchor`（开头原文+个人旧稿作风格原点，默认关）；`style_judge_l3`（L3 风格裁判，每 verify_every 章六维比对超阈值触发再锚定，默认开）；`outline_rolling_detail`（远期大纲粗粒度，默认关）+ `outline_far_skip`(30)；`beat_fail_judge`（fail 章 LLM 二级复核，默认关，启用待人工标注集一致率>80%）
 - **默认关项汇总**（线上行为与关闭前一致）：双锚体系（题材/个人旧稿/固定锚）+ `foreshadow_semantic_check` + `outline_rolling_detail` + `beat_fail_judge`，需要时开开关即可
 - 成本口径以 `agent_trace` 实测为准；存量项目仅新项目生效（不写迁移）
+
+### 机制类型谱系与一致性校验（REQ-通用机制类型适配，2026-10-29）
+
+- **七类机制类型**（`pipeline/mechanism_types.py`，纯函数判定，生成/校验/注入/质检统一入口 `resolve_types`：显式 `World.mechanism_types` 优先 → 字段启发推断 → none 兜底）：
+  - `numeric_panel` 数字面板/状态型（既有死亡次数/蚀化面板等，原三要素流程行为零变化）
+  - `power_level` 等级境界型（复用 power_system）
+  - `rule_set` 规则约束型（规则怪谈/副本守则，本期新增核心）
+  - `ability` 能力/概念金手指型
+  - `contract` 契约关系型（本期复用人物/物品/事实账本，不误伤）
+  - `temporal` 时间循环型（本期只保证不误伤）
+  - `none` 无机制型（纯剧情书，不强制任何机制卡）
+- **规则条款建模**：`MechanismRule` 结构化条款——`scope`（global / instance:<副本> / character:<角色> / ability:<能力>）、statement/condition/consequence、`change_policy`（fixed 不可改 / discoverable 可发现 / negotiable 可协商 / layered 分层解锁）、`status`（active/resolved/broken）；`World.mechanism_ruleset` 与自由文本 `mechanism_rules` 并存，旧 world.json 缺省兼容。
+- **按类型分派的口径**：记忆注入仅 rule_set 出规则条款卡、ability 出能力规则说明书（仅金手指非空）、numeric_panel 出机制初始值基线卡；校验端仅 ability 强制说明书三要素、仅 rule_set 校验条款四要素与编号去重；数字基线缺失提示仅 numeric_panel 触发。
+- **规则一致性独立 judge（质检 4.6）**：仅 rule_set + 规则集非空 + 开关开 + 命中频率 + 存在生效规则时执行；`rule_conflict`（条款被改写/前后矛盾）大改 -25，`rule_added`（私增未声明规则）/`rule_scope`（跨副本/角色串场）中改 -10；作者有意设计的规则冲突、角色误判规则、规则被发现后打破、旧规则已解除等不计漂移。开关 `rule_consistency_check`（默认 True）、`rule_consistency_every`（普通模式降频，默认 1=每章；高质量模式每章执行）；LLM 异常 warning 留痕降级空结果，不阻塞主流程。
+- **面板数字检查门控**：`_check_panel_progress` 仅 numeric_panel 执行，规则/能力/契约/无机制书直接短路，避免通用面板正则误伤。
 
 ---
 

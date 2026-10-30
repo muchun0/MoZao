@@ -20,87 +20,39 @@ import logging
 import re
 import time
 
-from ..config import NovelConfig
-from ..llm.base import LLMClient
-from ..llm.json_parse import parse_json_obj
-from ..store.project import ProjectStore
-from ..store.schemas import Chapter
-from .templates import reader_review_prompt, _output_discipline
-from .beats import _beat_cycle_issues
-from .trace import TraceRecorder
-from ..utils.text import longest_common_substr_len as _lcs_len
+from ...config import NovelConfig
+from ...llm.base import LLMClient
+from ...llm.json_parse import parse_json_obj
+from ...store.project import ProjectStore
+from ...store.schemas import Chapter
+from ..templates import reader_review_prompt, _output_discipline, panel_anchor_check_prompt
+from ..beats import _beat_cycle_issues
+from ..trace import TraceRecorder
+from ...utils.text import longest_common_substr_len as _lcs_len
+from ..pitfall_reconcile import reconcile_pitfall_injection as _reconcile_injection
+from ..pitfall_contract import contract_for, expected_params, CHANNEL_REWRITE
+from . import constants as C
+from .constants import (
+    _MIN_WORDS_RATIO, _NGRAM, _DUP_RATIO, _MAX_RECENT,
+    _SELF_NGRAM, _SELF_DUP_RATIO, _SALVAGE_MIN_LINE, _SALVAGE_MAX_LINE, _SALVAGE_SPREAD,
+    _TERMINAL,
+    _REPEAT_MIN_LEN, _REPEAT_LONG_LEN, _REPEAT_HARD_COUNT, _DIALOG_ALLOWED, _PANEL_KEYWORDS,
+    _PANEL_REPEAT_SPAN, _PANEL_SPAN_LABEL, _PANEL_EVENT_ANCHORS, _PANEL_EVENT_RECALL,
+    _MAX_REWRITE, _SALVAGE_MIN_KEEP, _CONSISTENCY_CHARS,
+)
+from .text_tools import (
+    _seg_has_settle_event_regex, _llm_panel_seg_settle, _load_persona, _has_type,
+    _split_summary, _core_event_missing,
+    _iter_sentences, _norm_sentence, _is_panel_line, _iter_repeat_groups,
+    _locate_problem_spans, _merge_spans, _align_to_paras,
+)
+from . import aggregate as _aggregate
+from .reviewers import (
+    ReviewContext, DimensionResult, ReviewerResult, ReviewerIssue,
+    PlotReviewer,
+)
 
-logger = logging.getLogger(__name__)
-
-# 校验阈值（确定性规则）
-_MIN_WORDS_RATIO = 0.3        # 字数 < 目标 30% 视为严重不足（触发重写）
-_NGRAM = 8                    # 重复检测 n-gram 长度
-_DUP_RATIO = 0.25             # 与任一近章重叠率 > 25% 视为明显重复
-_MAX_RECENT = 3               # 参与重复检测的最近章节数
-
-# 章内自重复（多稿拼接）检测
-_SELF_NGRAM = 24              # 章内重复检测 n-gram 长度
-_SELF_DUP_RATIO = 0.25        # 章内被重复 n-gram 覆盖比例 > 25% → 疑似多稿拼接
-_SALVAGE_MIN_LINE = 8         # 抢救时视为「草稿分界标记」的最小行长度
-_SALVAGE_MAX_LINE = 16        # 草稿分界标记的最大行长度（短促收尾/面板行；长行多为正常叙事重复）
-_SALVAGE_SPREAD = 300         # 同一标记两次出现的最小字距（区分跨草稿重复 vs 章内呼应）
-
-# 判定「正文完整收尾」的句末标点
-_TERMINAL = set("。！？…”\"』」）】）…。!?"")）】")
-
-# 章内同句复读检测（REQ-章内自洽与机制账本）：母题密度提示词的成文后兜底
-_REPEAT_MIN_LEN = 8         # 参与复读统计的最短归一化句长
-_REPEAT_LONG_LEN = 12       # 叙述长句出现 2 次即视为整句复读
-_REPEAT_HARD_COUNT = 3      # 叙述/对话句出现 ≥3 次 → 大改（触发自动重写）
-_DIALOG_ALLOWED = 2         # 对话句（口头禅）允许 2 次（writer.md：同一口头禅每章 ≤2 次）
-_PANEL_KEYWORDS = ("次数", "进度", "剩余", "累积", "状态", "面板")   # 数字面板行信号（通用机制词）
-
-# 机制数字结算校验（REQ-章内自洽与机制账本·扩展）：面板数字跨段同值复现 = 结算未推进
-_PANEL_REPEAT_SPAN = 150    # 同一面板数字两次出现的最小字距（> 视为跨事件复现，而非紧邻强调）
-_PANEL_SPAN_LABEL = 40      # 面板标签参与定位的最大长度（防误把长句当标签）
-# 结算事件锚点：两次同值之间出现"死亡/复活/结算"等强结算词 = 真跨结算点
-# 同值复现 → 结算未推进（大改）；无事件词 = 同一结算值的冗余重复显示（中改，不阻断）。
-# 排除项（实测误命中）："死一次"（"再死一次"=预判非事件）、"咬穿"（回忆/复述他人死亡）、
-# "刷新"（"面板刷新的时候"=设定陈述）——真结算错误时模型通常写"他死了/死亡/复活/结算"。
-_PANEL_EVENT_ANCHORS = re.compile(r"死了|死亡|复活|苏醒|睁眼|醒来|结算|重置")
-# 语境排除：锚点前 12 字内出现回忆/转述/指认/他人预判词 → 不算结算事件
-# （《万墟之上》22:32 版实测 6 处误命中全部是"她看见他死了/你死了/她快死了/
-# 他应该已经死了/感知到了他死亡"等回忆指认，无一是主角实时结算）
-_PANEL_EVENT_RECALL = re.compile(r"看见|看过|见过|说|喊|叫|读|记得|梦见|听说|以为|感知|想起|回忆|幻觉|残留|应该|快死")
-
-# 自动重写轮数（REQ-章内自洽与机制账本·扩展）：检出问题后最多重写 N 轮，通过即停；
-# 全部失败才标记放行（不再"1 次重写不通过即静默交付"）
-_MAX_REWRITE = 3
-
-# 多稿拼接抢救保留下限：抢救稿必须保留原文 ≥ 40%（丢超过 60% 拒绝，
-# 防止把"数字写错/场景重叠"的正常章节拦腰截断）
-_SALVAGE_MIN_KEEP = 0.4
-
-# 章内矛盾 LLM 自检的正文输入上限（字符）：3500→12000，与状态账本抽取
-# 对齐——前 3500 字符只能看到前半章，后半章（第三次死亡/次数用尽）的矛盾
-# 与机制状态会漏检（REQ-章内自洽与机制账本·扩展）。
-_CONSISTENCY_CHARS = 12000
-
-# 角色底色懒加载（通用化 2026-10-27）：质检链路（重写/矛盾自检）直接拼对应
-# Agent 的 prompts/*.md，机制纪律等通用原则只维护在 md 侧，py 只留任务级动态组装。
-_PERSONA_CACHE: dict[str, str] = {}
-
-
-def _load_persona(name: str) -> str:
-    """加载 agent 角色底色（novel_gen/pipeline/agents/prompts/{name}.md）；失败返回空串不阻塞。"""
-    if name not in _PERSONA_CACHE:
-        try:
-            from pathlib import Path
-            _p = Path(__file__).resolve().parent / "agents" / "prompts" / f"{name}.md"
-            _PERSONA_CACHE[name] = _p.read_text(encoding="utf-8")
-        except Exception:
-            _PERSONA_CACHE[name] = ""
-    return _PERSONA_CACHE[name]
-
-
-def _has_type(issues, keyword: str) -> bool:
-    """issues 中是否存在 type 含指定关键词的问题。"""
-    return any(keyword in (it.get("type", "") or "") for it in issues)
+logger = logging.getLogger("novel_gen.pipeline.quality")
 
 
 class QualityChecker:
@@ -179,7 +131,7 @@ class QualityChecker:
         重写稿的 {round, content, summary, auto_revised, quality(精简)} 列表，
         供 stages.write 逐版落库（每次生成的版本都展示、每版带质检问题）。
         """
-        from .compliance import has_compliance
+        from ..compliance import has_compliance
         versions: list[dict] = []
 
         def _push(content: str, smry: str, res: dict, round_no: int,
@@ -198,7 +150,10 @@ class QualityChecker:
                     "issue_count": len(issues),
                     "issues": [
                         {"level": it.get("level", ""), "type": it.get("type", ""),
-                         "detail": (it.get("detail") or "")[:120]}
+                         "detail": (it.get("detail") or "")[:120],
+                         # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
+                         # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
+                         "evidence": _aggregate.issue_evidence(it)[:120]}
                         for it in issues
                     ],
                 },
@@ -422,14 +377,96 @@ class QualityChecker:
         _it, _d = self._check_consistency(chapter_no, content)
         issues.extend(_it); score += _d
 
+        # 4.6 规则条款一致性（LLM，REQ-通用机制类型适配；仅 rule_set 类型启用）
+        _it, _d = self._check_rule_consistency(chapter_no, content)
+        issues.extend(_it); score += _d
+
+        # L2 新增评委：plot 情节结构（唯一新增 LLM 调用，开关 + 普通模式降频；
+        # reader/consistency/prose 复用上方已发起的现有调用，不重复计费，TECH §3.2）。
+        plot_result: ReviewerResult | None = None
+        layered = bool(getattr(self.cfg, "reviewer_layered", True))
+        if layered:
+            plot_result = self._run_plot_reviewer(
+                chapter_no, plan_title, plan_goal, content, core_event)
+            if plot_result and plot_result.dimension.available:
+                for ri in plot_result.raw_issues:
+                    issues.append(ri.to_dict())
+
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
 
-        return {
+        result = {
             "passed": passed,
             "issues": uniq,
             "score": max(0, min(100, score)),
             "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
+        }
+
+        # L3 附加快照（D-1：不接管旧 score/门禁，仅附加 dimensions/recommendations/layers）
+        if layered:
+            result.update(self._build_layered_snapshot(uniq, score, hook_score, plot_result))
+        return result
+
+    def _run_plot_reviewer(self, chapter_no: int, plan_title: str, plan_goal: str,
+                           content: str, core_event: str) -> ReviewerResult | None:
+        """调用 plot 情节评委；无 llm / 开关关闭 / 降频跳过时返回 None（不发起调用）。"""
+        if self.llm is None:
+            return None
+        ctx = ReviewContext(
+            chapter_no=chapter_no, plan_title=plan_title, plan_goal=plan_goal,
+            content=content, core_event=core_event, cfg=self.cfg, llm=self.llm,
+            store=self.store, guard=self.guard, memory=self.memory,
+        )
+        try:
+            return PlotReviewer().review(ctx)
+        except Exception:  # noqa: BLE001 —— 评委失败已在基类降级，此处兜底不阻塞
+            logger.exception("[quality] plot 评委调度失败（降级跳过，不阻塞主链路）")
+            return None
+
+    def _build_layered_snapshot(self, uniq: list[dict], score: int,
+                                hook_score: int | None,
+                                plot_result: ReviewerResult | None) -> dict:
+        """L3 附加快照：把现有 issue 归类到四维度，组装 dimensions / recommendations / layers。
+
+        旧 `score` / `passed` / issues 口径不变；维度分仅作附加信号（D-1）。
+        reader/consistency/prose 维度由现有 issue 归类映射，plot 来自新评委结果。
+        """
+        reviewer_results: list[ReviewerResult] = []
+        if plot_result is not None:
+            reviewer_results.append(plot_result)
+
+        # 现有 issue 按维度归类，构造 reader/consistency/prose 占位维度快照（available=True，
+        # 不重复发起 LLM；维度分本期留空，仅承载问题清单与亮点位）。
+        grouped: dict[str, list[dict]] = {"reader": [], "plot": [],
+                                          "consistency": [], "prose": []}
+        for it in uniq:
+            dim = _aggregate.classify_dimension(it)
+            grouped.setdefault(dim, []).append(it)
+
+        for key, label in (("reader", "读者体验"), ("consistency", "逻辑一致性"),
+                           ("prose", "文风自然度")):
+            dim_issues = [ReviewerIssue(
+                type=str(x.get("type", "")), detail=str(x.get("detail", "")),
+                level=str(x.get("level", "小改")),
+                fix_suggestion=str(x.get("fix_suggestion") or ""),
+                evidence=str(x.get("evidence", "") or ""),
+            ) for x in grouped.get(key, [])]
+            reviewer_results.append(ReviewerResult(
+                dimension=DimensionResult(key=key, label=label, score=None,
+                                          available=True, issues=dim_issues),
+                raw_issues=dim_issues))
+
+        agg = _aggregate.aggregate(
+            l1_issues=[], reviewer_results=reviewer_results, score=score,
+            diag_feedback=False, hook_score=hook_score,
+        )
+        # recommendations 面向全部合并后 issue；layers 统计确定性/评委来源
+        agg.recommendations = _aggregate._build_recommendations(uniq)
+        agg.layers["deterministic"]["issue_count"] = len(uniq)
+        return {
+            "dimensions": {k: _aggregate.dimension_to_dict(v) for k, v in agg.dimensions.items()},
+            "recommendations": agg.recommendations,
+            "layers": agg.layers,
         }
 
     def _check_structure(self, content: str, target: int) -> tuple[list, int]:
@@ -470,9 +507,23 @@ class QualityChecker:
         return issues, score
 
     def _check_panel_progress(self, content: str) -> tuple[list, int]:
-        """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。"""
+        """2.8 机制数字结算校验：同标签同数值跨段复现 = 结算未推进（软扣分）。
+
+        仅 numeric_panel 类型启用；规则/能力/契约等非数字类型不做面板数字判定。
+        REQ-词表换LLM 批次二：事件锚点判定优先 LLM 语义（开关 llm_semantic_panel_anchor
+        默认开），失败/关闭回退 _PANEL_EVENT_ANCHORS 锚点正则。
+        """
+        try:
+            world = self.store.load_world()
+            if world is not None:
+                from ..mechanism_types import has_type, resolve_types
+                if not has_type(resolve_types(world), "numeric_panel"):
+                    return [], 0
+        except Exception:
+            pass
         issues, score = [], 0
-        for it in self._panel_progress_issues(content):
+        use_llm_panel = bool(getattr(self.cfg, "llm_semantic_panel_anchor", True))
+        for it in self._panel_progress_issues(content, llm=self.llm, use_llm=use_llm_panel):
             issues.append(it)
             score -= 5
         return issues, score
@@ -482,7 +533,7 @@ class QualityChecker:
         if not baseline:
             return [], 0
         try:
-            from .chapter_state import (panel_direction_violations as _pdv,
+            from ..chapter_state import (panel_direction_violations as _pdv,
                                         mechanism_field_registry as _mregq)
             _regq = {}
             if self.memory is not None:
@@ -503,7 +554,7 @@ class QualityChecker:
     def _ledger_cumulative(self, chapter_no: int, content: str, _reg: dict,
                            _canon: dict) -> int:
         """2.8c 机制死亡/递减量反推：increase 字段链差 + decrease 递减量取最大（双源抗漏）。"""
-        from .chapter_state import (ledger_extract_numbers as _lex3,
+        from ..chapter_state import (ledger_extract_numbers as _lex3,
                                     _registry_initial as _rin)
         _cur = _lex3(content or "", _reg)
         _prev_ledger = self.memory.chapter_ledger(chapter_no - 1)
@@ -532,7 +583,7 @@ class QualityChecker:
         if self.memory is None:
             return [], 0
         try:
-            from .chapter_state import (mechanism_field_registry as _mreg2,
+            from ..chapter_state import (mechanism_field_registry as _mreg2,
                                         unknown_mechanism_fields as _unk2,
                                         ledger_check as _lchk,
                                         _registry_initial as _rin)
@@ -589,9 +640,14 @@ class QualityChecker:
         return issues, score
 
     def _check_beat_cycle(self, content: str) -> tuple[list, int]:
-        """2.12 情节级重演检测（确定性，2026-10-09）：完整节拍序列非重叠 ≥2 次 = 重演。"""
+        """2.12 情节级重演检测：完整节拍序列非重叠 ≥2 次 = 重演。
+
+        REQ-词表换LLM 批次一：节拍序列优先 LLM 语义抽取，失败自动回退词表；
+        开关 llm_semantic_beats（默认开）置 False 时纯词表。
+        """
         issues, score = [], 0
-        for it in _beat_cycle_issues(content):
+        use_llm_beats = bool(getattr(self.cfg, "llm_semantic_beats", True))
+        for it in _beat_cycle_issues(content, llm=self.llm, use_llm=use_llm_beats):
             issues.append(it)
             score -= 30
         return issues, score
@@ -622,7 +678,7 @@ class QualityChecker:
         """3. 输出合规（模块3 基础合规校验；结构化 rule_category/rule_phrase）。"""
         if not getattr(self.cfg.agent_guard, "output_check", True):
             return [], 0
-        from ..safety import basic_content_check_structured as _bcs
+        from ...safety import basic_content_check_structured as _bcs
         bad = _bcs(content)
         if not bad:
             return [], 0
@@ -648,6 +704,89 @@ class QualityChecker:
             score -= 25
         return issues, score
 
+    #: 规则一致性 code → (问题级别, 扣分)；rule_conflict 与章内矛盾同级大改
+    _RULE_CODE_POLICY = {
+        "rule_conflict": ("大改", -25),
+        "rule_added": ("中改", -10),
+        "rule_scope": ("中改", -10),
+    }
+
+    def _check_rule_consistency(self, chapter_no: int, content: str) -> tuple[list[dict], int]:
+        """4.6 规则条款一致性 LLM judge（REQ-通用机制类型适配）。
+
+        启用条件（全部满足才调用）：开关开启；world 类型集合含 rule_set；ruleset 非空；
+        高质量模式每章执行，普通模式按 rule_consistency_every 降频。仅对当前副本生效
+        的条款（global + 当前实例 + 角色/能力作用域）做对照；抽取/LLM/解析失败一律
+        返回空列表并 warning 留痕，不阻塞主流程。
+        """
+        if not content:
+            return [], 0
+        try:
+            if not getattr(self.cfg, "rule_consistency_check", True):
+                return [], 0
+            world = self.store.load_world()
+            if world is None:
+                return [], 0
+            from ..mechanism_types import has_type, resolve_types
+            if not has_type(resolve_types(world), "rule_set"):
+                return [], 0
+            ruleset = getattr(world, "mechanism_ruleset", None) or []
+            if not ruleset:
+                return [], 0
+            hq = getattr(self.cfg, "high_quality_mode", False)
+            every = max(1, int(getattr(self.cfg, "rule_consistency_every", 1) or 1))
+            if not (hq or chapter_no % every == 1):
+                return [], 0
+
+            from ..chapter_state import active_rules_for_instance
+            state = self.store.load_chapter_state() or {}
+            instance = str(state.get("current_instance") or "").strip()
+            active = active_rules_for_instance(ruleset, instance)
+            if not active:
+                return [], 0
+
+            rule_lines = []
+            for rule in active:
+                rule_lines.append(
+                    f"[{getattr(rule, 'rule_id', '')}] scope={getattr(rule, 'scope', 'global')} "
+                    f"policy={getattr(rule, 'change_policy', 'fixed')}；"
+                    f"规则：{getattr(rule, 'statement', '')}；"
+                    f"条件：{getattr(rule, 'condition', '')}；"
+                    f"违反后果：{getattr(rule, 'consequence', '')}"
+                )
+            persona = _load_persona("rule_consistency")
+            sys = (persona + "\n\n" if persona else "") + (
+                "你是规则条款一致性裁判，只输出规定 JSON，不附加解释。")
+            user = (
+                f"当前副本/场景：{instance or '全局场景'}\n\n"
+                "【当前生效规则清单】\n" + "\n".join(rule_lines) + "\n\n"
+                f"【第{chapter_no}章正文】\n{content[:_CONSISTENCY_CHARS]}\n\n"
+                "请对照规则清单检查，输出 violations JSON。"
+            )
+            raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
+            data = parse_json_obj(raw)
+            issues: list[dict] = []
+            score = 0
+            for item in (data.get("violations") or []):
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("code", "")).strip()
+                level, delta = self._RULE_CODE_POLICY.get(code, ("中改", -10))
+                detail = str(item.get("detail", "")).strip()
+                if not detail:
+                    continue
+                issues.append({
+                    "type": f"规则一致性-{code}",
+                    "detail": detail,
+                    "level": level,
+                    "fix_suggestion": str(item.get("suggestion") or "").strip(),
+                })
+                score += delta
+            return issues, score
+        except Exception as exc:
+            logger.warning("[quality] 规则一致性校验降级跳过（ch=%s）：%s", chapter_no, exc)
+            return [], 0
+
     def _finalize_issues(self, issues: list[dict], score: int) -> tuple[bool, list[dict], int]:
         """去重 + 排序（大改在前）+ 诊断回喂，返回 (passed, uniq, score)。"""
         # 去重 + 排序（大改在前）
@@ -666,7 +805,7 @@ class QualityChecker:
         # diag_feedback 关闭时不补（回退旧格式）。
         if getattr(self.cfg, "diag_feedback", True):
             try:
-                from .diagnosis import suggest_for as _sf
+                from ..diagnosis import suggest_for as _sf
                 for _it in uniq:
                     if _it.get("fix_suggestion"):
                         continue
@@ -689,10 +828,12 @@ class QualityChecker:
         # AI 痕迹量化检测（P1-4，确定性规则，只扣分不单独阻断）
         if getattr(self.cfg, "ai_taste_check", True):
             try:
-                from .ai_taste import ai_taste_issues
+                from ..ai_taste import ai_taste_issues
                 taste_issues = ai_taste_issues(
                     content,
                     threshold=int(getattr(self.cfg, "ai_taste_threshold", 60) or 60),
+                    llm=self.llm,
+                    use_llm=bool(getattr(self.cfg, "llm_semantic_ai_taste", True)),
                 )
                 if taste_issues:
                     issues.extend(taste_issues)
@@ -702,7 +843,7 @@ class QualityChecker:
         # 文风漂移 L1 确定性检测（REQ-超长篇攻坚 S2.4，每章必跑 ≈0 token）。
         if getattr(self.cfg, "style_drift_check", True):
             try:
-                from .ai_taste import drift_score, style_drift_metrics
+                from ..ai_taste import drift_score, style_drift_metrics
                 d = drift_score(content)
                 if d < int(getattr(self.cfg, "style_drift_threshold", 60) or 60):
                     m = style_drift_metrics(content)
@@ -870,7 +1011,7 @@ class QualityChecker:
             })
         return issues
 
-    def _panel_progress_issues(self, content: str) -> list[dict]:
+    def _panel_progress_issues(self, content: str, llm=None, use_llm: bool = True) -> list[dict]:
         """机制数字结算校验（确定性）：同一面板数字（同标签同数值）跨段复现 = 结算未推进。
 
         如「剩余次数：2/3」在两次死亡后仍显示「2/3」——数字未随事件递减。
@@ -909,16 +1050,22 @@ class QualityChecker:
                 if gap <= _PANEL_REPEAT_SPAN:
                     continue
                 seg = content[a:b]
-                # 事件锚点须跳过回忆/转述/他人语境（"她看见他死了"不算结算事件）
-                event = False
-                for m in _PANEL_EVENT_ANCHORS.finditer(seg):
-                    # 特判"快死了"=将死未死（非结算）：锚点"死了"前 1 字为"快"
-                    if m.group() == "死了" and seg[max(0, m.start() - 1):m.start()] == "快":
-                        continue
-                    ctx = seg[max(0, m.start() - 16):m.start()]
-                    if not _PANEL_EVENT_RECALL.search(ctx):
-                        event = True
-                        break
+                # 事件锚点判定（REQ-词表换LLM 批次二）：LLM 语义判定优先；
+                # llm 缺失/开关关/调用失败/输出非结构化 → 回退锚点+回忆正则兜底（行为零变化）
+                event: bool | None = None
+                if llm is not None and use_llm:
+                    try:
+                        event = _llm_panel_seg_settle(seg, llm)
+                    except Exception as exc:
+                        logger.warning(
+                            "panel seg settle LLM 判定失败，回退词表锚点正则: %s: %s",
+                            type(exc).__name__, exc)
+                        event = None
+                    else:
+                        if event is None:
+                            logger.warning("panel seg settle LLM 输出非结构化，回退词表锚点正则")
+                if event is None:
+                    event = _seg_has_settle_event_regex(seg)
                 if event:
                     major.append(f"{label}：{num}")
                 else:
@@ -927,8 +1074,8 @@ class QualityChecker:
         if major:
             out.append({
                 "type": "写作-机制数字未结算推进",
-                "detail": "面板数字「" + "；".join(major[:3]) + "」在死亡/结算事件后仍未变化，"
-                          "数值未随事件结算推进（如死亡次数未递减）；建议按机制卡随事件结算，"
+                "detail": "面板数字「" + "；".join(major[:3]) + "」在结算事件后仍未变化，"
+                          "数值未随事件结算推进（如次数未递减）；建议按机制卡随事件结算，"
                           "避免同值跨结算点复现（改稿建议，不强制重写）",
                 "level": "小改",
             })
@@ -1083,7 +1230,7 @@ class QualityChecker:
         return best
 
     def _content_check(self, content: str) -> list[str]:
-        from ..safety import basic_content_check
+        from ...safety import basic_content_check
         return basic_content_check(content)
 
     def _style_homogeneity_issues(self, chapter_no: int, content: str) -> list[dict]:
@@ -1098,7 +1245,7 @@ class QualityChecker:
         if chapter_no <= 2 or not content:
             return []
         try:
-            from .ai_taste import style_drift_metrics as _sdm
+            from ..ai_taste import style_drift_metrics as _sdm
             rows: list[dict] = []
             for ch in range(chapter_no - 2, chapter_no + 1):
                 if ch == chapter_no:
@@ -1236,7 +1383,7 @@ class QualityChecker:
         """
         try:
             if getattr(self.cfg, "compliance_clean_rewrite", True):
-                from .compliance import has_compliance
+                from ..compliance import has_compliance
                 if has_compliance(issues):
                     return self._rewrite_whole(
                         chapter_no, plan_title, plan_goal, content, issues,
@@ -1298,7 +1445,7 @@ class QualityChecker:
         """
         try:
             import json
-            from .templates import rewrite_diagnose_prompt
+            from ..templates import rewrite_diagnose_prompt
             sys_d, user_d = rewrite_diagnose_prompt(content or "")
             raw = self.llm.chat(sys_d, user_d, temperature=0.2, max_tokens=1200)
             t = raw.strip()
@@ -1368,7 +1515,7 @@ class QualityChecker:
             target = max(self.cfg.chapter_words, 500)
             if getattr(self.cfg, "diag_feedback", True):
                 try:
-                    from .diagnosis import build_issue_block as _bib
+                    from ..diagnosis import build_issue_block as _bib
                     issue_block = _bib(issues, max_n=8)
                 except Exception:
                     issue_block = "\n".join(
@@ -1420,7 +1567,7 @@ class QualityChecker:
             # 必须按账本权威值修数字，禁止模型自由发挥）
             _blk_text = ""
             try:
-                from .templates import _panel_baseline_block as _pbb
+                from ..templates import _panel_baseline_block as _pbb
                 if baseline:
                     _blk_text = _pbb("\n".join(f"- {k}：{v}" for k, v in baseline.items()))
             except Exception:
@@ -1457,6 +1604,30 @@ class QualityChecker:
                 + self._clean_rewrite_block(chapter_no, issues, content, skip_original)
             )
             _persona = _load_persona("writer")
+            # REQ-踩坑账本注入对账 - 第 3 步（P1 重写路径 whole）：prompt 拼装完成、chat 之前
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _rew_patterns = []
+                if self.memory is not None and getattr(self.cfg, "book_memory", True):
+                    try:
+                        _rew_top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
+                        _, _rew_patterns = self.memory.pitfall_injection(
+                            top_n=_rew_top_n, for_rewrite=True, self_ch=chapter_no)
+                    except Exception:
+                        _rew_patterns = []
+                _rew_contract = contract_for("rewrite_whole", self.cfg, chapter_no)
+                _recon_prompt = ((_persona + "\n\n") if _persona else "") + "\n" + prompt
+                _reconcile_injection(
+                    expected=list(_rew_patterns),
+                    params=dict(expected_params(_rew_contract)),
+                    prompt=_recon_prompt,
+                    path_id="rewrite_whole",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_REWRITE,
+                    trace=self.trace,
+                )
             text = self.llm.chat(
                 (_persona + "\n\n" if _persona else "")
                 + "你是资深网络小说写手，擅长按质检意见重写章节。\n\n"
@@ -1519,7 +1690,7 @@ class QualityChecker:
         """
         if not skip_original:
             return f"【当前正文】\n{content}"
-        from .compliance import compliance_categories, compliance_education_block
+        from ..compliance import compliance_categories, compliance_education_block
         cats = compliance_categories(issues)
         head = (
             "\n【本稿含违规内容·整章全新重写】本稿因命中合规红线被整体废弃。\n"
@@ -1548,7 +1719,7 @@ class QualityChecker:
             problem_seg = content[s:e]
             if getattr(self.cfg, "diag_feedback", True):
                 try:
-                    from .diagnosis import build_issue_block as _bib
+                    from ..diagnosis import build_issue_block as _bib
                     issue_block = _bib(issues, max_n=5)
                 except Exception:
                     issue_block = "\n".join(
@@ -1563,7 +1734,7 @@ class QualityChecker:
             # REQ-写作正向引导 5.3：权威当前值注入定点重写（数字违规段修复必须按权威值）
             _blk_text = ""
             try:
-                from .templates import _panel_baseline_block as _pbb
+                from ..templates import _panel_baseline_block as _pbb
                 if baseline:
                     _blk_text = _pbb("\n".join(f"- {k}：{v}" for k, v in baseline.items()))
             except Exception:
@@ -1585,6 +1756,30 @@ class QualityChecker:
                 f"3. 只输出替换后的这一个段落，不要解释，不要输出【摘要】\n"
                 f"4. 以句末标点完整收尾"
             )
+            # REQ-踩坑账本注入对账 - 第 3 步（P1 重写路径 span）：prompt 拼装完成、chat 之前
+            if getattr(self.cfg, "pitfall_reconcile", True):
+                _rew_patterns = []
+                if self.memory is not None and getattr(self.cfg, "book_memory", True):
+                    try:
+                        _rew_top_n = int(getattr(self.cfg, "book_memory_top_n", 5) or 5)
+                        _, _rew_patterns = self.memory.pitfall_injection(
+                            top_n=_rew_top_n, for_rewrite=True, self_ch=chapter_no)
+                    except Exception:
+                        _rew_patterns = []
+                _rew_contract = contract_for("rewrite_span", self.cfg, chapter_no)
+                _recon_prompt = "你是资深网络小说写手，擅长按质检意见局部修改章节段落。\n" + prompt
+                _reconcile_injection(
+                    expected=list(_rew_patterns),
+                    params=dict(expected_params(_rew_contract)),
+                    prompt=_recon_prompt,
+                    path_id="rewrite_span",
+                    chapter_no=chapter_no,
+                    cfg=self.cfg,
+                    store=self.store,
+                    project_id=getattr(self.store, "project_id", "") or "",
+                    inject_channel=CHANNEL_REWRITE,
+                    trace=self.trace,
+                )
             text = (self.llm.chat(
                 "你是资深网络小说写手，擅长按质检意见局部修改章节段落。",
                 prompt, temperature=0.8, max_tokens=4000,
@@ -1603,18 +1798,38 @@ class QualityChecker:
         （如"每死一次减 1"），重写后数字与矛盾修不动，复检仍是同样的 5 条。
         """
         parts: list[str] = []
+        types: list[str] = []
+        instance = ""
         try:
             world = self.store.load_world()
             if world:
+                from ..mechanism_types import has_type, resolve_types
+                types = resolve_types(world)
                 wv = getattr(world, "world_view", None)
                 if wv:
                     parts.append("【世界设定（正文必须遵守）】" + str(wv)[:800])
                 mr = getattr(world, "mechanism_rules", None)
                 if mr:
-                    parts.append("【金手指机制卡（机制数字结算的唯一权威）】" + str(mr)[:1000])
-                mb = getattr(world, "mechanism_baseline", None)
-                if mb:
-                    parts.append("【机制初始值/面板标准答案（正文数字的唯一来源）】" + str(mb)[:600])
+                    parts.append("【机制体系卡（正文必须遵守）】" + str(mr)[:1000])
+                # 数字基线仅 numeric_panel 类型注入；规则型走条款清单块
+                if has_type(types, "numeric_panel"):
+                    mb = getattr(world, "mechanism_baseline", None)
+                    if mb:
+                        parts.append("【机制初始值/面板标准答案（正文数字的唯一来源）】" + str(mb)[:600])
+                if has_type(types, "rule_set"):
+                    st0 = self.store.load_chapter_state() or {}
+                    instance = str(st0.get("current_instance") or "").strip()
+                    from ..chapter_state import active_rules_for_instance
+                    active = active_rules_for_instance(
+                        getattr(world, "mechanism_ruleset", None) or [], instance)
+                    if active:
+                        rule_lines = [
+                            f"[{getattr(r, 'rule_id', '')}] {getattr(r, 'statement', '')}"
+                            for r in active if getattr(r, "statement", "")
+                        ]
+                        if rule_lines:
+                            parts.append("【当前生效规则条款（不得改写/不得私增/不得串场）】"
+                                         + "；".join(rule_lines)[:800])
                 chars = getattr(world, "characters", None) or []
                 if chars:
                     blk = "；".join(
@@ -1671,167 +1886,3 @@ class QualityChecker:
         except Exception:
             pass
 
-
-def _split_summary(text: str) -> tuple[str, str]:
-    """按『【摘要】』标记拆分正文与摘要（与 stages 保持一致）。"""
-    marker = "【摘要】"
-    idx = text.rfind(marker)
-    if idx > 0:
-        body = text[:idx].strip()
-        summary = text[idx + len(marker):].strip().replace("\n", " ")
-        return body, summary
-    return text.strip(), ""
-
-
-def _core_event_missing(content: str, core_event: str) -> list[str]:
-    """P0-17：core_event 分段后每段与正文最长公共子串匹配，命中段 <60% 返回未覆盖段。
-
-    2 字窗口对专有名词（忘忧阁/阁主密报）与普通动作（下墟/遇袭）均敏感，低误报。
-    阈值用整数不等式 hit*10 < len*6 表达「≥60% 通过」——2 段命中 1（50%）必须
-    判为未覆盖（v9 ch6 大纲「忘忧阁密报」未进正文即 2 段 1 命中）。
-    """
-    if not content or not core_event:
-        return []
-    segs = [s.strip() for s in re.split(r"[→，,。；;]", core_event)
-            if len(s.strip()) >= 4]
-    if not segs:
-        return []
-    hit = sum(1 for s in segs if _lcs_len(s, content) >= 2)
-    if hit * 10 >= len(segs) * 6:
-        return []
-    return [s for s in segs if _lcs_len(s, content) < 2]
-
-
-# ---------- 章内同句复读工具（REQ-章内自洽与机制账本） ----------
-
-_QUOTE_OPEN = {"“": "”", "「": "」", '"': '"'}
-
-
-def _iter_sentences(text: str):
-    """按句末标点切句，返回 (句子原文, 是否在对话引号内)。追踪中英文引号状态。"""
-    in_quote = None
-    buf: list[str] = []
-    for ch in text:
-        buf.append(ch)
-        if in_quote is None and ch in _QUOTE_OPEN:
-            in_quote = ch
-        elif in_quote is not None and ch == _QUOTE_OPEN[in_quote]:
-            in_quote = None
-        if ch in "。！？…" and buf:
-            yield "".join(buf), in_quote is not None
-            buf = []
-    tail = "".join(buf).strip()
-    if tail:
-        yield tail, in_quote is not None
-
-
-def _norm_sentence(s: str) -> str:
-    """归一化：只保留中文与字母数字，去空白标点（复读判定基准）。"""
-    return "".join(ch for ch in (s or "") if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
-
-
-def _is_panel_line(norm: str) -> bool:
-    """数字面板行：含 次数/进度/剩余/累积/状态/面板 关键词且带数字（如「剩余次数2」）。"""
-    return any(k in norm for k in _PANEL_KEYWORDS) and any(c.isdigit() for c in norm)
-
-
-def _iter_repeat_groups(groups: dict):
-    """遍历归一化句 → (bucket, norm, 原始句子列表)，按出现次数降序（大问题先报）。"""
-    items = []
-    for bucket, mp in groups.items():
-        for norm, sentences in mp.items():
-            items.append((bucket, norm, sentences))
-    items.sort(key=lambda t: -len(t[2]))
-    return items
-
-
-# ---------- 定点重写定位工具（REQ-token优化 P1-4） ----------
-
-_CTX = 200          # 句锚点窗口半径
-_MIN_FRAG = 8       # 参与匹配的 detail 片段最短归一化长度
-_SPAN_GAP = 400     # 间距 ≤400 的窗口合并
-
-
-def _locate_problem_spans(content: str, issues: list[dict]) -> list[tuple[int, int]]:
-    """从 issue 定位问题段落（起点, 终点），供定点重写。
-
-    定位来源优先级：
-    1. issue["pos"]（如「段3」「第3段」）→ 按段落序号定位；
-    2. issue["detail"] 中 ≥8 字的片段 → 归一化后在正文句子中匹配，
-       以句为锚点取前后 _CTX 字符窗口；
-    3. 无法定位 → 返回空列表（调用方整章重写）。
-    """
-    if not content or not issues:
-        return []
-    import re
-    spans: list[tuple[int, int]] = []
-    # 1) 段落定位
-    para_nos = set()
-    for it in issues:
-        pos = (it.get("pos") or "").strip()
-        if not pos:
-            continue
-        m = re.search(r"(\d+)", pos)
-        if m:
-            para_nos.add(int(m.group(1)))
-    if para_nos:
-        paras = content.split("\n")
-        for pi in sorted(para_nos):
-            if 1 <= pi <= len(paras):
-                seg = paras[pi - 1]
-                start = content.find(seg)
-                if start >= 0:
-                    spans.append((start, start + len(seg)))
-        if spans:
-            return _merge_spans(spans)
-    # 2) 句锚点定位：detail 中 ≥8 字片段归一化匹配正文句子
-    anchors: list[str] = []
-    for it in issues:
-        detail = it.get("detail") or ""
-        for m in re.finditer(r"[“\"『]?([^”\"』，。；：]{8,40})[”\"』]?", detail):
-            frag = m.group(1).strip()
-            if frag:
-                anchors.append(frag)
-    if anchors:
-        sents = list(_iter_sentences(content))
-        for frag in anchors:
-            nf = _norm_sentence(frag)
-            if len(nf) < _MIN_FRAG:
-                continue
-            for sentence, _ in sents:
-                ns = _norm_sentence(sentence)
-                if ns and (nf in ns or ns in nf):
-                    i = content.find(sentence)
-                    if i >= 0:
-                        spans.append((max(0, i - _CTX),
-                                      min(len(content), i + len(sentence) + _CTX)))
-                    break
-        if spans:
-            return _merge_spans(spans)
-    return []
-
-
-def _merge_spans(spans: list[tuple[int, int]], gap: int = _SPAN_GAP) -> list[tuple[int, int]]:
-    """间距 ≤ gap 的窗口合并为一个（一次调用重写合并窗口）。"""
-    if not spans:
-        return []
-    spans = sorted(spans)
-    merged = [spans[0]]
-    for s, e in spans[1:]:
-        if s - merged[-1][1] <= gap:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    return merged
-
-
-def _align_to_paras(content: str, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """把窗口边界对齐到段落首尾，避免重写拼接处断句。"""
-    out = []
-    for s, e in spans:
-        s0 = content.rfind("\n", 0, s) + 1
-        e0 = content.find("\n", e)
-        if e0 == -1:
-            e0 = len(content)
-        out.append((s0, e0))
-    return out

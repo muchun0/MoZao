@@ -88,10 +88,10 @@ def test_memory_injects_mechanism_card(store):
     w = _world()
     store.save_world(w)
     ctx = Memory(store, 5).build_context(w, up_to_chapter=1, chapter_goal="推进")
-    assert "金手指机制卡" in ctx
+    assert "机制体系卡" in ctx
     assert "可死次数" in ctx
     assert "子时重置为3" in ctx
-    assert ctx.index("金手指机制卡") > ctx.index("L1·核心锁定")  # 在强约束区
+    assert ctx.index("机制体系卡") > ctx.index("L1·核心锁定")  # 在强约束区
     # 强约束区位于 prompt 最末尾（权重最高）
     assert ctx.strip().endswith("数字全书一致。")
 
@@ -127,7 +127,7 @@ def test_old_world_without_mechanism_rules_no_crash(store):
     w = World(world_view="旧世界观", characters=[Character(name="A", role="主角")])
     store.save_world(w)
     ctx = Memory(store, 5).build_context(w, up_to_chapter=1, chapter_goal="推进")
-    assert "金手指机制卡" not in ctx  # 没机制卡就不注入该块
+    assert "机制体系卡" not in ctx  # 没机制卡就不注入该块
 
 
 # ---------- REQ-章内自洽与机制账本：新写作约束 + 场景提示词注入（P2） ----------

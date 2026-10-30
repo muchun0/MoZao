@@ -198,10 +198,12 @@ def guard_locked(store: ProjectStore, agent: str, params: dict) -> None:
 def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
     """手写章守卫：单章手写拒重写；范围起点 ≤ 最大手写章号拒。
 
-    判定口径：`chapter_versions.json` 索引的 `user_managed` 标记（用户编辑保存即置位，
-    versioned 门面与 legacy 路径一致），叠加存量 HEAD `source=="user"` 双保险——
-    现网 `load_chapter().source` 只反映 chapter 对象自身字段，`save_chapter(source="user")`
-    不改写 HEAD 的 source 值，单看 HEAD 会漏判（存量缺陷，见 docs/decisions.md）。
+    判定口径：`chapter_versions.json` 索引中**当前 selected 版本**的 `source=="user"`
+    （`save_chapter(source="user")` 用户编辑保存时 history 记录 source=user），叠加存量
+    HEAD `source=="user"` 兜底（无版本索引的 legacy 项目）。不用 `user_managed` 标记：
+    `select()`（用户选择/回滚版本）也置位它但只改 selected，选中 AI 版本后 source 仍为
+    ai，不算手写——旧实现误用 user_managed 会把「用户只是选中 AI 重生成版本」判成手写
+    （存量缺陷，见 docs/decisions.md）。
     """
     if agent != "writer.chapter":
         return
@@ -223,20 +225,37 @@ def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
                    f"重新生成会覆盖手写内容，已禁止；请从第 {user_max + 1} 章开始")
 
 
+def _selected_version_is_user(rec: dict) -> bool:
+    """版本索引单条记录中，当前 selected 版本是否用户手写（source=="user"）。
+
+    `history` 的 source 在存档时可靠记录（versioned 门面与 legacy 路径一致）；
+    `select()` 只改 selected + user_managed，不改 history——选中 AI 版本后
+    selected 指向的 history 条目 source 仍为 ai。selected 缺失/条目不在
+    history（索引损坏）→ False，由调用方兜底查 HEAD。
+    """
+    if not isinstance(rec, dict):
+        return False
+    selected = rec.get("selected")
+    for h in rec.get("history") or []:
+        if isinstance(h, dict) and h.get("v") == selected:
+            return h.get("source") == "user"
+    return False
+
+
 def _is_user_chapter(store: ProjectStore, no: int) -> bool:
-    """单章是否用户手写/已人工管理（索引 user_managed 优先，存量 HEAD source 兜底）。"""
+    """单章是否用户手写（selected 版本 source=="user" 优先，存量 HEAD source 兜底）。"""
     rec = (store.load_chapter_versions() or {}).get(str(no)) or {}
-    if isinstance(rec, dict) and rec.get("user_managed"):
+    if _selected_version_is_user(rec):
         return True
     ch = store.load_chapter(no)
     return ch is not None and ch.source == "user"
 
 
 def _user_chapter_numbers(store: ProjectStore) -> list[int]:
-    """全部手写/人工管理章号（索引 user_managed ∪ HEAD source==user）。"""
+    """全部手写章号（selected 版本 source==user ∪ 存量 HEAD source==user）。"""
     numbers: set[int] = set()
     for no, rec in (store.load_chapter_versions() or {}).items():
-        if isinstance(rec, dict) and rec.get("user_managed") and str(no).isdigit():
+        if _selected_version_is_user(rec) and str(no).isdigit():
             numbers.add(int(no))
     for c in store.list_chapters():
         if c.source == "user":
@@ -433,6 +452,41 @@ def resume_agent_run(store: ProjectStore, handle, meta: dict) -> None:
     handle.task_id = task_id
     t.start()
     logger.info("agent run 重拾: project=%s agent=%s task=%s", store.dir.name, agent, task_id)
+
+
+def current_task_progress(store: ProjectStore) -> dict:
+    """读取当前运行中任务的进度快照（供 GET /projects/{id} 暴露真实进度）。
+
+    前端原先只能拿 chapters_done/chapters_total：大纲/世界观阶段 chapters_done 恒为 0，
+    进度条长期停在 0% 后突跳 100%。真实阶段与 task_done/task_total 只存在 task.json 里，
+    这里把它一并带回，让项目详情接口成为单一进度来源（轮询不依赖 task_id）。
+
+    只读 + 全程兜底：任何异常都降级为空字典，绝不影响项目详情本身的返回。
+    """
+    try:
+        task_file = store.dir / "task.json"
+        if not task_file.exists():
+            return {}
+        meta = json.loads(task_file.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict) or meta.get("kind") != "agent_run":
+            return {}
+        progress = dict(meta.get("progress") or {})
+        started_at = meta.get("started_at")
+        if started_at:
+            try:
+                progress["elapsed"] = round(max(0.0, time.time() - float(started_at)), 1)
+            except (TypeError, ValueError):
+                pass
+        return {
+            "task_id": meta.get("task_id", ""),
+            "agent": meta.get("agent", ""),
+            "started_at": started_at,
+            "progress": progress,
+        }
+    except Exception:
+        # 进度是增强信息：读不到只降级，不能让项目详情 500
+        logger.exception("task.json 进度读取失败（降级）: project=%s", store.dir.name)
+        return {}
 
 
 def get_agent_run(store: ProjectStore, task_id: str) -> dict:

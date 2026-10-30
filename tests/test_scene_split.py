@@ -44,6 +44,10 @@ def test_hq_keeps_dynamic_module(store):
     cfg = store.load_config()
     cfg.high_quality_mode = True
     cfg.action_plan_first = False
+    # 词表换LLM 批次一：本测试断言固定 mock 序列（拆场景→场景正文→润色→摘要），关新开关保持原调用布局
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
     store.save_config(cfg)
     llm = MagicMock()
     llm.chat.side_effect = [
@@ -368,6 +372,10 @@ def test_scene_done_events_injected_to_later_scene(store):
     cfg = store.load_config()
     cfg.action_plan_first = False
     cfg.agent_guard.quality_check = False
+    # 词表换LLM 批次一：本测试断言固定 mock 序列（拆场景→场景1→场景2→摘要），关新开关保持原调用布局
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
     store.save_config(cfg)
     llm = MagicMock()
     scenes_json = (

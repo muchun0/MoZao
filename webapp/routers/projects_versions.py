@@ -3,8 +3,10 @@
 
 outline/world 产物级版本库（阶段 1A 门面）的 HTTP 暴露：
 - 版本列表（每版附计费字数 + 结算金额，金额从 settle.json 账本反查）；
-- 受控回滚 select（置 user_managed，不改写已生成正文）；
-- 回滚影响范围预估（派生视图过期清单 + 需重生成起始章，供前端确认弹窗）。
+- 版本选择 select（置 user_managed，不改写已生成正文）；
+- 版本切换影响范围预估（派生视图过期清单 + 需重生成起始章，供前端确认弹窗）；
+- 两版只读评审（审校/评审两视角评论，零 LLM；评价口径在
+  novel_gen/pipeline/version_review.py，本文件只做取数与装配）。
 
 chapter 版本仍走 projects_chapters.py 既有路由，不在本文件重复暴露。
 """
@@ -15,8 +17,9 @@ from ..version_recommend import attach_product_recommendations
 from novel_gen.store.versioned import VersionedProduct
 from novel_gen.pipeline.commit import check_projection
 from novel_gen.pipeline.version_diff import diff_chapter_text, diff_structured
+from novel_gen.pipeline.version_review import review_chapter_pair, review_structured_pair
 
-# list/select/rollback 只服务单实例产物（key="all"）；diff 接口额外放行 chapter
+# list/select/影响面预估 只服务单实例产物（key="all"）；diff 接口额外放行 chapter
 _PRODUCT_KINDS = ("outline", "world")
 _DIFF_KINDS = ("outline", "world", "chapter")
 _PRODUCT_KEY = "all"
@@ -47,14 +50,38 @@ def list_product_versions(project_id: str, kind: str, user: dict = Depends(_requ
     return {"kind": kind, "versions": versions}
 
 
-@app.get("/api/projects/{project_id}/products/{kind}/versions/diff")
-def diff_product_versions(project_id: str, kind: str, v1: int, v2: int,
-                           chapter_no: int | None = None,
-                           user: dict = Depends(_require_user)):
-    """两版只读对比（REQ-版本对比与推荐）：零 LLM、不写盘、不扣费。
+def _target_words(store) -> int | None:
+    """本章目标字数（config.chapter_words）；读不到返回 None（字数类检查项不产出）。"""
+    try:
+        words = int(getattr(store.load_config(), "chapter_words", 0) or 0)
+        return words or None
+    except Exception:
+        logger.warning("读取目标字数失败（降级：不产出篇幅类评价）")
+        return None
 
-    - kind=chapter：必须传 chapter_no；返回段落级正文 diff；
-    - kind=outline/world：返回字段级结构化 diff。
+
+def _review_item(v: int, data: dict, history: dict[int, dict]) -> dict:
+    """组装评审入参：字数/质检取版本索引（与列表接口同源），正文取版本文件。"""
+    meta = history.get(int(v)) or {}
+    quality = meta.get("quality")
+    return {
+        "v": v,
+        "words": int(meta.get("words") or 0),
+        "quality": quality if isinstance(quality, dict) else None,
+        "content": str(data.get("content") or ""),
+    }
+
+
+@app.get("/api/projects/{project_id}/products/{kind}/versions/review")
+def review_product_versions(project_id: str, kind: str, v1: int, v2: int,
+                            chapter_no: int | None = None,
+                            user: dict = Depends(_require_user)):
+    """两版只读评审（REQ-版本对比与推荐）：零 LLM、不写盘、不扣费。
+
+    产出**审校视角 + 评审视角**的评论（引用原文 + 好在哪/问题定性 + 具体改法），
+    取代 git 式的行级增删展示：
+    - kind=chapter：必须传 chapter_no，素材为该版落库的质检数据 + 版本正文；
+    - kind=outline/world：素材为字段级结构差异（外部不展示 old→new 对照）。
     """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
@@ -69,22 +96,18 @@ def diff_product_versions(project_id: str, kind: str, v1: int, v2: int,
         raise HTTPException(status_code=404, detail="指定版本不存在")
 
     if kind == "chapter":
-        result = diff_chapter_text(a.get("content") or "", b.get("content") or "")
-        result.update({"kind": kind, "chapter_no": chapter_no, "v1": v1, "v2": v2})
+        history = {int(h.get("v") or 0): h for h in (vp.list(key) or []) if isinstance(h, dict)}
+        result = review_chapter_pair(
+            _review_item(v1, a, history), _review_item(v2, b, history),
+            target_words=_target_words(store),
+            # 段落 diff 只作概览计数用，不进前端分块（§11.3：差异算法仍在 version_diff）
+            changes=diff_chapter_text(a.get("content") or "", b.get("content") or ""))
     else:
-        changes = diff_structured(a, b)
-        # 按 group 聚合
-        groups: dict[str, list] = {}
-        for c in changes:
-            groups.setdefault(c["group"], []).append(c)
-        result = {
-            "kind": kind, "v1": v1, "v2": v2,
-            "groups": [{"group": g, "changes": cs} for g, cs in groups.items()],
-            "summary": {"added": sum(1 for c in changes if c["type"] == "added"),
-                        "removed": sum(1 for c in changes if c["type"] == "removed"),
-                        "modified": sum(1 for c in changes if c["type"] == "modified")},
-        }
-    logger.info("版本 diff: project=%s kind=%s v%d-v%d uid=%d",
+        words_map = {int(it.get("v") or 0): int(it.get("words") or 0)
+                     for it in (vp.list(_PRODUCT_KEY) or [])}
+        result = review_structured_pair(v1, v2, diff_structured(a, b), words_map=words_map)
+    result.update({"kind": kind, "chapter_no": chapter_no, "v1": v1, "v2": v2})
+    logger.info("版本评审: project=%s kind=%s v%d-v%d uid=%d",
                 project_id, kind, v1, v2, user["id"])
     return result
 
@@ -92,27 +115,31 @@ def diff_product_versions(project_id: str, kind: str, v1: int, v2: int,
 @app.post("/api/projects/{project_id}/products/{kind}/versions/{v}/select")
 def select_product_version(project_id: str, kind: str, v: int,
                            user: dict = Depends(_require_user)):
-    """受控回滚（§11.3）：select 置 user_managed；只切 HEAD，不改写/删除已生成正文。"""
+    """选择产物版本（§11.3）：select 置 user_managed；只切 HEAD，不改写/删除已生成正文。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     vp = _product(store, kind)
     data = vp.select(_PRODUCT_KEY, v)
     if data is None:
         raise HTTPException(status_code=404, detail=f"版本 v{v} 不存在")
-    logger.info("产物版本回滚: project=%s kind=%s v=%d uid=%d",
+    logger.info("产物版本选择: project=%s kind=%s v=%d uid=%d",
                 project_id, kind, v, user["id"])
     return {"kind": kind, "selected": v, "versions": vp.list(_PRODUCT_KEY)}
 
 
-@app.get("/api/projects/{project_id}/products/{kind}/rollback-impact")
-def rollback_impact(project_id: str, kind: str, v: int,
-                    user: dict = Depends(_require_user)):
-    """回滚影响范围（§11.3，评审 S-6）：派生视图过期清单 + 受影响章节 + 需重生成起始章。
+@app.get("/api/projects/{project_id}/products/{kind}/select-impact")
+def select_impact(project_id: str, kind: str, v: int,
+                  user: dict = Depends(_require_user)):
+    """选择某版本后的影响面只读评估（§11.3，评审 S-6）：派生视图过期清单 + 受影响章节 + 需重生成起始章。
 
     受影响章判定：章节版本 history 中当前选中版本的 upstream 记录了生成时依赖的
-    outline_v/world_v；若其值 > 回滚目标 v，说明该章基于「更新的上游版本」生成，
-    回滚后与上游不一致，需重生成。无 upstream 记录的存量章无法精确判定，不计入
+    outline_v/world_v；若其值 > 本次选择的目标 v，说明该章基于「更新的上游版本」生成，
+    选择该版后与上游不一致，需重生成。无 upstream 记录的存量章无法精确判定，不计入
     （降级为只提示派生视图状态）。
+
+    原名 rollback-impact（2026-10-30 改名）：版本操作已收敛为「选择」单一语义，
+    旧名会误导调用方以为存在独立的回退动作；全局仅 VersionDialog 一处调用方，
+    已随本次改名同步（webapp/frontend/src/api/novel.js:getVersionSelectImpact）。
     """
     _check_project_access(project_id, user)
     store = _find_project(project_id)

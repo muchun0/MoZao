@@ -173,16 +173,10 @@
           </el-card>
         </el-collapse-item>
 
-        <el-collapse-item title="机制初始值（数字标准答案）" name="mechanism">
+        <!-- 机制初始值：按机制类型分派渲染（REQ-通用机制类型适配），无机制类型时不显示 -->
+        <el-collapse-item v-if="mechVisible" :title="`机制初始值（${mechTitle}）`" name="mechanism">
           <el-card style="margin-bottom:10px">
-            <div class="char-fields">
-              <div class="char-row"><span class="char-label">旧痕起点</span><el-input v-model="worldDraft.mechanism_baseline.scar_start" size="small" placeholder="如：手腕" /></div>
-              <div class="char-row"><span class="char-label">每死延伸</span><el-input v-model="worldDraft.mechanism_baseline.scar_per_death" size="small" placeholder="如：约一指宽" /></div>
-              <div class="char-row"><span class="char-label">旧痕当前</span><el-input v-model="worldDraft.mechanism_baseline.scar_current" size="small" placeholder="如：累计约二十次死亡" /></div>
-              <div class="char-row"><span class="char-label">终局位置</span><el-input v-model="worldDraft.mechanism_baseline.scar_end" size="small" placeholder="如：蔓延至心脉=蚀化" /></div>
-              <div class="char-row"><span class="char-label">面板格式</span><el-input v-model="worldDraft.mechanism_baseline.panel_format" size="small" placeholder="唯一写法，如：今日可死次数：N/3" /></div>
-              <div class="char-row"><span class="char-label">重置规则</span><el-input v-model="worldDraft.mechanism_baseline.reset_rule" size="small" placeholder="如：每日子时重置为3" /></div>
-            </div>
+            <MechanismEditor :draft="worldDraft" />
           </el-card>
         </el-collapse-item>
 
@@ -223,6 +217,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getWorld, saveWorld } from '../../api/novel'
 import CharacterGraph from './CharacterGraph.vue'
+import MechanismEditor from './MechanismEditor.vue'
+import { TYPE_TITLES, hasMechanism, resolveTypes } from './mechanism'
 
 const props = defineProps({
   pid: { type: String, required: true },
@@ -237,12 +233,22 @@ const worldDraft = ref({
   world_view: '', characters: [],
   enemies: [], locations: [], factions: [],
   mechanism_baseline: {}, clock: {}, style_taboos: [],
+  mechanism_types: [], mechanism_ruleset: [], goldfinger_rules: {},
+  power_system: { levels: [] }, mechanism_rules: '',
 })
 const worldSaving = ref(false)
 const selectedCharIndex = ref(0)
 
 const isWorldLocked = computed(() => !!props.lock.world_view)
 const isCharLocked = (name) => !!(props.lock.character || {})[name]
+
+// 机制区块是否显示 + 标题：resolve_types 得到 none（且无机制说明文本）时整块不出现
+const mechVisible = computed(() => hasMechanism(worldDraft.value))
+const mechTitle = computed(() => {
+  const t = resolveTypes(worldDraft.value)
+  const titles = t.map(x => TYPE_TITLES[x] || x).join(' + ')
+  return titles === '无机制' ? '数字标准答案' : titles
+})
 
 function roleClass(role) {
   if (!role) return 'dot-default'
@@ -260,6 +266,24 @@ function normalizeWorldDraft() {
   d.style_taboos = d.style_taboos || []
   d.mechanism_baseline = d.mechanism_baseline || {}
   d.clock = d.clock || {}
+  // REQ-通用机制类型适配：类型标签/条款/结构化卡缺省补齐，编辑器才能按类型分派渲染
+  d.mechanism_types = Array.isArray(d.mechanism_types) ? d.mechanism_types : []
+  d.mechanism_types_resolved = Array.isArray(d.mechanism_types_resolved) ? d.mechanism_types_resolved : []
+  d.mechanism_ruleset = Array.isArray(d.mechanism_ruleset) ? d.mechanism_ruleset : []
+  d.goldfinger_rules = d.goldfinger_rules || {}
+  d.power_system = d.power_system || {}
+  d.power_system.levels = Array.isArray(d.power_system.levels) ? d.power_system.levels : []
+  d.mechanism_rules = d.mechanism_rules || ''
+}
+
+/** 保存前清理：空壳条款不入库（与后端 _merge_sub_card 同口径），并剔除编辑态辅助字段。 */
+function pruneMechanismDraft(d) {
+  d.mechanism_ruleset = (d.mechanism_ruleset || [])
+    .filter(r => String(r.statement || '').trim())
+    .map(({ _scopeKind, _scopeName, ...rest }) => rest)   // scope 由两控件拼装，辅助字段不入库
+  d.power_system = d.power_system || {}
+  d.power_system.levels = (d.power_system.levels || []).filter(
+    l => [l.name, l.range, l.requirement, l.capability].some(v => String(v ?? '').trim()))
 }
 
 async function reload() {
@@ -290,8 +314,12 @@ function removeCharacter(index) {
 async function saveWorldDraft() {
   worldSaving.value = true
   try {
+    pruneMechanismDraft(worldDraft.value)
     const res = await saveWorld(props.pid, worldDraft.value)
     world.value = res
+    // 保存后按服务端返回（库为真值）重建草稿，避免本地乐观状态与实际产物不一致
+    worldDraft.value = JSON.parse(JSON.stringify(res))
+    normalizeWorldDraft()
     ElMessage.success('已保存')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')

@@ -544,13 +544,27 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
-- **2026-10-29**：**通用机制类型适配（feat/generic-mechanism-types，待发版：仅合并 devtest，未合 master、未部署）**——机制/金手指从「数字面板一种形态」扩为七类机制谱系，规则怪谈条款一致性独立校验：
+- **2026-10-31**：第三十一次部署（服务器代码 = master，**已上线**）——**质检三层重构 + 通用机制类型适配上线 + 词表换 LLM + 踩坑账本契约化 + 生成质量/UX 修复一批**（devtest 16 提交合并 master 一次覆盖）：
+  - **① 质检三层重构（feat/quality-layered-review，f3a2fa0）**：quality 模块拆为 `quality/` 包（抽离常量与纯文本工具，行为零变化）→ **L1 确定性闸门 + L2 多维评委 + L3 聚合器**三层质检架构；架构/索引/决策与债务台账同步（f6a59f0）。
+  - **② 通用机制类型适配上线（feat/generic-mechanism-types）**：机制/金手指从「数字面板一种形态」扩为七类机制谱系 + 规则怪谈条款一致性独立校验（细节见下条 2026-10-29 记录，此前已合 devtest，本次随部署上线）。
+  - **③ 词表换 LLM 批次一/二（feat/vocab-to-llm）**：6 处写死语义词表换 LLM 语义判断 + 词表确定性兜底（批次一 4 处，1092 全绿 + E2E；批次二 2 处，1108 全绿 + E2E；批次二文档同步 decisions/architecture/filemap + REQ-词表换LLM-批次二）。
+  - **④ 踩坑账本契约化 + 注入对账（feat/pitfall-inject-unify）**：新增 `pitfall_contract.py` 六 path_id 契约（wired/channel/min_count 双向读取，防两份口径漂移）→ 踩坑注入统一到 `_write_body` 事前决策（5 个 FEATURE_FLAG 开关、阈值去硬编码、回退整章改独立段落通道）→ 新增 `pitfall_reconcile.py` 账本 vs 注入命中对账（L0/L1u/L1/L2/L3 分级，零额外 LLM）+ 6 处埋点 + 只读体检脚本 `tools/pitfall_reconcile_check.py`（1149 全绿）。
+  - **⑤ 机制/金手指/选择代价/两难强制项分层放宽（feat/decision-cost-relax）**：写章强制项按机制类型分层放宽，无机制书不再硬凑金手指五要素（1152 全绿）。
+  - **⑥ 手写章守卫误判修复（fix/guard-user-chapter-select）**：手写章守卫误判 select 版本为手写，改按 selected 版本 source 判定（1155 全绿）。
+  - **⑦ 生成流程进度修复（81b4758）**：生成流程进度不真实/双进度条/版本面板拥挤。
+  - **⑧ 后台开关持久化（fix/admin-config-switch-persist）**：系统设置开关切换即时持久化并按库值回填。
+  - **⑨ 机制初始值展示修复（fix/world-mechanism-initial-display）**：机制初始值按机制类型分派渲染（不再显示旧结构占位文案）→ 类型判定收口到后端（前端不再自算口径）→ 补类型标签编辑入口 + 补记两条根因 → QA Round2 P2 三条收尾（scope 残缺前缀 / isInferred 死代码 / resolved 硬编码）。
+  - **⑩ 版本操作收敛（fix/version）**：移除「回退」入口，版本操作收敛为「选择」单一语义（按钮文案「采用此版本」/ 路由 /select-impact）。
+  - **⑪ 版本对比两视角评论（feat/version-diff-agent-review）**：版本对比改为审校+评审两视角评论（除审校类外一律归评审，堵死两份口径漂移），候选过多时收敛对比入口。
+  - 回归：全量 pytest **1263 passed**（基线 1211 + 新增 52）。部署：devtest 合并 master → `git archive master` 打包 → workbench upload → 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+
+- **2026-10-29**：**通用机制类型适配（feat/generic-mechanism-types，已随第三十一次部署上线）**——机制/金手指从「数字面板一种形态」扩为七类机制谱系，规则怪谈条款一致性独立校验：
   - **七类机制谱系**（`pipeline/mechanism_types.py`，纯函数零 LLM）：`numeric_panel` 数字面板/状态型（既有行为零变化）、`power_level` 等级境界型、`rule_set` 规则约束型（本期新增核心）、`ability` 能力/概念型、`contract` 契约关系型、`temporal` 时间循环型、`none` 无机制型；显式类型优先 → 字段启发推断 → none 兜底，生成/校验/注入/质检统一入口判定。
   - **数据模型**：`MechanismRule` 结构化条款（范围/条件/禁令/后果/变更政策/状态，枚举校验）；`World` 增 `mechanism_types`、`mechanism_ruleset`，旧 world.json 兼容不报错。
   - **生成端**：开书提示词按类型分层标注必填项；规则状态跨章账本（当前副本/生效条款/规则事件，作用域过滤承接）；记忆注入按类型分派——规则条款卡 / 能力规则说明书 / 机制初始值基线卡，其余类型不硬凑五要素。
   - **校验端**：数字面板走原三要素流程（行为零变化、旧书 legacy 保留）；规则型走条款四要素与编号去重；非能力型不再强制金手指五要素；数字基线缺失提示仅数字面板触发。
   - **质检端**：新增规则一致性独立 LLM judge（开关 `rule_consistency_check` / `rule_consistency_every`），识别条款矛盾（大改）/ 私增规则（中改）/ 跨副本串场（中改），内置作者有意冲突等六条排除条款；面板进度检查加数字类型门控，防止规则/能力书被通用正则误伤。
-  - 回归：全量 pytest **1211 passed**（基线 1155 + 新增 56 用例，含规则怪谈/无机制/数字面板/混合类型四原型离线端到端冒烟 12 例）。**状态：待发版，待用户放行后再合并 master 部署。**
+  - 回归：全量 pytest **1211 passed**（基线 1155 + 新增 56 用例，含规则怪谈/无机制/数字面板/混合类型四原型离线端到端冒烟 12 例）。**状态：已上线（随第三十一次部署）。**
 
 - **2026-10-28**：第三十次部署（服务器代码 = master，**已上线**）——**场景重演修复（方案一）：派生事件清单改通用 LLM 语义去重**（fix/scene-plan-align-dedup，d854092）：
   - 消融定位重演成因 = `scene_plan_align`（重复事件源）× `scene_split`（重述发射端）协同，方案一修事件清单源。

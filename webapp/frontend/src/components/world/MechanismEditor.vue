@@ -187,7 +187,18 @@ function syncScopeFromRaw(r) {
   }
 }
 function syncScope(r) {
-  r.scope = r._scopeKind === 'global' ? 'global' : `${r._scopeKind}${String(r._scopeName || '').trim()}`
+  const kind = r._scopeKind || 'global'
+  const name = String(r._scopeName || '').trim()
+  // 非 global 但对象名为空 → 回落 global，绝不产出 "instance:" 这类残缺前缀值：
+  // memory._build_ruleset_cards 会把 "instance:" 解析成空串，注入文案变成「副本专属（）」。
+  // 回落时同步复位下拉与输入框，避免界面显示「副本专属」而落库是 global 的错觉。
+  if (kind !== 'global' && !name) {
+    r._scopeKind = 'global'
+    r._scopeName = ''
+    r.scope = 'global'
+    return
+  }
+  r.scope = kind === 'global' ? 'global' : `${kind}${name}`
 }
 function onScopeKind(r) {
   if (r._scopeKind === 'global') r._scopeName = ''

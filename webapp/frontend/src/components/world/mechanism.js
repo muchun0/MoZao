@@ -67,10 +67,10 @@ export function resolveTypes(d) {
   return declared.length ? declared : inferTypes(d)
 }
 
-/** 是否由推断得出（用于界面标注「由既有设定推断」）。 */
+/** 是否由推断得出（用于界面标注「由既有设定推断」）。
+ *  语义＝"用户/LLM 没有显式声明类型"（此时无论后端 resolved 还是本地兜底，走的都是推断路径），
+ *  故与 resolved 是否存在无关，不需要分支。 */
 export function isInferred(d) {
-  const resolved = normalizeTypes(d?.mechanism_types_resolved)
-  if (resolved.length) return !normalizeTypes(d?.mechanism_types).length
   return !normalizeTypes(d?.mechanism_types).length
 }
 

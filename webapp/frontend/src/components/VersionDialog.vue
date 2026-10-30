@@ -1,17 +1,16 @@
 <template>
   <el-dialog :model-value="modelValue" :title="title" width="860px" @update:model-value="$emit('update:modelValue', $event)">
-    <!-- 对比模式 -->
-    <div v-if="diffView" class="diff-bar">
-      <el-button link type="primary" @click="diffView = false">← 返回版本列表</el-button>
-      <span class="diff-title">v{{ diffView.v1 }} vs v{{ diffView.v2 }}</span>
-      <span v-if="diffView.truncated" class="diff-trunc">（差异较多，已折叠中段）</span>
+    <!-- 评审模式（两版对比结果：审校 + 评审两视角评论） -->
+    <div v-if="reviewView" class="rv-bar">
+      <el-button link type="primary" @click="reviewView = null">← 返回版本列表</el-button>
+      <span class="rv-title">v{{ reviewView.v1 }} vs v{{ reviewView.v2 }}</span>
     </div>
 
-    <div v-if="!diffView" class="ver-list">
+    <div v-if="!reviewView" class="ver-list">
       <div v-for="v in versionList" :key="v.v" class="ver-item" :class="{ active: v.selected }">
         <!-- 第一层：版本号 + 状态徽章 + 生成时间 -->
         <div class="ver-head">
-          <el-checkbox class="ver-check" :model-value="compareSel.includes(v.v)"
+          <el-checkbox v-if="canCompare" class="ver-check" :model-value="compareSel.includes(v.v)"
                        :disabled="compareSel.length >= 2 && !compareSel.includes(v.v)"
                        @change="toggleCompare(v.v)" />
           <span class="ver-no">v{{ v.v }}</span>
@@ -68,39 +67,18 @@
         </div>
       </div>
       <el-empty v-if="!versionList.length" :description="emptyText" />
-      <div v-if="compareSel.length === 2" class="compare-bar">
-        <el-button type="primary" size="small" @click="openDiff">对比 v{{ compareSel[0]}} vs v{{ compareSel[1] }}</el-button>
+      <!-- 版本堆到一定数量后不再提供逐对对比（理由见 MAX_COMPARE_VERSIONS 注释） -->
+      <div v-if="!canCompare && versionList.length" class="compare-off">
+        版本较多（{{ versionList.length }} 个），逐对对比的组合过多、看不过来；
+        请直接看各版本的徽章、推荐理由与改稿建议，或先删掉不再需要的版本。
+      </div>
+      <div v-if="canCompare && compareSel.length === 2" class="compare-bar">
+        <el-button type="primary" size="small" @click="openReview">
+          对比 v{{ compareSel[0]}} vs v{{ compareSel[1] }}</el-button>
       </div>
     </div>
 
-    <!-- 章节正文并排 diff -->
-    <div v-else-if="diffView && diffView.blocks" class="diff-text">
-      <div v-for="(b, i) in diffView.blocks" :key="i" class="diff-block" :class="'diff-' + b.type">
-        <template v-if="b.type === 'equal'"><p>{{ b.text }}</p></template>
-        <template v-else-if="b.type === 'add'"><p class="row-add">＋ {{ b.b_text }}</p></template>
-        <template v-else-if="b.type === 'del'"><p class="row-del">－ {{ b.a_text }}</p></template>
-        <template v-else-if="b.type === 'mod'">
-          <p class="row-del">－ {{ b.a_text }}</p>
-          <p class="row-add">＋ {{ b.b_text }}</p>
-        </template>
-        <template v-else-if="b.type === 'collapse'"><div class="diff-collapse">… 其余 {{ b.count }} 处差异已折叠 …</div></template>
-      </div>
-    </div>
-
-    <!-- outline/world 字段级 diff -->
-    <div v-else-if="diffView && diffView.groups" class="diff-struct">
-      <div v-for="g in diffView.groups" :key="g.group" class="diff-group">
-        <div class="diff-group-head">{{ g.group }}</div>
-        <div v-for="(c, i) in g.changes" :key="i" class="diff-change" :class="'dc-' + c.type">
-          <b>{{ c.name }}</b>
-          <template v-if="c.type === 'added'"><span class="dc-new">新增</span></template>
-          <template v-else-if="c.type === 'removed'"><span class="dc-old">删除</span></template>
-          <template v-else><span class="dc-mod">改写</span></template>
-          <div v-if="c.old !== null && c.old !== undefined" class="dc-val">旧：{{ String(c.old) }}</div>
-          <div v-if="c.new !== null && c.new !== undefined" class="dc-val">新：{{ String(c.new) }}</div>
-        </div>
-      </div>
-    </div>
+    <VersionReview v-else :review="reviewView" />
 
     <div class="ver-tip">{{ tipText }}</div>
   </el-dialog>
@@ -115,9 +93,10 @@
 // 不再提供单独的「回退」入口，避免"选择"与"回退"两套说法造成的语义歧义。
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import VersionReview from './VersionReview.vue'
 import {
   getChapterVersions, selectChapterVersion, deleteChapterVersion,
-  getProductVersions, selectProductVersion, getVersionSelectImpact, getProductDiff,
+  getProductVersions, selectProductVersion, getVersionSelectImpact, getVersionReview,
 } from '../api/novel'
 
 const props = defineProps({
@@ -128,10 +107,19 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue', 'changed', 'appeal'])
 
+// 候选版本数上限：超过则不提供逐对对比入口（也不显示勾选框）。
+// 理由：对比是两两进行的，n 个候选版本有 n(n-1)/2 种组合 —— 5 个就有 10 种、
+// 6 个 15 种，堆到这个量级后用户根本看不过来，此时版本卡片上的徽章/推荐理由/
+// 改稿建议才是有效的决策信息（详见 docs/decisions.md 2026-10-30 条目）。
+// 取值 5：保留" ≤5 个版本时可逐对对比"这一最常用的场景，不做成永远不显示。
+const MAX_COMPARE_VERSIONS = 5
+
 const versionList = ref([])
 const compareSel = ref([])   // 勾选待对比的两个版本号
-const diffView = ref(null)   // diff 接口响应
+const reviewView = ref(null) // 评审接口响应（审校/评审两视角）
 const expanded = reactive({})  // 各版本改稿建议的折叠态（按版本号 v 记录）
+// 版本数超阈值时不提供逐对对比入口
+const canCompare = computed(() => versionList.value.length <= MAX_COMPARE_VERSIONS)
 
 // 改稿建议默认只露前 3 条，展开后显示全部（避免面板拥挤）
 function visibleIssues(v) {
@@ -150,8 +138,8 @@ const emptyText = computed(() => props.kind === 'chapter'
   ? '暂无历史版本（重写/重生成会自动保留多版本）'
   : '暂无历史版本（重生成会自动保留旧版）')
 const tipText = computed(() => props.kind === 'chapter'
-  ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
-  : '每次重生成都会追加新版本、保留旧版；选择某个版本＝把它设为当前生效版本，不会删除已生成正文。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
+  ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。勾选两个版本可看【审校 + 评审】两视角评论（引用原文说明好在哪、问题在哪、具体怎么改）；版本较多时不再提供逐对对比，请直接看各版本的徽章与改稿建议。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
+  : '每次重生成都会追加新版本、保留旧版；选择某个版本＝把它设为当前生效版本，不会删除已生成正文。勾选两个版本可看【审校 + 评审】两视角评论（本版多了什么、缺了什么、要不要从另一版补回）。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
 
 function sourceText(src) {
   return { ai: 'AI生成', user: '人工编辑', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
@@ -165,7 +153,7 @@ function fmtVerTime(ts) {
 async function load() {
   versionList.value = []
   compareSel.value = []
-  diffView.value = null
+  reviewView.value = null
   try {
     if (props.kind === 'chapter') {
       const res = await getChapterVersions(props.pid, props.chapterNo)
@@ -186,13 +174,14 @@ function toggleCompare(v) {
   else if (compareSel.value.length < 2) compareSel.value.push(v)
 }
 
-async function openDiff() {
+async function openReview() {
   const [v1, v2] = compareSel.value
   if (!v1 || !v2) return
   try {
-    diffView.value = await getProductDiff(props.pid, props.kind, v1, v2, props.kind === 'chapter' ? props.chapterNo : undefined)
+    reviewView.value = await getVersionReview(
+      props.pid, props.kind, v1, v2, props.kind === 'chapter' ? props.chapterNo : undefined)
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '对比失败')
+    ElMessage.error(e?.response?.data?.detail || '评审失败')
   }
 }
 
@@ -300,6 +289,12 @@ watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
 .ver-reason { line-height: 1.6; }
 .ver-fatal { margin-top: 6px; font-size: 12px; color: var(--muted); }
 .compare-bar { margin-top: 8px; text-align: center; }
+.compare-off {
+  margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.6;
+  padding: 6px 8px; border: 1px dashed var(--card-line); border-radius: 6px;
+}
+.rv-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.rv-title { font-weight: 700; }
 
 /* 窄屏：徽章与时间换行、操作铺满，避免横向挤压 */
 @media (max-width: 700px) {
@@ -308,23 +303,4 @@ watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
   .ver-meta { gap: 6px 10px; }
   .ver-actions { gap: 8px; }
 }
-.diff-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.diff-title { font-weight: 700; }
-.diff-trunc { font-size: 12px; color: var(--el-text-color-secondary); }
-.diff-text { max-height: 60vh; overflow-y: auto; font-size: 13px; line-height: 1.7; }
-.diff-block p { margin: 2px 0; padding: 2px 6px; border-radius: 3px; }
-.row-add { background: var(--el-color-success-light-9); color: var(--el-color-success-dark-2); }
-.row-del { background: var(--el-color-danger-light-9); color: var(--el-color-danger-dark-2); text-decoration: line-through; }
-.diff-collapse { text-align: center; color: var(--el-text-color-secondary); font-size: 12px; padding: 6px; }
-.diff-struct { max-height: 60vh; overflow-y: auto; }
-.diff-group { margin-bottom: 10px; }
-.diff-group-head { font-weight: 700; border-bottom: 1px solid var(--el-border-color); padding-bottom: 2px; margin-bottom: 4px; }
-.diff-change { font-size: 13px; padding: 4px 6px; margin-bottom: 3px; border-radius: 3px; }
-.dc-added { background: var(--el-color-success-light-9); }
-.dc-removed { background: var(--el-color-danger-light-9); }
-.dc-modified { background: var(--el-color-warning-light-9); }
-.dc-new { color: var(--el-color-success); margin-left: 6px; font-size: 12px; }
-.dc-old { color: var(--el-color-danger); margin-left: 6px; font-size: 12px; }
-.dc-mod { color: var(--el-color-warning); margin-left: 6px; font-size: 12px; }
-.dc-val { font-size: 12px; color: var(--el-text-color-regular); margin-top: 2px; word-break: break-all; }
 </style>

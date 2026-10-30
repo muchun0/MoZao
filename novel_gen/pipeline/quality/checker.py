@@ -150,7 +150,10 @@ class QualityChecker:
                     "issue_count": len(issues),
                     "issues": [
                         {"level": it.get("level", ""), "type": it.get("type", ""),
-                         "detail": (it.get("detail") or "")[:120]}
+                         "detail": (it.get("detail") or "")[:120],
+                         # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
+                         # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
+                         "evidence": _aggregate.issue_evidence(it)[:120]}
                         for it in issues
                     ],
                 },

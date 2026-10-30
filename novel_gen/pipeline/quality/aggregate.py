@@ -57,6 +57,20 @@ def classify_dimension(issue: dict, reviewer_key: str = "") -> str:
     return "reader"
 
 
+def issue_evidence(issue: dict) -> str:
+    """取该条问题的**正文引用片段**（供对外展示/落库时存证）。
+
+    只认真实的 evidence：L2 评委在 evidence 缺失时会回落到 detail（
+    `evidence = it.get("evidence") or detail`），那种值是问题描述而不是原文片段，
+    一律返回空 —— 否则界面会把「与第3章重叠率 45%」当成原文引用展示。
+    """
+    ev = str(issue.get("evidence") or "").strip()
+    detail = str(issue.get("detail") or "").strip()
+    if not ev or ev == detail:
+        return ""
+    return ev
+
+
 def _norm_evidence(text: str) -> str:
     """证据归一化：去标点空白，供跨层重复合并判定（TECH §7.1-2）。"""
     return re.sub(r"[\s，。！？、；：“”\"‘’「」（）()…—\-]", "", str(text or ""))

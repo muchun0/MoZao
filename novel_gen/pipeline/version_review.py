@@ -54,14 +54,12 @@ MAX_ITEMS_PER_SECTION = 5
 #: 级别排序权重（大改 > 中改 > 小改），与 quality.constants.LEVEL_RANK 同口径
 _LEVEL_RANK = {"大改": 3, "中改": 2, "小改": 1}
 
-#: 审校视角认领的 issue 类型前缀（按前缀匹配，与 quality 的 type 命名同源）
+#: 审校视角认领的 issue 类型前缀（按前缀匹配，与 quality 的 type 命名同源）。
+#: 评审视角不需要对应清单：除审校类之外**一律**归评审（见 classify_review_agent），
+#: 新增/自定义 type 也不会被漏掉，故不并列第二份前缀表（§11.3：同一份规则不写两处）
 _PROOFREAD_PREFIXES: tuple[str, ...] = (
     "AI痕迹", "文风漂移", "文风同质化", "章内同句复读", "章内大量自重复",
     "内容重复", "对话轮重复", "自相矛盾", "摘要一致性",
-)
-#: 评审视角认领的 issue 类型前缀
-_CRITIQUE_PREFIXES: tuple[str, ...] = (
-    "结构-字数", "情节-", "结尾完整性", "读者-", "写作-机制", "合规-",
 )
 #: 字数类检查项名（需要目标字数才产出，拿不到就不编造"达标"）
 _WORD_COUNT_ASPECT = "篇幅与信息密度"
@@ -89,8 +87,8 @@ _CRITIQUE_CHECKS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
     ("节奏与收尾", ("结尾完整性", "读者-追更欲过低"),
      "本版以完整句收束（末句如上），未被点名结尾截断或章末追更欲过低", "ending"),
 )
-#: 引用片段的取材位置
-_QUOTE_OPENING, _QUOTE_DIALOGUE = "opening", "dialogue"
+#: 引用片段的取材位置（默认 opening，故不单列常量）
+_QUOTE_DIALOGUE = "dialogue"
 _QUOTE_LONGEST, _QUOTE_MIDDLE, _QUOTE_ENDING = "longest", "middle", "ending"
 
 #: 结构化产物的"文字表达类"分组（归审校视角）；其余分组归评审视角
@@ -199,8 +197,9 @@ def _has_prefix(issue: dict, prefixes: tuple[str, ...]) -> bool:
 def classify_review_agent(issue: dict) -> str:
     """一条质检问题归给哪个视角。
 
-    命中审校前缀 → 审校；命中评审前缀 → 评审；两者都不命中（未知类型/自定义 type）
-    默认给评审（结构/读者体验为主），保证任何 issue 都有人认领、不被静默吞掉。
+    命中审校前缀 → 审校；**其余一律归评审**（结构/读者体验为主），
+    包括未知类型与自定义 type —— 保证任何 issue 都有人认领、不被静默吞掉。
+    也因此评审侧不需要并列一份前缀清单（新增 type 自动落评审，不会漏）。
     """
     if _has_prefix(issue, _PROOFREAD_PREFIXES):
         return AGENT_PROOFREAD

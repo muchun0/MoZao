@@ -97,7 +97,7 @@ def _public_world(world) -> dict:
             "world_view": "", "characters": [], "foreshadowing": [], "locked_settings": [],
             "enemies": [], "locations": [], "factions": [],
             "mechanism_baseline": {}, "clock": {}, "style_taboos": [],
-            "mechanism_types": [], "mechanism_types_resolved": ["none"],
+            "mechanism_types": [], "mechanism_types_resolved": resolve_types(None),
             "mechanism_ruleset": [], "goldfinger_rules":
             GoldfingerRules().to_dict(), "power_system": PowerLevelSystem().to_dict(),
             "mechanism_rules": "",

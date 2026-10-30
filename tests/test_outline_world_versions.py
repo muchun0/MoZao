@@ -74,13 +74,13 @@ def test_outline_legacy_migration(store):
 
 
 @pytest.mark.p1
-def test_outline_select_rollback(store):
+def test_outline_select_older_version(store):
     store.save_outline(_outline("纲一"), commit=True)
     store.save_outline(_outline("纲二"), commit=True, source="user")
     f = VersionedProduct(store, "outline")
     data = f.select("all", 1)
     assert data is not None and data["title"] == "纲一"
-    assert store.load_outline().title == "纲一"   # HEAD 回滚
+    assert store.load_outline().title == "纲一"   # HEAD 已切到所选版本
     assert f.selected_version("all") == 1
     # select 置 user_managed：后续 commit 不自动选分覆盖（无 quality 时本就无候选，验证标记）
     idx = json.loads((store.dir / "outline" / "versions.json").read_text(encoding="utf-8"))

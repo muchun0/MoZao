@@ -2,7 +2,7 @@
 """章节版本化（REQ-章节版本化）专项测试。
 
 覆盖（按 REQ §5 验收标准）：
-- P0：内容不同追加版本不覆盖、内容相同幂等不追加、select 回退后 load_chapter 返回该版本
+- P0：内容不同追加版本不覆盖、内容相同幂等不追加、select 选择旧版后 load_chapter 返回该版本
       且 selected 更新、版本上限淘汰最旧且 HEAD 不淘汰
 - P1：list_versions 字段完整、source=user 人工编辑版本
 - P2：存量单版本章节向后兼容（首次保存建版本库保留旧版为 legacy）、select 不存在版本返回 None
@@ -59,7 +59,7 @@ def test_idempotent_same_content(store):
 
 
 @pytest.mark.p0
-def test_select_version_rollback(store):
+def test_select_version(store):
     store.save_chapter(_ch(1, "v1 正文"))
     store.save_chapter(_ch(1, "v2 正文"))
     ch = store.select_version(1, 1)
@@ -185,7 +185,7 @@ def test_user_managed_stops_auto_select(store):
     store.save_chapter(_ch(1, "重写高分"), source="rewrite", quality={"passed": True, "score": 92,
                                                                      "issue_count": 0,
                                                                      "auto_revised": True, "issues": []})
-    # 用户手动回退到 v1 → 置 user_managed
+    # 用户手动选择 v1（比当前旧）→ 置 user_managed
     store.select_version(1, 1)
     assert store.load_chapter(1).content == "初稿低分"
     # 再次生成更低分版本：user_managed 下不自动选分，HEAD 保持本轮新稿
@@ -196,7 +196,7 @@ def test_user_managed_stops_auto_select(store):
     v = store.list_versions(1)
     assert v[-1]["selected"] is True  # 本轮新稿成为 HEAD，不被自动选分干扰
     assert store.load_chapter(1).content == "再次重写"
-    # 用户之前选择的 v1 仍保留在版本库中可回退
+    # 用户之前选择的 v1 仍保留在版本库中可再次选择
     assert [x["v"] for x in v] == [1, 2, 3]
 
 

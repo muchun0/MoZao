@@ -25,7 +25,10 @@ def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_requir
 @app.post("/api/projects/{project_id}/chapters/{no}/versions/{v}/select")
 def select_chapter_version(project_id: str, no: int, v: int,
                            user: dict = Depends(_require_user)):
-    """回退/选中章节版本（REQ-章节版本化）：把 v{v} 复制回当前选中（HEAD）。"""
+    """选中章节版本（REQ-章节版本化）：把 v{v} 复制回当前选中（HEAD）。
+
+    版本操作只有「选择」一种语义（旧版/新版一视同仁），不再区分「回退」。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     if store.load_chapter(no) is None:
@@ -37,8 +40,8 @@ def select_chapter_version(project_id: str, no: int, v: int,
     ch = store.select_version(no, v)
     if ch is None:
         raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在（可能已被淘汰）")
-    # P2（REQ §5 验收10）：回退后账本为旧版本投影，仅提示，不重放
-    logger.info("章节版本回退: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
+    # P2（REQ §5 验收10）：切换后账本为该版本投影，仅提示，不重放
+    logger.info("章节版本选择: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
     return {"no": no, "selected_version": v, "words": len(ch.content)}
 
 

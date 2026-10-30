@@ -3,8 +3,8 @@
 
 outline/world 产物级版本库（阶段 1A 门面）的 HTTP 暴露：
 - 版本列表（每版附计费字数 + 结算金额，金额从 settle.json 账本反查）；
-- 受控回滚 select（置 user_managed，不改写已生成正文）；
-- 回滚影响范围预估（派生视图过期清单 + 需重生成起始章，供前端确认弹窗）。
+- 版本选择 select（置 user_managed，不改写已生成正文）；
+- 版本切换影响范围预估（派生视图过期清单 + 需重生成起始章，供前端确认弹窗）。
 
 chapter 版本仍走 projects_chapters.py 既有路由，不在本文件重复暴露。
 """
@@ -16,7 +16,7 @@ from novel_gen.store.versioned import VersionedProduct
 from novel_gen.pipeline.commit import check_projection
 from novel_gen.pipeline.version_diff import diff_chapter_text, diff_structured
 
-# list/select/rollback 只服务单实例产物（key="all"）；diff 接口额外放行 chapter
+# list/select/影响面预估 只服务单实例产物（key="all"）；diff 接口额外放行 chapter
 _PRODUCT_KINDS = ("outline", "world")
 _DIFF_KINDS = ("outline", "world", "chapter")
 _PRODUCT_KEY = "all"
@@ -92,27 +92,31 @@ def diff_product_versions(project_id: str, kind: str, v1: int, v2: int,
 @app.post("/api/projects/{project_id}/products/{kind}/versions/{v}/select")
 def select_product_version(project_id: str, kind: str, v: int,
                            user: dict = Depends(_require_user)):
-    """受控回滚（§11.3）：select 置 user_managed；只切 HEAD，不改写/删除已生成正文。"""
+    """选择产物版本（§11.3）：select 置 user_managed；只切 HEAD，不改写/删除已生成正文。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     vp = _product(store, kind)
     data = vp.select(_PRODUCT_KEY, v)
     if data is None:
         raise HTTPException(status_code=404, detail=f"版本 v{v} 不存在")
-    logger.info("产物版本回滚: project=%s kind=%s v=%d uid=%d",
+    logger.info("产物版本选择: project=%s kind=%s v=%d uid=%d",
                 project_id, kind, v, user["id"])
     return {"kind": kind, "selected": v, "versions": vp.list(_PRODUCT_KEY)}
 
 
-@app.get("/api/projects/{project_id}/products/{kind}/rollback-impact")
-def rollback_impact(project_id: str, kind: str, v: int,
-                    user: dict = Depends(_require_user)):
-    """回滚影响范围（§11.3，评审 S-6）：派生视图过期清单 + 受影响章节 + 需重生成起始章。
+@app.get("/api/projects/{project_id}/products/{kind}/select-impact")
+def select_impact(project_id: str, kind: str, v: int,
+                  user: dict = Depends(_require_user)):
+    """选择某版本后的影响面只读评估（§11.3，评审 S-6）：派生视图过期清单 + 受影响章节 + 需重生成起始章。
 
     受影响章判定：章节版本 history 中当前选中版本的 upstream 记录了生成时依赖的
-    outline_v/world_v；若其值 > 回滚目标 v，说明该章基于「更新的上游版本」生成，
-    回滚后与上游不一致，需重生成。无 upstream 记录的存量章无法精确判定，不计入
+    outline_v/world_v；若其值 > 本次选择的目标 v，说明该章基于「更新的上游版本」生成，
+    选择该版后与上游不一致，需重生成。无 upstream 记录的存量章无法精确判定，不计入
     （降级为只提示派生视图状态）。
+
+    原名 rollback-impact（2026-10-30 改名）：版本操作已收敛为「选择」单一语义，
+    旧名会误导调用方以为存在独立的回退动作；全局仅 VersionDialog 一处调用方，
+    已随本次改名同步（webapp/frontend/src/api/novel.js:getVersionSelectImpact）。
     """
     _check_project_access(project_id, user)
     store = _find_project(project_id)

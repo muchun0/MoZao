@@ -59,9 +59,11 @@
         <!-- 第四层：操作（切换 / 采用 / 删除） -->
         <div class="ver-actions">
           <el-button v-if="v.badge === 'recommended' && !v.selected" size="small" link type="warning"
-                     @click="onSelect(v.v)">采用建议</el-button>
+                     title="采用系统推荐版本：把它设为当前生效版本"
+                     @click="onSelect(v.v)">采用推荐版本</el-button>
           <el-button size="small" link :type="v.selected ? '' : 'primary'" :disabled="v.selected"
-                     @click="onSelect(v.v)">{{ v.selected ? '使用中' : '选择/回退' }}</el-button>
+                     title="采用此版本：把它设为当前生效版本（旧版、新版都可以，不删除其它版本）"
+                     @click="onSelect(v.v)">{{ v.selected ? '使用中' : '采用此版本' }}</el-button>
           <el-button v-if="kind === 'chapter' && !v.selected" size="small" link type="danger" @click="onDelete(v.v)">删除</el-button>
         </div>
       </div>
@@ -107,13 +109,15 @@
 <script setup>
 // 统一版本弹窗（TECH-Agent用户化与版本化 §10.2/§11.3，阶段 1C）：
 // - chapter：章节版本（质检分/改稿建议/申诉/删除），行为与 ProjectDetail 原内联弹窗一致；
-// - outline/world：产物版本列表（每版字数 + 结算金额），回滚前展示影响范围
-//   （受影响章节 + 需重生成起始章 + 派生视图过期清单），确认后受控回滚。
+// - outline/world：产物版本列表（每版字数 + 结算金额），切换前展示影响范围
+//   （受影响章节 + 需重生成起始章 + 派生视图过期清单），确认后切换当前生效版本。
+// 版本操作只保留「选择」一种语义：选择即切换当前生效版本（旧版与新版一视同仁），
+// 不再提供单独的「回退」入口，避免"选择"与"回退"两套说法造成的语义歧义。
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getChapterVersions, selectChapterVersion, deleteChapterVersion,
-  getProductVersions, selectProductVersion, getRollbackImpact, getProductDiff,
+  getProductVersions, selectProductVersion, getVersionSelectImpact, getProductDiff,
 } from '../api/novel'
 
 const props = defineProps({
@@ -147,7 +151,7 @@ const emptyText = computed(() => props.kind === 'chapter'
   : '暂无历史版本（重生成会自动保留旧版）')
 const tipText = computed(() => props.kind === 'chapter'
   ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
-  : '每次重生成都会追加新版本、保留旧版；回退只切换当前生效版本，不删除已生成正文。回退后基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
+  : '每次重生成都会追加新版本、保留旧版；选择某个版本＝把它设为当前生效版本，不会删除已生成正文。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
 
 function sourceText(src) {
   return { ai: 'AI生成', user: '人工编辑', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
@@ -195,46 +199,49 @@ async function openDiff() {
 async function onSelect(v) {
   if (props.kind === 'chapter') {
     try {
-      await ElMessageBox.confirm(`确定回退到第${props.chapterNo}章的 v${v} 版本？当前选中将切换为该版本。`, '切换版本', { type: 'warning' })
+      await ElMessageBox.confirm(
+        `确定选择第${props.chapterNo}章的 v${v} 版本作为当前生效版本？`, '选择版本', { type: 'warning' })
     } catch { return }
     try {
       const res = await selectChapterVersion(props.pid, props.chapterNo, v)
-      ElMessage.success(`已切换到 v${v}（${res.words}字）`)
+      ElMessage.success(`已选择 v${v}（${res.words}字）`)
       versionList.value = (await getChapterVersions(props.pid, props.chapterNo)).versions || []
       emit('changed')
     } catch (e) {
-      ElMessage.error(e?.message || '切换版本失败')
+      ElMessage.error(e?.message || '选择版本失败')
     }
     return
   }
-  // 产物回滚：先取影响范围，确认后受控回滚（§11.3：只切 HEAD，不改写已生成正文）
+  // 产物版本：先取影响范围（哪些章基于更新版生成），确认后切换当前生效版本
+  // （§11.3：只切 HEAD，不改写已生成正文）
   let impact
   try {
-    impact = await getRollbackImpact(props.pid, props.kind, v)
+    impact = await getVersionSelectImpact(props.pid, props.kind, v)
   } catch {
-    ElMessage.error('获取回滚影响范围失败')
+    ElMessage.error('获取版本切换影响范围失败')
     return
   }
   const label = KIND_LABELS[props.kind] || props.kind
-  const lines = [`确定回退${label}到 v${v} 版本？当前生效版本将切换为该版本，已生成正文不会被改动。`]
+  const lines = [`确定选择${label}的 v${v} 版本作为当前生效版本？已生成正文不会被改动。`]
   if (impact.affected_chapters?.length) {
-    lines.push(`有 ${impact.affected_chapters.length} 章基于更新版${label}生成（第 ${impact.affected_chapters.join('、')} 章），回退后建议从第 ${impact.regenerate_from} 章起重新生成以保持一致。`)
+    lines.push(`有 ${impact.affected_chapters.length} 章基于更新的${label}版本生成（第 ${impact.affected_chapters.join('、')} 章），切换后建议从第 ${impact.regenerate_from} 章起重新生成以保持一致。`)
   } else {
-    lines.push('未发现与更新版强绑定的章节；存量章节可能缺少版本依赖记录，建议回退后抽查前文章节一致性。')
+    lines.push('未发现与更新版本强绑定的章节；存量章节可能缺少版本依赖记录，建议切换后抽查前文章节一致性。')
   }
   if (impact.stale_views?.length) {
     lines.push(`派生视图（记忆账本等）已有 ${impact.stale_views.length} 项落后，重新生成时会自动同步。`)
   }
   try {
-    await ElMessageBox.confirm(lines.join('\n'), `回退${label}`, { type: 'warning', confirmButtonText: '确认回退', cancelButtonText: '取消' })
+    await ElMessageBox.confirm(lines.join('\n'), `选择${label}版本`,
+      { type: 'warning', confirmButtonText: '确认选择', cancelButtonText: '取消' })
   } catch { return }
   try {
     const res = await selectProductVersion(props.pid, props.kind, v)
-    ElMessage.success(`已回退到 v${res.selected}`)
+    ElMessage.success(`已选择 v${res.selected}`)
     versionList.value = res.versions || []
     emit('changed')
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '回退失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '选择版本失败')
   }
 }
 

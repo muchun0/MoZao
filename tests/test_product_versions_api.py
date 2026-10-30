@@ -1,6 +1,6 @@
 """阶段 1C 新增 API 测试（P1）。
 
-覆盖：产物版本列表（金额反查）/受控回滚/回滚影响范围（TECH §11.3）、
+覆盖：产物版本列表（金额反查）/版本选择/选择影响面（TECH §11.3）、
 agent-prompts 读写（§3.4）、agent-run 停止薄封装、rewrite 槽位收敛（§11.2 缺口）。
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ def test_version_charge_map_hit(store):
     assert all(v >= 1 for v in got)  # chapter 条目不串入
 
 
-# ---------- 产物版本列表 / 回滚 ----------
+# ---------- 产物版本列表 / 选择 ----------
 
 @pytest.mark.p1
 def test_list_product_versions_with_charge(store, routed):
@@ -110,7 +110,7 @@ def test_list_product_versions_bad_kind(store, routed):
 
 
 @pytest.mark.p1
-def test_select_product_version_rollback(store, routed):
+def test_select_product_version(store, routed):
     vp = VersionedProduct(store, "outline")
     vp.commit("all", _outline_dict("甲"), source="ai")
     vp.commit("all", _outline_dict("乙"), source="ai")
@@ -124,10 +124,10 @@ def test_select_product_version_rollback(store, routed):
     assert ei.value.status_code == 404
 
 
-# ---------- 回滚影响范围（§11.3） ----------
+# ---------- 选择影响面（§11.3） ----------
 
 @pytest.mark.p1
-def test_rollback_impact_by_upstream(store, routed):
+def test_select_impact_by_upstream(store, routed):
     """章节选中版本的 upstream.outline_v > 目标 v → 计入受影响章，regenerate_from 取最小。"""
     ch = VersionedProduct(store, "chapter")
     ch.commit("1", {"no": 1, "title": "一", "content": "正文一" * 100},
@@ -136,7 +136,7 @@ def test_rollback_impact_by_upstream(store, routed):
               source="ai", upstream={"outline_v": 3, "world_v": 1})
     ch.commit("3", {"no": 3, "title": "三", "content": "正文三" * 100},
               source="ai", upstream={"outline_v": 1, "world_v": 1})
-    body = pv.rollback_impact(store.dir.name, "outline", 1, {"id": 1})
+    body = pv.select_impact(store.dir.name, "outline", 1, {"id": 1})
     assert body["affected_chapters"] == [1, 2]  # outline_v 2/3 > 1；章 3 的 1 不 >
     assert body["regenerate_from"] == 1
     assert body["target_version"] == 1
@@ -144,11 +144,11 @@ def test_rollback_impact_by_upstream(store, routed):
 
 
 @pytest.mark.p1
-def test_rollback_impact_no_upstream(store, routed):
+def test_select_impact_no_upstream(store, routed):
     """存量章无 upstream 记录 → 不误判为受影响（降级只报视图状态）。"""
     ch = VersionedProduct(store, "chapter")
     ch.commit("1", {"no": 1, "title": "一", "content": "正文一" * 100}, source="ai")
-    body = pv.rollback_impact(store.dir.name, "outline", 1, {"id": 1})
+    body = pv.select_impact(store.dir.name, "outline", 1, {"id": 1})
     assert body["affected_chapters"] == []
     assert body["regenerate_from"] is None
 

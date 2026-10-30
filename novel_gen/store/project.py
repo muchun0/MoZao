@@ -578,7 +578,7 @@ class ProjectStore:
         return Chapter.from_dict(d) if d else None
 
     def select_version(self, no: int, ver: int) -> Optional[Chapter]:
-        """回退/选中某版本：把 v{ver} 复制回 HEAD 并更新 selected；置 user_managed。"""
+        """选中某版本（旧版/新版一视同仁）：把 v{ver} 复制回 HEAD 并更新 selected；置 user_managed。"""
         d = self._chapter_facade().select(str(no), ver)
         return Chapter.from_dict(d) if d else None
 

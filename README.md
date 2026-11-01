@@ -544,6 +544,14 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-11-01**：第三十二次部署（服务器代码 = master，**已上线**）——**质检语义复核二期：一致性事件重复误报修复 + 提示词接线 + 分层元数据对齐**（fix/quality-consistency-review-1101）：
+  - **① 事件重复误报修复**：新增 `quality/consistency_review.py` 确定性复核闸门（纯函数 / 零新增 LLM / fail-open）——仅当「对话打断 + 递进新细节 + 前动作未闭环」三信号齐全且无重演反向冲突时才剔除承接候选；引文缺失、定位失败、信号不全、自身异常一律**保留候选**（剔除留 `logger.warning`），真重演两版本仍报大改。
+  - **② d 排除条款收敛单一权威源**：旧内联检查、新 consistency 评委内置兜底、外置 `review/consistency.md` 三处口径同步（a/b/c 原文与既有测试锁定短语逐字保留）。
+  - **③ 提示词接线（补"建了能力没接线"缺口）**：`ConsistencyReviewer._call_llm` 接线外置 `consistency.md`（外置为单一事实源，内置常量仅作文件缺失兜底），并兼容 `issues / contradictions` 双 schema。
+  - **④ 分层元数据对齐**：主链路 issue 统一补 `source / dimension / rule_id` 标注，由 L3 聚合完成归类、去重合并、排序与建议清单；d 条款常量供旧内联与新评委共用。
+  - **不变量守住**：旧 `score` 倒扣与 `passed = 无大改` 门禁、`hook_score` 口径、`reviewer_layered=False` legacy 编排逐字零变化；不新增 LLM 调用、不改开关与降频口径。
+  - 回归：全量 pytest **1280 passed**（P0/P1 **741 passed**），新增 `test_consistency_review` 闸门用例与质检/分层用例共 +302 行。部署：devtest 合并 master → `git archive master` 打包 → workbench upload → 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上验证：容器 healthy + 主页不白屏。
+
 - **2026-10-31**：第三十一次部署（服务器代码 = master，**已上线**）——**质检三层重构 + 通用机制类型适配上线 + 词表换 LLM + 踩坑账本契约化 + 生成质量/UX 修复一批**（devtest 16 提交合并 master 一次覆盖）：
   - **① 质检三层重构（feat/quality-layered-review，f3a2fa0）**：quality 模块拆为 `quality/` 包（抽离常量与纯文本工具，行为零变化）→ **L1 确定性闸门 + L2 多维评委 + L3 聚合器**三层质检架构；架构/索引/决策与债务台账同步（f6a59f0）。
   - **② 通用机制类型适配上线（feat/generic-mechanism-types）**：机制/金手指从「数字面板一种形态」扩为七类机制谱系 + 规则怪谈条款一致性独立校验（细节见下条 2026-10-29 记录，此前已合 devtest，本次随部署上线）。

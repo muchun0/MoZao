@@ -6,6 +6,12 @@ rule_consistency 与 panel anchor 作为该评委内部专项，本期仍由 che
 在 L3 聚合时归入 consistency 维度（§6.4 合并为同一 DimensionResult 的后续迭代项）。
 
 只找「两处描写不能同时为真」的硬矛盾，不评文笔、不评节奏；失败降级 unavailable。
+
+二期（质检语义复核）：
+- 指令优先取外置 `review/consistency.md`，文件缺失回退内置 `_CONSISTENCY_SYSTEM`；
+- 兼容 LLM 历史返回的 `contradictions` 与新 schema `issues` 两个数组键；
+- 事件重复候选先过 `consistency_review` 确定性复核闸门，识别为「打断后续写承接」
+  的候选剔除，fail-open 保留其余候选。
 """
 from __future__ import annotations
 
@@ -14,11 +20,14 @@ import logging
 from ....llm.json_parse import parse_json_obj
 from ....config import NovelConfig
 from .base import BaseReviewer, ReviewContext, ReviewerResult
-from ..text_tools import _load_persona as _persona
+from ..text_tools import _load_persona as _persona, _load_review_prompt
+from ..consistency_review import review_event_duplicates, EXCLUSION_CLAUSE_D
 
 logger = logging.getLogger("novel_gen.pipeline.quality")
 
-#: 与旧 `_consistency_llm_check` 逐字一致的判定标准与排除条款（测试断言原文存在，勿改）
+#: 内置兜底判定标准与排除条款（外置 md 缺失时使用）。
+#: a/b/c 条款原文被 `test_consistency_prompt_excludes_decision_vs_action` 锁定，勿改；
+#: d 条款为二期新增（中断后续写承接），文本单一权威源见 consistency_review.EXCLUSION_CLAUSE_D。
 _CONSISTENCY_SYSTEM = (
     "你是严谨的小说文字编辑，通读本章后只找「前后自相矛盾的硬伤」，不评文笔、不评节奏。\n"
     "只输出 JSON：{\"contradictions\":[{\"type\":\"身体状态/行为模式/方位指代/比喻/事件重复\","
@@ -35,7 +44,8 @@ _CONSISTENCY_SYSTEM = (
     "可以同时为真，不是同一事件的两个版本；\n"
     "b) 未执行的念头、计划、心理活动（未实际发生的行为）不算'事件发生'；"
     "只有实际发生的动作才构成事件；\n"
-    "c) 若无法引用两处【实际发生行为】的原句，不得输出事件重复。"
+    "c) 若无法引用两处【实际发生行为】的原句，不得输出事件重复。\n"
+    + EXCLUSION_CLAUSE_D
 )
 
 
@@ -57,18 +67,25 @@ class ConsistencyReviewer(BaseReviewer):
 
     def _call_llm(self, ctx: ReviewContext) -> dict:
         persona = _persona("reviewer")
-        sys = (persona + "\n\n" if persona else "") + _CONSISTENCY_SYSTEM
+        brief = _load_review_prompt("consistency")
+        system = (persona + "\n\n" if persona else "") + (brief or _CONSISTENCY_SYSTEM)
         user = (
             f"第{ctx.chapter_no}章正文：\n{ctx.content[:12000]}\n\n"
             "请输出上述 JSON。"
         )
-        raw = ctx.llm.chat(sys, user, temperature=0.2, max_tokens=800)
-        return parse_json_obj(raw)
+        raw = ctx.llm.chat(system, user, temperature=0.2, max_tokens=800)
+        data = parse_json_obj(raw)
+        # 闸门复核需要正文上下文；随解析结果一并传给 _parse（评委内部私有键）
+        data["_review_context"] = ctx
+        return data
 
     def _parse(self, raw: dict) -> dict:
         data = raw if isinstance(raw, dict) else {}
-        issues = []
-        for it in (data.get("contradictions") or []):
+        ctx: ReviewContext | None = data.pop("_review_context", None)
+        # 兼容新 schema `issues` 与历史 schema `contradictions`
+        raw_items = data.get("issues") or data.get("contradictions") or []
+        issues: list[dict] = []
+        for it in raw_items:
             if not isinstance(it, dict):
                 continue
             detail = str(it.get("detail", "")).strip()
@@ -79,8 +96,30 @@ class ConsistencyReviewer(BaseReviewer):
                 "detail": detail,
                 "level": "大改",
                 "evidence": str(it.get("evidence", "") or detail),
+                "pos": str(it.get("pos", "") or ""),
                 "suggestion": str(it.get("suggestion") or "").strip(),
-                "fix_suggestion": str(it.get("suggestion") or "").strip(),
+                "fix_suggestion": str(it.get("fix_suggestion") or it.get("suggestion") or "").strip(),
                 "rule_id": "consistency.contradiction",
             })
-        return {"score": None, "issues": issues, "strengths": []}
+
+        # 事件重复候选确定性复核闸门：承接形态剔除，其余 fail-open 保留
+        filtered: list[dict] = []
+        if ctx is not None and issues:
+            issues, filtered = review_event_duplicates(issues, ctx.content)
+
+        return {
+            "score": None,
+            "issues": issues,
+            "strengths": [str(s) for s in (data.get("strengths") or [])],
+            "filtered_continuation": filtered,
+        }
+
+    def _ok(self, parsed: dict) -> ReviewerResult:
+        result = super()._ok(parsed)
+        filtered = parsed.get("filtered_continuation") or []
+        if filtered:
+            result.dimension.extra["filtered_continuation"] = [
+                {"type": x.get("type"), "detail": x.get("detail"),
+                 "review_signals": x.get("review_signals")} for x in filtered
+            ]
+        return result

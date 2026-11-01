@@ -47,6 +47,7 @@ from .text_tools import (
     _locate_problem_spans, _merge_spans, _align_to_paras,
 )
 from . import aggregate as _aggregate
+from .consistency_review import review_event_duplicates, EXCLUSION_CLAUSE_D
 from .reviewers import (
     ReviewContext, DimensionResult, ReviewerResult, ReviewerIssue,
     PlotReviewer,
@@ -301,85 +302,104 @@ class QualityChecker:
         """
         issues: list[dict] = []
         score = 100
+        # L1 确定性候选集合（供 L3 快照分层归类；旧 issues 顺序与去重口径不变）
+        l1_issues: list[dict] = []
+
+        def _tag_l1(rows: list[dict]) -> list[dict]:
+            for x in rows:
+                x.setdefault("source", "deterministic")
+                x.setdefault("dimension", _aggregate.classify_dimension(x))
+                x.setdefault("rule_id", "")
+            l1_issues.extend(rows)
+            return rows
+
+        def _tag_llm(rows: list[dict], source: str, dimension: str) -> list[dict]:
+            for x in rows:
+                x.setdefault("source", source)
+                x.setdefault("dimension", dimension)
+            return rows
 
         # 1. 结构要求（确定性）
         target = max(self.cfg.chapter_words, 1)
         _it, _d = self._check_structure(content, target)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2. 内容重复（确定性，与最近 N 章对比）+ 2.4 章内多稿自重复
         _it, _d = self._check_repetition(chapter_no, content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.7 章内同句复读（确定性，REQ-章内自洽与机制账本）
         _it, _d = self._check_repeat_sentence(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.8 机制数字结算校验（确定性）
         _it, _d = self._check_panel_progress(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.8b 面板数字方向校验（P0-5）
         _it, _d = self._check_panel_direction(content, baseline)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.8c 蚀化跨章累计 + 链式账本校验（REQ-机制数字软提示与通用化）
         _it, _d = self._check_mechanism_ledger(chapter_no, content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.8d 大纲核心事件正文覆盖校验（P0-17）
         _it, _d = self._check_core_event(content, core_event)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.9 对话轮重复（确定性兜底）
         _it, _d = self._check_dialogue_loop(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.12 情节级重演检测（确定性，2026-10-09）
         _it, _d = self._check_beat_cycle(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.10 字数审计（确定性·仅提示）
         _it, _d = self._check_length_audit(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.11 摘要一致性（确定性兜底）
         _it, _d = self._check_summary_consistency(content, summary)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.6 结尾完整性（确定性）
         _it, _d = self._check_ending(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 2.5 AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）
         ai_style_issues, ai_style_delta = self._check_ai_and_style(content, chapter_no)
-        issues.extend(ai_style_issues)
+        issues.extend(_tag_l1(ai_style_issues))
         score += ai_style_delta
 
         # 3. 输出合规（模块3 基础合规校验）
         _it, _d = self._check_compliance(content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_l1(_it)); score += _d
 
         # 4. 读者体验（LLM：代入感/爽点/钩子/主动性 + 人物一致性）
         llm_issues, hook_score = self._reader_llm_check(chapter_no, plan_title, plan_goal, content)
-        for it in llm_issues:
+        for it in _tag_llm(llm_issues, "llm:reader", "reader"):
             issues.append(it)
         if hook_score is not None:
             if hook_score <= 2:
-                issues.append({
+                _low = {
                     "type": "读者-追更欲过低",
                     "detail": f"追更欲评分 {hook_score}/5，低于 3 分阈值",
                     "level": "大改" if hook_score <= 1 else "中改",
-                })
+                    "source": "llm:reader",
+                    "dimension": "reader",
+                }
+                issues.append(_low)
                 score -= 20
 
         # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）
         _it, _d = self._check_consistency(chapter_no, content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_llm(_it, "llm:consistency", "consistency")); score += _d
 
         # 4.6 规则条款一致性（LLM，REQ-通用机制类型适配；仅 rule_set 类型启用）
         _it, _d = self._check_rule_consistency(chapter_no, content)
-        issues.extend(_it); score += _d
+        issues.extend(_tag_llm(_it, "llm:consistency", "consistency")); score += _d
 
         # L2 新增评委：plot 情节结构（唯一新增 LLM 调用，开关 + 普通模式降频；
         # reader/consistency/prose 复用上方已发起的现有调用，不重复计费，TECH §3.2）。
@@ -390,7 +410,10 @@ class QualityChecker:
                 chapter_no, plan_title, plan_goal, content, core_event)
             if plot_result and plot_result.dimension.available:
                 for ri in plot_result.raw_issues:
-                    issues.append(ri.to_dict())
+                    d = ri.to_dict()
+                    d.setdefault("source", "llm:plot")
+                    d.setdefault("dimension", "plot")
+                    issues.append(d)
 
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
@@ -404,7 +427,8 @@ class QualityChecker:
 
         # L3 附加快照（D-1：不接管旧 score/门禁，仅附加 dimensions/recommendations/layers）
         if layered:
-            result.update(self._build_layered_snapshot(uniq, score, hook_score, plot_result))
+            result.update(self._build_layered_snapshot(
+                uniq, score, hook_score, plot_result, l1_issues))
         return result
 
     def _run_plot_reviewer(self, chapter_no: int, plan_title: str, plan_goal: str,
@@ -425,11 +449,13 @@ class QualityChecker:
 
     def _build_layered_snapshot(self, uniq: list[dict], score: int,
                                 hook_score: int | None,
-                                plot_result: ReviewerResult | None) -> dict:
+                                plot_result: ReviewerResult | None,
+                                l1_issues: list[dict] | None = None) -> dict:
         """L3 附加快照：把现有 issue 归类到四维度，组装 dimensions / recommendations / layers。
 
         旧 `score` / `passed` / issues 口径不变；维度分仅作附加信号（D-1）。
-        reader/consistency/prose 维度由现有 issue 归类映射，plot 来自新评委结果。
+        reader/consistency/prose 维度由现有 issue 归类映射，plot 来自新评委结果；
+        `l1_issues` 为确定性阶段候选，供 L3 分层打标与来源归类（计数口径见 D4 覆写）。
         """
         reviewer_results: list[ReviewerResult] = []
         if plot_result is not None:
@@ -440,7 +466,7 @@ class QualityChecker:
         grouped: dict[str, list[dict]] = {"reader": [], "plot": [],
                                           "consistency": [], "prose": []}
         for it in uniq:
-            dim = _aggregate.classify_dimension(it)
+            dim = it.get("dimension") or _aggregate.classify_dimension(it)
             grouped.setdefault(dim, []).append(it)
 
         for key, label in (("reader", "读者体验"), ("consistency", "逻辑一致性"),
@@ -450,6 +476,7 @@ class QualityChecker:
                 level=str(x.get("level", "小改")),
                 fix_suggestion=str(x.get("fix_suggestion") or ""),
                 evidence=str(x.get("evidence", "") or ""),
+                rule_id=str(x.get("rule_id") or ""),
             ) for x in grouped.get(key, [])]
             reviewer_results.append(ReviewerResult(
                 dimension=DimensionResult(key=key, label=label, score=None,
@@ -457,11 +484,13 @@ class QualityChecker:
                 raw_issues=dim_issues))
 
         agg = _aggregate.aggregate(
-            l1_issues=[], reviewer_results=reviewer_results, score=score,
+            l1_issues=l1_issues or [], reviewer_results=reviewer_results, score=score,
             diag_feedback=False, hook_score=hook_score,
         )
         # recommendations 面向全部合并后 issue；layers 统计确定性/评委来源
         agg.recommendations = _aggregate._build_recommendations(uniq)
+        # D4：维持旧测试断言口径——deterministic 计数等于最终 issue 总数；
+        # 真实 L1/L2 分层计数随 L3 深度接线一起演进（TECH §13.2）。
         agg.layers["deterministic"]["issue_count"] = len(uniq)
         return {
             "dimensions": {k: _aggregate.dimension_to_dict(v) for k, v in agg.dimensions.items()},
@@ -1324,7 +1353,11 @@ class QualityChecker:
         ②同一类生物/配角的行为模式前后不一；③方位/指代错误（人在A地却描述B地）；
         ④同一意象的比喻出现两个版本；⑤同一事件出现两个版本（同人物+同冲突+同结果，
         换地点/换描写重写一遍，如"救同伴引开追兵"后又写坡地版同过程）。
-        只报硬矛盾，报了即大改。"""
+        只报硬矛盾，报了即大改。
+
+        二期：事件重复候选先过确定性复核闸门，识别为「打断后续写承接」的候选剔除；
+        其余候选 fail-open 保留。a/b/c 排除条款原文锁定不变，d 条款来自单一权威常量。
+        """
         if not content:
             return []
         try:
@@ -1346,7 +1379,8 @@ class QualityChecker:
                 "可以同时为真，不是同一事件的两个版本；\n"
                 "b) 未执行的念头、计划、心理活动（未实际发生的行为）不算'事件发生'；"
                 "只有实际发生的动作才构成事件；\n"
-                "c) 若无法引用两处【实际发生行为】的原句，不得输出事件重复。"
+                "c) 若无法引用两处【实际发生行为】的原句，不得输出事件重复。\n"
+                + EXCLUSION_CLAUSE_D
             )
             user = (
                 f"第{chapter_no}章正文：\n{content[:_CONSISTENCY_CHARS]}\n\n"
@@ -1354,7 +1388,7 @@ class QualityChecker:
             )
             raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
             data = parse_json_obj(raw)
-            out = []
+            out: list[dict] = []
             for it in (data.get("contradictions") or []):
                 if not isinstance(it, dict):
                     continue
@@ -1366,8 +1400,18 @@ class QualityChecker:
                     "detail": detail,
                     "level": "大改",
                     "fix_suggestion": str(it.get("suggestion") or "").strip(),  # P0-3 诊断回喂
+                    "source": "llm:consistency",
+                    "dimension": "consistency",
+                    "rule_id": "consistency.contradiction",
+                    "evidence": str(it.get("evidence") or "").strip(),
                 })
-            return out
+            # 确定性复核闸门：承接形态剔除，证据不足/信号不足 fail-open 保留
+            kept, filtered = review_event_duplicates(out, content)
+            for f in filtered:
+                logger.warning(
+                    "[quality] ch=%s 事件重复候选识别为承接形态已剔除（signals=%s）：%s",
+                    chapter_no, f.get("review_signals"), str(f.get("detail", ""))[:120])
+            return kept
         except Exception:
             return []
 

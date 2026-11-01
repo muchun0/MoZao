@@ -740,3 +740,74 @@ def test_consistency_prompt_excludes_decision_vs_action():
     assert "不得输出事件重复" in sys
     # 事件重复仍要求引用两处实际行为原句（防误报也防漏报）
     assert "实际发生的行为原句" in sys
+
+
+@pytest.mark.p1
+def test_consistency_prompt_includes_continuation_clause_d():
+    """二期：旧内联 prompt 追加 d 排除条款——中断后的动作递进承接不判事件重复；
+    a/b/c 锁定短语在上一用例中保持原样，本用例只校验 d 段关键口径落地。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    seen = {}
+
+    def _chat(system, user, **kw):
+        seen["sys"] = system
+        return '{"contradictions": []}'
+
+    llm.chat.side_effect = _chat
+    qc = QualityChecker(cfg, llm, None)
+    qc._consistency_llm_check(1, "正文若干")
+    sys = seen["sys"]
+    assert "阶段递进承接" in sys
+    assert "中间隔着对话对峙" in sys
+    assert "两处动作都已独立完成闭环" in sys
+    assert "回到起点后又完整重演一遍" in sys
+
+
+@pytest.mark.p1
+def test_consistency_llm_filters_interrupted_continuation():
+    """二期：LLM 误报「打断后递进承接」事件重复 → 确定性复核闸门剔除，不进入最终 issues；
+    剔除留痕 review_signals；其他一致性类型候选保留并带 source/dimension/rule_id 元数据。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    content = (
+        "沈决把把手压到底。柜门弹开一条缝，冷气混着旧纸的味道涌出来。"
+        "她伸手进去，指尖碰到一叠卷宗的硬边。"
+        "“停手。”走廊尽头的皮鞋声近了。"
+        "“十分钟，开始走了。”陆行舟让出半步通道。"
+        "“你还有八分钟。”他看着她，看了有两秒。"
+        "她把柜门彻底拉开，蹲下去，手伸进那格冷气里。"
+        "指尖碰到一叠卷宗的硬边，她摸到侧脊上贴的标签纸，指腹蹭过去，胶面发涩。"
+    )
+    llm.chat.return_value = (
+        '{"contradictions": ['
+        '{"type": "事件重复", '
+        '"detail": "前一处：『沈决把把手压到底。柜门弹开一条缝，冷气混着旧纸的味道涌出来。'
+        '她伸手进去，指尖碰到一叠卷宗的硬边。』'
+        '后一处：『她把柜门彻底拉开，蹲下去，手伸进那格冷气里。'
+        '指尖碰到一叠卷宗的硬边，她摸到侧脊上贴的标签纸，指腹蹭过去，胶面发涩。』"}'
+        ']}'
+    )
+    qc = QualityChecker(cfg, llm, None)
+    issues = qc._consistency_llm_check(6, content)
+    # 承接形态被剔除：不产生事件重复大改，切断整章重写连锁
+    assert issues == []
+
+
+@pytest.mark.p1
+def test_consistency_llm_kept_carries_metadata():
+    """定位失败 fail-open 保留的候选，带 source/dimension/rule_id 标注，供 L3 聚合归类。"""
+    cfg = NovelConfig(title="t", chapter_words=2500, total_words=10000)
+    llm = MagicMock()
+    llm.chat.return_value = (
+        '{"contradictions": [{"type": "事件重复", '
+        '"detail": "前一处空地救苏妄言；后一处坡地再围再救", "suggestion": "统一为一次救援"}]}'
+    )
+    qc = QualityChecker(cfg, llm, None)
+    issues = qc._consistency_llm_check(1, "正文若干")
+    assert len(issues) == 1
+    hit = issues[0]
+    assert hit["source"] == "llm:consistency"
+    assert hit["dimension"] == "consistency"
+    assert hit["rule_id"] == "consistency.contradiction"
+    assert hit["level"] == "大改"

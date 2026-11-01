@@ -184,6 +184,65 @@ class TestConsistencyReviewer:
         assert res.dimension.available is False
         assert llm.chat.call_count == 0
 
+    def test_external_prompt_loaded_and_issues_schema(self):
+        """二期：优先加载外置 review/consistency.md；新 schema `issues` 可解析，带 rule_id。"""
+        llm = MagicMock()
+        llm.chat.return_value = (
+            '{"score": 80, "issues": [{"type": "身体状态", '
+            '"detail": "前一处左臂受伤，后一处右手发力", "level": "大改", '
+            '"evidence": "两处原文", "suggestion": "统一左臂受伤"}], '
+            '"strengths": ["承接顺畅"]}')
+        res = ConsistencyReviewer().review(_ctx(llm=llm))
+        assert res.dimension.available is True
+        assert res.raw_issues[0].type.startswith("自相矛盾-")
+        assert res.raw_issues[0].rule_id == "consistency.contradiction"
+        # 外置 md 独有短语进入 system prompt（证明 md 接线，而非内置兜底）
+        system = llm.chat.call_args.args[0]
+        assert "事件重复正反示例" in system
+
+    def test_legacy_contradictions_schema_parsed(self):
+        """兼容历史 LLM 返回的 `contradictions` 数组键。"""
+        llm = MagicMock()
+        llm.chat.return_value = (
+            '{"contradictions": [{"type": "方位指代", "detail": "人在东厢却描述西窗", '
+            '"suggestion": "统一方位"}]}')
+        res = ConsistencyReviewer().review(_ctx(llm=llm))
+        assert res.dimension.available is True
+        assert res.raw_issues[0].type == "自相矛盾-方位指代"
+
+    def test_interrupted_continuation_filtered_by_gate(self):
+        """二期：打断后递进承接候选被确定性闸门剔除，留痕进 dimension.extra。"""
+        llm = MagicMock()
+        content = (
+            "沈决把把手压到底。柜门弹开一条缝，冷气混着旧纸的味道涌出来。"
+            "她伸手进去，指尖碰到一叠卷宗的硬边。"
+            "“停手。”走廊尽头的皮鞋声近了。"
+            "“十分钟，开始走了。”陆行舟让出半步通道。"
+            "“你还有八分钟。”他看着她，看了有两秒。"
+            "她把柜门彻底拉开，蹲下去，手伸进那格冷气里。"
+            "指尖碰到一叠卷宗的硬边，她摸到侧脊上贴的标签纸，指腹蹭过去，胶面发涩。"
+        )
+        llm.chat.return_value = (
+            '{"contradictions": [{"type": "事件重复", '
+            '"detail": "前一处：『沈决把把手压到底。柜门弹开一条缝，冷气混着旧纸的味道涌出来。'
+            '她伸手进去，指尖碰到一叠卷宗的硬边。』'
+            '后一处：『她把柜门彻底拉开，蹲下去，手伸进那格冷气里。'
+            '指尖碰到一叠卷宗的硬边，她摸到侧脊上贴的标签纸，指腹蹭过去，胶面发涩。』"}]}')
+        ctx = _ctx(llm=llm, content=content)
+        res = ConsistencyReviewer().review(ctx)
+        assert res.dimension.available is True
+        assert res.raw_issues == []
+        filtered = res.dimension.extra.get("filtered_continuation") or []
+        assert len(filtered) == 1
+        assert filtered[0]["review_signals"] == [
+            "interruption_dialogue", "progression_new_detail", "no_closed_loop"]
+
+    def test_llm_exception_degrades(self):
+        llm = MagicMock()
+        llm.chat.side_effect = RuntimeError("boom")
+        res = ConsistencyReviewer().review(_ctx(llm=llm))
+        assert res.dimension.available is False and res.dimension.score is None
+
 
 class TestProseReviewer:
     def test_runs_offline_without_llm(self):
@@ -230,6 +289,13 @@ class TestCheckSnapshot:
         assert "layers" in result
         assert set(result["dimensions"]) >= {"reader", "consistency", "prose"}
         assert result["layers"]["deterministic"]["issue_count"] == len(result["issues"])
+        # 二期：主链路 issue 统一带 source / dimension 标注，供 L3 聚合归类
+        allowed_sources = {"deterministic", "llm:reader", "llm:consistency", "llm:plot"}
+        for it in result["issues"]:
+            assert it.get("source") in allowed_sources
+            assert it.get("dimension")
+        if result["issues"]:
+            assert any(x["source"] == "deterministic" for x in result["issues"])
 
     def test_legacy_path_has_no_snapshot_fields(self, store):
         cfg = _offline_cfg(store)

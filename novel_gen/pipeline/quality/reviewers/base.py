@@ -45,6 +45,8 @@ class ReviewerIssue:
     suggestion: str = ""
     fix_suggestion: str = ""
     expected_gain: int = 0
+    #: 规则/评委编号（consistency.contradiction / plot.structure / prose.ai_taste），可空
+    rule_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +58,7 @@ class ReviewerIssue:
             "suggestion": self.suggestion,
             "fix_suggestion": self.fix_suggestion,
             "expected_gain": self.expected_gain,
+            "rule_id": self.rule_id,
         }
 
 
@@ -154,6 +157,7 @@ class BaseReviewer:
                 suggestion=str(it.get("suggestion", "") or ""),
                 fix_suggestion=str(it.get("fix_suggestion") or it.get("suggestion") or ""),
                 expected_gain=int(it.get("expected_gain") or 0),
+                rule_id=str(it.get("rule_id") or ""),
             )
             for it in (parsed.get("issues") or []) if isinstance(it, dict)
         ]

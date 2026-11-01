@@ -7,7 +7,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `AGENTS.md` | **豆包 AI 助手长期规则**（分支/复用/部署/Agent 约束），每次新任务必读 |
+| `AGENTS.md` | **Level 1 根规则**（项目身份/硬红线/分支交付/会话协议/规则路由表），每次新任务必读；细则按域在 `docs/rules/`（2026-10-31 三级分层） |
 | `CLAUDE.md` | Claude Code 规则镜像（与 AGENTS.md 同一套约束） |
 | `README.md` | 产品功能 + 架构概览 + 部署 + 更新记录（变更史权威来源） |
 | `WIKI.md` | 产品/技术/API/业务规则/数据库/配置/部署/分支/避坑/安全加固（业务权威） |
@@ -23,7 +23,16 @@
 | `tests/` | pytest 测试（700+ 用例，mock provider 离线跑通；含三期 `test_beat_gate.py`/`test_beat_gate_wiring.py`/`test_scene_inspector.py`；**后台开关管理** `test_sys_config.py`（2026-10-30 增 bool 双向 PUT/GET 回路、范围下发、审计留痕与即时生效）；**世界观机制呈现** `test_world_mechanism_api.py`（2026-10-30 新增，P1：七类机制数值字段下发/条款落库回读/旧数据兜底/空壳不回写/显式类型不被清空）；**REQ-通用机制类型适配** `test_mechanism_types.py`/`test_validator_mechanism_types.py`/`test_mechanism_registry.py`；**小墨AI** `test_assistant_context.py`/`test_assistant_cards.py`/`test_assistant_service.py`，P1；**REQ-Agent用户化 阶段0/0.5（2026-10-25）** `test_settle_per_version.py`（版本级结算 P0）/`test_settle_migration.py`（v1→v2 迁移不重扣）/`test_settle_byok_stop.py`（BYOK 不被平台余额误停）/`test_settle_audit_cli.py`（对账退出码）/`test_wordcount.py`（计费字数唯一事实来源）/`test_settle_wiring.py`（生成链路接线冒烟：大纲/世界观/章节/重写真实产出账本条目）；**阶段1A** `test_versioned_product.py`（版本化门面 P0：commit 幂等/legacy 初始化/淘汰跳 selected/promote=False/quality 透传/user_managed/upstream 自动读取/run_id duck-typing/flag parity）/`test_outline_world_versions.py`（大纲/世界观版本库 P1：首版 v1、存量迁移、select 回读、一次 run 仅 1 版本=commit_head 收尾）/`test_versioned_concurrency.py`（P1：并发不丢版本、索引↔文件对账、version_check CLI 退出码）；**阶段1B（2026-10-25）** `test_agent_prompts.py`（P1：人设懒快照 v1/保存递增/sha256/白名单）/`test_agent_run_guards.py`（P0 资金守卫+P1：402/409/手写章/skill 上限/开关 503）/`test_agent_run_api.py`（P0：202 返回体/四态状态机/停止语义/resume 沿用 task_id）/`test_provenance_meta.py`（P1：run 侧写字段齐全/prompt_version 格式/人设注入不落盘/4KB 截断/200 保留剪枝/commit 自动带 run_id）；**阶段1C（2026-10-25）** `test_product_versions_api.py`（P1：版本金额反查/产物版本列表/选择版本 select/select-impact 影响面/agent-prompts 读写/stop 语义/rewrite 槽位 409）；**版本评审（2026-10-30 新增）** `test_version_review.py`（P1：两视角归类/未知类型不吞/改法来自 diagnosis/原文引用定位/被点名方面不算优点/跨版已消除事实/无质检留空不编造/条目上限 + 路由装配 4 例；`test_version_diff.py` 原有 11 例保持绿） |
 | `tools/` | 运维/校验脚本：`projection_check.py`（投影一致性检查，lagging 退出码 2）、`settle_audit.py`（**结算三方对账**：账本内部 / MySQL 项目累计金额 / 章节已计费版本覆盖率，只读不补扣，差异退出码 1）、`version_check.py`（**版本库对账**，阶段1A：chapter/outline/world 索引↔文件 orphan/missing/selected_mismatch + chapter 孤儿存档目录，只读，差异退出码 1，支持 `--all`）`；`pitfall_reconcile_check.py`（**踩坑注入对账体检**：只读扫描 `pitfall_reconcile.jsonl`，按 path_id 聚合 level/命中率/未命中·重复 Top，存在 L3 → 退出码 3） |
 | `skills_library/` | 写作技能库：`style-references`（style_roles 种子化运行时依赖，Dockerfile COPY 进镜像）/`writing-techniques`（已蒸馏为平台技能入库）+ 技能蒸馏文档（`INDEX.md` 有目录）；不再有仓库内蒸馏脚本（收敛已执行完成） |
-| `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions） |
+| `docs/` | 设计文档（RD 方案）+ 本目录三件套（architecture/filemap/decisions）+ `rules/`（Level 2 域规则，见下） |
+| `docs/rules/workflow.md` | L2 规则：角色分工与需求→开发→测试→发版流程关口（原 AGENTS.md §9） |
+| `docs/rules/backend.md` | L2 规则：webapp 三层边界、SQL 参数化、鉴权/结算 P0 要点（原 §11.2/§11.9/§2.8 部分） |
+| `docs/rules/frontend.md` | L2 规则：Vue3 前端规范、dist 不入库与构建产物校验（原 §11.11/§8） |
+| `docs/rules/generation.md` | L2 规则：novel_gen 生成链路——依赖方向/状态权威源/接线/配置与提示词分离/幂等原子写（原 §11.2/§11.3/§11.7） |
+| `docs/rules/testing.md` | L2 规则：P0/P1/P2 分级、回归范围、端到端冒烟、测试纪律（原 §9.4/§11.8） |
+| `docs/rules/deploy.md` | L2 规则：部署发版、Docker 重建、回滚、发版后观察（原 §7/§9.5 部分） |
+| `docs/rules/docs-sync.md` | L2 规则：文档地图、文档同步义务、飞书需求台账、规则演化（原 §1.1/§6/§10） |
+| `docs/rules/debugging.md` | L2 规则：系统性调试方法论、agent_trace 查提示词（原 §12） |
+| `docs/rules/code-standards.md` | L2 规则：通用编码约束——复用/选型/文件规模/命名注释/异常降级/依赖安全/并发/性能/自查清单/不适用条目（原 §4/§5/§11.1/§11.4-§11.6/§11.9/§11.10/§11.12/§13） |
 | `_gen_skills/`、`.workbuddy/`、`ux_report/` | 内部工具/报告产物目录，一般无需阅读 |
 | `_*.py`（`_extract_routes`/`_split_server`/`_smoke_*` 等） | 一次性开发脚本（路由对比/拆分/冒烟），非运行路径 |
 | `*.md`（`数据隔离改造_*`、`竞品对比分析_20260904.md`） | 历史方案/分析文档，决策背景见 `docs/decisions.md` |
@@ -182,7 +191,7 @@
 | `style.css` | 全局样式（深夜书房视觉语言） |
 | `vite.config.js` / `package.json` | 构建配置/依赖 |
 
-> 构建产物 `webapp/frontend/dist/` **不入库**（见 AGENTS.md §6）。
+> 构建产物 `webapp/frontend/dist/` **不入库**（见 `docs/rules/frontend.md`）。
 
 ## 关联文档速查
 
@@ -191,6 +200,6 @@
 | 某接口的路径/参数/返回 | `API.md` |
 | 计费/返佣/退款/封面规则 | `WIKI.md` §4、`README.md` 计费节 |
 | 数据库表结构 | `WIKI.md` §5、`webapp/db/base.py`（含 agent_trace） |
-| 部署/发版/已知问题 | `WIKI.md` §7-9、`AGENTS.md` §5 |
+| 部署/发版/已知问题 | `WIKI.md` §7-9、`docs/rules/deploy.md` |
 | 为什么这么设计/踩过的坑 | `docs/decisions.md` |
 | 模块职责/依赖/改哪里 | `docs/architecture.md` |

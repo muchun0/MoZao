@@ -12,7 +12,6 @@
 | `README.md` | 产品功能 + 架构概览 + 部署 + 更新记录（变更史权威来源） |
 | `WIKI.md` | 产品/技术/API/业务规则/数据库/配置/部署/分支/避坑/安全加固（业务权威） |
 | `API.md` | REST API 接口文档（接口细节权威来源） |
-| `BRANCH_FLOW.md` | 分支流程说明 |
 | `run_web.py` | Web 启动入口（默认 127.0.0.1:8000，可指定端口/host） |
 | `Dockerfile` / `docker-compose.yml` | 容器化部署（前端多阶段构建 + mysql-mozao） |
 | `requirements.txt` | Python 依赖（注意 httpx<0.28 锁定） |

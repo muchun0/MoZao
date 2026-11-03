@@ -116,6 +116,123 @@ def test_seed_new_flag_auto_insert(monkeypatch):
             conn.execute("DELETE FROM sys_config WHERE config_key=%s", ("__test_new_flag__",))
 
 
+# ---------- 默认值口径变更迁移（updated_by 为空才迁移） ----------
+
+_MIG_KEY = "__test_migrate_default__"
+
+
+def _seed_mig_flag(value: str, updated_by) -> None:
+    """构造一条测试开关行（临时 key，用完即删，不污染真实开关）。"""
+    with db._connect() as conn:
+        conn.execute(
+            "INSERT INTO sys_config (config_key, config_value, config_group, config_type, "
+            "label, description, is_system, updated_by) "
+            "VALUES (%s, %s, 'writing', 'bool', '迁移测试', '迁移测试', 1, %s) "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value), "
+            "updated_by=VALUES(updated_by)",
+            (_MIG_KEY, value, updated_by),
+        )
+
+
+def _clean_mig_flag() -> None:
+    with db._connect() as conn:
+        conn.execute("DELETE FROM sys_config WHERE config_key=%s", (_MIG_KEY,))
+        conn.execute("DELETE FROM sys_config_log WHERE config_key=%s", (_MIG_KEY,))
+
+
+def _mig_logs() -> list[dict]:
+    with db._connect() as conn:
+        return list(conn.execute(
+            "SELECT old_value, new_value, operator FROM sys_config_log "
+            "WHERE config_key=%s ORDER BY id", (_MIG_KEY,),
+        ).fetchall())
+
+
+@pytest.mark.p2
+def test_default_migrations_registry_contains_assistant_key():
+    """白名单必须包含小墨开关的 true→false 迁移（防止后续误删导致生产不生效）。"""
+    assert ("assistant_require_user_key", "true", "false") in cfg_db.DEFAULT_MIGRATIONS
+
+
+@pytest.mark.p1
+@_NEED_DB
+def test_default_migration_seeded_true_moves_to_false():
+    """从未被后台改过 + 旧值 true → 迁到 false，写 updated_by=system-migration 且留审计时间。"""
+    _clean_mig_flag()
+    try:
+        _seed_mig_flag("true", None)
+        with db._connect() as conn:
+            assert cfg_db._migrate_default_value(conn, _MIG_KEY, "true", "false") == 1
+        row = cfg_db.get_config(_MIG_KEY)
+        assert row["config_value"] == "false"
+        assert row["updated_by"] == cfg_db.MIGRATION_OPERATOR
+        assert row["updated_at"] is not None            # 更新时间由 ON UPDATE 自动记录
+        logs = _mig_logs()
+        assert len(logs) == 1
+        assert logs[0]["old_value"] == "true" and logs[0]["new_value"] == "false"
+        assert logs[0]["operator"] == cfg_db.MIGRATION_OPERATOR
+    finally:
+        _clean_mig_flag()
+
+
+@pytest.mark.p1
+@_NEED_DB
+def test_default_migration_noop_when_value_already_new():
+    """从未被后台改过 + 值已是 false → 不写库、不写审计。"""
+    _clean_mig_flag()
+    try:
+        _seed_mig_flag("false", None)
+        with db._connect() as conn:
+            assert cfg_db._migrate_default_value(conn, _MIG_KEY, "true", "false") == 0
+        assert cfg_db.get_config(_MIG_KEY)["config_value"] == "false"
+        assert _mig_logs() == []
+    finally:
+        _clean_mig_flag()
+
+
+@pytest.mark.p1
+@_NEED_DB
+def test_default_migration_keeps_admin_overridden_value():
+    """被后台手动改过（updated_by='admin'）→ 即使值为 true 也绝不覆盖。"""
+    _clean_mig_flag()
+    try:
+        _seed_mig_flag("true", "admin")
+        with db._connect() as conn:
+            assert cfg_db._migrate_default_value(conn, _MIG_KEY, "true", "false") == 0
+        row = cfg_db.get_config(_MIG_KEY)
+        assert row["config_value"] == "true"
+        assert row["updated_by"] == "admin"
+        assert _mig_logs() == []
+    finally:
+        _clean_mig_flag()
+
+
+@pytest.mark.p1
+@_NEED_DB
+def test_default_migration_idempotent_twice():
+    """重复执行两次：第二次 0 行受影响，审计只保留 1 条（重复启动不重复记）。"""
+    _clean_mig_flag()
+    try:
+        _seed_mig_flag("true", None)
+        with db._connect() as conn:
+            assert cfg_db._migrate_default_value(conn, _MIG_KEY, "true", "false") == 1
+            assert cfg_db._migrate_default_value(conn, _MIG_KEY, "true", "false") == 0
+        assert len(_mig_logs()) == 1
+    finally:
+        _clean_mig_flag()
+
+
+@pytest.mark.p2
+@_NEED_DB
+def test_default_migration_failure_does_not_break_seed(monkeypatch):
+    """迁移抛异常时只留痕跳过，seed 仍正常返回（不阻断启动）。"""
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cfg_db, "_migrate_default_value", _boom)
+    assert isinstance(cfg_db.seed_feature_flags(), int)
+
+
 # ---------- 更新 + 审计 ----------
 
 @pytest.mark.p1

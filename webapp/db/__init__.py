@@ -24,6 +24,7 @@ from .skills import *  # noqa: F401,F403
 from .style_roles import *  # noqa: F401,F403
 from .teardowns import *  # noqa: F401,F403
 from .assistant import *  # noqa: F401,F403
+from .assistant_billing import *  # noqa: F401,F403
 from .traces import *  # noqa: F401,F403
 from .config import *  # noqa: F401,F403
 

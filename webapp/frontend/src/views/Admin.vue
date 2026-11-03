@@ -72,6 +72,39 @@
         </el-table>
       </el-tab-pane>
 
+      <!-- 小墨AI 消费（D4=B 独立账本，不混入项目生成统计） -->
+      <el-tab-pane label="小墨消费" name="assistant-billing">
+        <el-row :gutter="16" class="stat-row">
+          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ assistantBillingStats.total ?? 0 }}</div><div class="stat-label">对话笔数</div></el-card></el-col>
+          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ (assistantBillingStats.chars ?? 0).toLocaleString() }}</div><div class="stat-label">计费字数</div></el-card></el-col>
+          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">¥{{ Number(assistantBillingStats.charged ?? 0).toFixed(2) }}</div><div class="stat-label">实扣金额</div></el-card></el-col>
+          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">{{ assistantBillingStats.pending ?? 0 }}</div><div class="stat-label">待补扣</div></el-card></el-col>
+        </el-row>
+        <div style="margin-bottom:10px">
+          <el-button size="small" @click="loadAssistantBilling">刷新</el-button>
+        </div>
+        <el-table :data="assistantBilling" stripe size="small">
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column prop="username" label="用户" width="110" />
+          <el-table-column prop="project_id" label="项目" show-overflow-tooltip />
+          <el-table-column prop="mode" label="来源" width="100" />
+          <el-table-column prop="status" label="状态" width="80" />
+          <el-table-column prop="chars" label="字数" width="80" />
+          <el-table-column prop="due" label="应付" width="80" />
+          <el-table-column prop="charged" label="实扣" width="80" />
+          <el-table-column prop="owe" label="欠费" width="80" />
+          <el-table-column label="时间" width="160">
+            <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90">
+            <template #default="{ row }">
+              <el-button v-if="row.status === 'pending'" size="small" link type="primary"
+                         @click="retryAssistantBilling(row)">补扣</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
       <!-- 平台技能管理 -->
       <el-tab-pane label="平台技能" name="skills">
         <el-button type="primary" size="small" @click="skillDialog = true">+ 新建平台技能</el-button>
@@ -269,6 +302,8 @@ const users = ref([])
 const refunds = ref([])
 const refundFilter = ref('')
 const transactions = ref([])
+const assistantBilling = ref([])
+const assistantBillingStats = ref({})
 const skills = ref([])
 const logs = ref('')
 const qualityReport = ref(null)
@@ -513,6 +548,29 @@ async function delSkill(row) {
   loadSkills()
 }
 
+// 时间戳（秒）格式化；小墨账本时间列为 DOUBLE 秒
+const fmtTs = ts => (ts ? new Date(ts * 1000).toLocaleString() : '-')
+
+async function loadAssistantBilling() {
+  try {
+    const r = await adminApi.listAssistantBilling({ limit: 200 })
+    assistantBilling.value = r.items || []
+    assistantBillingStats.value = r.stats || {}
+  } catch (e) {
+    ElMessage.error('小墨消费加载失败')
+  }
+}
+
+async function retryAssistantBilling(row) {
+  try {
+    await adminApi.retryAssistantBilling(row.id)
+    ElMessage.success('补扣完成')
+    loadAssistantBilling()
+  } catch (e) {
+    ElMessage.error('补扣失败：' + (e.response?.data?.detail || e.message))
+  }
+}
+
 onMounted(() => {
   loadAll()
   loadRefunds()
@@ -520,6 +578,7 @@ onMounted(() => {
   loadSkills()
   loadLogs()
   loadConfig()
+  loadAssistantBilling()
 })
 </script>
 

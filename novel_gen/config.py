@@ -168,9 +168,12 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("assistant", "assistant_max_tokens", 1500, "小墨AI 单次回复最大 token（硬顶，控成本）"),
     FeatureFlag("assistant", "assistant_context_token_limit", 20000, "小墨AI 单轮输入 token 估算上限，超出按固定顺序裁剪（不拒绝）"),
     FeatureFlag("assistant", "assistant_history_turns", 6, "小墨AI 上下文保留最近 N 轮对话（层3 对话窗口）"),
-    FeatureFlag("assistant", "assistant_quota_enabled", False, "小墨AI 次数/计费开关（一期不生效，仅预留接入点）"),
-    FeatureFlag("assistant", "assistant_require_user_key", True,
-                "小墨AI 仅允许用户自带 Key（关闭平台 Key 兜底；未配置时直接提示去配置）"),
+    FeatureFlag("assistant", "assistant_quota_enabled", False, "小墨AI 次数/限次计费开关（本期保持 False，仅预留接入点；按字数计费不使用此开关）"),
+    FeatureFlag("assistant", "assistant_billing_enabled", True,
+                "小墨AI 按字数计费总开关：True=平台 Key 对余额>0 用户开放并按回答字符数结算；"
+                "False=退回仅 BYOK、不扣费（紧急回退）"),
+    FeatureFlag("assistant", "assistant_require_user_key", False,
+                "小墨AI 强制仅允许用户自带 Key（True 时优先于计费开关；默认 False 表示允许平台 Key）"),
     # ---- version：产物版本化（TECH-Agent用户化与版本化 阶段1A）----
     FeatureFlag("version", "versioned_product", True,
                 "版本化门面总开关（阶段1A）：True=outline/world 建真实版本库、save_chapter 走 "
@@ -464,6 +467,7 @@ class NovelConfig:
     assistant_context_token_limit: int = feature_default("assistant_context_token_limit")  # 单轮输入 token 估算上限
     assistant_history_turns: int = feature_default("assistant_history_turns")          # 上下文保留最近 N 轮
     assistant_quota_enabled: bool = feature_default("assistant_quota_enabled")          # 配额开关（一期不生效）
+    assistant_billing_enabled: bool = feature_default("assistant_billing_enabled")      # 按字数计费总开关
     assistant_require_user_key: bool = feature_default("assistant_require_user_key")    # 仅用用户自带 Key
     # ---- version：产物版本化（阶段1A）----
     versioned_product: bool = feature_default("versioned_product")           # 版本化门面总开关

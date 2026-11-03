@@ -46,3 +46,16 @@ def test_world_counts_all_nested_text():
 def test_unknown_kind_raises():
     with pytest.raises(ValueError):
         count_words("unknown", {})
+
+
+def test_assistant_counts_stripped_content():
+    """小墨回答按正文计费：只算 content，去首尾空白；空回答/纯空白计 0。"""
+    assert count_words("assistant", {"content": " 你好 "}) == 2
+    assert count_words("assistant", " Markdown **粗体** ") == len("Markdown **粗体**")
+    assert count_words("assistant", {"content": "   "}) == 0
+    assert count_words("assistant", {"content": ""}) == 0
+    assert count_words("assistant", {"content": None}) == 0
+    # 未知类型必须显式失败，不得静默按 0 计费（fail-closed）
+    with pytest.raises(ValueError):
+        count_words("assistant_typo", {"content": "abc"})
+

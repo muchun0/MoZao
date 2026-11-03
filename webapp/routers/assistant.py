@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """小墨AI 路由：只做 HTTP 输入输出与鉴权，业务在 webapp/assistant/service.py。"""
+from fastapi import Header
 from pydantic import BaseModel, Field
 
 from .. import db
@@ -60,14 +61,17 @@ def get_conversation(project_id: str, cid: int, limit: int = 50, before_id: int 
 
 @app.post("/api/projects/{project_id}/assistant/conversations/{cid}/messages")
 def send_message(project_id: str, cid: int, req: MessageReq,
+                 idempotency_key: str = Header(default="", alias="Idempotency-Key"),
                  user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
     conv = _owned_conversation(project_id, cid)
     if int(conv["user_id"]) != int(user["id"]) and not user["is_admin"]:
         raise HTTPException(status_code=403, detail="无权访问该会话")
     store = _find_project(project_id)
+    # D1=1A：前端必须携带 Idempotency-Key，服务端按项目+request_id 幂等
     return service.send_message(store, user, conv, req.content, req.mode,
-                                chapter_no=req.chapter_no or None)
+                                chapter_no=req.chapter_no or None,
+                                request_id=idempotency_key)
 
 
 @app.delete("/api/projects/{project_id}/assistant/conversations/{cid}")

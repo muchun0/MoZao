@@ -1,0 +1,50 @@
+# CI：合入前跑 P0 回归、硬护栏检查与前端构建
+# 说明：仓库若未托管在 GitHub，本文件即"本地 CI 脚本的等价定义"；
+# 本地可执行 `python -m pytest tests/ -m p0 -q` + `npm run build` 复现。
+name: ci
+
+on:
+  pull_request:
+    branches: [devtest, master]
+  push:
+    branches: [devtest]
+
+jobs:
+  p0-and-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Guard check (tracked files)
+        # 本检查是 automation/scripts/guard_check.py 的子集，完整护栏由本地 hook 承担，两边规则需同步
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)\.env$|\.key$|\.pem$|(^|/)dist/|\.zip$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::以下已跟踪文件违反护栏（.env / *.key / *.pem / dist/ / *.zip）："
+            echo "$bad"
+            exit 1
+          fi
+          echo "Guard check passed: no forbidden tracked files."
+      - name: P0 regression
+        run: python -m pytest tests/ -m p0 -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

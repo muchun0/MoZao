@@ -35,7 +35,9 @@
         </div>
         <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.role">
           <div class="bubble">
-            <div class="msg-content">{{ m.content }}</div>
+            <!-- 小墨回答渲染 Markdown；用户提问保持纯文本（white-space: pre-wrap） -->
+            <div v-if="m.role === 'assistant'" class="msg-content md-body" v-html="renderMd(m.content)"></div>
+            <div v-else class="msg-content">{{ m.content }}</div>
             <AssistantCard v-for="(card, i) in msgCards(m)" :key="i" :card="card" />
             <div v-if="m.role === 'assistant' && m.extra && m.extra.notice" class="a-notice">
               {{ m.extra.notice }}
@@ -43,6 +45,14 @@
             <div v-if="m.role === 'assistant'" class="msg-foot">
               <span v-if="m.extra && m.extra.token_in != null" class="usage">
                 第{{ m.extra.chapter_no }}章 · 输入 {{ m.extra.token_in }} / 输出 {{ m.extra.token_out || 0 }} tokens
+              </span>
+              <span v-if="m.extra && m.extra.billing_status" class="billing">
+                <template v-if="m.extra.billing_status === 'billed'">
+                  本次 {{ m.extra.chars || 0 }} 字 · 实扣 ¥{{ (m.extra.charged || 0).toFixed(2) }}
+                  <span v-if="m.extra.owe > 0">（欠费 ¥{{ m.extra.owe.toFixed(2) }}）</span>
+                </template>
+                <template v-else-if="m.extra.billing_status === 'failed'">计费待补扣</template>
+                <template v-else>本条不计费</template>
               </span>
               <el-button v-if="m.extra && m.extra.chapter_no" link size="small" type="primary"
                          @click="$emit('locate', m.extra.chapter_no)">
@@ -64,7 +74,7 @@
         <el-input v-model="draft" type="textarea" :rows="3" maxlength="4000" show-word-limit
                   :placeholder="placeholder" @keydown.ctrl.enter.prevent="submit" />
         <div class="send-row">
-          <span class="hint">Ctrl+Enter 发送 · 不限次不扣费 · 模型 Key 需在「模型设置」自配</span>
+          <span class="hint">Ctrl+Enter 发送 · 按回答字数计费（3 元/万字）· 自备 Key 不扣费</span>
           <el-button type="primary" :loading="sending" :disabled="!chapters.length || !draft.trim()"
                      @click="submit">发送</el-button>
         </div>
@@ -80,6 +90,7 @@ import {
   listConversations, createConversation, getConversation, sendMessage, deleteConversation,
 } from '../../api/assistant'
 import AssistantCard from './AssistantCard.vue'
+import { renderMarkdown as renderMd } from '../../utils/markdown'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -200,6 +211,7 @@ async function submit() {
   try {
     const cid = await ensureConversation()
     draft.value = ''
+    // 幂等键由 api 层统一生成（见 utils/requestId.js），调用方无需再传
     await sendMessage(props.projectId, cid, {
       content: text, mode: mode.value, chapter_no: chapterNo.value || 0,
     })
@@ -252,10 +264,28 @@ onMounted(async () => {
   border-top-left-radius: 2px; }
 .bubble.typing { color: #909399; }
 .msg-content { white-space: pre-wrap; word-break: break-word; }
+/* 小墨回答的 Markdown 样式：v-html 生成的子元素不在 scoped 作用域内，需 :deep 命中 */
+.md-body { white-space: normal; }
+.md-body :deep(p) { margin: 0 0 8px; }
+.md-body :deep(p:last-child) { margin-bottom: 0; }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) {
+  margin: 10px 0 6px; font-size: 13.5px; font-weight: 600; color: #1f3a5f;
+}
+.md-body :deep(h1:first-child), .md-body :deep(h2:first-child), .md-body :deep(h3:first-child) { margin-top: 0; }
+.md-body :deep(strong) { font-weight: 600; color: #1f3a5f; }
+.md-body :deep(ul), .md-body :deep(ol) { margin: 4px 0 8px; padding-left: 18px; }
+.md-body :deep(li) { margin: 2px 0; }
+.md-body :deep(code) { background: #f5f7fa; border-radius: 4px; padding: 1px 4px; font-size: 12px; }
+.md-body :deep(pre) { background: #f5f7fa; border-radius: 6px; padding: 8px; overflow-x: auto; }
+.md-body :deep(blockquote) {
+  margin: 6px 0; padding: 4px 10px; border-left: 2px solid #c9a961; color: #606266; background: #fdf9ef;
+}
+.md-body :deep(a) { color: #1f3a5f; text-decoration: underline; }
 .a-notice { margin-top: 8px; font-size: 12px; color: #b88230; background: #fdf6ec; border-radius: 6px;
   padding: 6px 8px; }
 .msg-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 .usage { font-size: 11px; color: #c0c4cc; }
+.billing { font-size: 11px; color: #909399; }
 .input-area { border-top: 1px solid #ebeef5; padding: 10px 12px; background: #fff; }
 .input-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; min-height: 22px; }
 .err-text { font-size: 12px; color: #f56c6c; }

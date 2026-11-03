@@ -9,6 +9,8 @@ export const handleRefund = (id, data) => request.post(`/admin/refunds/${id}/han
 export const approveRefund = (id) => handleRefund(id, { action: 'approve' })
 export const rejectRefund = (id) => handleRefund(id, { action: 'reject' })
 export const listTransactions = (params) => request.get('/admin/recharges', { params })
+export const listAssistantBilling = (params) => request.get('/admin/assistant-billing', { params })
+export const retryAssistantBilling = (id) => request.post(`/admin/assistant-billing/${id}/retry`)
 export const getLogs = (params) => request.get('/admin/logs', { params })
 export const getQualityReport = (params) => request.get('/admin/quality-report', { params })
 export const listSkills = () => request.get('/admin/skills')

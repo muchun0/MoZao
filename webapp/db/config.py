@@ -39,6 +39,7 @@ __all__ = [
     "FLAG_MODULES", "SELECT_ENUMS", "AGENT_GUARD_SCALAR", "AGENT_GUARD_JSON",
     "coerce_config_type", "flag_type", "json_default", "seed_feature_flags",
     "list_configs", "get_config", "update_configs", "count_configs",
+    "DEFAULT_MIGRATIONS", "MIGRATION_OPERATOR",
 ]
 
 
@@ -97,6 +98,16 @@ def coerce_config_type(config_type: str, raw: str):
     return str(raw)
 
 
+# 默认值口径变更迁移：注册表默认值改了，但 seed 不覆盖存量表值（以表为准），
+# 若该行从未被后台手动改过（updated_by 为空），这里把它从旧默认值迁到新默认值。
+# 只处理「明确发生口径变更」的白名单，禁止据此批量改历史调参值。
+MIGRATION_OPERATOR: str = "system-migration"
+DEFAULT_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    # 2026-11-03：小墨AI 从「仅 BYOK」改为「付费用户可用平台 Key、按字数扣费」
+    # （REQ/TECH-小墨AI计费 v0.2 D2：billing=true / require_user_key=false）
+    ("assistant_require_user_key", "true", "false"),
+)
+
 # 已退役开关（行为固化进代码，从注册表移除后同步清理存量行，防残留覆盖/后台误改）。
 # 仅白名单内的 key 才会被清理；不在名单的「非注册表行」（如 scene_limits）不受影响。
 RETIRED_FLAGS: tuple[str, ...] = (
@@ -106,6 +117,52 @@ RETIRED_FLAGS: tuple[str, ...] = (
     "character_depth",        # 人物立体化：已固化开启
     "high_quality_mode",      # 高质量模式：已固化开启（普通模式不再存在）
 )
+
+
+def _migrate_default_value(conn, key: str, old_value: str, new_value: str) -> int:
+    """把「从未被后台改过」的存量开关从旧默认值迁到新默认值（幂等），返回迁移条数。
+
+    只在 `updated_by` 为空（NULL/空串）时迁移：非空代表站长在后台手动设置过，
+    属于运营意图，必须保留「以表为准」，不能被代码升级悄悄覆盖。
+    条件里带 `config_value=old_value`，重复启动时值已变成新默认值 → 0 行受影响，
+    因此不会重复写、也不会重复记审计；更新时间由表字段 ON UPDATE 自动落。
+    """
+    cur = conn.execute(
+        "UPDATE sys_config SET config_value=%s, updated_by=%s "
+        "WHERE config_key=%s AND config_value=%s "
+        "AND (updated_by IS NULL OR updated_by='')",
+        (new_value, MIGRATION_OPERATOR, key, old_value),
+    )
+    changed = int(cur.rowcount or 0)
+    if changed:
+        conn.execute(
+            "INSERT INTO sys_config_log (config_key, old_value, new_value, operator) "
+            "VALUES (%s, %s, %s, %s)",
+            (key, old_value, new_value, MIGRATION_OPERATOR),
+        )
+        logger.warning("开关默认值迁移: %s %s→%s（operator=%s）",
+                       key, old_value, new_value, MIGRATION_OPERATOR)
+    return changed
+
+
+def _apply_default_migrations() -> int:
+    """执行 DEFAULT_MIGRATIONS 白名单（独立事务，失败留痕不阻断启动）。
+
+    与 seed 分开连接：迁移出错不会回滚已提交的注册表元数据同步。
+    逐条 try/except：单个 key 失败不影响其它迁移。
+    """
+    migrated = 0
+    try:
+        with _connect() as conn:
+            for key, old_value, new_value in DEFAULT_MIGRATIONS:
+                try:
+                    migrated += _migrate_default_value(conn, key, old_value, new_value)
+                except Exception:
+                    logger.exception("开关默认值迁移失败（跳过，不影响启动）: %s %s→%s",
+                                     key, old_value, new_value)
+    except Exception:
+        logger.exception("开关默认值迁移整体跳过（不影响启动）")
+    return migrated
 
 
 def seed_feature_flags() -> int:
@@ -139,6 +196,8 @@ def seed_feature_flags() -> int:
             cur = conn.execute("DELETE FROM sys_config WHERE config_key=%s", (key,))
             if cur.rowcount:
                 logger.warning("退役开关清理: 已删除 sys_config 行 %s（行为已固化进代码）", key)
+    # 注册表元数据先提交，再独立执行默认值口径迁移（迁移失败不影响 seed/启动）
+    _apply_default_migrations()
     return added
 
 

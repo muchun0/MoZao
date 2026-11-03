@@ -44,6 +44,19 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Init database schema
         run: python -c "import webapp.db"
+      - name: Seed admin (idempotent)
+        # CI 固定测试账号 admin/admin（非真实凭据，不使用 secrets）；已存在则不改密码
+        run: |
+          python - <<'PY'
+          from webapp import db
+          if db.get_user_by_name("admin") is None:
+              ok, why = db.create_user("admin", "admin", is_admin=True, email="admin@ci.local")
+              if not ok:
+                  raise SystemExit(f"seed admin failed: {why}")
+              print("admin created")
+          else:
+              print("admin already exists, skip")
+          PY
       - name: Guard check (tracked files)
         # 本检查是 automation/scripts/guard_check.py 的子集，完整护栏由本地 hook 承担，两边规则需同步
         run: |

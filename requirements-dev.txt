@@ -1,0 +1,6 @@
+# 开发/CI 依赖：运行时依赖 + 测试工具
+# 仅用于本地测试与 CI，不进入生产镜像；CI 安装本文件，容器仍只装 requirements.txt
+# 安装：pip install -r requirements-dev.txt
+
+-r requirements.txt
+pytest>=8.0.0

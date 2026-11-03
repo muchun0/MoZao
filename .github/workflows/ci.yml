@@ -12,6 +12,27 @@ on:
 jobs:
   p0-and-guard:
     runs-on: ubuntu-latest
+    # P0 用例在 import webapp.db 时即初始化 schema，必须提供真实 MySQL；
+    # 生产镜像仍只装 requirements.txt，测试依赖只装在 CI
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: mozao
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: mozao
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,7 +41,9 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Init database schema
+        run: python -c "import webapp.db"
       - name: Guard check (tracked files)
         # 本检查是 automation/scripts/guard_check.py 的子集，完整护栏由本地 hook 承担，两边规则需同步
         run: |

@@ -545,6 +545,13 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-11-04 00:03**：第三十三次部署（服务器代码 = master `faa5358`，**已上线**）——**小墨AI 支持付费用户按字数计费 + 文档口径补充**（feat/assistant-billing 合并 master，含 `3df5f2a` / `faa5358` 两次 `--no-ff` 合并）：
+  - **① 付费用户走平台 Key 按字数扣费**：统一 3 元/万字，按 AI 实际生成字数结算；BYOK 用户不扣费；独立 `assistant_billing` 账本（不占项目 500 条账本、不计入 `ai_words_total` 项目累计），先落用户消息再调用 + 请求级 `Idempotency-Key` 幂等（唯一索引）。
+  - **② 前端接线**：小墨回答改为 markdown 渲染（`markdown-it`，`html:false` 防注入、`breaks:true`），新增 `utils/requestId.js` 自动携带幂等键，后台新增开关配置入口。
+  - **③ 开关默认值迁移**：`sys_config.assistant_require_user_key` 由 `true` 迁到 `false`（仅 `updated_by` 为空时迁移，operator `system-migration`），随服务启动自动执行并写 `sys_config_log` 审计。
+  - **上线证据**：镜像 `novel-gen:latest`（重建前旧镜像已打 `novel-gen:rollback-4c46aae`）；前端多阶段构建真实执行（`vite v8.3.0 built in 5.85s`）；`https://mozao.click/api/health` 200 `{"status":"ok"}`；主页引用 `assets/index-D3312oZV.js`（200，1,119,237 B）+ `assets/index-DFRzFKSO.css`，不白屏；DB 核对 `assistant_require_user_key=false`、`updated_by=system-migration`，`sys_config_log` 有 `true→false / operator=system-migration` 记录（2026-11-04 00:02:16）。
+  - 部署：`git archive master` → workbench upload（md5 `5dc712be90dc800a3df63a7d601834ec` 一致）→ 备份 `/opt/novel-gen-bak-20261103.tgz` → 解压 `/opt/novel-gen` → `docker compose up -d --build`。回滚：`docker tag novel-gen:rollback-4c46aae novel-gen:latest && cd /opt/novel-gen && docker compose up -d`。
+
 - **2026-11-01**：第三十二次部署（服务器代码 = master，**已上线**）——**质检语义复核二期：一致性事件重复误报修复 + 提示词接线 + 分层元数据对齐**（fix/quality-consistency-review-1101）：
   - **① 事件重复误报修复**：新增 `quality/consistency_review.py` 确定性复核闸门（纯函数 / 零新增 LLM / fail-open）——仅当「对话打断 + 递进新细节 + 前动作未闭环」三信号齐全且无重演反向冲突时才剔除承接候选；引文缺失、定位失败、信号不全、自身异常一律**保留候选**（剔除留 `logger.warning`），真重演两版本仍报大改。
   - **② d 排除条款收敛单一权威源**：旧内联检查、新 consistency 评委内置兜底、外置 `review/consistency.md` 三处口径同步（a/b/c 原文与既有测试锁定短语逐字保留）。

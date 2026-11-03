@@ -37,7 +37,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # 必须与生产镜像 Dockerfile（python:3.13-slim）一致；
+          # 3.11 不兼容代码中的 PEP 701 f-string 写法，会在收集阶段直接 SyntaxError
+          python-version: "3.13"
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip

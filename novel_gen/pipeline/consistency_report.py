@@ -116,53 +116,136 @@ COVERAGE_WATERMARK_META: dict = {
 #: 记录缺口最多返回多少个章号（超出由前端折叠成区间）
 MAX_MISSING_CHAPTERS = 30
 
+#: 覆盖清单首屏最多列出的章数与每章条目数（避免把整本清单一次塞给前端）
+MAX_RECORDED_CHAPTERS = 12
+MAX_RECORDED_ITEMS = 3
+RECORDED_TEXT_LIMIT = 46
 
-def _recorded_chapters(store, view: str) -> Optional[set]:
-    """读取某视图「已记录的章号」集合；读取失败或该视图无逐章记录时返回 None。"""
+#: 落盘记录只有编号、没有可读描述时的统一标注
+NO_DESCRIPTION = "只有编号，没有描述"
+
+#: 不可逐章定位时的空清单字段（保持接口形状一致，前端无需分支）
+_EMPTY_RECORDED = {"recorded_chapters": [], "recorded_chapter_count": 0,
+                   "recorded_item_count": 0, "recorded_truncated": False}
+
+
+def _view_records(store, view: str) -> Optional[dict]:
+    """一次性读取某视图的逐章记录（{章号: 原始值}）；读不到或异常时返回 None。"""
     try:
         if view == "chapter_commit":
             chapters = (store.load_chapter_commit() or {}).get("chapters") or {}
-            return {int(k) for k, v in chapters.items()
-                    if isinstance(v, dict) and v.get("status") != "pending"}
+            return {int(k): v for k, v in chapters.items()
+                    if str(k).isdigit() and isinstance(v, dict)
+                    and v.get("status") != "pending"}
         if view == "summaries":
-            return {int(x["no"]) for x in (store.load_summaries() or [])
+            return {int(x["no"]): x for x in (store.load_summaries() or [])
                     if isinstance(x, dict) and x.get("no")}
         if view == "scenes":
-            return {int(k) for k in (store.load_scenes() or {}) if str(k).isdigit()}
+            raw = store.load_scenes() or {}
+            return {int(k): v for k, v in raw.items()
+                    if str(k).isdigit() and isinstance(v, dict)}
         if view == "beat_gate":
-            return {int(k) for k in (store.load_beat_gate() or {}) if str(k).isdigit()}
+            raw = store.load_beat_gate() or {}
+            return {int(k): v for k, v in raw.items()
+                    if str(k).isdigit() and isinstance(v, dict)}
     except Exception:
         return None
     return None
 
 
+def _recorded_chapters(store, view: str) -> Optional[set]:
+    """读取某视图「已记录的章号」集合；读取失败或该视图无逐章记录时返回 None。"""
+    records = _view_records(store, view)
+    return None if records is None else set(records)
+
+
+def _clip_text(value) -> str:
+    """压成单行并截断，避免一条记录把卡片撑满。"""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= RECORDED_TEXT_LIMIT:
+        return text
+    return text[: RECORDED_TEXT_LIMIT - 1] + "…"
+
+
+def _chapter_entries(view: str, record) -> tuple[list[str], int]:
+    """把一章的落盘记录压成可读条目，返回（摘要列表, 条目总数）。"""
+    if view == "scenes":
+        scenes = record.get("scenes") or []
+        texts: list[str] = []
+        for sc in scenes[:MAX_RECORDED_ITEMS]:
+            if not isinstance(sc, dict):
+                texts.append(NO_DESCRIPTION)
+                continue
+            text = sc.get("event") or sc.get("location") or sc.get("scene_event_ref")
+            if text and sc.get("location") and str(sc["location"]) not in str(text):
+                text = f"{sc['location']} · {text}"
+            texts.append(_clip_text(text) if text else NO_DESCRIPTION)
+        return texts, len(scenes)
+    if view == "beat_gate":
+        planned = record.get("planned") or []
+        texts = []
+        for b in planned[:MAX_RECORDED_ITEMS]:
+            if not isinstance(b, dict):
+                texts.append(_clip_text(b) or NO_DESCRIPTION)
+                continue
+            mark = "已覆盖" if b.get("covered") else "未覆盖"
+            beat = b.get("beat")
+            texts.append(_clip_text(f"{mark}：{beat}") if beat else mark)
+        return texts, len(planned)
+    if view == "summaries":
+        return [_clip_text(record.get("summary")) or NO_DESCRIPTION], 1
+    if view == "chapter_commit":
+        done = record.get("done") or []
+        failed = record.get("failed") or []
+        texts = [t for t in (_clip_text(x) for x in done[:MAX_RECORDED_ITEMS]) if t]
+        if failed and len(texts) < MAX_RECORDED_ITEMS:
+            texts.append(_clip_text(f"失败 {len(failed)} 项"))
+        return texts or [NO_DESCRIPTION], max(len(done) + len(failed), 1)
+    return [], 0
+
+
 def _coverage_detail(store, view: str, covered_ch: Optional[int],
                      written: list[int]) -> dict:
-    """覆盖项的缺口事实：能逐章定位就给具体章号，不能就老实说只能看到落后多少。
+    """覆盖项的缺口事实：能逐章定位就给具体章号与已记条目，不能就老实说只看得到落后多少。
 
     只统计「已写章节里没有记录」的章，不把未写的未来章节算成缺口。
     """
     if view in COVERAGE_LOCATABLE_META:
-        recorded = _recorded_chapters(store, view)
-        if recorded is None:
+        records = _view_records(store, view)
+        if records is None:
             return {"locatable": False, "missing_chapters": [], "missing_count": 0,
-                    "record_source": COVERAGE_LOCATABLE_META[view] + "（本次读取失败）"}
+                    "record_source": COVERAGE_LOCATABLE_META[view] + "（本次读取失败）",
+                    **_EMPTY_RECORDED}
+        recorded = set(records)
         missing = sorted(n for n in written if n not in recorded)
+        listed = sorted(n for n in written if n in recorded)
+        entries: list[dict] = []
+        total_items = 0
+        for n in listed:
+            texts, count = _chapter_entries(view, records[n])
+            total_items += count
+            if len(entries) < MAX_RECORDED_CHAPTERS:
+                entries.append({"ch": n, "count": count, "items": texts})
         return {"locatable": True,
                 "missing_chapters": missing[:MAX_MISSING_CHAPTERS],
                 "missing_count": len(missing),
-                "record_source": COVERAGE_LOCATABLE_META[view]}
+                "record_source": COVERAGE_LOCATABLE_META[view],
+                "recorded_chapters": entries,
+                "recorded_chapter_count": len(listed),
+                "recorded_item_count": total_items,
+                "recorded_truncated": len(listed) > MAX_RECORDED_CHAPTERS}
     if view in COVERAGE_WATERMARK_META:
         if covered_ch is None:
             # 连最后更新章号都没有：不能推算落后几章，只能说明查不到
             return {"locatable": False, "missing_chapters": [], "missing_count": 0,
-                    "record_source": "这一项没有记录更新到第几章，无法判断缺口"}
+                    "record_source": "这一项没有记录更新到第几章，无法判断缺口",
+                    **_EMPTY_RECORDED}
         baseline = written[-1] if written else 0
         gap = max(0, baseline - int(covered_ch))
         return {"locatable": False, "missing_chapters": [], "missing_count": gap,
-                "record_source": COVERAGE_WATERMARK_META[view]}
+                "record_source": COVERAGE_WATERMARK_META[view], **_EMPTY_RECORDED}
     return {"locatable": False, "missing_chapters": [], "missing_count": 0,
-            "record_source": "这一项没有记录覆盖到第几章，无法判断缺口"}
+            "record_source": "这一项没有记录覆盖到第几章，无法判断缺口", **_EMPTY_RECORDED}
 
 
 def build_coverage(store, up_to_chapter: Optional[int] = None) -> dict:

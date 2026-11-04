@@ -604,6 +604,22 @@ class ProjectStore:
         items.sort(key=lambda c: c.no)
         return items
 
+    def iter_chapter_texts(self):
+        """逐章流式产出 (no, title, content)，按章节号升序。
+
+        与 `list_chapters` 的区别：每次只保留一章正文，供全书提及索引等只读场景使用，
+        避免把几十万字全书一次性载入内存（体检/索引接口的性能前提）。
+        """
+        for p in sorted(self.chapters_dir.glob("*.json")):
+            try:
+                no = int(p.stem)
+            except ValueError:
+                continue
+            d = self._read_json(p, None)
+            if not isinstance(d, dict):
+                continue
+            yield no, str(d.get("title") or ""), str(d.get("content") or "")
+
     # ---------- 轻量统计（列表页缓存，避免每次全量读章节文本） ----------
     def meta_path(self) -> Path:
         return self.dir / "meta.json"

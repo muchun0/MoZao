@@ -352,6 +352,17 @@ class ReaderLedger:
                     return True
         return False
 
+    # ---------------- 只读查询（体检 / 索引复用） ----------------
+    def commitment_items(self, chapter_no: int) -> list[dict]:
+        """返回给定章节号下的伏笔承诺快照（状态机唯一事实来源的对外只读入口）。
+
+        只读、不写盘；与写章注入共用 `_commitment_items`，避免体检页另造一套状态判定。
+        """
+        world = self.store.load_world()
+        if world is None:
+            return []
+        return self._commitment_items(world, int(chapter_no))
+
     # ---------------- 章末后处理钩子 ----------------
     def update_post_chapter(self, chapter_no: int) -> None:
         """章末钩子：伏笔回收检测 + 爽点配额 tally；幂等、失败静默留痕。"""

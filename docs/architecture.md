@@ -14,7 +14,7 @@
                                      │ REST API（同源部署，dist 由 FastAPI 托管）
 ┌───────────────────────────────────▼─────────────────────────────────────────────────┐
 │                   Web 服务层 webapp/（FastAPI + MySQL）                              │
-│  server.py(组装壳) ── core.py(核心层) ── routers/(按域 9 个模块)                      │
+│  server.py(组装壳) ── core.py(核心层) ── routers/(按域 11 个模块)                      │
 │  db.py / secret_encrypt.py / pricing.py / referral.py / mailer.py / logger.py        │
 └───────────────────────────────────┬─────────────────────────────────────────────────┘
                                      │ 调用生成流水线（后台线程，任务可持久化/断点续跑）
@@ -118,7 +118,7 @@
 | `logger.py` | 统一日志（`logs/app.log`，5MB 轮转 ×3） |
 | `admin_cli.py` | 站长命令行管理（users/balance/recharge/agent/...） |
 
-### 2.4 webapp/routers/（10 个路由模块，共 106 条 API 路径）
+### 2.4 webapp/routers/（11 个路由模块）
 
 | 模块 | 域 | 说明 |
 |---|---|---|
@@ -133,6 +133,7 @@
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | **Agent 统一入口（唯一生成通道）**：`POST/GET /agent-runs`、`POST /agent-runs/{task_id}/stop`、`POST /agent-runs/estimate`（只读预估价，UX 评审 U2）、`GET/PUT /agent-prompts[/{agent}]`（人设不可变版本）、`/outline/candidates`、`/stop`（9）；业务全在 generate_service；旧生成接口（start/regenerate/rewrite/generate-outline/world-regenerate/volume-regenerate）已全部删除 |
 | `projects_versions.py` | 产物版本 | **阶段1C**：outline/world 版本列表（含每版计费金额）/选择版本 select/select-impact 影响面/两版评审 `GET .../versions/review`（审校+评审两视角评论，零 LLM，评价口径在 `pipeline/version_review.py`）（4）；chapter 版本在 projects_chapters |
+| `projects_consistency.py` | 全书体检 | **R2（2026-11-04）只读**：overview / coverage / foreshadow / conflicts / entities / mentions（6）；零 LLM、零写盘，业务全在 `novel_gen/pipeline/consistency_report.py`，落盘信号复用 reader_ledger 状态机、check_projection、verify_issues 与章节版本质检 |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 

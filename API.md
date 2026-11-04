@@ -162,6 +162,48 @@
 | POST | /api/projects/{id}/cover | 是 | 生成封面（限5次/本） |
 | GET | /api/projects/{id}/download | 是 | 下载成品（TXT/EPUB/DOCX） |
 
+### 全书体检（R2，只读）
+
+> 全部零 LLM、零写盘、零扣费；只读聚合账本覆盖、伏笔状态机、全书校验与章节质检。业务入口唯一收敛在 `novel_gen/pipeline/consistency_report.py`。`limit` 统一边界 1–200（超出按边界截断），`offset` 为负按 0 处理。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | /api/projects/{id}/consistency/overview | 是 | 体检首屏：计数 + 各分类前 8 条 + `data_gaps` |
+| GET | /api/projects/{id}/consistency/coverage | 是 | 账本覆盖明细（可传假设基准章 `up_to`） |
+| GET | /api/projects/{id}/consistency/foreshadow | 是 | 伏笔台账（状态筛选 + 分页） |
+| GET | /api/projects/{id}/consistency/conflicts | 是 | 一致性冲突（严重度筛选 + 分页） |
+| GET | /api/projects/{id}/consistency/entities | 是 | 人物/设定提及索引（按名称/别名/类型筛选） |
+| GET | /api/projects/{id}/consistency/mentions | 是 | 单实体章节内定位（原文片段 + 字符偏移） |
+
+**查询参数**
+
+| 接口 | 参数 | 默认 / 边界 |
+|---|---|---|
+| coverage | `up_to` | 0=以当前已写最大章为基准；>0=假设写到第 N 章 |
+| foreshadow | `state` / `limit` / `offset` | 空=全部状态；50；0。`state ∈ overdue/stalled/due_soon/planted/revealed` |
+| conflicts | `severity` / `limit` / `offset` | 空=全部；50；0。`severity ∈ high/medium/low` |
+| entities | `q` / `kind` / `limit` / `offset` | 空；空；50；0。`kind ∈ character/location/faction/item/enemy/term` |
+| mentions | `name`（必填）/ `alias`（可重复）/ `limit_chapters` | —；去重且长度≥2，最多 8 个；50 |
+
+**响应字段概述**
+
+- `overview`：`project_id, baseline_ch, chapters_written, has_world, has_outline, coverage{baseline_ch, lagging_views[], views[]}, foreshadow{total, counts{}, items[≤8]}, conflicts{total, counts{}, items[≤8]}, entities{candidates}, data_gaps[]`。
+- `coverage`：`views[{view, covered_ch, status(synced|lagging|ahead|unknown), label, severity}], lagging_views[], baseline_ch`；与 `tools/projection_check.py` 同源。
+- `foreshadow`：`items[{name, state, state_label, severity, buried_ch, reveal_ch, revealed_ch, level, excerpt}], total, offset`；严重度降序（overdue=high / stalled=medium / due_soon=low / planted、revealed=info）。
+- `conflicts`：`items[{source(verify|chapter_quality), chapter, type, detail, evidence, suggestion, severity}], total, offset`；严重度降序。
+- `entities`：`items[{name, kind, kind_label, aliases[], chapters[{no,title,count}], total_mentions, first_ch, last_ch}], total, offset, limit, truncated`；按引用次数降序，零命中实体保留在末尾作覆盖缺口；实体数 >400 时 `truncated=true`。
+- `mentions`：`{name, aliases[], chapters[{no,title,count,occurrences[{offset,snippet}]}], total_chapters, truncated}`；单章最多 3 条片段。
+
+**错误语义**
+
+| 状态码 | 场景 |
+|---|---|
+| 401 | 未登录 / 令牌无效 |
+| 403 | 非本人项目 |
+| 404 | 项目不存在 |
+| 400 | `mentions` 的 `name` 为空 |
+| 422 | 参数类型不合法（FastAPI 校验） |
+
 ### 调研
 
 | 方法 | 路径 | 鉴权 | 说明 |

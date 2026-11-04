@@ -74,6 +74,26 @@ def test_coverage_status_labels_and_severity(book):
     assert rows["chapter_commit"]["severity"] in cr.SEVERITY_RANK
 
 
+def test_coverage_gap_lists_missing_chapters(book):
+    """可逐章定位的视图：缺口给具体章号与数据来源，不只说「落后」。"""
+    for no in [1, 2, 3, 5, 6, 7, 8, 9, 10]:
+        book.save_scenes(no, [{"name": f"场景{no}"}])
+    row = next(r for r in cr.build_coverage(book)["views"] if r["view"] == "scenes")
+    assert row["locatable"] is True
+    assert row["missing_chapters"] == [4]
+    assert row["missing_count"] == 1
+    assert "每写完一章写入的场景清单" in row["record_source"]
+
+
+def test_coverage_watermark_cannot_locate_missing(book):
+    """只有水位（最后更新章号）的视图：明说无法定位，且无水位时不硬算落后章数。"""
+    rows = {r["view"]: r for r in cr.build_coverage(book)["views"]}
+    for view in ("chapter_state", "reveal_status"):
+        assert rows[view]["locatable"] is False
+        assert rows[view]["missing_chapters"] == []
+    assert "无法判断缺口" in rows["character_states"]["record_source"]
+
+
 # ---------------- 伏笔台账 ----------------
 
 def test_foreshadow_states_overdue_stalled_and_revealed(book):
@@ -137,6 +157,85 @@ def test_conflicts_strong_word_maps_high(book):
 
 def test_conflicts_conflict_sort_and_empty(store):
     assert cr.build_conflicts(store) == []
+
+
+def test_conflict_repetition_is_relabelled_not_conflict(book):
+    """不同人物的同类动作 = 雷同描写，不再冒充「前后矛盾」。"""
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{
+            "type": "自相矛盾-事件重复", "level": "大改",
+            "detail": "前一处：二舅公抓笔划字，手指发灰；后一处：三表叔抓笔划字，指尖发灰",
+        }],
+    })
+    item = next(i for i in cr.build_conflicts(book) if i["source"] == "chapter_quality")
+    assert item["category"] == "repetition"
+    assert item["category_label"] == "雷同描写"
+    assert item["severity"] == "low"
+    assert item["expected"] == "二舅公抓笔划字，手指发灰"
+    assert item["actual"] == "三表叔抓笔划字，指尖发灰"
+    assert item["entities"] == ["二舅公", "三表叔"]
+    assert "不是同一事件" in item["reason"]
+    assert item["basis"][0]["kind"] == "check"
+
+
+def test_conflict_duplicate_event_is_not_called_conflict(book):
+    """同一人物、同冲突、同结果的重复 = 同一事件重复，不是设定矛盾。"""
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{
+            "type": "自相矛盾-事件重复", "level": "大改",
+            "detail": "同一人物（沈决）面对同一冲突对象，实际做出同一件事且结果相同，却写了两个版本。",
+        }],
+    })
+    item = next(i for i in cr.build_conflicts(book) if i["source"] == "chapter_quality")
+    assert item["category"] == "duplicate_event"
+    assert item["category_label"] == "同一事件重复"
+    assert "不是设定矛盾" in item["reason"]
+
+
+def test_advisory_types_are_not_conflicts(book):
+    """阅读障碍/情节推进这类是建议，不冒充「前后矛盾」。"""
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{"type": "情节-事件推进效率", "level": "中改", "detail": "核心逻辑成立，但关键证据只用一句口述交代，读者看不到过程。"}],
+    })
+    item = next(i for i in cr.build_conflicts(book) if i["source"] == "chapter_quality")
+    assert item["category"] == "advisory"
+    assert item["category_label"] == "阅读/节奏提醒"
+    assert item["severity"] == "low"
+    assert item["expected"] == ""
+    assert "不是设定矛盾" in item["reason"]
+
+
+def test_conflict_attaches_setting_excerpt_as_expected(book):
+    """真冲突：挂上设定条目名与设定原文，作为「预期」依据。"""
+    book.save_world(World(characters=[Character(name="林舟", desc="左手残疾，不能提重物")]))
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{
+            "type": "自相矛盾-设定", "level": "大改",
+            "detail": "林舟用左手提起铜箱", "evidence": "他左手提起铜箱",
+        }],
+    })
+    item = next(i for i in cr.build_conflicts(book) if i["source"] == "chapter_quality")
+    assert item["category"] == "conflict"
+    assert item["expected"] == "左手残疾，不能提重物"
+    assert item["actual"] == "他左手提起铜箱"
+    assert item["entities"] == ["林舟"]
+    assert any(b["kind"] == "setting" and b["name"] == "林舟" for b in item["basis"])
+
+
+def test_conflict_without_basis_is_downgraded(book):
+    """质检只给结论、没有原文也没有设定对照 → 依据不足，降为 low。"""
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{"type": "自相矛盾-设定", "level": "大改", "detail": "本章前后不一致"}],
+    })
+    item = next(i for i in cr.build_conflicts(book) if i["source"] == "chapter_quality")
+    assert item["category"] == "insufficient"
+    assert item["severity"] == "low"
+    assert "无法核对" in item["reason"]
 
 
 # ---------------- 提及索引 ----------------

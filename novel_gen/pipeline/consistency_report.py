@@ -97,6 +97,74 @@ def _count_by(items: list[dict], field: str) -> dict:
 
 # ---------------- 1. 账本覆盖 ----------------
 
+#: 可逐章定位缺口的视图 → 数据来源说明（生成每章时写入）
+COVERAGE_LOCATABLE_META: dict = {
+    "chapter_commit": "每写完一章写入的章节提交记录",
+    "summaries": "每写完一章写入的章节摘要",
+    "scenes": "每写完一章写入的场景清单",
+    "beat_gate": "每写完一章写入的剧情节点",
+}
+
+#: 只能拿到「最后更新章号」的视图 → 无法定位具体缺哪章
+COVERAGE_WATERMARK_META: dict = {
+    "chapter_state": "这一项只记录最后更新到第几章，看不到具体缺哪章",
+    "foreshadow_commitment": "这一项只记录最后更新到第几章，看不到具体缺哪章",
+    "payoff_quota": "这一项只记录发生过爽点的章号，不代表逐章覆盖",
+    "reveal_status": "这一项按伏笔回收事件记录，不代表逐章覆盖",
+}
+
+#: 记录缺口最多返回多少个章号（超出由前端折叠成区间）
+MAX_MISSING_CHAPTERS = 30
+
+
+def _recorded_chapters(store, view: str) -> Optional[set]:
+    """读取某视图「已记录的章号」集合；读取失败或该视图无逐章记录时返回 None。"""
+    try:
+        if view == "chapter_commit":
+            chapters = (store.load_chapter_commit() or {}).get("chapters") or {}
+            return {int(k) for k, v in chapters.items()
+                    if isinstance(v, dict) and v.get("status") != "pending"}
+        if view == "summaries":
+            return {int(x["no"]) for x in (store.load_summaries() or [])
+                    if isinstance(x, dict) and x.get("no")}
+        if view == "scenes":
+            return {int(k) for k in (store.load_scenes() or {}) if str(k).isdigit()}
+        if view == "beat_gate":
+            return {int(k) for k in (store.load_beat_gate() or {}) if str(k).isdigit()}
+    except Exception:
+        return None
+    return None
+
+
+def _coverage_detail(store, view: str, covered_ch: Optional[int],
+                     written: list[int]) -> dict:
+    """覆盖项的缺口事实：能逐章定位就给具体章号，不能就老实说只能看到落后多少。
+
+    只统计「已写章节里没有记录」的章，不把未写的未来章节算成缺口。
+    """
+    if view in COVERAGE_LOCATABLE_META:
+        recorded = _recorded_chapters(store, view)
+        if recorded is None:
+            return {"locatable": False, "missing_chapters": [], "missing_count": 0,
+                    "record_source": COVERAGE_LOCATABLE_META[view] + "（本次读取失败）"}
+        missing = sorted(n for n in written if n not in recorded)
+        return {"locatable": True,
+                "missing_chapters": missing[:MAX_MISSING_CHAPTERS],
+                "missing_count": len(missing),
+                "record_source": COVERAGE_LOCATABLE_META[view]}
+    if view in COVERAGE_WATERMARK_META:
+        if covered_ch is None:
+            # 连最后更新章号都没有：不能推算落后几章，只能说明查不到
+            return {"locatable": False, "missing_chapters": [], "missing_count": 0,
+                    "record_source": "这一项没有记录更新到第几章，无法判断缺口"}
+        baseline = written[-1] if written else 0
+        gap = max(0, baseline - int(covered_ch))
+        return {"locatable": False, "missing_chapters": [], "missing_count": gap,
+                "record_source": COVERAGE_WATERMARK_META[view]}
+    return {"locatable": False, "missing_chapters": [], "missing_count": 0,
+            "record_source": "这一项没有记录覆盖到第几章，无法判断缺口"}
+
+
 def build_coverage(store, up_to_chapter: Optional[int] = None) -> dict:
     """账本覆盖体检：与 `tools/projection_check.py` 同源（复用 check_projection）。
 
@@ -107,9 +175,12 @@ def build_coverage(store, up_to_chapter: Optional[int] = None) -> dict:
         nos = chapter_numbers(store)
         baseline = nos[-1] if nos else 0
     rows = check_projection(store, up_to_chapter=baseline)
+    # 缺口只统计到本次基准章为止，避免把尚未写的章节算成「缺记录」
+    written = [n for n in chapter_numbers(store) if n <= baseline]
     for r in rows:
         r["label"] = VIEW_STATUS_LABELS.get(r["status"], r["status"])
         r["severity"] = VIEW_STATUS_SEVERITY.get(r["status"], "info")
+        r.update(_coverage_detail(store, r["view"], r.get("covered_ch"), written))
     return {"baseline_ch": baseline, "views": rows,
             "lagging_views": [r["view"] for r in rows if r["status"] == "lagging"]}
 
@@ -170,10 +241,191 @@ def _selected_quality(rec: dict) -> dict:
     return {}
 
 
+#: 判为「雷同描写」而非「前后矛盾」的类型特征（这类不是设定矛盾）
+REPETITION_TYPE_KEYWORDS = ("事件重复", "内容重复", "重复")
+
+#: 质检 detail 的两处对照（提示词要求引用「前一处…后一处…」）
+_TWO_SIDE_RE = re.compile(r"前一处[：:]\s*(.*?)[；;，。\n』”\"]+后一处[：:]\s*(.*)$", re.S)
+
+
+def _match_entities(text: str, entities: list[dict]) -> list[dict]:
+    """在问题描述里匹配已知实体（名字或别名），用于标明「涉及人物/设定」。"""
+    hits: list[dict] = []
+    for e in entities:
+        for alias in [e.get("name", "")] + list(e.get("aliases") or []):
+            if len(alias) >= 2 and alias in text:
+                hits.append(e)
+                break
+    return hits[:5]
+
+
+#: 动作词：用于从「前一处：二舅公走到桌前…」这类原文里截出人物主语
+_ACTION_WORDS = ("走", "站", "坐", "抓", "把", "抬", "转", "看", "说", "笑",
+                 "跑", "冲", "握", "伸", "跨", "拿", "提", "推", "拉", "低", "回", "作", "用")
+_SUBJECT_RE = re.compile(
+    r"^([\u4e00-\u9fa5]{2,4})(?:[一二三四五六七八九十两几]步)?(?="
+    + "|".join(_ACTION_WORDS) + r")"
+)
+
+
+def _subject_from_side(text: str) -> str:
+    """从一句动作描写里截出开头的称呼/人名；截不出来就返回空串（不硬猜）。"""
+    text = (text or "").strip()
+    m = _SUBJECT_RE.match(text)
+    return m.group(1) if m else ""
+
+
+def _setting_excerpt(world, names: set) -> Optional[dict]:
+    """取设定原文（人物/地点/势力/物件/生物）作为「预期」依据；无则 None。"""
+    if world is None or not names:
+        return None
+    for attr in ("characters", "locations", "factions", "items", "enemies"):
+        for obj in getattr(world, attr, None) or []:
+            name = str(getattr(obj, "name", "") or "").strip()
+            if name not in names:
+                continue
+            for field in ("description", "desc", "summary", "setting"):
+                text = str(getattr(obj, field, "") or "").strip()
+                if text:
+                    return {"name": name, "excerpt": text[:160]}
+    return None
+
+
+#: 质检 detail 里引用的设定原文（如「与他‘表面温和…’的设定有冲突」）
+_SETTING_QUOTE_RE = re.compile(r"[‘“\"]([^’”\"]{4,160})[’”\"]\s*(?:的)?(?:人物)?设定")
+
+
+def _setting_quote(detail: str) -> str:
+    """取质检记录自己引用的设定原文；没有写就不返回，绝不替作者猜。"""
+    m = _SETTING_QUOTE_RE.search(detail or "")
+    return m.group(1).strip() if m else ""
+
+
+def _setting_by_text(world, text: str) -> Optional[dict]:
+    """把质检引用的设定原文对回世界观条目；对不上就返回 None（展示时标为「记录引用」）。"""
+    if world is None or not text:
+        return None
+    for attr in ("characters", "locations", "factions", "items", "enemies"):
+        for obj in getattr(world, attr, None) or []:
+            name = str(getattr(obj, "name", "") or "").strip()
+            blob = " ".join(str(getattr(obj, f, "") or "")
+                            for f in ("description", "desc", "summary", "setting"))
+            if name and text in blob:
+                return {"name": name, "excerpt": text}
+    return None
+
+
+def _enrich_conflict(item: dict, entities: list[dict], world) -> dict:
+    """给每条记录补齐「依据 / 预期 vs 实际 / 为什么判」三要素。
+
+    分类口径：
+    - repetition：不同人物的同类动作/句式重复（不是设定矛盾，降为 low）；
+    - duplicate_event：同一人物、同一事件被写成两个版本（是重复叙述，不是设定矛盾）；
+    - insufficient：质检只给结论、没引用原文也没写对照设定，无法核对（降为 low）；
+    - conflict：其余，按原严重度，并尽量挂上质检引用的设定原文。
+    """
+    detail = item["detail"]
+    evidence = item.get("evidence") or ""
+    matched = _match_entities(f"{detail} {evidence} {item.get('suggestion', '')}", entities)
+    pair = _TWO_SIDE_RE.search(detail)
+    sides = [pair.group(1).strip(), pair.group(2).strip()] if pair else []
+    subjects = [s for s in (_subject_from_side(x) for x in sides) if s]
+    side_entities = [{e["name"] for e in _match_entities(x, entities)} for x in sides]
+    same_subject = (
+        (len(subjects) == 2 and subjects[0] == subjects[1])
+        or (len(side_entities) == 2 and side_entities[0] and side_entities[0] == side_entities[1])
+        or ("同一人物" in detail) or ("同一个人" in detail) or ("同一事件" in detail)
+    )
+    item["entities"] = [e["name"] for e in matched]
+    item["check_type"] = item["type"]
+
+    is_repetition = any(k in item["type"] for k in REPETITION_TYPE_KEYWORDS)
+    if is_repetition:
+        if same_subject:
+            item.update({
+                "category": "duplicate_event", "category_label": "同一事件重复",
+                "expected": "", "actual": detail,
+                "reason": "同一个人在同一冲突下做出同一行为、结果也相同，却被写成了两个版本；这是重复叙述，不是设定矛盾。",
+                "basis": [{"kind": "check", "name": "单章质检 · 一致性评审记录", "excerpt": ""}],
+            })
+            return item
+        # 世界观里没登记的人物：从两处原文开头截出称呼，至少能说清「涉及谁」
+        if pair and not item["entities"]:
+            for side in sides:
+                name = _subject_from_side(side)
+                if name and name not in item["entities"]:
+                    item["entities"].append(name)
+        item.update({
+            "category": "repetition", "category_label": "雷同描写",
+            "expected": sides[0] if pair else "两处相似的动作描写",
+            "actual": sides[1] if pair else detail,
+            "reason": "两处是不同人物的同类动作，不是同一事件的第二个版本；按一致性评审规则（同人物+同冲突+同结果）不构成矛盾，属于动作/句式雷同。",
+            "severity": "low",
+            "basis": [{"kind": "check", "name": "单章质检 · 一致性评审记录", "excerpt": ""}],
+        })
+        return item
+
+    # 阅读障碍 / 情节推进效率这类是建议，不是「前后对不上」，不冒充冲突
+    if item["type"].startswith("情节-") or "阅读障碍" in item["type"]:
+        item.update({
+            "category": "advisory", "category_label": "阅读/节奏提醒",
+            "expected": "", "actual": detail,
+            "reason": "这条不是设定矛盾，是单章质检给出的阅读或节奏建议，没有对照设定条目。",
+            "severity": "low",
+            "basis": [{"kind": "check", "name": "单章质检 · 一致性评审记录", "excerpt": ""}],
+        })
+        return item
+
+    # 依据优先用质检自己引用的设定原文；只有类型明确是「设定」冲突时才对世界观条目
+    quoted = _setting_quote(detail)
+    setting = _setting_by_text(world, quoted) if quoted else None
+    if quoted and not setting:
+        name = _subject_from_side(detail) or "质检引用的设定"
+        setting = {"name": name, "excerpt": quoted}
+    elif not quoted and "设定" in item["type"]:
+        setting = _setting_excerpt(world, {e["name"] for e in matched})
+    if setting and setting["name"] != "质检引用的设定" and setting["name"] not in item["entities"]:
+        item["entities"].append(setting["name"])
+
+    # detail 里已经引用了正文原句（“…”/‘…’）时，不能算「没给原文」
+    has_quote = bool(re.search(r"[‘“\"][^’”\"]{4,}", detail))
+
+    if item["source"] == "chapter_quality" and not evidence and not pair and not setting and not has_quote:
+        item.update({
+            "category": "insufficient", "category_label": "依据不足",
+            "expected": "", "actual": detail,
+            "reason": "质检只写了一句判断，没有引用原文，也没有写对照的设定；无法核对，先不当作冲突。",
+            "severity": "low",
+            "basis": [{"kind": "check", "name": "单章质检 · 一致性评审记录", "excerpt": ""}],
+        })
+        return item
+
+    basis = [{"kind": "check", "name": "单章质检 · 一致性评审记录" if item["source"] == "chapter_quality" else "全书通读检查记录", "excerpt": ""}]
+    if setting:
+        basis.append({"kind": "setting", "name": setting["name"], "excerpt": setting["excerpt"]})
+    item.update({
+        "category": "conflict", "category_label": "前后矛盾",
+        "expected": setting["excerpt"] if setting else "",
+        "actual": evidence or detail,
+        "reason": (f"与「{setting['name']}」的设定冲突：记录引用的设定原文见依据，正文写法与其不一致。"
+                   if setting else
+                   ("记录里引用了正文原句，但没有写对照的设定条目；系统只能按原句指出前后不一致，需要打开这一章核对。"
+                    if has_quote else
+                    "检查记录判定前后不一致；但记录里没有引用任何设定条目，系统无法指出冲突对象，需要打开这一章核对原文。")),
+        "basis": basis,
+    })
+    return item
+
+
 def build_conflicts(store) -> list[dict]:
-    """一致性冲突汇总（只读）：全书校验问题 + 章节选中版本的质检一致性问题。"""
+    """一致性冲突汇总（只读）：全书校验问题 + 章节选中版本的质检一致性问题。
+
+    每条都带 category / basis / expected / actual / reason，缺依据的降级为「依据不足」。
+    """
     out: list[dict] = []
     seen: set = set()
+    world = store.load_world()
+    entities = collect_entities(world)
 
     def _add(item: dict) -> None:
         # 同一章同类型同细节只保留一条（版本重生成会产生重复质检记录）
@@ -181,7 +433,7 @@ def build_conflicts(store) -> list[dict]:
         if key in seen:
             return
         seen.add(key)
-        out.append(item)
+        out.append(_enrich_conflict(item, entities, world))
 
     for it in store.load_verify_issues():
         chapter = int(it.get("chapter") or 0)
@@ -207,7 +459,7 @@ def build_conflicts(store) -> list[dict]:
                   "type": str(issue.get("type") or "一致性"),
                   "detail": detail,
                   "evidence": str(issue.get("evidence") or "").strip(),
-                  "suggestion": str(issue.get("fix_suggestion") or "").strip(),
+                  "suggestion": str(issue.get("fix_suggestion") or issue.get("suggestion") or "").strip(),
                   "severity": LEVEL_SEVERITY.get(issue.get("level"), "medium")})
     return _sort_items(out, key="chapter")
 

@@ -129,16 +129,200 @@ export function foreshadowAdvice(item = {}) {
   }
 }
 
-// 一致性冲突：来源换成作者能理解的部门，不显示内部 source 键
+// ---------- 设定小抄覆盖：缺口事实与影响 ----------
+
+// 某一项「小抄」缺的到底是什么（用于「第 X 章的…还没记进去」）
+export const COVERAGE_MISSING_SUBJECT = {
+  chapter_commit: '章节要点',
+  summaries: '章节摘要',
+  scenes: '场景',
+  beat_gate: '剧情节点',
+}
+
+// 某一项落后会影响什么（作者视角的后果，不是系统术语）
+export const COVERAGE_VIEW_EFFECT = {
+  chapter_commit: '后面写新章节时缺少「这一章发生过什么」的依据，容易接不上前文。',
+  summaries: '写后面的章节时看不到这几章发生过什么，容易把已经处理过的事再写一遍。',
+  scenes: '后面写新章节时可能重复用同一类场景，或漏掉应有的过场。',
+  beat_gate: '后面写章节时摸不准节奏，可能连着几章都很平。',
+  chapter_state: '对全书进度的判断会失准，可能提前或重复推进剧情。',
+  foreshadow_commitment: '伏笔该收的时间点会失准，容易拖着不收。',
+  payoff_quota: '节奏记录会失真，后面可能连着多章没有起伏。',
+  reveal_status: '可能重复回收同一条伏笔，或者该收的忘了收。',
+  character_states: '人物状态会停在旧版本，容易写崩人设或关系。',
+  book_memory: '写新章节时对前情把握不准，容易和前面矛盾。',
+}
+
+// 章号压缩： [5,7] → "5、7"；[5,6,7] → "5–7"；[5,7,8,9] → "5、7–9"
+export function formatChapterList(numbers = []) {
+  const list = [...new Set((numbers || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))]
+    .sort((a, b) => a - b)
+  if (!list.length) return ''
+  const parts = []
+  let start = list[0]
+  let prev = list[0]
+  const push = (a, b) => parts.push(a === b ? `${a}` : `${a}–${b}`)
+  for (let i = 1; i < list.length; i += 1) {
+    const n = list[i]
+    if (n === prev + 1) { prev = n; continue }
+    push(start, prev)
+    start = n
+    prev = n
+  }
+  push(start, prev)
+  return parts.join('、')
+}
+
+// 已经把第几章写完（章号从 1 起）
+function writtenRange(baseline) {
+  const n = Math.max(0, Number(baseline) || 0)
+  if (n <= 0) return '还没有写完的章节'
+  return n === 1 ? '第 1 章已写' : `第 1–${n} 章已写`
+}
+
+// 覆盖项一句话事实：能逐章定位就给具体章号，不能就明说只能看到落后多少
+export function coverageGap(row = {}, baseline = 0) {
+  const name = projectionViewLabel(row.view)
+  const subject = COVERAGE_MISSING_SUBJECT[row.view] || '记录'
+  const written = writtenRange(baseline)
+  const missing = row.missing_chapters || []
+  const count = Number(row.missing_count) || 0
+
+  if (row.locatable) {
+    if (!count) {
+      if (row.status === 'ahead') {
+        return `${written}，这份${name}已经记到第 ${row.covered_ch} 章，属于旧记录，不影响阅读`
+      }
+      return `${written}，这份${name}逐章都有记录，和正文对得上`
+    }
+    if (count >= (Number(baseline) || 0)) {
+      return `${written}；这份${name}还是空的，第 1–${baseline} 章都没有记录`
+    }
+    // 缺口正好落在「已记录章号之后」时，用「只更新到第 X 章」更贴近用户直觉
+    const isSuffix = row.covered_ch && missing.length && Number(missing[0]) === Number(row.covered_ch) + 1
+    const lead = isSuffix
+      ? `这份${name}只更新到第 ${row.covered_ch} 章，`
+      : `这份${name}里，`
+    return `${written}；${lead}第 ${formatChapterList(missing)} 章的${subject}还没记进去（共缺 ${count} 章）`
+  }
+  if (row.status === 'ahead') {
+    return `${written}，这份${name}已经记到第 ${row.covered_ch} 章，属于旧记录，不影响阅读`
+  }
+  if (row.status === 'synced') {
+    return `${written}，这份${name}逐章都有记录，和正文对得上`
+  }
+  if (count > 0) {
+    return `${written}，这一项只更新到第 ${row.covered_ch} 章，落后 ${count} 章；系统只知道它落后 ${count} 章，无法定位具体缺哪几章`
+  }
+  return `${written}，但这一项没有记录更新到第几章，系统无法判断缺了哪几章`
+}
+
+// 覆盖项的数据来源（可核对：这份记录是哪一步写下的）
+export function coverageSource(row = {}) {
+  return (row.record_source || '').trim()
+}
+
+// 覆盖项影响与处理建议
+export function coverageEffect(row = {}) {
+  return COVERAGE_VIEW_EFFECT[row.view] || '后面写新章节时参考不到这几章的记录。'
+}
+
+export function coverageAdvice(row = {}) {
+  if (row.status === 'synced' || row.status === 'ahead') return '不用处理。'
+  return '先不用改正文；下一次生成或全书检查跑完后通常会补记。如果一直不动，说明生成时那一步没跑到，建议到「Agent」页重新生成下一章，或检查生成过程。'
+}
+
+// ---------- 一致性冲突：依据 / 预期 vs 实际 / 判定理由 ----------
+
+// 来源换成作者能理解的部门，不显示内部 source 键
 export function sourceLabel(source) {
   return source === 'verify' ? '全书通读检查' : '单章质检'
+}
+
+export function conflictCategory(item = {}) {
+  if (item.category_label) return item.category_label
+  if (item.category === 'repetition') return '雷同描写'
+  if (item.category === 'insufficient') return '依据不足'
+  return '前后矛盾'
+}
+
+// 标题：雷同类不复述两段原文，直接说清「是重复、不是设定矛盾」
+export function conflictHeadline(item = {}) {
+  if (item.category === 'repetition') return '两处同类动作写得几乎一样'
+  if (item.category === 'duplicate_event') return '同一件事写了两遍'
+  if (item.category === 'advisory') return '这是一条阅读/节奏建议'
+  if (item.category === 'insufficient') return '这条质检只写了结论，没给原文依据'
+  return item.detail || '有一处前后对不上'
+}
+
+// 依据来源：检查记录 + 对照的设定条目（含设定原文）
+export function conflictBasis(item = {}) {
+  const out = []
+  for (const b of item.basis || []) {
+    if (b?.kind === 'setting') out.push({ kind: 'setting', name: b.name || '', text: `设定「${b.name || '未命名'}」`, excerpt: b.excerpt || '' })
+    else out.push({ kind: 'check', name: b?.name || '检查记录', text: b?.name || '检查记录', excerpt: b?.excerpt || '' })
+  }
+  return out
+}
+
+// 预期 vs 实际的标签：雷同类讲「前一处/后一处」，真冲突讲「设定要求/正文写法」
+export function conflictSideLabels(item = {}) {
+  if (item.category === 'repetition') return { expected: '前一处', actual: '后一处' }
+  return { expected: '设定要求', actual: '正文写法' }
+}
+
+export function conflictHasSides(item = {}) {
+  return Boolean((item.expected || '').trim() || (item.actual || '').trim())
+}
+
+// 预期 vs 实际的可展示对：没有「预期」就不硬凑对照，避免只重复问题描述
+export function conflictSides(item = {}) {
+  const label = conflictSideLabels(item)
+  const expected = (item.expected || '').trim()
+  const actual = (item.actual || '').trim()
+  if (!expected) return null
+  return {
+    expectedLabel: label.expected, expected,
+    actualLabel: label.actual, actual,
+  }
+}
+
+// 判定理由：没有 reason 的条目按「依据不足」处理，不冒充冲突
+export function conflictReason(item = {}) {
+  const reason = (item.reason || '').trim()
+  if (reason) return reason
+  return '这条记录没有写判定依据，系统无法确认它是不是真的冲突，先不当作冲突。'
 }
 
 export const CONFLICT_ADVICE_FALLBACK =
   '打开这一章核对，把说法统一成你现在的设定；如果设定本身改了，记得顺手更新世界观。'
 
 export function conflictAdvice(item = {}) {
+  if (item.category === 'repetition') {
+    return '这不是设定矛盾，是写法重复。检查是不是给不同人物用了同一套动作模板：如果只是巧合可以不改；想让人物有区分度，给其中一处换一个标志性动作。'
+  }
+  if (item.category === 'duplicate_event') {
+    return '这不是设定矛盾，是同一件事被写了两遍。删掉或合并其中一处，保留信息更完整的那一版；两处都要留就把后一处改成新的推进。'
+  }
+  if (item.category === 'advisory') {
+    return (item.suggestion || '').trim() || '按建议酌情调整；不改也不影响设定一致性。'
+  }
+  if (item.category === 'insufficient') {
+    return '先按「了解一下」看，不当作冲突。打开这一章核对原文；确认有问题后，在单章质检里补上原文对照，下次体检才能给出依据。'
+  }
   return (item.suggestion || '').trim() || CONFLICT_ADVICE_FALLBACK
+}
+
+// 涉及人物/章节：把匹配到的实体名字列出来，没匹配到就明说
+export function conflictScope(item = {}) {
+  const names = (item.entities || []).filter(Boolean)
+  const chapter = item.chapter ? `第 ${item.chapter} 章` : '章节未记录'
+  return names.length ? `${names.join('、')} · ${chapter}` : `未匹配到具体人物 · ${chapter}`
+}
+
+// 检查项（具体是哪种检查判出来的）
+export function conflictCheckType(item = {}) {
+  return (item.check_type || item.type || '').trim()
 }
 
 // 人物/设定索引：一句话摘要（出现次数 + 覆盖区间；零命中明确说是「还没用上」）

@@ -85,6 +85,33 @@ def test_coverage_gap_lists_missing_chapters(book):
     assert "每写完一章写入的场景清单" in row["record_source"]
 
 
+def test_coverage_lists_recorded_entries(book):
+    """已记录章节要列出可读条目：章号 + 摘要；无描述字段时如实标注。"""
+    book.save_scenes(1, [{"location": "包间", "event": "相亲现场观察规则"}, {"name": "只有编号"}])
+    for no in [2, 3, 5, 6, 7, 8, 9, 10]:
+        book.save_scenes(no, [{"name": f"场景{no}"}])
+    row = next(r for r in cr.build_coverage(book)["views"] if r["view"] == "scenes")
+    assert row["missing_chapters"] == [4]
+    assert row["recorded_chapter_count"] == 9
+    assert row["recorded_item_count"] == 10
+    first = row["recorded_chapters"][0]
+    assert first["ch"] == 1
+    assert first["count"] == 2
+    assert first["items"][0] == "包间 · 相亲现场观察规则"
+    assert first["items"][1] == cr.NO_DESCRIPTION
+    assert [e["ch"] for e in row["recorded_chapters"]][1] == 2
+
+
+def test_coverage_summaries_have_readable_items(book):
+    """章节摘要视图：每章一条摘要，可读文本直接给出。"""
+    for no in range(1, 6):
+        book.append_summary(no, f"第{no}章讲了主角的一次冲突与代价")
+    row = next(r for r in cr.build_coverage(book)["views"] if r["view"] == "summaries")
+    assert row["locatable"] is True
+    assert row["missing_chapters"] == [6, 7, 8, 9, 10]
+    assert row["recorded_chapters"][0]["items"][0].startswith("第1章讲了")
+
+
 def test_coverage_watermark_cannot_locate_missing(book):
     """只有水位（最后更新章号）的视图：明说无法定位，且无水位时不硬算落后章数。"""
     rows = {r["view"]: r for r in cr.build_coverage(book)["views"]}

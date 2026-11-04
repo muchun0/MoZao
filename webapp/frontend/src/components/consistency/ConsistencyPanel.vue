@@ -1,5 +1,5 @@
 <template>
-  <div class="cp">
+  <div ref="rootRef" class="cp">
     <header class="cp-head">
       <div>
         <h3 class="cp-title">全书体检</h3>
@@ -65,14 +65,21 @@
             </div>
             <p class="cp-card-where">{{ it.where }}</p>
             <div v-if="it.sides" class="cp-sides">
-              <p v-if="it.sides.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
-              <p v-if="it.sides.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+              <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`${g.key}-${i}`) }">
+                <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
+              </p>
+              <p v-if="it.sides.actual" :class="{ 'clamp-text': !isExpanded(`${g.key}-${i}`) }">
+                <span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}
+              </p>
             </div>
             <p v-for="(d, di) in it.details || []" :key="di" class="cp-card-detail">
               <span class="cp-detail-label">{{ d.label }}</span>{{ d.text }}
             </p>
             <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ it.advice }}</p>
             <div class="cp-card-actions">
+              <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`${g.key}-${i}`)">
+                {{ isExpanded(`${g.key}-${i}`) ? '收起原文' : '展开原文' }}
+              </el-button>
               <el-button v-if="it.jump" size="small" text type="primary" @click="emitLocate(it.jump)">打开第 {{ it.jump }} 章</el-button>
             </div>
           </article>
@@ -88,50 +95,103 @@
           <span class="cp-meta">要逐条核对、筛选或搜索时用这里</span>
         </div>
 
-        <el-tabs v-model="sub" class="cp-tabs">
-          <!-- 1. 设定小抄是否跟上正文 -->
-          <el-tab-pane label="设定跟上了吗" name="coverage">
-            <p class="cp-purpose">
-              这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。
-            </p>
-            <p v-if="!coverageViews.length" class="cp-group-empty">
-              暂时还没有可对照的记录。等生成过正文后，这里会显示每项「小抄」跟到了第几章。
-            </p>
-            <div v-for="row in coverageViews" :key="row.view" class="cp-row-card cp-coverage-card">
-              <div class="cp-coverage-main">
-                <div class="cp-row-title">
-                  <strong>{{ viewName(row.view) }}</strong>
-                  <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
-                </div>
-                <p class="cp-coverage-fact">{{ row.gapText }}</p>
-                <p v-if="row.sourceText && row.status !== 'unknown'" class="cp-meta">数据来自：{{ row.sourceText }}</p>
-                <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">会影响：{{ row.effectText }}</p>
-                <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">建议：{{ row.adviceText }}</p>
-              </div>
-              <div class="cp-row-card-right">
-                <el-button v-if="row.status === 'lagging' && row.firstMissingCh" size="small" text type="primary"
-                  @click="emitLocate(row.firstMissingCh)">打开缺记录的章</el-button>
-                <el-button v-if="row.status === 'lagging' && !row.firstMissingCh && baselineCh" size="small" text type="primary"
-                  @click="emitLocate(baselineCh)">看看最新一章</el-button>
-              </div>
-            </div>
-            <p class="cp-footnote">
-              小抄会在生成新章节时自动更新。如果某一项一直不动，说明那一步没跑到，后面的伏笔和人物状态判断会不准。
-            </p>
-          </el-tab-pane>
-
-          <!-- 2. 伏笔 -->
-          <el-tab-pane :label="`埋下的伏笔和回收进度 (${overview.foreshadow.total})`" name="foreshadow">
-            <p class="cp-purpose">
-              这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。
-            </p>
-            <div class="cp-filter">
+        <!-- 一级分类与该类筛选合成一行，不再叠两层横条 -->
+        <div class="cp-nav">
+          <div class="cp-nav-tabs">
+            <button v-for="t in SUB_TABS" :key="t.name" type="button" class="cp-tab"
+              :class="{ active: sub === t.name }" @mousedown="rememberScroll" @click="switchSub(t.name)">
+              {{ t.label }}<span v-if="t.count !== undefined" class="cp-tab-count">{{ t.count }}</span>
+            </button>
+          </div>
+          <div class="cp-nav-filter">
+            <template v-if="sub === 'foreshadow'">
               <el-select v-model="fsState" size="small" clearable placeholder="全部状态" class="cp-select"
                 @change="reloadForeshadow">
                 <el-option v-for="s in FORESHADOW_STATES" :key="s.value" :value="s.value" :label="s.label" />
               </el-select>
               <span class="cp-count">{{ fsLoaded ? `${fsTotal} 条` : '读取中…' }}</span>
+            </template>
+            <template v-else-if="sub === 'conflicts'">
+              <el-select v-model="confSeverity" size="small" clearable placeholder="全部轻重" class="cp-select"
+                @change="reloadConflicts">
+                <el-option value="high" label="必须处理" />
+                <el-option value="medium" label="建议处理" />
+                <el-option value="low" label="了解一下" />
+              </el-select>
+              <span class="cp-count">{{ confLoaded ? `${confTotal} 条` : '读取中…' }}</span>
+            </template>
+            <template v-else-if="sub === 'entities'">
+              <el-input v-model="entityQuery" size="small" clearable placeholder="搜名字或别名，例如「林舟」"
+                class="cp-input" @keyup.enter="reloadEntities" @clear="reloadEntities" />
+              <el-select v-model="entityKind" size="small" clearable placeholder="全部类型" class="cp-select"
+                @change="reloadEntities">
+                <el-option v-for="k in ENTITY_KIND_OPTIONS" :key="k.value" :value="k.value" :label="k.label" />
+              </el-select>
+              <span class="cp-count">{{ entityLoaded ? `${entityTotal} 个` : '读取中…' }}</span>
+            </template>
+          </div>
+        </div>
+
+        <p class="cp-purpose">{{ PURPOSE[sub] }}</p>
+
+        <!-- 1. 设定小抄是否跟上正文 -->
+        <div v-show="sub === 'coverage'" class="cp-pane">
+            <p v-if="!coverageViews.length" class="cp-group-empty">
+              暂时还没有可对照的记录。等生成过正文后，这里会显示每项「小抄」跟到了第几章。
+            </p>
+            <div v-for="row in coverageViews" :key="row.view" class="cp-coverage-card">
+              <div class="cp-row-title">
+                <strong>{{ viewName(row.view) }}</strong>
+                <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
+                <span class="cp-meta">{{ row.sourceText }}</span>
+              </div>
+              <p class="cp-coverage-fact">{{ row.gapText }}</p>
+              <!-- 缺记录的章号首屏直出，点一下直接跳章 -->
+              <div v-if="row.missingChapters.length" class="cp-chips">
+                <span class="cp-chip-label">缺记录</span>
+                <button v-for="no in row.missingChapters" :key="no" type="button" class="cp-chap-chip"
+                  @click="emitLocate(no)">第 {{ no }} 章</button>
+                <span v-if="row.missingCount > row.missingChapters.length" class="cp-meta">
+                  等共 {{ row.missingCount }} 章
+                </span>
+              </div>
+              <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">
+                会影响：{{ row.effectText }}　建议：{{ row.adviceText }}
+              </p>
+              <!-- 清单里已经记了哪些，按章列出条目 -->
+              <div v-if="row.recordedChapters.length" class="cp-records">
+                <div class="cp-records-head">
+                  <span class="cp-chip-label">清单里已有的</span>
+                  <span class="cp-meta">
+                    {{ row.recordedChapterCount }} 章 · {{ row.recordedItemCount }} 条
+                    <template v-if="row.recordedTruncated">（先列前 {{ row.recordedChapters.length }} 章）</template>
+                  </span>
+                </div>
+                <div v-for="c in row.recordedChapters" :key="c.ch" class="cp-record-row">
+                  <button type="button" class="cp-chap-link" @click="emitLocate(c.ch)">第 {{ c.ch }} 章</button>
+                  <div class="cp-record-items">
+                    <p v-for="(t, ti) in c.items" :key="ti" :class="{ 'cp-muted-item': t === NO_DESC }">{{ t }}</p>
+                    <p v-if="c.count > c.items.length" class="cp-meta">还有 {{ c.count - c.items.length }} 条</p>
+                  </div>
+                </div>
+              </div>
+              <p v-else-if="row.locatable" class="cp-meta">这份清单里还没有记录可以列。</p>
+              <p v-if="row.status === 'lagging' && !row.firstMissingCh" class="cp-meta">
+                系统只知道它落后到第 {{ row.covered_ch ?? '—' }} 章，无法定位具体缺哪几章，可以先打开最新一章核对。
+              </p>
+              <div v-if="row.status === 'lagging' && row.firstMissingCh" class="cp-card-actions">
+                <el-button size="small" text type="primary" @click="emitLocate(row.firstMissingCh)">
+                  打开第 {{ row.firstMissingCh }} 章
+                </el-button>
+              </div>
             </div>
+            <p class="cp-footnote">
+              小抄会在生成新章节时自动更新。如果某一项一直不动，说明那一步没跑到，后面的伏笔和人物状态判断会不准。
+            </p>
+          </div>
+
+          <!-- 2. 伏笔 -->
+          <div v-show="sub === 'foreshadow'" class="cp-pane">
             <p v-if="fsLoaded && !fsItems.length" class="cp-group-empty">{{ fsEmptyText }}</p>
             <article v-for="it in fsItems" :key="it.name" class="cp-card">
               <div class="cp-card-top">
@@ -149,22 +209,10 @@
             </article>
             <el-button v-if="fsItems.length < fsTotal" size="small" text type="primary" :loading="fsLoading"
               @click="loadMore('foreshadow')">再看一些</el-button>
-          </el-tab-pane>
+          </div>
 
           <!-- 3. 前后不一致 -->
-          <el-tab-pane :label="`前后对不上的地方 (${overview.conflicts.total})`" name="conflicts">
-            <p class="cp-purpose">
-              这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。没被检查到的矛盾，这里看不到。
-            </p>
-            <div class="cp-filter">
-              <el-select v-model="confSeverity" size="small" clearable placeholder="全部轻重" class="cp-select"
-                @change="reloadConflicts">
-                <el-option value="high" label="必须处理" />
-                <el-option value="medium" label="建议处理" />
-                <el-option value="low" label="了解一下" />
-              </el-select>
-              <span class="cp-count">{{ confLoaded ? `${confTotal} 条` : '读取中…' }}</span>
-            </div>
+          <div v-show="sub === 'conflicts'" class="cp-pane">
             <p v-if="confLoaded && !confItems.length" class="cp-group-empty">{{ confEmptyText }}</p>
             <article v-for="(it, i) in confItems" :key="i" class="cp-card">
               <div class="cp-card-top">
@@ -177,36 +225,33 @@
               <p v-for="b in it.basisExcerpts" :key="b.name" class="cp-card-detail">
                 <span class="cp-detail-label">对照设定</span>「{{ b.name }}」：{{ b.excerpt }}
               </p>
-              <p v-if="it.actualText" class="cp-card-detail"><span class="cp-detail-label">记录原文</span>{{ it.actualText }}</p>
+              <p v-if="it.actualText" class="cp-card-detail" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
+                <span class="cp-detail-label">记录原文</span>{{ it.actualText }}
+              </p>
               <p v-if="it.checkType" class="cp-card-detail"><span class="cp-detail-label">检查项</span>{{ it.checkType }}</p>
               <div v-if="it.sides" class="cp-sides">
-                <p v-if="it.sides.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
-                <p v-if="it.sides.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+                <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
+                  <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
+                </p>
+                <p v-if="it.sides.actual" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
+                  <span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}
+                </p>
               </div>
               <p class="cp-card-detail"><span class="cp-detail-label">为什么这样判</span>{{ it.reasonText }}</p>
               <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ adviceOf(it) }}</p>
               <div class="cp-card-actions">
+                <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`c-${i}`)">
+                  {{ isExpanded(`c-${i}`) ? '收起原文' : '展开原文' }}
+                </el-button>
                 <el-button size="small" text type="primary" @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
               @click="loadMore('conflicts')">再看一些</el-button>
-          </el-tab-pane>
+          </div>
 
           <!-- 4. 人物 / 设定索引 -->
-          <el-tab-pane label="谁/什么在哪几章出现过" name="entities">
-            <p class="cp-purpose">
-              这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。
-            </p>
-            <div class="cp-filter">
-              <el-input v-model="entityQuery" size="small" clearable placeholder="搜名字或别名，例如「林舟」"
-                class="cp-input" @keyup.enter="reloadEntities" @clear="reloadEntities" />
-              <el-select v-model="entityKind" size="small" clearable placeholder="全部类型" class="cp-select"
-                @change="reloadEntities">
-                <el-option v-for="k in ENTITY_KIND_OPTIONS" :key="k.value" :value="k.value" :label="k.label" />
-              </el-select>
-              <span class="cp-count">{{ entityLoaded ? `${entityTotal} 个` : '读取中…' }}</span>
-            </div>
+          <div v-show="sub === 'entities'" class="cp-pane">
             <p v-if="entityLoaded && !entityItems.length" class="cp-group-empty">{{ entityEmptyText }}</p>
             <article v-for="row in entityItems" :key="row.name" class="cp-row-card"
               :class="{ clickable: row.chapters.length }" @click="openMentions(row)">
@@ -225,8 +270,7 @@
             <p v-if="entityTruncated" class="cp-footnote">
               设定条目太多，这次只体检了前 400 个。搜具体名字仍然能查到。
             </p>
-          </el-tab-pane>
-        </el-tabs>
+          </div>
       </div>
 
       <!-- 数据边界：把「哪里查不到」翻成人话 -->
@@ -260,7 +304,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getConsistencyOverview, getForeshadowLedger, getConsistencyConflicts,
@@ -324,6 +368,65 @@ const coverageTag = (row) => coverageStateType(row.status)
 
 const baselineCh = computed(() => overview.value?.baseline_ch || 0)
 
+// 覆盖清单里「没有可读描述」的条目统一标注，与后端常量保持一致
+const NO_DESC = '只有编号，没有描述'
+
+// 四个分类的用途说明（切页时跟着换，不再各占一层横条）
+const PURPOSE = {
+  coverage: '这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
+  foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。',
+  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。没被检查到的矛盾，这里看不到。',
+  entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
+}
+
+// 一级分类与筛选合并成一行，标签用短词避免换行拥挤
+const SUB_TABS = computed(() => [
+  { name: 'coverage', label: '设定跟上了吗' },
+  { name: 'foreshadow', label: '伏笔回收', count: overview.value?.foreshadow?.total ?? 0 },
+  { name: 'conflicts', label: '前后对不上', count: overview.value?.conflicts?.total ?? 0 },
+  { name: 'entities', label: '人物·设定索引' },
+])
+
+// 长原文默认两行截断，按条展开
+const expanded = ref({})
+const isExpanded = (key) => Boolean(expanded.value[key])
+function toggleExpand(key) {
+  expanded.value = { ...expanded.value, [key]: !expanded.value[key] }
+}
+
+// ---- 切分类时保住阅读位置：记下滚动容器与偏移，内容加载后还原 ----
+const rootRef = ref(null)
+let savedScroller = null
+let savedScrollTop = 0
+
+function scrollParentOf(node) {
+  let p = node?.parentElement
+  while (p) {
+    const style = getComputedStyle(p)
+    if (/(auto|scroll)/.test(`${style.overflowY} ${style.overflow}`) && p.scrollHeight > p.clientHeight) return p
+    p = p.parentElement
+  }
+  return null
+}
+
+function rememberScroll() {
+  savedScroller = scrollParentOf(rootRef.value)
+  savedScrollTop = savedScroller ? savedScroller.scrollTop : window.scrollY
+}
+
+async function restoreScroll() {
+  await nextTick()
+  const target = savedScroller?.isConnected ? savedScroller : null
+  const current = target ? target.scrollTop : window.scrollY
+  if (Math.abs(current - savedScrollTop) <= 4) return
+  if (target) target.scrollTop = savedScrollTop
+  else window.scrollTo(0, savedScrollTop)
+}
+
+function switchSub(name) {
+  if (sub.value !== name) sub.value = name
+}
+
 // 覆盖项按当前基准章计算「缺了哪几章」，避免模板里反复取整章号
 const coverageViews = computed(() => (overview.value?.coverage?.views || []).map((row) => ({
   ...row,
@@ -332,6 +435,12 @@ const coverageViews = computed(() => (overview.value?.coverage?.views || []).map
   effectText: coverageEffect(row),
   adviceText: coverageAdvice(row),
   firstMissingCh: (row.missing_chapters || [])[0] || 0,
+  missingChapters: row.missing_chapters || [],
+  missingCount: row.missing_count || 0,
+  recordedChapters: row.recorded_chapters || [],
+  recordedChapterCount: row.recorded_chapter_count || 0,
+  recordedItemCount: row.recorded_item_count || 0,
+  recordedTruncated: Boolean(row.recorded_truncated),
 })))
 
 // 冲突项预先把「依据 / 预期实际 / 判定理由」算好，模板只负责展示
@@ -350,6 +459,8 @@ function decorateConflict(it) {
     sides,
     actualText: sides ? '' : (it.actual || '').trim(),
     reasonText: conflictReason(it),
+    // 超过两行才需要「展开原文」，短条目不上按钮
+    longContent: [it.expected, it.actual, it.detail].some((t) => (t || '').length > 70),
   }
 }
 const gapNotes = computed(() => (overview.value?.data_gaps || []).map(humanizeGap))
@@ -600,7 +711,11 @@ function jump(no) {
 
 onMounted(loadOverview)
 // 切到未加载过的子页时按需拉取（冲突/索引不在首屏全量返回）
-watch(sub, () => { if (overview.value) loadCurrentSub() })
+watch(sub, async () => {
+  if (overview.value) await loadCurrentSub()
+  // 切页后内容高度会变，这里把滚动位置还原回切换前
+  await restoreScroll()
+})
 </script>
 
 <style scoped>
@@ -692,21 +807,59 @@ watch(sub, () => { if (overview.value) loadCurrentSub() })
 }
 
 /* 覆盖卡：事实 / 来源 / 影响 / 建议 */
-.cp-coverage-card { align-items: flex-start; }
-.cp-coverage-main { min-width: 0; }
+.cp-coverage-card { padding: 10px 0; border-top: 1px dashed var(--card-line); min-width: 0; }
 .cp-coverage-fact { margin-top: 4px; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
 
 /* 细看区 */
 .cp-detail { background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius); padding: 10px 14px 12px; }
 .cp-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.cp-tabs { margin-top: 4px; }
-.cp-purpose { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 2px 0 10px; }
+/* 一级分类 + 筛选：一行放完，不堆两层横条 */
+.cp-nav {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin-top: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--card-line);
+}
+.cp-nav-tabs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.cp-tab {
+  border: 0; background: transparent; font: inherit; font-size: 13px; color: var(--muted);
+  padding: 5px 9px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+}
+.cp-tab:hover { background: var(--hover, rgba(0, 0, 0, .03)); color: var(--ink-soft); }
+.cp-tab.active { background: var(--chip, rgba(0, 0, 0, .06)); color: var(--ink); font-weight: 600; }
+.cp-tab-count { margin-left: 4px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cp-nav-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cp-pane { padding-top: 2px; }
+.cp-purpose { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 6px 0 8px; }
 .cp-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
-.cp-select { width: 130px; }
-.cp-input { width: 220px; }
+.cp-select { width: 128px; }
+.cp-input { width: 200px; }
 .cp-count { font-size: 12px; color: var(--muted); }
 .cp-tip { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
 .cp-footnote { font-size: 12px; color: var(--muted); line-height: 1.7; margin-top: 10px; }
+
+/* 覆盖卡：缺章号 chip + 已记录清单 */
+.cp-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.cp-chip-label { font-size: 11px; color: var(--muted); }
+.cp-chap-chip {
+  border: 1px solid var(--card-line); background: var(--card); color: var(--ink-soft);
+  font-size: 12px; padding: 2px 9px; border-radius: 999px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.cp-chap-chip:hover { border-color: var(--indigo); color: var(--indigo); }
+.cp-records { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--card-line); }
+.cp-records-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cp-record-row { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; }
+.cp-chap-link {
+  flex: none; border: 0; background: transparent; color: var(--indigo);
+  font-size: 12px; padding: 0; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.cp-record-items { min-width: 0; }
+.cp-record-items p { font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
+.cp-muted-item { color: var(--muted) !important; }
+
+/* 长原文默认两行截断，点「展开原文」再看全 */
+.clamp-text {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis;
+}
 
 /* 列表行（设定小抄 / 人物索引），不用表格 */
 .cp-row-card {
@@ -737,5 +890,14 @@ watch(sub, () => { if (overview.value) loadCurrentSub() })
 @media (max-width: 900px) {
   .cp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cp-row-card { flex-direction: column; }
+}
+
+/* 约 1280 宽的笔记本：导航与筛选自动换行到两行，但不出现横向滚动 */
+@media (max-width: 1320px) {
+  .cp-nav { align-items: flex-start; }
+  .cp-nav-filter { justify-content: flex-end; }
+  .cp-select { width: 120px; }
+  .cp-input { width: 180px; }
+  .cp-detail { padding: 10px 12px; }
 }
 </style>

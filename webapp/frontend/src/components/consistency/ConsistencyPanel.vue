@@ -60,11 +60,18 @@
           <article v-for="(it, i) in g.items" :key="`${g.key}-${i}`" class="cp-card">
             <div class="cp-card-top">
               <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
+              <span v-if="it.categoryLabel" class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
               <strong class="cp-card-title">{{ it.title }}</strong>
             </div>
             <p class="cp-card-where">{{ it.where }}</p>
+            <div v-if="it.sides" class="cp-sides">
+              <p v-if="it.sides.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
+              <p v-if="it.sides.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+            </div>
+            <p v-for="(d, di) in it.details || []" :key="di" class="cp-card-detail">
+              <span class="cp-detail-label">{{ d.label }}</span>{{ d.text }}
+            </p>
             <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ it.advice }}</p>
-            <p v-if="it.evidence" class="cp-card-evidence">原文：「{{ it.evidence }}」</p>
             <div class="cp-card-actions">
               <el-button v-if="it.jump" size="small" text type="primary" @click="emitLocate(it.jump)">打开第 {{ it.jump }} 章</el-button>
             </div>
@@ -90,14 +97,21 @@
             <p v-if="!coverageViews.length" class="cp-group-empty">
               暂时还没有可对照的记录。等生成过正文后，这里会显示每项「小抄」跟到了第几章。
             </p>
-            <div v-for="row in coverageViews" :key="row.view" class="cp-row-card">
-              <div>
-                <strong>{{ viewName(row.view) }}</strong>
-                <p class="cp-meta">{{ coverageText(row) }}</p>
+            <div v-for="row in coverageViews" :key="row.view" class="cp-row-card cp-coverage-card">
+              <div class="cp-coverage-main">
+                <div class="cp-row-title">
+                  <strong>{{ viewName(row.view) }}</strong>
+                  <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
+                </div>
+                <p class="cp-coverage-fact">{{ row.gapText }}</p>
+                <p v-if="row.sourceText && row.status !== 'unknown'" class="cp-meta">数据来自：{{ row.sourceText }}</p>
+                <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">会影响：{{ row.effectText }}</p>
+                <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">建议：{{ row.adviceText }}</p>
               </div>
               <div class="cp-row-card-right">
-                <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
-                <el-button v-if="row.status === 'lagging' && baselineCh" size="small" text type="primary"
+                <el-button v-if="row.status === 'lagging' && row.firstMissingCh" size="small" text type="primary"
+                  @click="emitLocate(row.firstMissingCh)">打开缺记录的章</el-button>
+                <el-button v-if="row.status === 'lagging' && !row.firstMissingCh && baselineCh" size="small" text type="primary"
                   @click="emitLocate(baselineCh)">看看最新一章</el-button>
               </div>
             </div>
@@ -155,11 +169,22 @@
             <article v-for="(it, i) in confItems" :key="i" class="cp-card">
               <div class="cp-card-top">
                 <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
-                <strong class="cp-card-title">{{ it.detail }}</strong>
+                <span class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
+                <strong class="cp-card-title">{{ it.headline }}</strong>
               </div>
-              <p class="cp-card-where">第 {{ it.chapter }} 章 · 来自{{ sourceName(it.source) }}</p>
+              <p class="cp-card-where">涉及：{{ it.scopeText }}</p>
+              <p class="cp-card-detail"><span class="cp-detail-label">依据</span>{{ it.basisText }}</p>
+              <p v-for="b in it.basisExcerpts" :key="b.name" class="cp-card-detail">
+                <span class="cp-detail-label">对照设定</span>「{{ b.name }}」：{{ b.excerpt }}
+              </p>
+              <p v-if="it.actualText" class="cp-card-detail"><span class="cp-detail-label">记录原文</span>{{ it.actualText }}</p>
+              <p v-if="it.checkType" class="cp-card-detail"><span class="cp-detail-label">检查项</span>{{ it.checkType }}</p>
+              <div v-if="it.sides" class="cp-sides">
+                <p v-if="it.sides.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
+                <p v-if="it.sides.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+              </div>
+              <p class="cp-card-detail"><span class="cp-detail-label">为什么这样判</span>{{ it.reasonText }}</p>
               <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ adviceOf(it) }}</p>
-              <p v-if="it.evidence" class="cp-card-evidence">原文：「{{ it.evidence }}」</p>
               <div class="cp-card-actions">
                 <el-button size="small" text type="primary" @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
               </div>
@@ -245,7 +270,10 @@ import {
   FORESHADOW_STATES, ENTITY_KIND_OPTIONS, SEVERITY_ORDER,
   severityMeta, severityGroup, projectionViewLabel, coverageStateLabel,
   coverageStateType, foreshadowStateLabel, foreshadowProblem, foreshadowWhere,
-  foreshadowAdvice, sourceLabel, conflictAdvice, entitySummary, humanizeGap,
+  foreshadowAdvice, conflictAdvice, entitySummary, humanizeGap,
+  coverageGap, coverageSource, coverageEffect, coverageAdvice,
+  conflictCategory, conflictHeadline, conflictBasis, conflictSides,
+  conflictReason, conflictScope, conflictCheckType,
 } from '../../utils/consistency'
 
 const props = defineProps({ pid: { type: String, required: true } })
@@ -288,7 +316,6 @@ const fsLabel = (state) => foreshadowStateLabel(state)
 const fsProblem = (it) => foreshadowProblem(it)
 const fsWhere = (it) => foreshadowWhere(it)
 const fsAdvice = (it) => foreshadowAdvice(it)
-const sourceName = (source) => sourceLabel(source)
 const adviceOf = (it) => conflictAdvice(it)
 const summaryOf = (row) => entitySummary(row)
 const viewName = (view) => projectionViewLabel(view)
@@ -296,7 +323,35 @@ const coverageState = (row) => coverageStateLabel(row.status)
 const coverageTag = (row) => coverageStateType(row.status)
 
 const baselineCh = computed(() => overview.value?.baseline_ch || 0)
-const coverageViews = computed(() => overview.value?.coverage?.views || [])
+
+// 覆盖项按当前基准章计算「缺了哪几章」，避免模板里反复取整章号
+const coverageViews = computed(() => (overview.value?.coverage?.views || []).map((row) => ({
+  ...row,
+  gapText: coverageGap(row, baselineCh.value),
+  sourceText: coverageSource(row),
+  effectText: coverageEffect(row),
+  adviceText: coverageAdvice(row),
+  firstMissingCh: (row.missing_chapters || [])[0] || 0,
+})))
+
+// 冲突项预先把「依据 / 预期实际 / 判定理由」算好，模板只负责展示
+function decorateConflict(it) {
+  const basis = conflictBasis(it)
+  const sides = conflictSides(it)
+  return {
+    ...it,
+    categoryLabel: conflictCategory(it),
+    headline: conflictHeadline(it),
+    scopeText: conflictScope(it),
+    basisText: basis.map((b) => b.text).join(' / ') || '检查记录',
+    basisExcerpts: basis.filter((b) => b.kind === 'setting' && b.excerpt)
+      .map((b) => ({ name: b.name, excerpt: b.excerpt })),
+    checkType: conflictCheckType(it),
+    sides,
+    actualText: sides ? '' : (it.actual || '').trim(),
+    reasonText: conflictReason(it),
+  }
+}
 const gapNotes = computed(() => (overview.value?.data_gaps || []).map(humanizeGap))
 
 // 各分组真实总数（来自后端计数，不受首屏预览条数限制）
@@ -334,18 +389,22 @@ function buildGroupedItems(ov) {
   const items = []
   if (!ov) return items
 
-  // 设定小抄落后：作者能感知的是「后面容易写崩」
-  for (const row of ov.coverage?.views || []) {
+  // 设定小抄落后：直接给「缺哪几章 + 数据来自哪一步 + 会影响什么」
+  for (const row of coverageViews.value) {
     if (row.status !== 'lagging') continue
+    const sev = row.severity || 'high'
     items.push({
-      severity: 'high', group: 'must',
-      title: `${projectionViewLabel(row.view)}还没跟上正文`,
-      where: row.covered_ch
-        ? `只跟到第 ${row.covered_ch} 章，正文已经写到第 ${ov.baseline_ch} 章`
-        : `正文已经写到第 ${ov.baseline_ch} 章，这一项还没有跟上`,
-      advice: '生成新章节时它会自动补上；如果一直不动，说明这一步没跑到，建议到「Agent」页重新生成下一章或检查生成过程。',
-      jump: ov.baseline_ch || 0,
-      evidence: '',
+      severity: sev, group: severityGroup(sev),
+      title: row.missing_count
+        ? `${projectionViewLabel(row.view)}缺了 ${row.missing_count} 章的记录`
+        : `${projectionViewLabel(row.view)}还没跟上正文`,
+      where: row.gapText,
+      details: [
+        { label: '数据来自', text: row.sourceText || '系统没有记录这项的来源' },
+        { label: '会影响', text: row.effectText },
+      ],
+      advice: row.adviceText,
+      jump: row.firstMissingCh || ov.baseline_ch || 0,
     })
   }
 
@@ -355,18 +414,28 @@ function buildGroupedItems(ov) {
       severity: sev, group: severityGroup(sev),
       title: foreshadowProblem(it), where: foreshadowWhere(it),
       advice: foreshadowAdvice(it), jump: it.buried_ch || 0,
-      evidence: it.excerpt || '',
+      details: it.excerpt ? [{ label: '原文', text: `「${it.excerpt}」` }] : [],
     })
   }
 
-  for (const it of ov.conflicts?.items || []) {
+  for (const raw of ov.conflicts?.items || []) {
+    const it = decorateConflict(raw)
     const sev = it.severity || 'medium'
     items.push({
       severity: sev, group: severityGroup(sev),
-      title: it.detail || '有一处前后对不上',
-      where: `第 ${it.chapter} 章 · 来自${sourceLabel(it.source)}`,
+      title: it.headline,
+      where: `涉及：${it.scopeText}`,
+      details: [
+        { label: '依据', text: it.basisText },
+        ...it.basisExcerpts.map((b) => ({ label: '对照设定', text: `「${b.name}」：${b.excerpt}` })),
+        ...(it.actualText ? [{ label: '记录原文', text: it.actualText }] : []),
+        ...(it.checkType ? [{ label: '检查项', text: it.checkType }] : []),
+        { label: '为什么这样判', text: it.reasonText },
+      ],
+      sides: it.sides,
+      category: it.category,
+      categoryLabel: it.categoryLabel,
       advice: conflictAdvice(it), jump: it.chapter || 0,
-      evidence: it.evidence || '',
     })
   }
 
@@ -405,20 +474,6 @@ const confEmptyText = computed(() => (confSeverity.value
 const entityEmptyText = computed(() => (entityQuery.value
   ? `没有找到叫「${entityQuery.value}」的人物或设定，换个名字或别名再搜。`
   : '还没有可查的人物或设定。先在大纲或世界观里生成人物与设定，这里就能查到它们出现在哪几章。'))
-
-function coverageText(row) {
-  if (row.status === 'lagging') {
-    const gap = (overview.value?.baseline_ch || 0) - (row.covered_ch || 0)
-    return `只跟到第 ${row.covered_ch} 章，比正文落后 ${gap > 0 ? gap : 1} 章，后面写的内容容易和前面打架`
-  }
-  if (row.status === 'ahead') {
-    return `记到了第 ${row.covered_ch} 章，比已写正文还多，通常是旧记录，不影响阅读`
-  }
-  if (row.status === 'synced') {
-    return `已经跟到第 ${row.covered_ch} 章，和正文一致`
-  }
-  return '还没有记录跟到第几章，等下一次生成或检查后才会更新'
-}
 
 function toggleGroup(key) {
   openGroups[key] = !openGroups[key]
@@ -473,7 +528,7 @@ async function reloadConflicts() {
   confLoading.value = true
   try {
     const data = await getConsistencyConflicts(props.pid, { severity: confSeverity.value, limit: PAGE_SIZE, offset: 0 })
-    confItems.value = data.items
+    confItems.value = data.items.map(decorateConflict)
     confTotal.value = data.total
     confLoaded.value = true
   } catch (e) {
@@ -511,7 +566,7 @@ async function loadMore(kind) {
     confLoading.value = true
     const data = await getConsistencyConflicts(props.pid, { severity: confSeverity.value, limit: PAGE_SIZE, offset: confItems.value.length })
       .finally(() => { confLoading.value = false })
-    confItems.value = confItems.value.concat(data.items)
+    confItems.value = confItems.value.concat(data.items.map(decorateConflict))
   } else {
     entityLoading.value = true
     const data = await getEntityIndex(props.pid, {
@@ -614,6 +669,32 @@ watch(sub, () => { if (overview.value) loadCurrentSub() })
 }
 .cp-card-evidence { margin-top: 4px; font-size: 12px; color: var(--gold-deep); line-height: 1.6; }
 .cp-card-actions { margin-top: 6px; display: flex; gap: 8px; }
+
+/* 冲突卡：分类标签 + 依据 / 预期实际 / 判定理由 */
+.cp-card-cat {
+  flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  background: var(--chip, rgba(0, 0, 0, .05)); color: var(--ink-soft);
+}
+.cp-card-cat.repeat { color: var(--gold-deep); }
+.cp-card-detail { margin-top: 4px; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
+.cp-detail-label {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
+  background: var(--chip, rgba(0, 0, 0, .05)); color: var(--muted); font-size: 11px;
+}
+.cp-sides {
+  margin-top: 6px; padding: 8px 10px; border-left: 2px solid var(--card-line);
+  background: var(--hover, rgba(0, 0, 0, .02)); border-radius: 4px;
+}
+.cp-sides p { font-size: 12px; color: var(--ink-soft); line-height: 1.7; margin-top: 2px; }
+.cp-sides p:first-child { margin-top: 0; }
+.cp-side-label {
+  display: inline-block; margin-right: 6px; font-size: 11px; color: var(--muted);
+}
+
+/* 覆盖卡：事实 / 来源 / 影响 / 建议 */
+.cp-coverage-card { align-items: flex-start; }
+.cp-coverage-main { min-width: 0; }
+.cp-coverage-fact { margin-top: 4px; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
 
 /* 细看区 */
 .cp-detail { background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius); padding: 10px 14px 12px; }

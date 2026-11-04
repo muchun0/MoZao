@@ -124,6 +124,7 @@
 | POST | /api/projects/{id}/chapters/batch | 是 | 批量生成章节 |
 | POST | /api/projects/{id}/regenerate-from/{no} | 是 | 从某章开始重生成 |
 | POST | /api/projects/{id}/expand-selection | 是 | 扩写选中片段 |
+| POST | /api/projects/{id}/chapters/{no}/issues/rewrite | 是 | 按单条改稿建议局部改写（只改命中段落，新增版本并设为当前，按版本字数计费） |
 
 ### 生成控制
 

@@ -7,6 +7,7 @@ from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
+from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
 from novel_gen.pipeline.templates import _style_reference
 import time
 
@@ -63,6 +64,61 @@ def delete_chapter_version(project_id: str, no: int, v: int,
     logger.info("章节版本删除: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
     versions = attach_chapter_recommendations(store, no, store.list_versions(no))
     return {"no": no, "deleted_version": v, "versions": versions}
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/issues/rewrite")
+def rewrite_chapter_issue(project_id: str, no: int, req: dict = Body(...),
+                          user: dict = Depends(_require_user)):
+    """R1「按此改」：对单条改稿建议做定点局部改写，新增版本并设为当前生效版本。
+
+    只替换命中的段落（窗口外逐字符不变），旧版本全部保留；按新增版本字数结算。
+    定位失败/模型无结果时显式报错，绝不回落到整章重写。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需按建议改稿请先解锁")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+    cfg = store.load_config()
+    if not getattr(cfg, "targeted_rewrite", True):
+        raise HTTPException(status_code=400, detail="定点改写已关闭，请先在配置中开启")
+
+    versions = store.list_versions(no)
+    selected = next((v.get("v") for v in versions if v.get("selected")), 0)
+    try:
+        from_v = int(req.get("version") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="version 参数不合法")
+    if from_v:
+        try:
+            chapter = store.load_chapter_version(no, from_v)
+        except ValueError:
+            chapter = None
+        if chapter is None:
+            raise HTTPException(status_code=400, detail=f"版本 v{from_v} 不存在（可能已被淘汰）")
+    else:
+        chapter = store.load_chapter(no)
+        if chapter is None:
+            raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+
+    try:
+        pipeline = _open_pipeline(store)
+        billing_mode = _settle_billing_mode(store)
+        result = apply_issue_rewrite(
+            store, pipeline, chapter, from_v or selected, req,
+            billing_mode=billing_mode, project_id=project_id)
+    except ValueError as exc:
+        # 定位失败 / 模型无可用结果 / 内容未变化：可预期的业务失败
+        raise HTTPException(status_code=422, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("按此改失败: project=%s no=%d", project_id, no)
+        raise HTTPException(status_code=500, detail=f"局部改写失败：{exc}")
+
+    version_list = attach_chapter_recommendations(store, no, store.list_versions(no))
+    return {**result, "versions": version_list}
 
 
 @app.post("/api/projects/{project_id}/expand-selection")

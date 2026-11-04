@@ -7,6 +7,8 @@ export const updateChapterContent = (pid, no, data) => request.put(`/projects/${
 export const getChapterVersions = (pid, no) => request.get(`/projects/${pid}/chapters/${no}/versions`)
 export const selectChapterVersion = (pid, no, v) => request.post(`/projects/${pid}/chapters/${no}/versions/${v}/select`)
 export const deleteChapterVersion = (pid, no, v) => request.delete(`/projects/${pid}/chapters/${no}/versions/${v}`)
+// R1 按此改：对单条改稿建议做定点局部改写（只替换命中段落，新增版本并设为当前）
+export const rewriteChapterIssue = (pid, no, data) => request.post(`/projects/${pid}/chapters/${no}/issues/rewrite`, data)
 export const getOutline = (pid) => request.get(`/projects/${pid}/outline`)
 export const saveOutline = (pid, data) => request.put(`/projects/${pid}/outline`, data)
 export const getWorld = (pid) => request.get(`/projects/${pid}/world`)

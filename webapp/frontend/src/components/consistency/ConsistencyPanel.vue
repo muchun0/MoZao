@@ -155,9 +155,11 @@
                   等共 {{ row.missingCount }} 章
                 </span>
               </div>
-              <p v-if="row.status !== 'synced' && row.status !== 'ahead'" class="cp-meta">
-                会影响：{{ row.effectText }}　建议：{{ row.adviceText }}
-              </p>
+              <!-- 影响与建议拆成两行，和「事实」拉开视觉权重 -->
+              <template v-if="row.status !== 'synced' && row.status !== 'ahead'">
+                <p class="cp-card-detail"><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
+                <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
+              </template>
               <!-- 清单里已经记了哪些，按章列出条目 -->
               <div v-if="row.recordedChapters.length" class="cp-records">
                 <div class="cp-records-head">
@@ -417,10 +419,19 @@ function rememberScroll() {
 async function restoreScroll() {
   await nextTick()
   const target = savedScroller?.isConnected ? savedScroller : null
-  const current = target ? target.scrollTop : window.scrollY
-  if (Math.abs(current - savedScrollTop) <= 4) return
-  if (target) target.scrollTop = savedScrollTop
-  else window.scrollTo(0, savedScrollTop)
+  const html = document.documentElement
+  const prevBehavior = html.style.scrollBehavior
+  // 全局样式是 html { scroll-behavior: smooth }，还原必须瞬时完成，否则切页瞬间会被当成动画而“飘”回去
+  html.style.scrollBehavior = 'auto'
+  try {
+    const current = target ? target.scrollTop : window.scrollY
+    if (Math.abs(current - savedScrollTop) > 1) {
+      if (target) target.scrollTop = savedScrollTop
+      else window.scrollTo(0, savedScrollTop)
+    }
+  } finally {
+    html.style.scrollBehavior = prevBehavior
+  }
 }
 
 function switchSub(name) {

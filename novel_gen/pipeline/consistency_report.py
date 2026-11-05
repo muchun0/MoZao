@@ -40,10 +40,12 @@ VIEW_STATUS_SEVERITY: dict = {
 FS_STATE_LABELS: dict = {
     "planted": "已埋设", "due_soon": "临期", "overdue": "逾期未回收",
     "stalled": "停滞无推进", "revealed": "已回收",
+    # REQ-R10 A：进度接口专用（未到埋点，状态机本身不返回该值）
+    "not_buried": "未到埋点",
 }
 FS_STATE_SEVERITY: dict = {
     "overdue": "high", "stalled": "medium", "due_soon": "low",
-    "planted": "info", "revealed": "info",
+    "planted": "info", "revealed": "info", "not_buried": "info",
 }
 
 #: 质检 issue 级别 → 严重度

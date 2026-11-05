@@ -154,7 +154,7 @@ def test_only_existing_artifacts_are_listed(tmp_path):
 
 
 def test_analyze_never_raises_on_broken_store(monkeypatch, tmp_path):
-    """读取异常时必须降级为空结构，不能把 5xx 冒到接口层。"""
+    """读取异常时必须降级为「逐章 unknown」，不能把 5xx 冒到接口层，也不能伪装成没问题。"""
     store = _store(tmp_path)
     store.save_chapter(Chapter(no=1, title="第1章", content="正文。"))
 
@@ -164,6 +164,9 @@ def test_analyze_never_raises_on_broken_store(monkeypatch, tmp_path):
     monkeypatch.setattr(st, "_artifact_sets", _boom)
     data = st.analyze(store)
     assert data["has_stale"] is False and data["items"] == []
+    assert data["degraded"] is True
+    assert data["unknown_chapters"] == [1]
+    assert data["notice"]["level"] == "info"
 
 
 # ---------------------------------------------------------------- 接口层接线
@@ -220,3 +223,95 @@ def test_chain_of_thought_carries_staleness(book, monkeypatch):
     assert data["staleness"]["notice"]["title"] == "记录可能过期"
     # 同章未改时不应出现提示
     assert pch.chapter_chain_of_thought("p1", 2, USER)["staleness"]["notice"] is None
+
+
+def test_coverage_route_rows_carry_stale_chapters(book, monkeypatch):
+    """独立 GET /consistency/coverage 的行也要带 stale_chapters（REQ §4.2 判据）。"""
+    monkeypatch.setattr(pc, "_check_project_access", lambda pid, user: None)
+    monkeypatch.setattr(pc, "_find_project", lambda pid: book)
+
+    # 未改章时：每行 stale_chapters 存在且为空
+    data = pc.consistency_coverage("p1", 0, USER)
+    rows = data["views"]
+    assert rows and all("stale_chapters" in r for r in rows)
+    assert all(r["stale_chapters"] == [] for r in rows)
+
+    # 改第 2 章后：四类章级记录的行都精确标出 [2]，其他视图不受影响
+    edited = book.load_chapter(2)
+    edited.content = "改过之后的正文"
+    book.save_chapter(edited, source="user")
+    data = pc.consistency_coverage("p1", 0, USER)
+    by_view = {r["view"]: r["stale_chapters"] for r in data["views"]}
+    for view in ("scenes", "beat_gate", "summaries", "chapter_commit"):
+        assert by_view[view] == [2]
+
+
+def test_select_version_marks_stale(book):
+    """回退（select 旧版本）后正文与派生记录对不上，必须被判成 stale。
+
+    依赖：VersionedProduct.select 在索引上记 selected_at；判定取 max(版本 ts, selected_at)。
+    回退不改历史 ts，若不记 selected_at 这一场景会漏报。
+    """
+    chapter = book.load_chapter(1)
+    chapter.content = "第1章第二版正文"
+    book.save_chapter(chapter)
+    _age_versions(book)  # 版本时间拨回 OLD：保证「回退」是唯一的新事件
+    assert book.select_version(1, 1) is not None
+
+    data = st.analyze(book)
+    assert data["has_stale"] is True
+    assert data["stale_chapters"] == [1]
+    assert data["notice"]["level"] == "warning"
+    assert data["notice"]["title"] == "有 1 章的记录可能过期"
+    assert "回退到旧版本" in data["notice"]["text"]  # 回退不是「手动保存」，文案要区分
+
+
+def test_manual_flag_is_strictly_greater(tmp_path):
+    """同一秒内 AI 版本与人工版本 ts 相等时，不应算作「手动改过」（必须严格大于）。"""
+    store = _store(tmp_path)
+    store.save_chapter(Chapter(no=1, title="第1章", content="正文。"))
+    index = store.load_chapter_versions()
+
+    index["1"]["history"] = [
+        {"v": 1, "ts": 2_000, "source": "ai"},
+        {"v": 2, "ts": 2_000, "source": "user"},
+    ]
+    assert st._change_info(store, 1, index)["manual"] is False
+
+    index["1"]["history"][1]["ts"] = 2_001
+    info = st._change_info(store, 1, index)
+    assert info["manual"] is True and info["changed_at"] == 2_001
+
+
+def test_foreshadow_marks_tolerate_non_numeric_fields():
+    """伏笔条目的章号字段异常时降级为「未过期」，不能抛异常打出 500。"""
+    items = [{"buried_ch": "甲", "reveal_ch": None}, "not-a-dict",
+             {"buried_ch": 2, "reveal_ch": 0}]
+    pc._mark_foreshadow(items, {2})
+    assert items[0]["record_stale"] is False
+    assert items[2]["record_stale"] is True
+
+
+def test_all_unknown_shows_total_notice(tmp_path):
+    """全书没有可比对基线时，体检页必须出现总提示，而不是当成「没问题」。"""
+    store = _store(tmp_path)
+    store.save_chapter(Chapter(no=1, title="第1章", content="正文。"))
+    store.save_chapter(Chapter(no=2, title="第2章", content="正文。"))
+    _seed_artifacts(store, [1, 2])
+    store.save_chapter_commit({"chapters": {}, "updated_ch": 0})
+    store.chapter_versions_path().unlink(missing_ok=True)
+    store.projection_log_path().unlink(missing_ok=True)
+
+    data = st.analyze(store)
+    assert data["unknown_chapters"] == [1, 2]
+    assert data["notice"]["level"] == "info"
+    assert "无法判断" in data["notice"]["title"]
+
+
+def test_partial_unknown_is_mentioned_in_advice():
+    """只有部分章 unknown 时，过期提示里要如实带上一句，不能静默。"""
+    items = [{"chapter": 2, "manual": True, "artifacts": ["scenes"]}]
+    notice = st._build_notice(items, [4], single=False)
+    assert notice["level"] == "warning"
+    assert "另有 1 章" in notice["advice"]
+    assert "第 4 章" in notice["advice"]

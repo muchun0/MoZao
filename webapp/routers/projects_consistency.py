@@ -33,9 +33,14 @@ def _mark_conflicts(items: list, stale_set: set[int]) -> None:
 
 
 def _mark_foreshadow(items: list, stale_set: set[int]) -> None:
-    """伏笔条目的埋设/回收章命中过期章时打标。"""
+    """伏笔条目的埋设/回收章命中过期章时打标（字段非法时该条按「未过期」降级）。"""
     for item in items or []:
-        chs = {int(item.get("buried_ch") or 0), int(item.get("reveal_ch") or 0)}
+        if not isinstance(item, dict):
+            continue
+        try:
+            chs = {int(item.get("buried_ch") or 0), int(item.get("reveal_ch") or 0)}
+        except (TypeError, ValueError):
+            chs = set()
         item["record_stale"] = bool(chs & stale_set)
 
 
@@ -43,6 +48,8 @@ def _mark_coverage(rows: list, flags: dict) -> None:
     """覆盖视图逐行补「该视图有哪些章已过期」，供前端精确标注。"""
     by_view = flags.get("stale_by_view") or {}
     for row in rows or []:
+        if not isinstance(row, dict):
+            continue
         row["stale_chapters"] = list(by_view.get(row.get("view"), []))
 
 
@@ -50,12 +57,14 @@ def _attach_staleness(data: dict, flags: dict) -> dict:
     """把标脏结果挂到体检响应，并给受影响的条目打「记录可能过期」标记。
 
     只在路由层做标注：不改 consistency_report 的既有冲突判定（R11 并行改动面）。
+    覆盖视图有两种响应结构：overview 嵌在 `coverage.views`，独立 coverage 接口在顶层 `views`。
     """
     data["staleness"] = flags
     stale_set = _stale_set(flags)
     _mark_conflicts((data.get("conflicts") or {}).get("items"), stale_set)
     _mark_foreshadow((data.get("foreshadow") or {}).get("items"), stale_set)
     _mark_coverage((data.get("coverage") or {}).get("views"), flags)
+    _mark_coverage(data.get("views"), flags)
     return data
 
 

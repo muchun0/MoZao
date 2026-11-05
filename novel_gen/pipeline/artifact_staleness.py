@@ -10,7 +10,8 @@
 - 不改 `consistency_report.py` 的冲突判定（避开并行需求 R11 的改动面）。
 
 判定口径（精确到章）：
-1. 正文最后改动时间 = max(该章版本历史 ts, 章节 HEAD 文件 mtime)；
+1. 正文最后改动时间 = max(该章版本历史 ts, 回退时刻 selected_at)；完全没有版本时间的老数据
+   才退回章节 HEAD 文件 mtime（HEAD mtime 会被 AI 自身重写刷新，不能作为常规依据）；
 2. 派生记录写入时间（基线）= chapter_commit.finished_at → projection_log ts → 最新 AI 版 ts；
 3. 改动时间 > 基线 → stale；基线全无 → unknown（如实降级，不猜）。
 """
@@ -53,16 +54,42 @@ def _empty() -> dict[str, Any]:
         "artifact_labels": ARTIFACT_LABELS,
         "global_artifacts": GLOBAL_ARTIFACTS,
         "notice": None,
+        "degraded": False,
     }
 
 
 def analyze(store, chapter_no: Optional[int] = None) -> dict[str, Any]:
-    """判定派生记录是否落后于正文；任何异常降级为空结构（不抛 5xx）。"""
+    """判定派生记录是否落后于正文；任何异常降级为「逐章无法判断」（不抛 5xx）。"""
     try:
         return _analyze(store, chapter_no)
     except Exception:  # 只读体检，异常不允许冒到接口层
-        logger.exception("派生记录标脏判定失败（降级为空）")
-        return _empty()
+        logger.exception("派生记录标脏判定失败（降级为 unknown）")
+        return _degraded(store, chapter_no)
+
+
+def _degraded(store, chapter_no: Optional[int]) -> dict[str, Any]:
+    """判定过程出错时如实说明：把涉及章节全部标为 unknown，而不是伪装成「没问题」。"""
+    data = _empty()
+    data["degraded"] = True
+    try:
+        nos = chapter_numbers(store)
+    except Exception:
+        logger.warning("派生记录标脏降级：读取章号失败", exc_info=True)
+        nos = []
+    if chapter_no is not None:
+        nos = [n for n in nos if n == _int(chapter_no)]
+    data["checked_chapters"] = len(nos)
+    data["unknown_chapters"] = list(nos)
+    if nos:
+        data["notice"] = {
+            "level": "info",
+            "title": "暂时无法判断记录是否过期",
+            "text": f"第 {_fmt_chapters(nos)} 章的记录无法与正文比对（判定过程出错），系统"
+                    "暂时无法判断这些记录是否还对应当前正文。",
+            "advice": "可稍后重新打开全书体检再试；若要立刻确认，重新生成这些章（会产生"
+                      "正常的生成消耗）。",
+        }
+    return data
 
 
 # ---------------------------------------------------------------- 内部实现
@@ -91,20 +118,27 @@ def _chapter_mtime(store, no: int) -> int:
 
 
 def _change_info(store, no: int, versions: dict) -> dict[str, Any]:
-    """该章正文最后改动时间，以及是否以「人工版本」收尾。
+    """该章正文最后改动时间，以及是否以「人工改动」收尾。
 
-    有版本索引时只用版本时间：HEAD 文件的 mtime 会被 AI 自身的重写（rewrite /
-    auto-select）刷新，拿 mtime 比较会把正常的 AI 重写误判成人工改动。
-    mtime 只在完全没有版本时间的老数据上兜底。
+    有版本索引时只用版本时间与回退时刻：HEAD 文件的 mtime 会被 AI 自身的重写（rewrite /
+    auto-select）刷新，拿 mtime 比较会把正常的 AI 重写误判成人工改动。mtime 只在完全没有
+    版本时间的老数据上兜底。
+
+    回退（`VersionedProduct.select`）只改 HEAD、不追加历史版本，因此单独记录 `selected_at`；
+    否则「回退到旧版本」会让派生记录与正文对不上却判不出来。
     """
     rec = versions.get(str(no)) if isinstance(versions, dict) else None
     history = rec.get("history") if isinstance(rec, dict) else None
     entries = [h for h in (history or []) if isinstance(h, dict)]
     user_ts = max((_int(h.get("ts")) for h in entries if h.get("source") == "user"), default=0)
     ai_ts = max((_int(h.get("ts")) for h in entries if h.get("source") != "user"), default=0)
-    if user_ts or ai_ts:
-        changed_at = max(user_ts, ai_ts)
-        manual = user_ts > 0 and user_ts >= ai_ts
+    selected_at = _int(rec.get("selected_at")) if isinstance(rec, dict) else 0
+    latest_ts = max(user_ts, ai_ts)
+    if latest_ts or selected_at:
+        changed_at = max(latest_ts, selected_at)
+        # 同一秒内的 AI 重写不应被显示成「你手动改过」，所以人工判定用严格大于；
+        # 回退（selected_at 最晚）不算「手动改正文」，文案走「正文有改动（比如回退到旧版本）」
+        manual = user_ts > 0 and user_ts > max(ai_ts, selected_at)
     else:
         # 老数据没有版本时间：退回 HEAD 文件 mtime，只能说明「正文变过」
         changed_at = _chapter_mtime(store, no)
@@ -205,7 +239,7 @@ def _analyze(store, chapter_no: Optional[int]) -> dict[str, Any]:
             stale_by_view[view].append(no)
 
     stale = [it["chapter"] for it in items]
-    notice = _build_notice(items, unknown if len(nos) == 1 else [], single=chapter_no is not None)
+    notice = _build_notice(items, unknown, single=chapter_no is not None)
     return {
         "checked_chapters": len(nos),
         "has_stale": bool(stale),
@@ -216,6 +250,7 @@ def _analyze(store, chapter_no: Optional[int]) -> dict[str, Any]:
         "artifact_labels": ARTIFACT_LABELS,
         "global_artifacts": GLOBAL_ARTIFACTS,
         "notice": notice,
+        "degraded": False,
     }
 
 
@@ -234,16 +269,25 @@ def _affected_labels(items: list[dict]) -> list[str]:
 
 
 def _build_notice(items: list[dict], unknown: list[int], *, single: bool) -> Optional[dict]:
+    """统一的过期提示口径；unknown 是「判断不了」，不能静默当成「没问题」。"""
     if not items:
-        if unknown:
-            no = unknown[0]
-            return {
-                "level": "info",
-                "title": "无法判断记录是否过期",
-                "text": f"第 {no} 章没有可比对的记录写入时间（老数据），系统无法判断这些记录是否还对应当前正文。",
-                "advice": "想确认的话：重新生成这一章，让记录与正文对齐（会产生正常的生成消耗）。",
-            }
-        return None
+        if not unknown:
+            return None
+        nos_text = f"第 {_fmt_chapters(unknown)} 章"
+        if len(unknown) == 1:
+            title = "无法判断记录是否过期"
+            text = (f"{nos_text}没有可比对的记录写入时间（老数据），系统无法判断这些记录"
+                    "是否还对应当前正文。")
+        else:
+            title = f"有 {len(unknown)} 章的记录无法判断是否过期"
+            text = (f"{nos_text}都没有可比对的记录写入时间（老数据），系统无法判断这些记录"
+                    "是否还对应当前正文。")
+        return {
+            "level": "info",
+            "title": title,
+            "text": text,
+            "advice": "想确认的话：重新生成这几章，让记录与正文对齐（会产生正常的生成消耗）。",
+        }
 
     nos = [it["chapter"] for it in items]
     manual = all(it.get("manual") for it in items)
@@ -252,8 +296,10 @@ def _build_notice(items: list[dict], unknown: list[int], *, single: bool) -> Opt
     action = "你手动改过正文" if manual else "正文有改动（比如回退到旧版本）"
     text = f"{subject}{action}，{'、'.join(labels)}还是改之前的，据此得出的体检结论可能不准。"
     advice = "想消除提示：重新生成这几章（会产生正常的生成消耗）；系统不会在你保存正文时自动重算。"
-    if len(unknown) > 1:
-        advice += f"另有 {len(unknown)} 章没有可比对的时间基线，无法判断是否过期。"
+    if unknown:
+        tail = (f"另有 {len(unknown)} 章（第 {_fmt_chapters(unknown)} 章）没有可比对的"
+                "时间基线，无法判断是否过期。")
+        advice += tail
     return {
         "level": "warning",
         "title": "记录可能过期" if single else f"有 {len(nos)} 章的记录可能过期",

@@ -247,6 +247,9 @@ class VersionedProduct:
         # 2. 索引（原子写）
         index[key] = {"versions": versions, "selected": selected,
                       "history": history, "user_managed": user_managed}
+        if rec.get("selected_at"):
+            # REQ-R13：回退时刻要跨后续提交保留，否则标脏判定会丢掉「曾回退」这条依据
+            index[key]["selected_at"] = rec["selected_at"]
         self.store._write_json(self.spec.index_path(self.store), index)
 
         # 3. 最后写 HEAD（HEAD = selected 版本内容；commit_head 场景 HEAD 已在盘上）
@@ -274,6 +277,8 @@ class VersionedProduct:
             if isinstance(rec, dict) and v in (rec.get("versions") or []):
                 rec["selected"] = v
                 rec["user_managed"] = True
+                # REQ-R13：记下回退时刻，供派生记录标脏判定（回退不改历史 ts，否则判不出来）
+                rec["selected_at"] = int(time.time())
                 index[key] = rec
                 self.store._write_json(self.spec.index_path(self.store), index)
             self.store._write_json(self.spec.head_path(self.store, key), data)

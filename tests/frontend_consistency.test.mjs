@@ -10,6 +10,7 @@ import {
   foreshadowProblem, foreshadowWhere, foreshadowAdvice,
   humanizeGap, entitySummary, severityGroup,
   formatChapterList, coverageGap, coverageEffect, coverageAdvice,
+  coverageShowInMust, coverageWhatText,
   conflictCategory, conflictHeadline, conflictBasis, conflictSides,
   conflictReason, conflictScope, conflictAdvice, conflictCheckType,
 } from '../webapp/frontend/src/utils/consistency.js'
@@ -108,7 +109,26 @@ test('覆盖缺口：能逐章定位时说清缺哪几章、数据来自哪一�
   assert.ok(text.includes('共缺 2 章'))
   assert.ok(!text.includes('落后了'))
   assert.ok(coverageEffect(row).includes('场景'))
-  assert.ok(coverageAdvice(row).includes('不用改正文'))
+  assert.ok(coverageAdvice(row).includes('重新生成'))
+})
+
+test('数据可见性：只有作者看得到内容的记录才进必须先处理，内部账本降级为参考', () => {
+  assert.equal(coverageShowInMust({ view: 'scenes' }), true)
+  assert.equal(coverageShowInMust({ view: 'summaries' }), true)
+  for (const view of ['chapter_commit', 'beat_gate', 'chapter_state',
+    'foreshadow_commitment', 'payoff_quota', 'reveal_status']) {
+    assert.equal(coverageShowInMust({ view }), false, view)
+  }
+  // 作者看不到内容的记录，不给「去补记/重新生成」这类做不到的建议
+  const internal = coverageAdvice({ view: 'chapter_state', status: 'lagging' })
+  assert.ok(internal.includes('不用管'))
+  assert.ok(!internal.includes('重新生成'))
+  const visible = coverageAdvice({ view: 'scenes', status: 'lagging' })
+  assert.ok(visible.includes('重新生成'))
+  // 场景清单要在卡片里说清「系统自动记录、界面上没有单独入口」
+  const what = coverageWhatText({ view: 'scenes' })
+  assert.ok(what.includes('自动记'))
+  assert.ok(what.includes('没有单独'))
 })
 
 test('覆盖缺口：只能拿到水位时明说无法定位具体章节', () => {

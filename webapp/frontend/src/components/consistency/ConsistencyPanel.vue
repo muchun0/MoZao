@@ -63,7 +63,33 @@
               <span v-if="it.categoryLabel" class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
               <strong class="cp-card-title">{{ it.title }}</strong>
             </div>
+            <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
+            <p v-if="it.what" class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ it.what }}</p>
             <p class="cp-card-where">{{ it.where }}</p>
+            <div v-if="it.missingChapters && it.missingChapters.length" class="cp-chips">
+              <span class="cp-chip-label">缺记录</span>
+              <button v-for="no in it.missingChapters" :key="no" type="button" class="cp-chap-chip"
+                @click="emitLocate(no)">第 {{ no }} 章</button>
+              <span v-if="it.missingCount > it.missingChapters.length" class="cp-meta">
+                等共 {{ it.missingCount }} 章
+              </span>
+            </div>
+            <div v-if="it.recordedChapters && it.recordedChapters.length" class="cp-records">
+              <div class="cp-records-head">
+                <span class="cp-chip-label">清单里已有的</span>
+                <span class="cp-meta">
+                  {{ it.recordedChapterCount }} 章 · {{ it.recordedItemCount }} 条
+                  <template v-if="it.recordedTruncated">（先列前 {{ it.recordedChapters.length }} 章）</template>
+                </span>
+              </div>
+              <div v-for="c in it.recordedChapters" :key="c.ch" class="cp-record-row">
+                <button type="button" class="cp-chap-link" @click="emitLocate(c.ch)">第 {{ c.ch }} 章</button>
+                <div class="cp-record-items">
+                  <p v-for="(t, ti) in c.items" :key="ti" :class="{ 'cp-muted-item': t === NO_DESC }">{{ t }}</p>
+                  <p v-if="c.count > c.items.length" class="cp-meta">还有 {{ c.count - c.items.length }} 条</p>
+                </div>
+              </div>
+            </div>
             <div v-if="it.sides" class="cp-sides">
               <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`${g.key}-${i}`) }">
                 <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
@@ -143,11 +169,13 @@
               <div class="cp-row-title">
                 <strong>{{ viewName(row.view) }}</strong>
                 <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
-                <span class="cp-meta">{{ row.sourceText }}</span>
+                <span v-if="!row.showInMust" class="cp-meta">系统内部记录 · 仅供参考</span>
               </div>
+              <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
+              <p class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ row.whatText }}</p>
               <p class="cp-coverage-fact">{{ row.gapText }}</p>
-              <!-- 缺记录的章号首屏直出，点一下直接跳章 -->
-              <div v-if="row.missingChapters.length" class="cp-chips">
+              <!-- 缺记录的章号首屏直出，点一下直接跳章（仅作者看得到内容的记录） -->
+              <div v-if="row.showInMust && row.missingChapters.length" class="cp-chips">
                 <span class="cp-chip-label">缺记录</span>
                 <button v-for="no in row.missingChapters" :key="no" type="button" class="cp-chap-chip"
                   @click="emitLocate(no)">第 {{ no }} 章</button>
@@ -155,13 +183,8 @@
                   等共 {{ row.missingCount }} 章
                 </span>
               </div>
-              <!-- 影响与建议拆成两行，和「事实」拉开视觉权重 -->
-              <template v-if="row.status !== 'synced' && row.status !== 'ahead'">
-                <p class="cp-card-detail"><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
-                <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
-              </template>
               <!-- 清单里已经记了哪些，按章列出条目 -->
-              <div v-if="row.recordedChapters.length" class="cp-records">
+              <div v-if="row.showInMust && row.recordedChapters.length" class="cp-records">
                 <div class="cp-records-head">
                   <span class="cp-chip-label">清单里已有的</span>
                   <span class="cp-meta">
@@ -177,18 +200,23 @@
                   </div>
                 </div>
               </div>
-              <p v-else-if="row.locatable" class="cp-meta">这份清单里还没有记录可以列。</p>
-              <p v-if="row.status === 'lagging' && !row.firstMissingCh" class="cp-meta">
-                系统只知道它落后到第 {{ row.covered_ch ?? '—' }} 章，无法定位具体缺哪几章，可以先打开最新一章核对。
+              <p v-else-if="row.showInMust && row.locatable" class="cp-meta">这份清单里还没有记录可以列。</p>
+              <!-- 影响与建议拆成两行，和「事实」拉开视觉权重 -->
+              <template v-if="row.showInMust && row.status !== 'synced' && row.status !== 'ahead'">
+                <p class="cp-card-detail"><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
+                <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
+              </template>
+              <p v-else-if="!row.showInMust && row.status === 'lagging'" class="cp-card-advice">
+                <span class="cp-advice-label">说明</span>这一项的内容你看不到，也不用管；这里的缺口只作系统内部参考。
               </p>
-              <div v-if="row.status === 'lagging' && row.firstMissingCh" class="cp-card-actions">
+              <div v-if="row.showInMust && row.firstMissingCh" class="cp-card-actions">
                 <el-button size="small" text type="primary" @click="emitLocate(row.firstMissingCh)">
                   打开第 {{ row.firstMissingCh }} 章
                 </el-button>
               </div>
             </div>
             <p class="cp-footnote">
-              小抄会在生成新章节时自动更新。如果某一项一直不动，说明那一步没跑到，后面的伏笔和人物状态判断会不准。
+              只有「你看得到内容」的记录才会进上面的「必须先处理」；系统内部账本只在这里列出来做个参考。
             </p>
           </div>
 
@@ -317,7 +345,8 @@ import {
   severityMeta, severityGroup, projectionViewLabel, coverageStateLabel,
   coverageStateType, foreshadowStateLabel, foreshadowProblem, foreshadowWhere,
   foreshadowAdvice, conflictAdvice, entitySummary, humanizeGap,
-  coverageGap, coverageSource, coverageEffect, coverageAdvice,
+  coverageGap, coverageEffect, coverageAdvice,
+  coverageShowInMust, coverageWhatText,
   conflictCategory, conflictHeadline, conflictBasis, conflictSides,
   conflictReason, conflictScope, conflictCheckType,
 } from '../../utils/consistency'
@@ -365,8 +394,9 @@ const fsAdvice = (it) => foreshadowAdvice(it)
 const adviceOf = (it) => conflictAdvice(it)
 const summaryOf = (row) => entitySummary(row)
 const viewName = (view) => projectionViewLabel(view)
-const coverageState = (row) => coverageStateLabel(row.status)
-const coverageTag = (row) => coverageStateType(row.status)
+// 内部记录不暴露「落后」红标，统一叫「后台记录」，避免作者误以为要去补
+const coverageState = (row) => (row.showInMust ? coverageStateLabel(row.status) : '后台记录')
+const coverageTag = (row) => (row.showInMust ? coverageStateType(row.status) : 'info')
 
 const baselineCh = computed(() => overview.value?.baseline_ch || 0)
 
@@ -442,7 +472,8 @@ function switchSub(name) {
 const coverageViews = computed(() => (overview.value?.coverage?.views || []).map((row) => ({
   ...row,
   gapText: coverageGap(row, baselineCh.value),
-  sourceText: coverageSource(row),
+  whatText: coverageWhatText(row),
+  showInMust: coverageShowInMust(row),
   effectText: coverageEffect(row),
   adviceText: coverageAdvice(row),
   firstMissingCh: (row.missing_chapters || [])[0] || 0,
@@ -511,20 +542,27 @@ function buildGroupedItems(ov) {
   const items = []
   if (!ov) return items
 
-  // 设定小抄落后：直接给「缺哪几章 + 数据来自哪一步 + 会影响什么」
+  // 设定小抄落后：只把「作者看得到内容」的记录放进必须先处理（内部账本不进）
   for (const row of coverageViews.value) {
-    if (row.status !== 'lagging') continue
+    if (row.status !== 'lagging' || !row.showInMust) continue
     const sev = row.severity || 'high'
     items.push({
       severity: sev, group: severityGroup(sev),
+      view: row.view,
       title: row.missing_count
         ? `${projectionViewLabel(row.view)}缺了 ${row.missing_count} 章的记录`
         : `${projectionViewLabel(row.view)}还没跟上正文`,
+      what: row.whatText,
       where: row.gapText,
       details: [
-        { label: '数据来自', text: row.sourceText || '系统没有记录这项的来源' },
         { label: '会影响', text: row.effectText },
       ],
+      missingChapters: row.missingChapters,
+      missingCount: row.missingCount,
+      recordedChapters: row.recordedChapters,
+      recordedChapterCount: row.recordedChapterCount,
+      recordedItemCount: row.recordedItemCount,
+      recordedTruncated: row.recordedTruncated,
       advice: row.adviceText,
       jump: row.firstMissingCh || ov.baseline_ch || 0,
     })

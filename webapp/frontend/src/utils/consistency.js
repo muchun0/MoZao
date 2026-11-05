@@ -117,7 +117,7 @@ export function foreshadowWhere(item = {}) {
 export function foreshadowAdvice(item = {}) {
   switch (item.state) {
     case 'overdue':
-      return '翻回最早埋下它的那一章，找机会收掉；如果这条线本来就不打算用了，把回收计划改掉或删掉，免得越拖越像烂尾。'
+      return '翻回最早埋下它的那一章，找机会收掉；如果这条线本来就不打算用了，就在后面章节里明说放弃或转成别的用途，免得越拖越像烂尾。'
     case 'stalled':
       return '在接下来一两章里让它再露一次面，哪怕只提一句，读者才不会把它忘掉。'
     case 'due_soon':
@@ -151,6 +151,60 @@ export const COVERAGE_VIEW_EFFECT = {
   reveal_status: '可能重复回收同一条伏笔，或者该收的忘了收。',
   character_states: '人物状态会停在旧版本，容易写崩人设或关系。',
   book_memory: '写新章节时对前情把握不准，容易和前面矛盾。',
+}
+
+// ---------- 数据可见性决策（2026-11-05） ----------
+// R2 结论依赖的底层记录，作者在界面上到底能不能看到、能不能自己维护。
+// show：体检页直接列出条目并可跳章（A 补展示）；degrade：系统内部记录，只作参考，不进「必须先处理」（C 保留降级）。
+export const COVERAGE_VISIBILITY = {
+  scenes: {
+    decision: 'show',
+    hint: '系统每写完一章自动记下的场景清单。界面上没有单独的清单页，你不用手动维护；下面就是它记下的内容。',
+  },
+  summaries: {
+    decision: 'show',
+    hint: '系统每写完一章自动写下的这一章摘要。界面上没有单独的摘要页，你不用手动维护；下面就是它记下的内容。',
+  },
+  chapter_commit: {
+    decision: 'degrade',
+    hint: '这是系统内部的章节要点账本，界面上不展示，也不用你维护。',
+  },
+  beat_gate: {
+    decision: 'degrade',
+    hint: '这是系统内部用来自检节奏的剧情节点记录，界面上不展示，也不用你维护。',
+  },
+  chapter_state: {
+    decision: 'degrade',
+    hint: '这是系统内部的全书进度水位，界面上不展示，也不用你维护。',
+  },
+  foreshadow_commitment: {
+    decision: 'degrade',
+    hint: '这是系统内部的伏笔回收计划，界面上只在「伏笔回收」里看得到结果，你不用手动维护。',
+  },
+  payoff_quota: {
+    decision: 'degrade',
+    hint: '这是系统内部的爽点节奏记录，界面上不展示，也不用你维护。',
+  },
+  reveal_status: {
+    decision: 'degrade',
+    hint: '这是系统内部的伏笔揭示记录，界面上不展示，也不用你维护。',
+  },
+}
+
+export function coverageVisibility(row = {}) {
+  return COVERAGE_VISIBILITY[row.view] || {
+    decision: 'degrade',
+    hint: '这是系统内部记录，界面上不展示，也不用你维护。',
+  }
+}
+
+// 只有作者能看到内容、且缺了会影响写作的记录，才进「必须先处理」
+export function coverageShowInMust(row = {}) {
+  return coverageVisibility(row).decision === 'show'
+}
+
+export function coverageWhatText(row = {}) {
+  return coverageVisibility(row).hint
 }
 
 // 章号压缩： [5,7] → "5、7"；[5,6,7] → "5–7"；[5,7,8,9] → "5、7–9"
@@ -229,7 +283,12 @@ export function coverageEffect(row = {}) {
 
 export function coverageAdvice(row = {}) {
   if (row.status === 'synced' || row.status === 'ahead') return '不用处理。'
-  return '先不用改正文；下一次生成或全书检查跑完后通常会补记。如果一直不动，说明生成时那一步没跑到，建议到「Agent」页重新生成下一章，或检查生成过程。'
+  // 内部记录：作者看不到也改不了，不给「你去补记」这类做不到的建议
+  if (!coverageShowInMust(row)) {
+    return '不用管，也不需要你补。系统写下一章时会自己续上；如果它一直不动，可以在「工具 → 生成过程」里看下一章有没有正常更新。'
+  }
+  // 可见记录：缺的是已写完的章节，系统不会回头补，只能靠重新生成该章
+  return '系统在你写下一章时会自动继续记。已经写完的章节不会回头补；要让这几章补上，只能打开对应章节重新生成（会产生正常的生成消耗）。'
 }
 
 // ---------- 一致性冲突：依据 / 预期 vs 实际 / 判定理由 ----------

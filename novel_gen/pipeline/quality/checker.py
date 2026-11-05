@@ -154,7 +154,10 @@ class QualityChecker:
                          "detail": (it.get("detail") or "")[:120],
                          # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
                          # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
-                         "evidence": _aggregate.issue_evidence(it)[:120]}
+                         "evidence": _aggregate.issue_evidence(it)[:120],
+                         # R1：具体改法落版本快照，版本弹窗直接展示「怎么改」；
+                         # 没有就存空串，前端显示「未给出改法」，不编造
+                         "fix_suggestion": (it.get("fix_suggestion") or "")[:120]}
                         for it in issues
                     ],
                 },

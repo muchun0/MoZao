@@ -1,0 +1,88 @@
+# CI：合入前跑 P0 回归、硬护栏检查与前端构建
+# 说明：仓库若未托管在 GitHub，本文件即"本地 CI 脚本的等价定义"；
+# 本地可执行 `python -m pytest tests/ -m p0 -q` + `npm run build` 复现。
+name: ci
+
+on:
+  pull_request:
+    branches: [devtest, master]
+  push:
+    branches: [devtest]
+
+jobs:
+  p0-and-guard:
+    runs-on: ubuntu-latest
+    # P0 用例在 import webapp.db 时即初始化 schema，必须提供真实 MySQL；
+    # 生产镜像仍只装 requirements.txt，测试依赖只装在 CI
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: mozao
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: mozao
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 必须与生产镜像 Dockerfile（python:3.13-slim）一致；
+          # 3.11 不兼容代码中的 PEP 701 f-string 写法，会在收集阶段直接 SyntaxError
+          python-version: "3.13"
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Init database schema
+        run: python -c "import webapp.db"
+      - name: Seed admin (idempotent)
+        # CI 固定测试账号 admin/admin（非真实凭据，不使用 secrets）；已存在则不改密码
+        run: |
+          python - <<'PY'
+          from webapp import db
+          if db.get_user_by_name("admin") is None:
+              ok, why = db.create_user("admin", "admin", is_admin=True, email="admin@ci.local")
+              if not ok:
+                  raise SystemExit(f"seed admin failed: {why}")
+              print("admin created")
+          else:
+              print("admin already exists, skip")
+          PY
+      - name: Guard check (tracked files)
+        # 本检查是 automation/scripts/guard_check.py 的子集，完整护栏由本地 hook 承担，两边规则需同步
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)\.env$|\.key$|\.pem$|(^|/)dist/|\.zip$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::以下已跟踪文件违反护栏（.env / *.key / *.pem / dist/ / *.zip）："
+            echo "$bad"
+            exit 1
+          fi
+          echo "Guard check passed: no forbidden tracked files."
+      - name: P0 regression
+        run: python -m pytest tests/ -m p0 -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

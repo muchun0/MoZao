@@ -3,7 +3,7 @@
     <header class="cp-head">
       <div>
         <h3 class="cp-title">全书体检</h3>
-        <p class="cp-sub">帮你把全书过一遍：哪里前后对不上、哪条伏笔该收了、某个人物或设定都在哪几章出现过。这里只看不改，不会动你的正文。</p>
+        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），不跑新检查、不改正文、不扣费。要发起检查、看原始记录，去「工具 → 全书质检」。</p>
       </div>
       <el-button size="small" :loading="loading" @click="loadOverview">重新体检</el-button>
     </header>
@@ -46,6 +46,11 @@
         </div>
       </div>
 
+      <!-- 口径：体检与工具的数字来源不同，这里把拆分摊开，作者能自己核对 -->
+      <p v-if="overview.conflicts?.total" class="cp-source-line">
+        「前后对不上」{{ overview.conflicts.total }} 条，来源：{{ conflictSourceLine }}
+        <el-button size="small" text type="primary" @click="emit('open-tools')">去工具看原始记录</el-button>
+      </p>
       <!-- 按轻重分组，默认只展开最需要处理的那一组 -->
       <section v-for="g in groupList" :key="g.key" class="cp-group">
         <button class="cp-group-head" type="button" @click="toggleGroup(g.key)">
@@ -243,6 +248,11 @@
 
           <!-- 3. 前后不一致 -->
           <div v-show="sub === 'conflicts'" class="cp-pane">
+            <p class="cp-source-line">
+              {{ conflictSourceLine }}
+              <el-button size="small" text type="primary" @click="emit('open-tools')">去工具看原始记录</el-button>
+            </p>
+            <p class="cp-source-hint">全书校验来自「工具 → 全书质检」跑出的通读记录，单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对。</p>
             <p v-if="confLoaded && !confItems.length" class="cp-group-empty">{{ confEmptyText }}</p>
             <article v-for="(it, i) in confItems" :key="i" class="cp-card">
               <div class="cp-card-top">
@@ -259,6 +269,7 @@
                 <span class="cp-detail-label">记录原文</span>{{ it.actualText }}
               </p>
               <p v-if="it.checkType" class="cp-card-detail"><span class="cp-detail-label">检查项</span>{{ it.checkType }}</p>
+              <p v-if="it.note" class="cp-card-detail"><span class="cp-detail-label">说明</span>{{ it.note }}</p>
               <div v-if="it.sides" class="cp-sides">
                 <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
                   <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
@@ -273,7 +284,7 @@
                 <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`c-${i}`)">
                   {{ isExpanded(`c-${i}`) ? '收起原文' : '展开原文' }}
                 </el-button>
-                <el-button size="small" text type="primary" @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
+                <el-button v-if="it.chapter" size="small" text type="primary" @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
@@ -348,11 +359,11 @@ import {
   coverageGap, coverageEffect, coverageAdvice,
   coverageShowInMust, coverageWhatText,
   conflictCategory, conflictHeadline, conflictBasis, conflictSides,
-  conflictReason, conflictScope, conflictCheckType,
+  conflictReason, conflictScope, conflictCheckType, conflictSourceText,
 } from '../../utils/consistency'
 
 const props = defineProps({ pid: { type: String, required: true } })
-const emit = defineEmits(['locate'])
+const emit = defineEmits(['locate', 'open-tools'])
 
 const loading = ref(false)
 const overview = ref(null)
@@ -400,6 +411,9 @@ const coverageTag = (row) => (row.showInMust ? coverageStateType(row.status) : '
 
 const baselineCh = computed(() => overview.value?.baseline_ch || 0)
 
+// 冲突计数口径：全书校验 / 单章质检 / 合并去重后的条数，由后端同一次遍历产出
+const conflictSourceLine = computed(() => conflictSourceText(overview.value?.conflicts?.sources))
+
 // 覆盖清单里「没有可读描述」的条目统一标注，与后端常量保持一致
 const NO_DESC = '只有编号，没有描述'
 
@@ -407,7 +421,7 @@ const NO_DESC = '只有编号，没有描述'
 const PURPOSE = {
   coverage: '这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
   foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。',
-  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。没被检查到的矛盾，这里看不到。',
+  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；要发起检查或看原始记录，去「工具 → 全书质检」。',
   entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
 }
 
@@ -590,6 +604,7 @@ function buildGroupedItems(ov) {
         ...it.basisExcerpts.map((b) => ({ label: '对照设定', text: `「${b.name}」：${b.excerpt}` })),
         ...(it.actualText ? [{ label: '记录原文', text: it.actualText }] : []),
         ...(it.checkType ? [{ label: '检查项', text: it.checkType }] : []),
+        ...(it.note ? [{ label: '说明', text: it.note }] : []),
         { label: '为什么这样判', text: it.reasonText },
       ],
       sides: it.sides,
@@ -878,6 +893,9 @@ watch(sub, async () => {
 .cp-nav-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cp-pane { padding-top: 2px; }
 .cp-purpose { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 6px 0 8px; }
+/* 体检与工具的口径对照：一行放完，不新增横条 */
+.cp-source-line { font-size: 12px; color: var(--ink-soft); line-height: 1.7; margin-top: 2px; }
+.cp-source-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
 .cp-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .cp-select { width: 128px; }
 .cp-input { width: 200px; }

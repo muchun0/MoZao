@@ -127,7 +127,7 @@
 
         <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel" />
         </section>
       </main>
     </div>
@@ -484,6 +484,12 @@ function locateChapter(no) {
   const ch = chapters.value.find(c => Number(c.no) === Number(no))
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
+}
+
+// 体检页「去工具看原始记录」：只切页，不触发任何检查（体检零 LLM、零扣费）
+function openToolsPanel() {
+  navTouched.value = true
+  tab.value = 'tools'
 }
 
 function startEdit() {

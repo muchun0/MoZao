@@ -65,6 +65,8 @@
         <div style="margin-top:4px"><b>产出 · 场景清单</b>
           <span v-if="sceneCountHint" class="muted" style="margin-left:6px">{{ sceneCountHint }}</span>
         </div>
+        <!-- R13：这一章改过正文时，提示下面的场景清单可能还是改之前的 -->
+        <StaleNotice v-if="staleNotice" :notice="staleNotice" />
         <p v-if="!sceneItems.length" class="cot-empty">{{ sceneEmptyText }}</p>
         <div v-for="(sc, i) in sceneItems" :key="i" class="cot-scene">
           <div class="cot-scene-head" @click="toggleScene(i)">
@@ -324,6 +326,8 @@ import {
   normalizeForeshadowSummary, buildForeshadowFilters, filterForeshadowItems,
   foreshadowStateTag, foreshadowProgressText, unstructuredNote,
 } from '../../utils/foreshadow'
+import StaleNotice from '../common/StaleNotice.vue'
+import { staleNoticeOf } from '../../utils/staleness'
 
 const props = defineProps({ pid: String })
 
@@ -433,6 +437,8 @@ const summaryShort = computed(() => clipText(summaryText.value))
 const sceneEmptyText = SCENE_EMPTY_TEXT
 const designEmptyText = DESIGN_EMPTY_TEXT
 const summaryEmptyText = SUMMARY_EMPTY_TEXT
+// R13：改章后派生记录标脏提示（与体检页同一后端判定与文案）
+const staleNotice = computed(() => staleNoticeOf(cotView.value))
 function toggleScene(i) {
   openScenes.value = { ...openScenes.value, [i]: !openScenes.value[i] }
 }

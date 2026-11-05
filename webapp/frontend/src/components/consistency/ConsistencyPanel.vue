@@ -27,6 +27,9 @@
         <p class="cp-verdict-text">{{ verdict.text }}</p>
       </div>
 
+      <!-- R13：正文改过后派生记录没重算，先提醒结论可能过期（文案来自后端，两处共用） -->
+      <StaleNotice v-if="staleNotice" :notice="staleNotice" />
+
       <div class="cp-stats">
         <div class="cp-stat">
           <span class="cp-stat-num">{{ overview.chapters_written }}</span>
@@ -67,6 +70,8 @@
               <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
               <span v-if="it.categoryLabel" class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
               <strong class="cp-card-title">{{ it.title }}</strong>
+              <!-- R13：这一条依据的记录落后于当前正文，结论可能不准 -->
+              <span v-if="it.recordStale" class="cp-stale-tag">记录可能过期</span>
             </div>
             <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
             <p v-if="it.what" class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ it.what }}</p>
@@ -179,6 +184,12 @@
               <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
               <p class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ row.whatText }}</p>
               <p class="cp-coverage-fact">{{ row.gapText }}</p>
+              <!-- R13：这份记录里有章已被改过，条目可能还是旧正文的 -->
+              <div v-if="row.staleChapters.length" class="cp-chips cp-stale-row">
+                <span class="cp-chip-label">记录可能过期</span>
+                <button v-for="no in row.staleChapters" :key="no" type="button" class="cp-chap-chip"
+                  @click="emitLocate(no)">第 {{ no }} 章</button>
+              </div>
               <!-- 缺记录的章号首屏直出，点一下直接跳章（仅作者看得到内容的记录） -->
               <div v-if="row.showInMust && row.missingChapters.length" class="cp-chips">
                 <span class="cp-chip-label">缺记录</span>
@@ -234,6 +245,7 @@
                 <strong class="cp-card-title">{{ fsProblem(it) }}</strong>
               </div>
               <p class="cp-card-where">{{ fsWhere(it) }}</p>
+              <span v-if="it.record_stale" class="cp-stale-tag">记录可能过期</span>
               <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ fsAdvice(it) }}</p>
               <p v-if="it.excerpt" class="cp-card-evidence">原文：「{{ it.excerpt }}」</p>
               <div class="cp-card-actions">
@@ -259,6 +271,7 @@
                 <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
                 <span class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
                 <strong class="cp-card-title">{{ it.headline }}</strong>
+                <span v-if="it.record_stale" class="cp-stale-tag">记录可能过期</span>
               </div>
               <p class="cp-card-where">涉及：{{ it.scopeText }}</p>
               <p class="cp-card-detail"><span class="cp-detail-label">依据</span>{{ it.basisText }}</p>
@@ -361,6 +374,8 @@ import {
   conflictCategory, conflictHeadline, conflictBasis, conflictSides,
   conflictReason, conflictScope, conflictCheckType, conflictSourceText,
 } from '../../utils/consistency'
+import { staleNoticeOf, isItemStale, staleChaptersOf } from '../../utils/staleness'
+import StaleNotice from '../common/StaleNotice.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
 const emit = defineEmits(['locate', 'open-tools'])
@@ -413,6 +428,8 @@ const baselineCh = computed(() => overview.value?.baseline_ch || 0)
 
 // 冲突计数口径：全书校验 / 单章质检 / 合并去重后的条数，由后端同一次遍历产出
 const conflictSourceLine = computed(() => conflictSourceText(overview.value?.conflicts?.sources))
+// R13：记录可能过期的统一提示（文案与判定均来自后端，生成过程卡共用同一组件）
+const staleNotice = computed(() => staleNoticeOf(overview.value))
 
 // 覆盖清单里「没有可读描述」的条目统一标注，与后端常量保持一致
 const NO_DESC = '只有编号，没有描述'
@@ -497,6 +514,7 @@ const coverageViews = computed(() => (overview.value?.coverage?.views || []).map
   recordedChapterCount: row.recorded_chapter_count || 0,
   recordedItemCount: row.recorded_item_count || 0,
   recordedTruncated: Boolean(row.recorded_truncated),
+  staleChapters: staleChaptersOf(row),
 })))
 
 // 冲突项预先把「依据 / 预期实际 / 判定理由」算好，模板只负责展示
@@ -577,6 +595,7 @@ function buildGroupedItems(ov) {
       recordedChapterCount: row.recordedChapterCount,
       recordedItemCount: row.recordedItemCount,
       recordedTruncated: row.recordedTruncated,
+      recordStale: row.staleChapters.length > 0,
       advice: row.adviceText,
       jump: row.firstMissingCh || ov.baseline_ch || 0,
     })
@@ -588,6 +607,7 @@ function buildGroupedItems(ov) {
       severity: sev, group: severityGroup(sev),
       title: foreshadowProblem(it), where: foreshadowWhere(it),
       advice: foreshadowAdvice(it), jump: it.buried_ch || 0,
+      recordStale: isItemStale(it),
       details: it.excerpt ? [{ label: '原文', text: `「${it.excerpt}」` }] : [],
     })
   }
@@ -610,6 +630,7 @@ function buildGroupedItems(ov) {
       sides: it.sides,
       category: it.category,
       categoryLabel: it.categoryLabel,
+      recordStale: isItemStale(it),
       advice: conflictAdvice(it), jump: it.chapter || 0,
     })
   }
@@ -905,6 +926,12 @@ watch(sub, async () => {
 
 /* 覆盖卡：缺章号 chip + 已记录清单 */
 .cp-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+/* R13：记录可能过期的逐条小标（与顶部提示同一口径） */
+.cp-stale-tag {
+  flex: none; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  color: #a0521b; background: #fdf3e3; border: 1px solid #f3d19e;
+}
+.cp-stale-row .cp-chip-label { color: #a0521b; }
 .cp-chip-label { font-size: 11px; color: var(--muted); }
 .cp-chap-chip {
   border: 1px solid var(--card-line); background: var(--card); color: var(--ink-soft);

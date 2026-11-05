@@ -5,6 +5,7 @@ from fastapi import Body  # P2-3 申诉接口 body（core 未导出）
 from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.style_anchor import (
     PERSONAL_ANCHOR_HEADER, extract_personal_anchor, wrap_style_anchor)
+from novel_gen.pipeline import artifact_staleness  # R13 派生记录标脏（只读）
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
@@ -494,7 +495,9 @@ def chapter_chain_of_thought(project_id: str, no: int, user: dict = Depends(_req
         logger.warning("[ChainOfThought] 读取 review.json 失败（降级）: project=%s ch=%d",
                        project_id, no)
     return {"chapter": no, "plan": plan, "production": production, "review": review,
-            "design": design, "summary": summary}
+            "design": design, "summary": summary,
+            # R13：该章派生记录是否落后于当前正文（与体检页同一判定与文案）
+            "staleness": artifact_staleness.analyze(store, chapter_no=no)}
 
 
 _BRANCH_DIRS = [

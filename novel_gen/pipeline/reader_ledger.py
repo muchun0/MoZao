@@ -52,7 +52,10 @@ def profile_for(genre: str) -> dict:
     return GENRE_PROFILE[DEFAULT_PROFILE]
 
 
-def _fs_name(fs) -> str:
+def foreshadow_name(fs) -> str:
+    """伏笔显示名（结构化取 name，纯字符串旧数据取原文），供状态机与进度接口共用。"""
+    if isinstance(fs, str):
+        return fs.strip() or "未命名伏笔"
     return str(getattr(fs, "name", "") or getattr(fs, "content", "") or "未命名伏笔").strip()
 
 
@@ -205,7 +208,7 @@ class ReaderLedger:
         for fs in fs_list:
             reveal = getattr(fs, "reveal_ch", None)
             buried = int(getattr(fs, "buried_ch", 0) or 0)
-            name = _fs_name(fs)
+            name = foreshadow_name(fs)
             if reveal is not None and int(reveal) <= n:
                 known.append({"name": name, "reveal_ch": int(reveal)})
             elif buried <= n and (reveal is None or int(reveal) > n):
@@ -279,7 +282,7 @@ class ReaderLedger:
         out: list[dict] = []
         fs_list = list(getattr(world, "foreshadowing", None) or []) if world else []
         for fs in fs_list:
-            name = _fs_name(fs)
+            name = foreshadow_name(fs)
             reveal = getattr(fs, "reveal_ch", None)
             buried = int(getattr(fs, "buried_ch", 0) or 0)
             if reveal is None:
@@ -291,7 +294,8 @@ class ReaderLedger:
             revealed_ch = prev.get("revealed_ch")
             if revealed_ch:
                 state = "revealed"
-            elif n > reveal:
+            elif n >= reveal:
+                # REQ-R10：计划回收当章即视为逾期（该章必须兑现），不再留「到期当天无状态」
                 state = "overdue"
             elif reveal - lead <= n < reveal:
                 state = "due_soon"
@@ -413,7 +417,7 @@ class ReaderLedger:
 
     def _find_fs(self, world, name: str):
         for fs in getattr(world, "foreshadowing", None) or []:
-            if _fs_name(fs) == name:
+            if foreshadow_name(fs) == name:
                 return fs
         return None
 
@@ -440,7 +444,7 @@ class ReaderLedger:
         by_name = {str(it.get("name") or ""): it for it in items}
         changed = False
         for fs in targets:
-            name = _fs_name(fs)
+            name = foreshadow_name(fs)
             if not name:
                 continue
             it = by_name.get(name)
@@ -487,3 +491,16 @@ class ReaderLedger:
             if g in prof["genres"]:
                 return name
         return DEFAULT_PROFILE
+
+
+def commit_chapter_account(store, cfg, chapter_no: int) -> None:
+    """网页写章链路章后确定性入账入口（REQ-R10 D1）。
+
+    只做 ReaderLedger 的确定性动作（伏笔状态推进 / 原文句存档 / 爽点 tally），
+    不调用带 LLM 抽取的重型章后提交；幂等（同章重复提交结果一致），
+    异常只记日志、绝不阻断写章与计费。
+    """
+    try:
+        ReaderLedger(store, cfg).update_post_chapter(int(chapter_no))
+    except Exception:
+        logger.exception("章后账本入账失败（降级跳过）: ch=%s", chapter_no)

@@ -20,6 +20,7 @@ import json
 import uuid
 
 from novel_gen.pipeline.guard import AgentGuardError
+from novel_gen.pipeline.reader_ledger import commit_chapter_account
 from novel_gen.pipeline.style_anchor import build_teardown_anchor
 from novel_gen.store.project import ProjectStore
 
@@ -326,6 +327,8 @@ def _run_generation(store: ProjectStore, handle, start_from: int = 0) -> None:
             # v2 计费：写前快照版本集合，写后只结算本次新增版本（幂等不重扣）
             prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
             pipeline.write_chapter(no, silent=False)
+            # REQ-R10 D1：章后确定性入账（伏笔状态推进），失败降级不阻断写章/结算
+            commit_chapter_account(store, cfg, no)
             settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
                                                   project_id=project_id)
             stop, why = _settle_incremental(store)
@@ -416,6 +419,8 @@ def _run_batch(store: ProjectStore, handle, start: int, end: int) -> None:
             prev_versions = settle_ledger.snapshot_chapter_versions(store, no)
             pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
                                           is_final=(no == len(outline.chapters)))
+            # REQ-R10 D1：章后确定性入账（伏笔状态推进），失败降级不阻断写章/结算
+            commit_chapter_account(store, cfg, no)
             settle_ledger.settle_chapter_versions(store, no, prev_versions, mode=mode,
                                                   project_id=project_id)
             stop, why = _settle_incremental(store)

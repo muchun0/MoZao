@@ -127,7 +127,7 @@
     <!-- 全书质检（全书质量汇总/终审/一致性校验；每章改稿建议已整合进章节版本弹窗） -->
     <el-card class="tool-card">
       <template #header><b>全书质检</b></template>
-      <p class="muted">全书质量汇总与终审；每章改稿建议见「章节 → 版本」弹窗</p>
+      <p class="muted">这里发起检查、查看原始记录；每章改稿建议见「章节 → 版本」弹窗。要按作者视角看分类汇总，去左侧「全书体检」，那里只读汇总、不重复跑检查。</p>
       <el-button size="small" @click="loadReview">查看全书质检</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
@@ -158,6 +158,10 @@
             <div v-if="reviewSummary.verify_issue_total" class="summary-line">
               一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
             </div>
+            <!-- 口径说明：两份记录来源不同，数字本来就不必相等，避免作者以为是同一个数 -->
+            <div class="summary-line muted">
+              「改稿问题」是逐章质检的全部建议（含字数、对话、钩子等非一致性项）；「一致性/审稿校验问题」是全书通读检查记录。两者来源不同，数字不必相等；体检页会把后者与单章一致性质检合并，所以会再大一些。
+            </div>
           </div>
           <div v-if="finalReview" class="final-review-box">
             <b>全书终审</b>
@@ -171,7 +175,7 @@
           <div v-if="verifyIssues.length" class="verify-block">
             <b>一致性校验 / 读者自检 / 编辑审稿问题</b>
             <div v-for="(it, i) in verifyIssues" :key="i" class="review-issue">
-              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem || it.detail || it.title || '（原记录未单列问题描述）' }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
             </div>
           </div>
         </template>

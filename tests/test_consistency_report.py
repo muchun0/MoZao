@@ -265,6 +265,70 @@ def test_conflict_without_basis_is_downgraded(book):
     assert "无法核对" in item["reason"]
 
 
+def test_verify_record_without_problem_is_not_dropped(book):
+    """缺 problem 的全书校验记录（真实数据里的文风漂移）不能静默丢条。"""
+    book.append_verify_issues(5, [{
+        "type": "文风漂移-L3（LLM裁判）", "level": "中改",
+        "detail": "漂移维度 3 个：句长、词汇、情绪节奏。",
+    }])
+    items, stats = cr.build_conflicts_with_counts(book)
+    item = next(i for i in items if i["source"] == "verify")
+    assert item["detail"].startswith("漂移维度 3 个")
+    assert item["check_type"] == "文风漂移-L3（LLM裁判）"
+    # 文风类不冒充前后矛盾；按原记录的改稿级别给严重度
+    assert item["category"] == "advisory"
+    assert item["category_label"] == "文风/表达提醒"
+    assert item["severity"] == "medium"
+    # 如实标注原记录缺问题字段
+    assert item["problem_missing"] is True
+    assert item["note"] == cr.PROBLEM_MISSING_NOTE
+    assert stats["verify"] == {"records": 1, "included": 1, "skipped": 0, "fallback": 1}
+
+
+def test_verify_text_fallback_order(book):
+    """兜底顺序 problem → detail → title；只有标题也要计入。"""
+    book.append_verify_issues(4, [{"title": "这条只有标题"}])
+    items, stats = cr.build_conflicts_with_counts(book)
+    assert items[0]["detail"] == "这条只有标题"
+    assert stats["verify"]["fallback"] == 1
+    assert stats["verify"]["skipped"] == 0
+
+
+def test_verify_record_without_chapter_is_counted(book):
+    """定位不到章号的记录也计入（宁可不能跳章，也不能让工具与体检数字对不上）。"""
+    book.save_verify_issues([{"problem": "全书级问题", "chapter": 0}])
+    items, stats = cr.build_conflicts_with_counts(book)
+    assert stats["verify"]["included"] == 1
+    assert items[0]["chapter"] == 0
+
+
+def test_conflict_counts_add_up(book):
+    """计数口径自证：各来源计入数 - 去重数 == 合并后总数。"""
+    book.append_verify_issues(7, [{"problem": "第3章说已死，第7章仍在行动", "suggestion": "统一生死状态"}])
+    book.save_chapter(Chapter(no=11, title="第11章", content="正文"), quality={
+        "passed": False, "score": 60, "issue_count": 1,
+        "issues": [{"type": "自相矛盾-设定", "level": "大改", "detail": "本章铜钥匙又出现在手里"}],
+    })
+    items, stats = cr.build_conflicts_with_counts(book)
+    assert stats["verify"]["records"] == 1
+    assert stats["chapter_quality"]["candidates"] == 1
+    assert stats["merged"]["deduped"] == 0
+    assert stats["merged"]["total"] == len(items) == 2
+    assert (stats["verify"]["included"] + stats["chapter_quality"]["included"]
+            == stats["merged"]["total"] + stats["merged"]["deduped"])
+
+
+def test_overview_exposes_conflict_sources(book):
+    """首屏 overview 下发计数口径，前端才能解释「工具 21、体检 38」。"""
+    book.append_verify_issues(5, [{
+        "type": "文风漂移-L3（LLM裁判）", "level": "中改", "detail": "漂移维度 3 个",
+    }])
+    data = cr.build_overview(book, book.load_config())
+    assert data["conflicts"]["total"] == 1
+    assert data["conflicts"]["sources"]["verify"]["included"] == 1
+    assert data["conflicts"]["sources"]["merged"]["total"] == 1
+
+
 # ---------------- 提及索引 ----------------
 
 def test_entity_index_counts_alias_and_zero_hits(book):

@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
@@ -53,6 +54,20 @@ LEVEL_SEVERITY: dict = {"大改": "high", "中改": "medium", "小改": "low"}
 
 #: 一致性冲突的关键词（type/detail 命中即纳入，确定性过滤，零 LLM）
 CONSISTENCY_KEYWORDS = ("一致", "矛盾", "冲突", "逻辑", "设定")
+
+#: 全书校验记录取「问题描述」的兜底顺序（真实数据存在只有 type/detail 的文风漂移记录）
+VERIFY_TEXT_FIELDS = ("problem", "detail", "title")
+
+#: 不是设定矛盾、只算建议的类型特征（文风漂移 / 阅读节奏等）
+ADVISORY_TYPE_KEYWORDS = ("情节-", "阅读障碍", "文风", "漂移", "节奏")
+
+#: 文风漂移类特征：展示时与「阅读/节奏建议」区分，避免被误读成情节问题
+STYLE_DRIFT_KEYWORDS = ("文风", "漂移")
+
+#: 缺 problem 字段时的前端标注（不隐藏记录，但也不假装它有完整问题描述）
+PROBLEM_MISSING_NOTE = "原记录未单列问题描述"
+
+logger = logging.getLogger(__name__)
 
 #: 实体类型与展示名（唯一口径）
 ENTITY_KINDS: dict = {
@@ -423,6 +438,9 @@ def _enrich_conflict(item: dict, entities: list[dict], world) -> dict:
     )
     item["entities"] = [e["name"] for e in matched]
     item["check_type"] = item["type"]
+    # 缺 problem 字段时如实标注，前端据此提示「原记录未单列问题描述」
+    if item.get("problem_missing"):
+        item["note"] = PROBLEM_MISSING_NOTE
 
     is_repetition = any(k in item["type"] for k in REPETITION_TYPE_KEYWORDS)
     if is_repetition:
@@ -450,14 +468,22 @@ def _enrich_conflict(item: dict, entities: list[dict], world) -> dict:
         })
         return item
 
-    # 阅读障碍 / 情节推进效率这类是建议，不是「前后对不上」，不冒充冲突
-    if item["type"].startswith("情节-") or "阅读障碍" in item["type"]:
+    # 阅读障碍 / 情节推进 / 文风漂移这类是建议，不是「前后对不上」，不冒充冲突
+    if any(k in item["type"] for k in ADVISORY_TYPE_KEYWORDS):
+        is_style = any(k in item["type"] for k in STYLE_DRIFT_KEYWORDS)
+        basis_name = ("单章质检 · 一致性评审记录" if item["source"] == "chapter_quality"
+                      else "全书通读检查记录")
         item.update({
-            "category": "advisory", "category_label": "阅读/节奏提醒",
+            "category": "advisory",
+            "category_label": "文风/表达提醒" if is_style else "阅读/节奏提醒",
             "expected": "", "actual": detail,
-            "reason": "这条不是设定矛盾，是单章质检给出的阅读或节奏建议，没有对照设定条目。",
-            "severity": "low",
-            "basis": [{"kind": "check", "name": "单章质检 · 一致性评审记录", "excerpt": ""}],
+            "reason": ("这条不是设定矛盾，是检查记录给出的文风提醒：只描述了写法变化，没有对照设定条目。"
+                       if is_style else
+                       "这条不是设定矛盾，是单章质检给出的阅读或节奏建议，没有对照设定条目。"),
+            # 文风漂移按原记录的改稿级别给严重度，其余建议保持 low（不冒充必须处理）
+            "severity": (LEVEL_SEVERITY.get(str(item.get("level") or ""), "low")
+                         if is_style else "low"),
+            "basis": [{"kind": "check", "name": basis_name, "excerpt": ""}],
         })
         return item
 
@@ -502,51 +528,121 @@ def _enrich_conflict(item: dict, entities: list[dict], world) -> dict:
     return item
 
 
-def build_conflicts(store) -> list[dict]:
-    """一致性冲突汇总（只读）：全书校验问题 + 章节选中版本的质检一致性问题。
+def _verify_detail(it: dict) -> tuple[str, bool]:
+    """取全书校验记录的问题描述（problem → detail → title 兜底）。
+
+    返回（描述文本, 是否缺 problem 字段）。真实数据里的文风漂移记录只有 type/detail，
+    旧实现直接跳过，导致「工具能看到 21 条、体检只剩 19 条」。
+    """
+    problem = str(it.get("problem") or "").strip()
+    if problem:
+        return problem, False
+    for field in VERIFY_TEXT_FIELDS[1:]:
+        text = str(it.get(field) or "").strip()
+        if text:
+            return text, True
+    return "", False
+
+
+def build_conflicts_with_counts(store) -> tuple[list[dict], dict]:
+    """一致性冲突汇总 + 计数口径（只读、零 LLM、零写盘）。
 
     每条都带 category / basis / expected / actual / reason，缺依据的降级为「依据不足」。
+
+    计数口径（同一轮遍历内产生，前端按 sources 自证差异）：
+    - verify.records：verify_issues.json 原始条数（工具「全书校验」看到的数）；
+    - verify.included：进入体检的条数（缺 problem 时用 detail/title 兜底）；
+    - verify.skipped：连问题描述都没有、无法计入的条数；
+    - verify.fallback：缺 problem、走兜底的条数；
+    - chapter_quality.candidates / included：命中一致性关键词的质检条数 / 计入条数；
+    - merged.total / merged.deduped：最终条数 / 去重掉的条数。
     """
     out: list[dict] = []
     seen: set = set()
     world = store.load_world()
     entities = collect_entities(world)
+    stats: dict = {
+        "verify": {"records": 0, "included": 0, "skipped": 0, "fallback": 0},
+        "chapter_quality": {"candidates": 0, "included": 0},
+        "merged": {"total": 0, "deduped": 0},
+    }
 
     def _add(item: dict) -> None:
         # 同一章同类型同细节只保留一条（版本重生成会产生重复质检记录）
         key = (item["source"], item["chapter"], item["type"], item["detail"][:60])
         if key in seen:
+            stats["merged"]["deduped"] += 1
             return
         seen.add(key)
         out.append(_enrich_conflict(item, entities, world))
 
-    for it in store.load_verify_issues():
-        chapter = int(it.get("chapter") or 0)
-        problem = str(it.get("problem") or "").strip()
-        suggestion = str(it.get("suggestion") or "").strip()
-        if not chapter or not problem:
+    try:
+        verify_records = store.load_verify_issues()
+    except Exception:
+        logger.warning("体检读取 verify_issues 失败，按空清单降级", exc_info=True)
+        verify_records = []
+    stats["verify"]["records"] = len(verify_records)
+    for raw in verify_records:
+        if not isinstance(raw, dict):
+            stats["verify"]["skipped"] += 1
             continue
-        _add({"source": "verify", "chapter": chapter, "type": "全书一致性校验",
-              "detail": problem, "evidence": "", "suggestion": suggestion,
-              "severity": _verify_severity(problem, suggestion)})
+        detail, fallback = _verify_detail(raw)
+        if not detail:
+            stats["verify"]["skipped"] += 1
+            continue
+        try:
+            chapter = int(raw.get("chapter") or 0)
+        except (TypeError, ValueError):
+            chapter = 0  # 不能定位也保留（会计入计数，前端不提供跳章）
+        stats["verify"]["included"] += 1
+        if fallback:
+            stats["verify"]["fallback"] += 1
+        _add({
+            "source": "verify", "chapter": chapter,
+            # 保留记录自带类型（如「文风漂移-L3」），既有的「全书一致性校验」仅作兜底
+            "type": str(raw.get("type") or "全书一致性校验").strip(),
+            "detail": detail,
+            "evidence": str(raw.get("evidence") or "").strip(),
+            "suggestion": str(raw.get("suggestion") or "").strip(),
+            "level": str(raw.get("level") or ""),
+            "problem_missing": fallback,
+            "severity": _verify_severity(detail, str(raw.get("suggestion") or "")),
+        })
 
-    for ch_key, rec in (store.load_chapter_versions() or {}).items():
+    try:
+        versions = store.load_chapter_versions() or {}
+    except Exception:
+        logger.warning("体检读取 chapter_versions 失败，按空清单降级", exc_info=True)
+        versions = {}
+    for ch_key, rec in versions.items():
         try:
             chapter = int(ch_key)
         except (TypeError, ValueError):
             continue
-        quality = _selected_quality(rec)
-        for issue in quality.get("issues") or []:
+        for issue in (_selected_quality(rec).get("issues") or []):
             if not isinstance(issue, dict) or not _is_consistency_issue(issue):
                 continue
             detail = str(issue.get("detail") or "").strip()
+            if not detail:
+                continue
+            stats["chapter_quality"]["candidates"] += 1
+            stats["chapter_quality"]["included"] += 1
             _add({"source": "chapter_quality", "chapter": chapter,
                   "type": str(issue.get("type") or "一致性"),
                   "detail": detail,
                   "evidence": str(issue.get("evidence") or "").strip(),
                   "suggestion": str(issue.get("fix_suggestion") or issue.get("suggestion") or "").strip(),
+                  "level": str(issue.get("level") or ""),
                   "severity": LEVEL_SEVERITY.get(issue.get("level"), "medium")})
-    return _sort_items(out, key="chapter")
+
+    stats["merged"]["total"] = len(out)
+    return _sort_items(out, key="chapter"), stats
+
+
+def build_conflicts(store) -> list[dict]:
+    """一致性冲突清单（向后兼容入口）：只返回条目，不返回计数口径。"""
+    items, _ = build_conflicts_with_counts(store)
+    return items
 
 
 # ---------------- 4. 提及索引 ----------------
@@ -700,7 +796,7 @@ def build_overview(store, cfg=None) -> dict:
     world = store.load_world()
     coverage = build_coverage(store, up_to_chapter=baseline)
     foreshadow = build_foreshadow(store, cfg, baseline)
-    conflicts = build_conflicts(store)
+    conflicts, conflict_sources = build_conflicts_with_counts(store)
     entity_candidates = collect_entities(world)
 
     return {
@@ -722,6 +818,8 @@ def build_overview(store, cfg=None) -> dict:
         "conflicts": {
             "total": len(conflicts),
             "counts": _count_by(conflicts, "severity"),
+            # 计数口径：全书校验 / 单章质检各多少条、合并去重后多少条，供前端自证差异
+            "sources": conflict_sources,
             "items": conflicts[:OVERVIEW_PREVIEW],
         },
         "entities": {"candidates": len(entity_candidates)},

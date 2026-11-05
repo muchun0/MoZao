@@ -51,15 +51,21 @@ def consistency_foreshadow(project_id: str, state: str = "",
 def consistency_conflicts(project_id: str, severity: str = "",
                           limit: int = 50, offset: int = 0,
                           user: dict = Depends(_require_user)):
-    """一致性冲突清单（全书校验 + 章节质检），按严重度排序。"""
+    """一致性冲突清单（全书校验 + 章节质检），按严重度排序。
+
+    额外下发 sources（计数口径）：全书校验 / 单章质检各多少条、合并去重后多少条，
+    让前端能解释「工具 21 条、体检 36 条」这类差异，而不是再给第四套数字。
+    """
     store = _open_store(project_id, user)
-    items = report.build_conflicts(store)
+    items, sources = report.build_conflicts_with_counts(store)
+    total = len(items)
     if severity:
         items = [i for i in items if i["severity"] == severity]
-    total = len(items)
-    offset = _clamp(offset, 0, total)
+    page_total = len(items)
+    offset = _clamp(offset, 0, page_total)
     return {"items": items[offset: offset + _clamp(limit, 1, 200)],
-            "total": total, "offset": offset}
+            "total": page_total, "merged_total": total,
+            "sources": sources, "offset": offset}
 
 
 @app.get("/api/projects/{project_id}/consistency/entities")

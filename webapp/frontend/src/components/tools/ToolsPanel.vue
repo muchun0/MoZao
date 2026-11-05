@@ -54,7 +54,7 @@
     <!-- 三期 F4：思维链可视化（生成过程） -->
     <el-card class="tool-card">
       <template #header><b>生成过程</b></template>
-      <p class="muted">查看本章「计划→产出→校验」链条（只读）</p>
+      <p class="muted">查看本章「计划→产出→校验」链条与中间产物（只读，不能编辑）</p>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
         <el-input-number v-model="cotNo" :min="1" size="small" controls-position="right" style="width:90px" />
         <el-button size="small" type="primary" @click="runCot" :loading="cotLoading">查看</el-button>
@@ -62,7 +62,45 @@
       <div v-if="cotView" class="result-area">
         <div><b>计划</b>：{{ cotView.plan.core_event || '（无）' }}</div>
         <div class="muted" style="margin:2px 0">拍序列：{{ cotView.plan.character_moves || '—' }}</div>
-        <div style="margin-top:4px"><b>产出</b>：{{ (cotView.production.scenes||[]).length }} 个场景</div>
+        <div style="margin-top:4px"><b>产出 · 场景清单</b>
+          <span v-if="sceneCountHint" class="muted" style="margin-left:6px">{{ sceneCountHint }}</span>
+        </div>
+        <p v-if="!sceneItems.length" class="cot-empty">{{ sceneEmptyText }}</p>
+        <div v-for="(sc, i) in sceneItems" :key="i" class="cot-scene">
+          <div class="cot-scene-head" @click="toggleScene(i)">
+            <span class="cot-scene-no">{{ sc.index }}</span>
+            <span class="cot-scene-title">{{ openScenes[i] ? sc.title : sc.shortTitle }}</span>
+            <span class="cot-link">{{ openScenes[i] ? '收起' : '详情' }}</span>
+          </div>
+          <div v-show="openScenes[i]" class="cot-scene-body">
+            <p v-for="(d, j) in sc.details" :key="j" class="cot-line">
+              <span class="cot-label">{{ d.label }}</span>{{ d.text }}
+            </p>
+            <p v-if="sc.anchors.length" class="cot-line">
+              <span class="cot-label">细节锚点</span>{{ sc.anchors.join('；') }}
+            </p>
+          </div>
+        </div>
+        <div class="cot-block">
+          <div class="cot-block-head" @click="showDesign = !showDesign">
+            <b>本章设计</b>
+            <span v-if="designRows.length" class="cot-link">{{ showDesign ? '收起' : '展开' }}</span>
+          </div>
+          <p v-if="!designRows.length" class="cot-empty">{{ designEmptyText }}</p>
+          <div v-else v-show="showDesign">
+            <p v-for="(d, j) in designRows" :key="j" class="cot-line">
+              <span class="cot-label">{{ d.label }}</span>{{ d.text }}
+            </p>
+          </div>
+        </div>
+        <div class="cot-block">
+          <div class="cot-block-head" @click="showSummary = !showSummary">
+            <b>本章摘要</b>
+            <span v-if="summaryText" class="cot-link">{{ showSummary ? '收起' : '展开' }}</span>
+          </div>
+          <p v-if="!summaryText" class="cot-empty">{{ summaryEmptyText }}</p>
+          <p v-else class="cot-line">{{ showSummary ? summaryText : summaryShort }}</p>
+        </div>
         <div class="muted" style="margin-top:4px"><b>校验</b>：
           beat覆盖 {{ cotView.review.beat_gate ? cotView.review.beat_gate.verdict : '—' }}
           <span v-if="cotView.review.quality">，质检 {{ cotView.review.quality.score }} 分</span>
@@ -225,10 +263,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import * as toolsApi from '../../api/tools'
 import { getProject, getStatus, startAgentRun } from '../../api/project'
 import { ElMessage } from 'element-plus'
+import {
+  clipText, sceneTitle, sceneDetails, sceneAnchors, sceneCountText, designLines,
+  SCENE_EMPTY_TEXT, DESIGN_EMPTY_TEXT, SUMMARY_EMPTY_TEXT,
+} from '../../utils/artifactView'
 
 const props = defineProps({ pid: String })
 
@@ -320,7 +362,34 @@ async function pickBranch(b) {
 const cotNo = ref(1)
 const cotLoading = ref(false)
 const cotView = ref(null)
+// 中间产物只读展示：场景逐条展开，设计与摘要折叠查看（无任何写操作）
+const openScenes = ref({})
+const showDesign = ref(false)
+const showSummary = ref(false)
+const sceneItems = computed(() => ((cotView.value?.production?.scenes) || []).map((s, i) => ({
+  index: `场景 ${i + 1}`,
+  title: sceneTitle(s),
+  shortTitle: clipText(sceneTitle(s)),
+  details: sceneDetails(s),
+  anchors: sceneAnchors(s),
+})))
+const sceneCountHint = computed(() => sceneCountText(sceneItems.value.length))
+const designRows = computed(() => designLines(cotView.value?.design || {}))
+const summaryText = computed(() => String(cotView.value?.summary || '').trim())
+const summaryShort = computed(() => clipText(summaryText.value))
+const sceneEmptyText = SCENE_EMPTY_TEXT
+const designEmptyText = DESIGN_EMPTY_TEXT
+const summaryEmptyText = SUMMARY_EMPTY_TEXT
+function toggleScene(i) {
+  openScenes.value = { ...openScenes.value, [i]: !openScenes.value[i] }
+}
+function resetArtifactView() {
+  openScenes.value = {}
+  showDesign.value = false
+  showSummary.value = false
+}
 async function runCot() {
+  resetArtifactView()
   cotLoading.value = true
   try {
     cotView.value = await toolsApi.getChainOfThought(props.pid, cotNo.value)
@@ -507,4 +576,16 @@ onUnmounted(stopBatchPolling)
 .review-type { color: #409eff; }
 .review-pos { color: #909399; }
 .batch-err { padding: 8px 10px; background: #fef0f0; border-left: 3px solid #f56c6c; border-radius: 4px; font-size: 13px; }
+/* 中间产物只读展示（场景清单 / 设计卡 / 摘要） */
+.cot-block { border-top: 1px solid #ebeef5; padding-top: 6px; margin-top: 8px; }
+.cot-block-head { display: flex; align-items: center; font-size: 13px; }
+.cot-scene { padding: 4px 0; border-bottom: 1px dashed #f2f3f5; }
+.cot-scene-head { display: flex; align-items: baseline; gap: 6px; cursor: pointer; }
+.cot-scene-no { color: #409eff; font-size: 12px; flex: none; }
+.cot-scene-title { flex: 1; min-width: 0; font-size: 13px; color: #303133; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cot-scene-body { padding: 2px 0 4px; }
+.cot-line { font-size: 12px; color: #606266; line-height: 1.6; margin: 2px 0; }
+.cot-label { color: #909399; margin-right: 6px; }
+.cot-link { color: #409eff; font-size: 12px; cursor: pointer; margin-left: auto; flex: none; }
+.cot-empty { font-size: 12px; color: #909399; margin: 4px 0; }
 </style>

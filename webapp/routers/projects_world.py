@@ -5,6 +5,9 @@ from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.mechanism_types import (  # noqa: F401  机制类型清洗/判定（唯一事实源）
     normalize_types, resolve_types,
 )
+from novel_gen.pipeline.consistency_report import FS_STATE_LABELS
+from novel_gen.pipeline.reader_ledger import ReaderLedger, foreshadow_name
+from novel_gen.store.schemas import ForeshadowItem
 
 
 @app.post("/api/projects/{project_id}/cover")
@@ -182,7 +185,7 @@ def update_world(project_id: str, payload: dict, user: dict = Depends(_require_u
     if "mechanism_rules" in payload:
         old.mechanism_rules = str(payload.get("mechanism_rules") or "").strip()
 
-    fs = [str(x) for x in (payload.get("foreshadowing", old.foreshadowing) or [])]
+    fs = _parse_foreshadowing(payload.get("foreshadowing", old.foreshadowing))
     ls = [str(x) for x in (payload.get("locked_settings", old.locked_settings) or [])]
 
     # 复用旧对象，只更新可编辑字段，保留 theme/arc/goldfinger 等
@@ -261,13 +264,115 @@ def project_research(project_id: str, user: dict = Depends(_require_user)):
     return r.to_dict()
 
 
+def _parse_foreshadowing(raw) -> list:
+    """REQ-R10 D2：保存世界观时按结构化解析伏笔，避免 str(dict) 把章号/回收计划压扁。
+
+    兼容三种输入：ForeshadowItem（旧对象回填）、dict（前端回传的结构化项）、str（老数据）。
+    """
+    items = []
+    for x in raw or []:
+        if isinstance(x, ForeshadowItem):
+            items.append(x)
+        elif isinstance(x, str):
+            if x.strip():
+                items.append(ForeshadowItem.from_dict(x.strip()))
+        elif isinstance(x, dict):
+            fs = ForeshadowItem.from_dict(x)
+            if foreshadow_name(fs):
+                items.append(fs)
+    return items
+
+
+def _fs_distance(state: str, item: dict, baseline_ch: int):
+    """REQ-R10 A：由账本状态 + 章号推导「距到期/逾期」口径，不重复判定状态。"""
+    reveal = item.get("reveal_ch")
+    if state == "revealed":
+        ch = item.get("revealed_ch")
+        return None, (f"第 {ch} 章已收" if ch else "已回收")
+    if reveal is None:
+        return None, "未登记回收章"
+    reveal = int(reveal)
+    if state == "overdue":
+        gap = max(baseline_ch - reveal, 0)
+        # 到期当章即算逾期（REQ-R10 D3），gap=0 用「到期未收」表述避免「逾期 0 章」歧义
+        return gap, (f"第 {reveal} 章到期未收" if gap == 0 else f"已逾期 {gap} 章")
+    if state == "not_buried":
+        buried = int(item.get("buried_ch") or 0)
+        gap = max(buried - baseline_ch, 0)
+        return gap, f"计划第 {buried} 章埋（还差 {gap} 章）"
+    gap = max(reveal - baseline_ch, 0)
+    if state == "due_soon":
+        return gap, f"距到期还有 {gap} 章"
+    if state == "stalled":
+        return gap, f"距到期还有 {gap} 章，且长时间无推进"
+    return gap, f"距到期还有 {gap} 章"
+
+
 @app.get("/api/projects/{project_id}/foreshadowing")
 def list_foreshadowing(project_id: str, user: dict = Depends(_require_user)):
-    """伏笔管理：列出世界设定中的伏笔清单。"""
+    """伏笔进度：总览 + 逐条状态 + 老格式兜底（REQ-R10 A）。
+
+    `foreshadowing` 保留名称数组以向后兼容；状态唯一来源是 ReaderLedger.commitment_items，
+    本接口只做展示层派生（距到期章数、未到埋点标记），不另写一套判定。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     world = store.load_world()
-    return {"foreshadowing": [str(x) for x in (world.foreshadowing if world else [])]}
+    raw = list(getattr(world, "foreshadowing", None) or []) if world else []
+    names = [foreshadow_name(x) for x in raw]
+    counts = {k: 0 for k in ("revealed", "overdue", "due_soon", "stalled",
+                             "planted", "not_buried")}
+    if not raw:
+        return {"foreshadowing": [], "items": [], "unstructured": [],
+                "summary": {"total": 0, "tracked": 0, "unstructured": 0,
+                            "baseline_ch": 0, **counts}}
+
+    baseline = max((c.no for c in store.list_chapters()), default=0)
+    ledger_items = []
+    if baseline > 0:
+        try:
+            ledger_items = ReaderLedger(store, store.load_config()).commitment_items(baseline)
+        except Exception:
+            # 降级：只展示世界观清单，不编造状态（前端按「未跟踪」渲染）
+            logger.exception("伏笔进度计算失败（降级为空）: project=%s", project_id)
+    ledger_map = {str(it.get("name")): it for it in ledger_items}
+
+    items, unstructured = [], []
+    for idx, fs in enumerate(raw):
+        name = names[idx]
+        reveal = getattr(fs, "reveal_ch", None)
+        buried = int(getattr(fs, "buried_ch", 0) or 0)
+        base = ledger_map.get(name)
+        if base is None:
+            # 老格式纯字符串 / 缺章号：不猜章号，如实归入未跟踪
+            if reveal is None or buried <= 0 or buried <= baseline:
+                unstructured.append({"index": idx, "name": name,
+                                     "buried_ch": buried, "reveal_ch": reveal,
+                                     "structured": False,
+                                     "note": "未登记章号，补全后可纳入跟踪"})
+                continue
+            # 尚未写到埋点章：账本本就不返回，这里显式补「未到埋点」
+            base = {"name": name, "buried_ch": buried, "reveal_ch": int(reveal),
+                    "level": getattr(fs, "level", "medium") or "medium",
+                    "state": "not_buried", "revealed_ch": None,
+                    "original_excerpt": getattr(fs, "original_excerpt", "") or ""}
+        state = base.get("state") or "planted"
+        item = {
+            "index": idx, "name": name, "level": base.get("level") or "medium",
+            "buried_ch": base.get("buried_ch"), "reveal_ch": base.get("reveal_ch"),
+            "revealed_ch": base.get("revealed_ch"), "state": state,
+            "state_label": FS_STATE_LABELS.get(state, state),
+            "excerpt": (base.get("original_excerpt") or "").strip(),
+            "structured": True,
+        }
+        item["distance"], item["distance_label"] = _fs_distance(state, item, baseline)
+        items.append(item)
+        counts[state] = counts.get(state, 0) + 1
+
+    return {"foreshadowing": names, "items": items, "unstructured": unstructured,
+            "summary": {"total": len(raw), "tracked": len(items),
+                        "unstructured": len(unstructured), "baseline_ch": baseline,
+                        **counts}}
 
 
 @app.post("/api/projects/{project_id}/foreshadowing")

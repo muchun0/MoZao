@@ -227,20 +227,65 @@
       </div>
     </el-card>
 
-    <!-- 伏笔管理 -->
+    <!-- 伏笔管理（REQ-R10 A：进度视图） -->
     <el-card class="tool-card">
-      <template #header><b>伏笔管理</b></template>
-      <p class="muted">追踪已埋伏笔</p>
-      <el-space>
-        <el-input v-model="fsInput" placeholder="添加伏笔" style="flex:1" />
+      <template #header>
+        <div class="fs-head">
+          <b>伏笔管理</b>
+          <span class="muted">埋点 · 计划回收 · 当前进度</span>
+        </div>
+      </template>
+      <div v-if="!fsSummary.total" class="muted">
+        还没有登记伏笔。可在下方添加，或在世界观中补充伏笔计划（含埋设章与计划回收章）。
+      </div>
+      <template v-else>
+        <div class="fs-summary">
+          <span>已回收 <b>{{ fsSummary.revealed }}</b> / 共 <b>{{ fsSummary.total }}</b>
+            <span v-if="!fsSummary.tracked" class="muted">（均未登记章号）</span>
+          </span>
+          <span class="muted">已写 {{ fsSummary.baseline_ch }} 章</span>
+        </div>
+        <template v-if="fsSummary.tracked">
+        <div class="fs-badges">
+          <el-tag v-for="f in fsFilterList" :key="f.key" size="small" :type="f.type"
+            :effect="fsFilter === f.key ? 'dark' : 'plain'" class="fs-badge"
+            @click="fsFilter = f.key">{{ f.label }} {{ f.count }}</el-tag>
+        </div>
+        <div class="result-area fs-area">
+          <div v-for="item in fsVisible" :key="item.index" class="fs-item">
+            <div class="fs-item-top">
+              <span class="fs-name">{{ item.name }}</span>
+              <el-tag size="small" :type="stateTag(item.state)">{{ item.state_label }}</el-tag>
+              <el-button size="small" link type="danger" @click="delFs(item.index)">删</el-button>
+            </div>
+            <div class="fs-meta">
+              埋在第 {{ item.buried_ch }} 章 · 原计划第 {{ item.reveal_ch }} 章收 · {{ foreshadowProgressText(item) }}
+            </div>
+            <div v-if="item.state === 'revealed' && item.revealed_ch" class="fs-meta">
+              实际回收：第 {{ item.revealed_ch }} 章
+            </div>
+            <div v-if="item.excerpt" class="fs-excerpt"
+              :class="{ expanded: !!fsExpanded[item.index] }"
+              @click="fsExpanded[item.index] = !fsExpanded[item.index]">
+              {{ item.excerpt }}
+            </div>
+          </div>
+          <div v-if="!fsVisible.length" class="muted">当前筛选下没有伏笔。</div>
+        </div>
+        </template>
+        <div v-if="fsUnstructured.length" class="fs-unstructured">
+          <div class="muted">未纳入跟踪（缺章号）</div>
+          <div v-for="u in fsUnstructured" :key="u.index" class="fs-row">
+            <span class="fs-name">{{ u.name }}</span>
+            <span class="muted fs-note">{{ unstructuredNote(u) }}</span>
+            <el-button size="small" link type="danger" @click="delFs(u.index)">删</el-button>
+          </div>
+        </div>
+      </template>
+      <el-space style="margin-top:8px;width:100%">
+        <el-input v-model="fsInput" placeholder="添加伏笔（补全章号后才会纳入进度跟踪）" style="flex:1" />
         <el-button size="small" @click="addFs">添加</el-button>
       </el-space>
-      <div class="result-area">
-        <div v-for="(f, i) in foreshadowing" :key="i" class="fs-row">
-          <span>{{ f }}</span>
-          <el-button size="small" link type="danger" @click="delFs(i)">删</el-button>
-        </div>
-      </div>
     </el-card>
 
     <!-- 核心设定锁定 -->
@@ -271,6 +316,10 @@ import {
   clipText, sceneTitle, sceneDetails, sceneAnchors, sceneCountText, designLines,
   SCENE_EMPTY_TEXT, DESIGN_EMPTY_TEXT, SUMMARY_EMPTY_TEXT,
 } from '../../utils/artifactView'
+import {
+  normalizeForeshadowSummary, buildForeshadowFilters, filterForeshadowItems,
+  foreshadowStateTag, foreshadowProgressText, unstructuredNote,
+} from '../../utils/foreshadow'
 
 const props = defineProps({ pid: String })
 
@@ -461,9 +510,18 @@ async function doBatch() {
 }
 
 const fsInput = ref('')
-const foreshadowing = ref([])
+const fsData = ref({ items: [], unstructured: [], summary: null })
+const fsFilter = ref('all')
+const fsExpanded = ref({})
 const lkInput = ref('')
 const locked = ref([])
+
+// REQ-R10 A：展示口径统一走 utils/foreshadow（状态判定仍在后端，避免第二套口径）
+const stateTag = foreshadowStateTag
+const fsSummary = computed(() => normalizeForeshadowSummary(fsData.value.summary))
+const fsUnstructured = computed(() => fsData.value.unstructured || [])
+const fsFilterList = computed(() => buildForeshadowFilters(fsSummary.value))
+const fsVisible = computed(() => filterForeshadowItems(fsData.value.items, fsFilter.value))
 
 async function runVerify(kind, label) {
   verifyResult.value = [{ text: `正在检查${label}…`, ok: false }]
@@ -506,7 +564,14 @@ async function genAlts() {
 }
 
 async function loadFs() {
-  try { const r = await toolsApi.listForeshadowing(props.pid); foreshadowing.value = r.foreshadowing || [] } catch {}
+  try {
+    const r = await toolsApi.listForeshadowing(props.pid)
+    fsData.value = {
+      items: r.items || [],
+      unstructured: r.unstructured || [],
+      summary: r.summary || null,
+    }
+  } catch { fsData.value = { items: [], unstructured: [], summary: null } }
 }
 async function addFs() {
   if (!fsInput.value) return
@@ -533,6 +598,11 @@ async function delLk(i) {
   loadLk()
 }
 
+// 进入工具页即加载伏笔进度/锁定设定（此前未挂载加载，导致卡片永远空白）
+onMounted(() => {
+  loadFs()
+  loadLk()
+})
 // 离开工具面板时停止批量轮询，避免泄漏定时器
 onUnmounted(stopBatchPolling)
 
@@ -547,6 +617,23 @@ onUnmounted(stopBatchPolling)
 .alt-box { padding: 8px 10px; background: #f5f7fa; border: 1px solid #e4e7ed; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }
 .alt-box p { margin-top: 4px; color: #606266; }
 .snap-row, .fs-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 13px; }
+/* REQ-R10 A：伏笔进度卡片 */
+.fs-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fs-summary { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: #303133; }
+.fs-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fs-badge { cursor: pointer; }
+.fs-area { max-height: 320px; }
+.fs-item { padding: 8px 10px; background: #fafafa; border: 1px solid #ebeef5; border-radius: 6px; margin-bottom: 8px; }
+.fs-item-top { display: flex; align-items: center; gap: 8px; }
+.fs-item-top .el-button { margin-left: auto; }
+.fs-name { font-size: 13px; color: #303133; font-weight: 600; word-break: break-all; }
+.fs-meta { margin-top: 4px; font-size: 12px; color: #606266; }
+.fs-excerpt { margin-top: 6px; font-size: 12px; color: #909399; line-height: 1.5; cursor: pointer;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.fs-excerpt.expanded { -webkit-line-clamp: unset; }
+.fs-unstructured { margin-top: 8px; border-top: 1px dashed #ebeef5; padding-top: 6px; }
+.fs-unstructured .fs-row { gap: 8px; justify-content: flex-start; }
+.fs-note { font-size: 12px; }
 .rhythm-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
 .rhythm-label { width: 50px; color: #909399; }
 .rhythm-bar { height: 12px; background: #c6e2ff; border-radius: 3px; }

@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from novel_gen.store.project import ProjectStore
+from novel_gen.pipeline.reader_ledger import commit_chapter_account
 from novel_gen.store.run_context import RunContext
 from novel_gen.store import run_context as run_files
 from novel_gen.store.wordcount import count_words
@@ -918,6 +919,8 @@ def _generate_one_chapter(store, pipeline, outline, research, no: int, total: in
     prev = settle_ledger.snapshot_chapter_versions(store, no)
     pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
                                   is_final=(no == total))
+    # REQ-R10 D1：章后确定性入账（伏笔状态推进），失败降级不阻断写章/结算
+    commit_chapter_account(store, store.load_config(), no)
     results = settle_ledger.settle_chapter_versions(store, no, prev,
                                                     mode=billing["mode"],
                                                     project_id=project_id)

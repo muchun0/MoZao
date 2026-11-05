@@ -5,7 +5,7 @@
 
 ## 1. 系统全景
 
-**墨造 · AI 小说创作平台**：输入题材/创意，自动产出完整小说（调研 → 大纲 → 人物世界观 → 逐章正文 → 质检 → 导出），同时是**多用户 SaaS**（注册登录、按 AI 实际生成字数计费、代理分销、退款、站长后台）。
+**墨造 · AI 小说创作平台**：输入题材/创意，自动产出完整小说（调研 → 大纲 → 人物世界观 → 逐章正文 → 质检 → 导出），同时是**多用户 SaaS**（注册登录、按 AI 实际生成字数计费、代理分销、退款、站长后台）。验收口径是可读性与跨章一致性（判据见知识库《墨造 · 产品目标》），不看字数。
 
 ```
 ┌──────────────────────────── 前端 Vue3 (webapp/frontend) ────────────────────────────┐
@@ -190,7 +190,7 @@
 
 **导出**：`projects/<id>/output/` 生成 TXT/EPUB/DOCX + 封面 PNG（限 5 次），同时拷到全局 `output/`。
 
-**小墨AI 对话**：前端 `POST /api/projects/{id}/assistant/conversations/{cid}/messages` → 鉴权/归属校验 → 输入三闸（空/超长/注入）→ 只读项目产物组装上下文（`review.json`/`chapter_design.json`/`book_memory.json`/`chapters/<no>.json`/config）→ `create_llm`（BYOK 优先，`scene=assistant` 落 `agent_trace`）→ 输出合规校验 → 确定性卡片 → `messages` 落两条（user/assistant）；LLM 失败只落 user 并返回 200 降级提示。
+**小墨AI 对话**：前端 `POST /api/projects/{id}/assistant/conversations/{cid}/messages`（携带 `Idempotency-Key`）→ 鉴权/归属校验 → 输入三闸（空/超长/注入）→ 余额闸门（platform 模式余额≤0 调模型前 402）→ 先落 user 消息（带 `request_id`）→ 只读项目产物组装上下文（`review.json`/`chapter_design.json`/`book_memory.json`/`chapters/<no>.json`/config）→ `create_llm`（BYOK 优先，`scene=assistant` 落 `agent_trace`）→ 输出合规校验 → 确定性卡片 → 落 assistant 消息 → 单事务结算（独立 `assistant_billing` 账本，`UNIQUE(project_id, request_id)` 幂等，不写 `settle.json`/`ai_words_total`，失败记 `pending` 待补扣）；LLM 失败/空回答/安全拦截不扣费，失败只落 user 并返回 200 降级提示。
 
 ## 5. 关键机制（为什么这么设计）
 

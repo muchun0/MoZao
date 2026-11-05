@@ -16,6 +16,7 @@ from .base import _connect, logger
 __all__ = [
     "create_conversation", "list_conversations", "get_conversation",
     "delete_conversation", "add_message", "list_messages", "recent_messages",
+    "get_message", "update_message_extra", "find_assistant_message_by_request",
 ]
 
 
@@ -150,3 +151,41 @@ def list_messages(cid: int, limit: int = 50, before_id: int = 0) -> list[dict]:
 def recent_messages(cid: int, limit: int = 12) -> list[dict]:
     """组装上下文用：最近 N 条消息（升序）。"""
     return list_messages(cid, limit=limit)
+
+
+def get_message(message_id: int) -> dict | None:
+    """按消息 id 读取单条消息（幂等命中时回放已存回答用）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM messages WHERE id=%s", (int(message_id),)).fetchone()
+    return _msg_row(row) if row else None
+
+
+def update_message_extra(message_id: int, patch: dict) -> bool:
+    """合并更新 messages.extra（计费状态/字数/金额等），返回是否命中消息。"""
+    if not patch:
+        return False
+    with _connect() as conn:
+        row = conn.execute("SELECT extra FROM messages WHERE id=%s", (int(message_id),)).fetchone()
+        if not row:
+            return False
+        extra = _parse_extra(row.get("extra"))
+        extra.update(patch)
+        conn.execute(
+            "UPDATE messages SET extra=%s WHERE id=%s",
+            (json.dumps(extra, ensure_ascii=False), int(message_id)),
+        )
+    return True
+
+
+def find_assistant_message_by_request(cid: int, request_id: str) -> dict | None:
+    """按 request_id 查已落库的助手回答（覆盖"落库后、结算前中断"的恢复场景）。"""
+    if not request_id:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=%s AND role='assistant' "
+            "AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.request_id'))=%s "
+            "ORDER BY id DESC LIMIT 1",
+            (int(cid), request_id),
+        ).fetchone()
+    return _msg_row(row) if row else None

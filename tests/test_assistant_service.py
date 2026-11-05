@@ -77,7 +77,14 @@ def _wire(monkeypatch, llm, history=None, byok=None) -> dict:
                                   "content": content, "extra": extra or {}})
         return len(calls["messages"])
 
+    def _update_extra(mid, patch):
+        # add_message 返回自增序号，测试里用下标回填，验证 extra 合并语义
+        if 0 < int(mid) <= len(calls["messages"]):
+            calls["messages"][int(mid) - 1]["extra"].update(patch or {})
+        return True
+
     monkeypatch.setattr(service.db, "add_message", _add_message)
+    monkeypatch.setattr(service.db, "update_message_extra", _update_extra)
     monkeypatch.setattr(service, "_user_llm_cfg", lambda uid: byok)
     monkeypatch.setattr(service, "_server_api_key", lambda provider: "server-key")
     # 全局开关走库，单测里隔离为 no-op（开关行为由项目快照显式设置）
@@ -95,9 +102,11 @@ def _wire(monkeypatch, llm, history=None, byok=None) -> dict:
 @pytest.fixture
 def project(tmp_path):
     store = _store(tmp_path)
-    # 多数用例验证编排逻辑：显式关掉"仅用自带 Key"，允许平台 Key 兜底
+    # 多数用例验证编排逻辑：显式关掉"仅用自带 Key"，允许平台 Key 兜底；
+    # 本文件聚焦一期编排行为，按字数计费由 test_assistant_billing.py 覆盖
     cfg = store.load_config()
     cfg.assistant_require_user_key = False
+    cfg.assistant_billing_enabled = False
     store.save_config(cfg)
     return store
 

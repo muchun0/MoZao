@@ -25,13 +25,13 @@
 | 大纲 | 上传大纲智能解析自动填表；三级大纲编辑器（总纲→分卷→章节）；章节跨分卷拖拽、分卷增删；大纲快照保存/回滚；单独生成大纲/世界观/分卷 |
 | 内容解析 | 上传/粘贴已有正文自动切分章节预览 |
 | 生成 | 生成前联网搜索热门小说参考文风（博查 API）；多 agent 流水线（调研员→架构师→写手→审校→读者）；**章节生成按钮三态**（无章节=开始生成 / 有章节未完成=继续生成，成本防护/余额耗尽终止后同样可从断点继续 / 全部完成=重新生成整本重写）；**整本重写** `POST /api/projects/{id}/chapters/regenerate`（保留大纲世界观、锁定章节跳过） |
-| 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分）；**生成质量升级 P0-P2**：前文直读/人物动态状态/全书质量汇总（P0）、行动表先行/场景级下沉/Lorebook 裁剪/AI痕迹评分（P1）、动态模块随机化/风格范文锚定/全书终审/质量指标报表（P2），见 §4 生成质量升级；**正文去机械感（REQ-写作正向引导，2026-10-15）**：提示词从"禁令驱动"改"正向引导"（场景规则 23→10 条）、演七分说三分（白描为主+情绪顶点直白点破）、机制数字"权威当前值只抄不推"、AI 腔词表改警示+密度意识、卷→章→场景三级目标传导（卷卡）、踩坑+正向样例双账本（good 账本：高分章/用户修订好片段自动学习并注入"参考质感非内容来源"） |
+| 质量 | 去AI味、防同质化、结局优化、番茄写作纪律、Reader 读者视角审校（追更欲评分）；**生成质量升级 P0-P2**：前文直读/人物动态状态/全书质量汇总（P0）、行动表先行/场景级下沉/Lorebook 裁剪/AI痕迹评分（P1）、动态模块随机化/风格范文锚定/全书终审/质量指标报表（P2），见 §4 生成质量升级；**正文去机械感（REQ-写作正向引导，2026-10-15）**：提示词从"禁令驱动"改"正向引导"（场景规则 23→10 条）、演七分说三分（白描为主+情绪顶点直白点破）、机制数字降为"背景参考·按需自然呈现"（2026-10-17 机制数字软提示与通用化：方向改读设定账本派生注册表支持加点/升级等非死亡型机制、校验端机制数字问题小改给改稿建议不重写不阻塞）、AI 腔词表改警示+密度意识、卷→章→场景三级目标传导（卷卡）、踩坑+正向样例双账本（good 账本：高分章/用户修订好片段自动学习并注入"参考质感非内容来源"） |
 | 创作设计与读者体验 | **章级设计卡（chapter_design）**：从章级 conflict/emotion + 冲突矩阵派生逐章 A1–A7 设计卡注入写章（零 LLM）；**读者认知账本（reader_ledger）**：读者已知/在等/被误导三态 + 伏笔临期/超时/回收状态机 + 爽点节奏配额，写章注入读者视角约束（零 LLM） |
 | 产品化工具（工具面板） | **场景体检**：对已生成章节做字数/事件推进/情节重演/章首承接/章末钩子 5 维度确定性体检并给修复建议（对标 Sudowrite Scene Inspector）；**三分支续写**：一次生成 3 方向（冲突升级/埋伏笔/转折）续写候选，选一条复制使用（预览模式不自动改正文）；**生成过程（思维链）**：只读展示本章「计划→产出→校验」链条；**Beat 覆盖度门禁**：正文对大纲逐拍覆盖率自检（绿/黄/红标） |
-| 小墨AI（项目页写作对话） | **REQ-小墨AI 一期**：项目页「小墨AI」tab 对话（章节评估 `chapter_eval` / 改稿建议 `revision_advice`），只读项目产物（review/chapter_design/book_memory/ai_taste），不写正文、不改稿、不扣费（一期不限次）；确定性卡片（质检扣分/问题清单/版本对比/正向实测）+ 会话历史 + 定位跳章 |
+| 小墨AI（项目页写作对话） | **REQ-小墨AI 一期 + 计费变更 v0.2**：项目页「小墨AI」tab 对话（章节评估 `chapter_eval` / 改稿建议 `revision_advice`），只读项目产物（review/chapter_design/book_memory/ai_taste），不写正文、不改稿；**按 AI 实际回答字数计费（3 元/万字）**，BYOK 与管理员跨项目不扣费 |
 | 封面 | 硅基流动 Tongyi-MAI/Z-Image-Turbo 一体封面；每本限 5 次 |
 | 作品管理 | 章节阅读/编辑/重写、**选中段落扩写/续写**、大纲编辑、从某章重生成（免费每日限次）、世界观/调研查看、下载、退款删除、归档、克隆；**章节版本化**（REQ-章节版本化，git 式多版本保留）：重写/重生成追加新版本、旧版保留，阅读器「版本」弹窗逐章选择/回退最优版本（`GET /chapters/{no}/versions`、`POST /chapters/{no}/versions/{v}/select`）；**2026-10-17 版本质量扩展**：每次生成（含自动质检重写稿）都入版本库，弹窗每版显示质检分/改稿建议明细，支持删除非当前版本，未被用户操作时默认展示质检最高分一版（`DELETE /chapters/{no}/versions/{v}`） | Skills | 全局写作风格（admin）、我的自定义 Skills、Skill 市场（发布/安装）、**风格角色**（写作风格抽象为 agent 角色，可挂载技能，建书一键套用）；技能与风格角色管理入口已从项目工具面板迁至**个人中心**（/workspace） |
-| 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费 |
+| 计费 | 创建不扣费；按 AI 实际字数结算；余额≤0 自动停止；BYOK 不扣费。计费单位是生成字数（定价方式）；成功指标看留存与追更率，不看字数 |
 | 个人中心 | `/workspace` 6 tab：概览（余额/可退/返佣/下级指标）/ 账户与账单（充值流水/退款申请）/ 推广返佣（邀请码绑定/下级列表/返佣明细）/ 模型配置（BYOK）/ 我的技能（新建/市场发布安装）/ 风格角色（增删改/挂载技能/参考文风） |
 | 代理分销 | 一级代理：本人消费 8 折 + 下级消费 10% 返佣 |
 | 退款 | 用户申请余额退款 → 邮件通知站长 → 人工处理 |
@@ -162,13 +162,14 @@ D:\PythonProjects\DouBao\
 - 单章重写 + 从某章重生成，共用 10 次/项目/日（**防滥用调用上限，与计费解耦**：每次重写仍按新版本字数计费）
 - 用户手写章节（source=user）保护，不可 rewrite
 
-### 小墨AI 写作对话（REQ-小墨AI 一期，2026-10-21）
+### 小墨AI 写作对话（REQ-小墨AI 一期 + 计费变更 v0.2，2026-11-02）
 
-- 定位：项目页写作对话，模式 `chapter_eval`（章节评估）/ `revision_advice`（改稿建议）；**只读**项目产物，不写正文、不改稿、不扣费（`assistant_quota_enabled=False` 一期不限次）
+- 定位：项目页写作对话，模式 `chapter_eval`（章节评估）/ `revision_advice`（改稿建议）；**只读**项目产物，不写正文、不改稿；按回答字数计费（3 元/万字，四舍五入到分），开关 `assistant_billing_enabled=True`
 - 上下文：四层组装（system 人设+Bible / 事实块 / 最近 N 轮对话 / 本次提问），按 `context_token_limit` 固定档位裁剪、正文保留头尾
 - 会话落库 MySQL `conversations`/`messages`，项目产物仍是评估事实唯一来源；LLM 调用以 `scene=assistant` 落 `agent_trace`
 - 口径红线：质检分只称「质检扣分（缺陷分）」；正向卡只给实测值 vs 阈值（阈值 import 自 `pipeline/ai_taste.py`），不合成质量分；未接入检测项明示缺口
-- `assistant_require_user_key` 默认 True：未配置 BYOK 直接 400 提示去「模型设置」，不消耗平台额度；LLM 失败只落 user 消息（degraded）并返回 200，不留空壳回复
+- 计费（REQ v0.2 D1-D4 / TECH v0.2）：扣费对象=会话发起用户（管理员跨项目豁免）；复用注册赠 10 元、不另设额度；代理本人 8 折且计入上级返佣；独立 `assistant_billing` 账本（不写 `settle.json` / `ai_words_total` / 项目累计）；`request_id`（`Idempotency-Key`）幂等 + DB 唯一键兜底；余额 ≤0 前置 402 不调模型；失败/空回答/降级/安全拦截不扣费；结算失败返回回答并落待补扣（后台可重试）
+- 开关：`assistant_billing_enabled` 默认 True、`assistant_require_user_key` 默认 False（平台 Key 可兜底）、`assistant_quota_enabled` 保持 False（本次开按字数计费，不恢复限次扣费）
 
 ### 成本防护（agent_guard）
 
@@ -199,6 +200,16 @@ D:\PythonProjects\DouBao\
 - `WorldReveal` 新增 `keywords` 真相锚定词；每章正文落盘后 `detect_reveal_hits` 做确定性命中检测（零 LLM），累积到项目目录 `reveal_status.json`
 - 全书完成 `check_reveal_execution` 校验：**提前剧透**（锚定词在 from_ch 前出现）→ fatal；**到点未揭示**（from_ch 已过正文未提及）→ major；旧数据无 keywords 不误报
 - 开关 `reveal_tracking`（FEATURE_FLAGS，默认 True）；失败降级不阻塞生成/结算
+
+### 超长篇生成攻坚（REQ-超长篇生成攻坚.md，2026-10-18，第二批/二期）
+
+治长文四大天花板（记忆稀释 / 文风漂移 / 大纲承诺衰减 / 成本线性爆炸），按三批落地：
+
+- **第一批（S3.2/S3.1/S1.3/S2.1）**：① `beat_loose_match`（beat_gate 去标点 loose 匹配）/`beat_chapter_type`（章型白名单，对话=引号≥0.35、过渡=<50字）/`beat_node_priority`（大纲节点 P0/P1/P2 分级）；② `pending_commitments`（章末承诺台账：committed/missed/planted 清单 + 下章补偿块注入）；③ 补偿块前置 memory_context 最前；④ `teardown_style_anchor`/`personal_style_anchor` 双锚**默认关**（防放大 AI 特征）
+- **第二批（降本 + 中成本）**：`json_schema_output`（response_format json_object）+ `state_extract_frequency`(5)；`prefix_cache_aligned`（稳定块前置 user 最前，最大化 DeepSeek 前缀缓存命中，命中价 0.02/M vs 未命中 1/M）；`foreshadow_original_text`（伏笔原文句存档注入到期章）；`style_reanchor_every`(5)+`style_anchor_rolling`（每 5 章滚动风格锚）；`l2_hangover_block`（连续漏兑现节点→下章挂账镜头，章型豁免）；`style_drift_check`（确定性漂移检测：句长波动系数/TTR/填充词/明喻密度）
+- **二期**：`ledger_stalled`（伏笔埋后超 8 章无推进注入"冷却"提醒防弃笔，默认开）+ `foreshadow_semantic_check`（LLM 语义判推进，默认关）；`fixed_style_anchor`（开头原文+个人旧稿作风格原点，默认关）；`style_judge_l3`（L3 风格裁判，每 verify_every 章六维比对超阈值触发再锚定，默认开）；`outline_rolling_detail`（远期大纲粗粒度，默认关）+ `outline_far_skip`(30)；`beat_fail_judge`（fail 章 LLM 二级复核，默认关，启用待人工标注集一致率>80%）
+- **默认关项汇总**（线上行为与关闭前一致）：双锚体系（题材/个人旧稿/固定锚）+ `foreshadow_semantic_check` + `outline_rolling_detail` + `beat_fail_judge`，需要时开开关即可
+- 成本口径以 `agent_trace` 实测为准；存量项目仅新项目生效（不写迁移）
 
 ### 机制类型谱系与一致性校验（REQ-通用机制类型适配，2026-10-29）
 
@@ -232,7 +243,8 @@ D:\PythonProjects\DouBao\
 | style_role_skills | id, role_id, skill_type(admin/user), skill_id, sort_order, created_at |
 | book_teardown | id, genre, title, summary, content(JSON), source_project, source_type(research/seed/manual), user_id, view_count, status（爆款拆书库） |
 | agent_trace | id, trace_id, user_id, project_id, event, payload(JSON), created_at（全链路快照，质量报表聚合底座 P2-4） |
-| conversations / messages | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id, user_id, title, mode, created_at/updated_at）与 `messages`（conversation_id, role, content, extra JSON：卡片/token/章节号/降级标记）；只存对话，项目产物仍是评估事实来源 |
+| conversations / messages | **小墨AI 会话（REQ-小墨AI 一期）**：`conversations`（project_id, user_id, title, mode, created_at/updated_at）与 `messages`（conversation_id, role, content, extra JSON：卡片/token/章节号/request_id/计费状态）；只存对话，项目产物仍是评估事实来源 |
+| assistant_billing | **小墨AI 独立计费账本（TECH v0.2 D4=B）**：user_id, project_id, conversation_id, request_id, 消息 id, mode(platform/user_llm/admin_free), status(settled/pending), chars, due/charged/owe, commission_granted；`UNIQUE(project_id, request_id)` 幂等；不写 `settle.json`、不写 `ai_words_total`、不动项目累计金额 |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头；**章节版本化**：`chapters/<no>.json` 为当前选中版本，历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引（每章上限 15、HEAD 不淘汰），`load_chapter`/`list_chapters` 读当前选中版本（对外行为不变）
 - `init_db()` 启动时自动建表 + 增量迁移
@@ -339,6 +351,10 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
+- 部署记录（2026-11-04）：第三十三次发版（`feat/assistant-billing` 合 master，`faa5358`，**已上线**）。内容：**小墨AI 支持付费用户按字数计费 + 文档口径补充**。① 平台 Key 按 AI 实际回答字数计费（3 元/万字，代理本人 8 折且足额时计入上级返佣）；BYOK 与「管理员在非本人项目」不扣费但写审计行；LLM 失败/空回答/安全拦截不扣费；独立 `assistant_billing` 账本（`UNIQUE(project_id, request_id)` 幂等，不写 `settle.json`、不写 `ai_words_total`），后台「小墨消费」可查可补扣（结算失败记 `pending`）；② 前端小墨回答改 markdown 渲染（`markdown-it`，`html:false`/`breaks:true`），新增 `utils/requestId.js` 自动携带 `Idempotency-Key`；③ 开关迁移：`assistant_billing_enabled` 默认 True、`assistant_require_user_key` 默认改 False（存量 `sys_config` 白名单迁移，operator=`system-migration`，`sys_config_log` 有 `true→false` 审计）。部署：`git archive master` → workbench upload（md5 `5dc712be90dc800a3df63a7d601834ec` 一致）→ 备份 `/opt/novel-gen-bak-20261103.tgz` → 解压 `/opt/novel-gen` → `docker compose up -d --build`；回滚镜像 `novel-gen:rollback-4c46aae`（旧 `c2b830c1ae41`）。验证：`/api/health` 200 `{"status":"ok"}`、主页 200（`assets/index-D3312oZV.js` 1,119,237 B + `assets/index-DFRzFKSO.css`）不白屏、`vite build ✓ built in 5.85s`、DB `assistant_require_user_key=false` / `updated_by=system-migration`。**已知偏差**：`assistant_billing` 表无 `billing_status` 列，字段以 `webapp/db/assistant_billing.py` 的 INSERT 为准。**遗留**：服务器 `/tmp/novel_master.zip` 等临时文件未清理（Workbench 403 配额）；付费账号小墨AI 实调按用户要求取消。第二十二、二十四～三十二次记录见 README「更新记录」。
+
+- 部署记录（2026-10-17）：第二十三次发版（devtest → master，081d5ff，docs 3cd0328，**已上线**）。内容：**机制数字软提示与通用化（REQ-机制数字软提示与通用化）**——写作重心还给战斗/剧情/伏笔，机制数字从「每章每场景强注入 + 硬校验」转「动态设定账本 + 被动一致性软提示」。① 生成端弱注入：templates/book_memory 机制数字（基线/蚀痕锚）降为「背景参考·不要求刻意展示」、删"只抄不推/必须逐字遵守/结算提示"强指令；「看面板确认状态」类自然伏笔保留但不每章强制；stages 移除依赖死亡信号的强结算提示块与因果校验引用。② 校验端降级：quality 6 处机制数字问题 大改/中改 → 小改（-5）+改稿建议+不重写不阻塞（`passed` 只看是否大改）；保留章内前后矛盾 LLM 自检大改（管疤脸死而复生类叙事硬伤）。③ 通用化（砍写死）：chapter_state 移除死亡信号词表（death_signals/death_count/book_death_signals/_PANEL_DEATH_RE）、因果校验（panel_causal_violations）、蚀化跨章（erosion_cumulative_check/_EROSION_SEQ_RE）不重构直接停用；`panel_direction_violations` 方向规则从固定 `_PANEL_DIR_RULES` 改读设定账本派生的字段注册表（`mechanism_field_registry`，字段名语义通用判定，支持加点/升级等非死亡型机制方向，空 registry 退回固定规则兼容）；quality 蚀化差反推死亡数本地化；移除书级死亡信号记忆（book_signals/state.extra_death_signals）。④ 字数审计不扣分（08d1302）：正文超目标 1.35 倍仅小改提示、不扣分不重写。⑤ good 注入留痕 + pitfall 去污染（8127a42，随 devtest 并入）：good 注入段禁静默吞异常；pitfall 对"本轮刚犯的错"降权不霸榜回灌。回归：全量 720 pytest 全绿。**A/B 验收**：《万墟之上》副本 _smoke_mech_soft 全链重生成 1-11 + 双检测器质检（判定：优化）——同旧硬校验检测器均分 65.9→84.1、通过 6→9、机制数字方向违规大改 6→1；新检测器均分 65.9→97.3、通过 6→10、机制数字大改 8→0；新稿 ch1 正文抽查面板数字作状态伏笔出现一次、重心在蚀痕/铁匠铺/灰卒潜行/捡晶战斗。文档：README/WIKI、docs/decisions.md/architecture.md/filemap.md、REQ-机制数字软提示与通用化.md 已同步。部署：git archive master（3cd0328）→ workbench upload → md5 一致（1af01e87…）→ `python3 -m zipfile -e` 解压 → `docker compose up -d --build`（novel-gen:latest 新镜像，前端容器内重建）；线上验证：mysql-mozao / novel-gen 均 Up healthy、/api/health 200、主 JS 1.1MB（index-Bew8lF3T.js）不白屏。
+
 - 部署记录（2026-10-16）：第二十一次发版（合并 devtest → master，da27b4c）。内容：**章节原子提交 + 投影一致性（A/B）+ 章节正文版本化**。① 一期·章节提交（feat/chapter-commit，借鉴 webnovel「写与记分离」）：新增 `pipeline/commit.py` `ChapterCommitter`，把 manager 章末 4 个分散入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕 incomplete、同章幂等 skip、每次写 `projection_log.jsonl`；`check_projection` 扫描 10 个派生视图定位账本落后章号，命令行 `tools/projection_check.py`（lagging 退出码 2）。开关 `chapter_commit` 默认 True；② 二期·章节正文版本化（feat/chapter-versions，git 式多版本保留与用户选择）：`save_chapter` 从覆盖改追加版本——`chapters/<no>.json` 仍为当前选中（HEAD），历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引（source=ai/user/rewrite/legacy）；内容相同幂等、不同追加新版更新选中；每章上限 15 淘汰最旧（HEAD 不淘汰）；`regenerate_from` 改方案 a（不删章节，追加候选版本、用户逐章自选）；`edit_chapter` 追加 user 版本；新增 `GET /chapters/{no}/versions` + `POST /chapters/{no}/versions/{v}/select`；前端阅读器加版本列表+选择/回退 UI。回归：全量 730 pytest 全绿（新增 chapter_commit 14 + chapter_versions 8）+ 前端 build 通过。**第二十次（正文去机械感，2026-10-15 未部署）内容随本次一并上线**。部署：git archive master（da27b4c）→ workbench upload → python3 -m zipfile -e 解压 → docker compose up -d --build（基础镜像 python:3.13-slim/node:20-alpine 首建时遇 daocloud 镜像源 502 与 docker.io 直连超时，镜像源恢复后重试成功）；验证：mysql-mozao healthy、novel-gen Up healthy、/api/health 200、主 JS 1.1MB（index-DAGe3qr1.js）无白屏。**部署后反查验证（2026-10-16）**：服务器关键文件 7/7（book_memory/stages/templates/writer.md/projects_chapters/schemas/config）git blob（CRLF 归一化为 LF 后）与本地 master da27b4c **完全一致**；zip→解压 cmp 无损；功能特征宿主机 + 容器内双确认（good 账本/卷卡/机制"只抄不推"/白描措辞/record_good_manual 全命中）。文档：README/WIKI、docs/decisions.md/architecture.md/filemap.md、REQ-借鉴webnovel.md、REQ-章节版本化.md 已同步。
 
 - 合并记录（2026-10-15）：第二十次合并（devtest → master，8783cca，**未部署，服务器发版待执行**）。内容：**正文去机械感优化（REQ-写作正向引导 一/二/三期）**——① 一期（feat/positive-guidance-writing）：场景规则 23→10 条（禁令改正向引导）、机制数字"权威当前值只抄不推"、AI 腔词表警示化+明喻密度/零直白检测、writer.md 演七分说三分；② 二期（feat/volume-cards）：卷卡传导（卷→章→场景三级目标）+ 场景字数预算收敛 + 机制权威基线三路径补盲（场景/整章回退/重写）+ 账本双源反推 + 寸字段累计格式提取；③ 三期（feat/good-memory）：踩坑+正向样例双账本——`BookMemory.goods` 高分章（≥85 且无大改）段落自动入账（`record_good`）+ 用户编辑保存免质检入账（`record_good_manual`），按手法确定性分类（对话-潜台词/战斗-动作链/情绪-白描+点破/环境-物象白描/叙事-节奏），每类 ≤5 条总量 ≤50 每条 ≤300 字，场景生成/重写双路径注入 `good_block`（参考质感非内容来源）。验收：全书重生成均分 81.4、通过 9/11（5 章满分，ch1 45→100），vs 二期 79.1/7、master 63.2/6 提升确定。回归：全量 707 pytest 全绿（P0/P1 433 全绿）。**决策：章节字数超长不触发整章级 LLM 处理**。文档：README/WIKI 已同步；docs/decisions.md、architecture.md、filemap.md、REQ-写作正向引导.md 已更新。部署：尚未执行（git archive master → workbench upload → docker compose up -d --build 待发版时执行），内容已随第二十一次发版（2026-10-16，da27b4c）一并上线。
@@ -365,4 +381,4 @@ py -3.13 run_web.py --host 0.0.0.0 --port 8000
 
 ---
 
-*最后更新：2026-10-16*
+*最后更新：2026-11-04*

@@ -432,6 +432,28 @@ def list_appeals(project_id: str, user: dict = Depends(_require_user)):
     return {"appeals": store.load_appeals(), "misjudge": store.misjudge_rate()}
 
 
+def _design_for_chapter(store, no: int) -> dict:
+    """读取本章设计卡（只读展示用）；缺失或异常时降级为空，不抛 5xx。"""
+    try:
+        dc = store.load_chapter_design() or {}
+        for item in (dc.get("chapters") or []):
+            if int(item.get("no") or 0) == no:
+                return item.get("design") or {}
+    except Exception:
+        logger.warning("[ChainOfThought] 读取 chapter_design.json 失败（降级）: ch=%d", no)
+    return {}
+
+
+def _summary_for_chapter(store, no: int) -> str:
+    """读取本章摘要（只读展示用）；缺失或异常时降级为空，不抛 5xx。"""
+    try:
+        chapter = store.load_chapter(no)
+        return (getattr(chapter, "summary", "") or "") if chapter else ""
+    except Exception:
+        logger.warning("[ChainOfThought] 读取章节摘要失败（降级）: ch=%d", no)
+        return ""
+
+
 @app.get("/api/projects/{project_id}/chapters/{no}/chain-of-thought")
 def chapter_chain_of_thought(project_id: str, no: int, user: dict = Depends(_require_user)):
     """F4 思维链可视化（只读聚合）：计划（大纲拍）→产出（拆场景）→校验（beat门禁/质检）。"""
@@ -450,6 +472,9 @@ def chapter_chain_of_thought(project_id: str, no: int, user: dict = Depends(_req
                 "tag": getattr(p, "tag", "")}
     # 产出段：拆场景
     production = store.load_scenes().get(str(no)) or {}
+    # 设计卡段 / 摘要段：只读展示，缺失为空（见上方 helper）
+    design = _design_for_chapter(store, no)
+    summary = _summary_for_chapter(store, no)
     # 校验段：beat 门禁 + review.json 该章最新一条
     review = {}
     bg = store.load_beat_gate().get(str(no))
@@ -468,7 +493,8 @@ def chapter_chain_of_thought(project_id: str, no: int, user: dict = Depends(_req
     except Exception:
         logger.warning("[ChainOfThought] 读取 review.json 失败（降级）: project=%s ch=%d",
                        project_id, no)
-    return {"chapter": no, "plan": plan, "production": production, "review": review}
+    return {"chapter": no, "plan": plan, "production": production, "review": review,
+            "design": design, "summary": summary}
 
 
 _BRANCH_DIRS = [

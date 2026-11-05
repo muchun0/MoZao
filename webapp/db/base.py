@@ -72,6 +72,10 @@ class _TxConn:
         cur.execute(sql, params)
         return cur
 
+    def rollback(self) -> None:
+        """显式中途回滚（唯一键冲突等需"回滚后读已有行"的场景）。"""
+        self._conn.rollback()
+
     def executescript(self, script: str):
         """逐条执行多条 SQL（MySQL 驱动不支持多语句一次执行）。"""
         cur = self._conn.cursor()
@@ -208,6 +212,33 @@ CREATE TABLE IF NOT EXISTS messages (
     extra JSON NULL,
     created_at DOUBLE NOT NULL,
     KEY idx_msg_conv (conversation_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+# ---- 小墨AI 独立计费账本（TECH-小墨AI计费 v0.2，D4=B：不进项目 settle.json）----
+# status：settled=已结算 / pending=待补扣（D3=3B 结算失败留痕）
+_ASSISTANT_BILLING = """
+CREATE TABLE IF NOT EXISTS assistant_billing (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    project_id VARCHAR(200) NOT NULL,
+    conversation_id BIGINT NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    user_message_id BIGINT NULL,
+    assistant_message_id BIGINT NULL,
+    mode VARCHAR(16) NOT NULL DEFAULT 'platform',
+    status VARCHAR(16) NOT NULL DEFAULT 'settled',
+    chars INT NOT NULL DEFAULT 0,
+    unit_price DOUBLE NOT NULL DEFAULT 3.0,
+    due DOUBLE NOT NULL DEFAULT 0,
+    charged DOUBLE NOT NULL DEFAULT 0,
+    owe DOUBLE NOT NULL DEFAULT 0,
+    commission_granted INT NOT NULL DEFAULT 0,
+    created_at DOUBLE NOT NULL,
+    updated_at DOUBLE NOT NULL,
+    UNIQUE KEY uk_ab_project_request (project_id, request_id),
+    KEY idx_ab_user_time (user_id, created_at),
+    KEY idx_ab_conv (conversation_id),
+    KEY idx_ab_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """
 
@@ -413,7 +444,8 @@ def _run_schema_ddl(conn) -> None:
     """init_db 拆：执行全量建表 DDL（幂等，IF NOT EXISTS）。"""
     for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
                 _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
-                _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES):
+                _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES,
+                _ASSISTANT_BILLING):
         conn.execute(ddl)
 
 

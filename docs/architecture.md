@@ -5,7 +5,7 @@
 
 ## 1. 系统全景
 
-**墨造 · AI 小说创作平台**：输入题材/创意，自动产出完整小说（调研 → 大纲 → 人物世界观 → 逐章正文 → 质检 → 导出），同时是**多用户 SaaS**（注册登录、按 AI 实际生成字数计费、代理分销、退款、站长后台）。
+**墨造 · AI 小说创作平台**：输入题材/创意，自动产出完整小说（调研 → 大纲 → 人物世界观 → 逐章正文 → 质检 → 导出），同时是**多用户 SaaS**（注册登录、按 AI 实际生成字数计费、代理分销、退款、站长后台）。验收口径是可读性与跨章一致性（判据见知识库《墨造 · 产品目标》），不看字数。
 
 ```
 ┌──────────────────────────── 前端 Vue3 (webapp/frontend) ────────────────────────────┐
@@ -14,7 +14,7 @@
                                      │ REST API（同源部署，dist 由 FastAPI 托管）
 ┌───────────────────────────────────▼─────────────────────────────────────────────────┐
 │                   Web 服务层 webapp/（FastAPI + MySQL）                              │
-│  server.py(组装壳) ── core.py(核心层) ── routers/(按域 9 个模块)                      │
+│  server.py(组装壳) ── core.py(核心层) ── routers/(按域 11 个模块)                      │
 │  db.py / secret_encrypt.py / pricing.py / referral.py / mailer.py / logger.py        │
 └───────────────────────────────────┬─────────────────────────────────────────────────┘
                                      │ 调用生成流水线（后台线程，任务可持久化/断点续跑）
@@ -118,7 +118,7 @@
 | `logger.py` | 统一日志（`logs/app.log`，5MB 轮转 ×3） |
 | `admin_cli.py` | 站长命令行管理（users/balance/recharge/agent/...） |
 
-### 2.4 webapp/routers/（10 个路由模块，共 106 条 API 路径）
+### 2.4 webapp/routers/（11 个路由模块）
 
 | 模块 | 域 | 说明 |
 |---|---|---|
@@ -133,6 +133,7 @@
 | `projects_world.py` | 世界观 | 人物卡/世界观/锁定/调研/伏笔/封面（10） |
 | `projects_generation.py` | 生成控制 | **Agent 统一入口（唯一生成通道）**：`POST/GET /agent-runs`、`POST /agent-runs/{task_id}/stop`、`POST /agent-runs/estimate`（只读预估价，UX 评审 U2）、`GET/PUT /agent-prompts[/{agent}]`（人设不可变版本）、`/outline/candidates`、`/stop`（9）；业务全在 generate_service；旧生成接口（start/regenerate/rewrite/generate-outline/world-regenerate/volume-regenerate）已全部删除 |
 | `projects_versions.py` | 产物版本 | **阶段1C**：outline/world 版本列表（含每版计费金额）/选择版本 select/select-impact 影响面/两版评审 `GET .../versions/review`（审校+评审两视角评论，零 LLM，评价口径在 `pipeline/version_review.py`）（4）；chapter 版本在 projects_chapters |
+| `projects_consistency.py` | 全书体检 | **R2（2026-11-04）只读**：overview / coverage / foreshadow / conflicts / entities / mentions（6）；零 LLM、零写盘，业务全在 `novel_gen/pipeline/consistency_report.py`，落盘信号复用 reader_ledger 状态机、check_projection、verify_issues 与章节版本质检 |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 
@@ -189,7 +190,7 @@
 
 **导出**：`projects/<id>/output/` 生成 TXT/EPUB/DOCX + 封面 PNG（限 5 次），同时拷到全局 `output/`。
 
-**小墨AI 对话**：前端 `POST /api/projects/{id}/assistant/conversations/{cid}/messages` → 鉴权/归属校验 → 输入三闸（空/超长/注入）→ 只读项目产物组装上下文（`review.json`/`chapter_design.json`/`book_memory.json`/`chapters/<no>.json`/config）→ `create_llm`（BYOK 优先，`scene=assistant` 落 `agent_trace`）→ 输出合规校验 → 确定性卡片 → `messages` 落两条（user/assistant）；LLM 失败只落 user 并返回 200 降级提示。
+**小墨AI 对话**：前端 `POST /api/projects/{id}/assistant/conversations/{cid}/messages`（携带 `Idempotency-Key`）→ 鉴权/归属校验 → 输入三闸（空/超长/注入）→ 余额闸门（platform 模式余额≤0 调模型前 402）→ 先落 user 消息（带 `request_id`）→ 只读项目产物组装上下文（`review.json`/`chapter_design.json`/`book_memory.json`/`chapters/<no>.json`/config）→ `create_llm`（BYOK 优先，`scene=assistant` 落 `agent_trace`）→ 输出合规校验 → 确定性卡片 → 落 assistant 消息 → 单事务结算（独立 `assistant_billing` 账本，`UNIQUE(project_id, request_id)` 幂等，不写 `settle.json`/`ai_words_total`，失败记 `pending` 待补扣）；LLM 失败/空回答/安全拦截不扣费，失败只落 user 并返回 200 降级提示。
 
 ## 5. 关键机制（为什么这么设计）
 

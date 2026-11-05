@@ -231,6 +231,31 @@ def admin_recharges(user: dict = Depends(_require_admin)):
     return {"recharges": [{**r, "username": names.get(r["user_id"], f"#{r['user_id']}")} for r in rows]}
 
 
+@app.get("/api/admin/assistant-billing")
+def admin_assistant_billing(user_id: int = 0, project_id: str = "", status: str = "",
+                            limit: int = 100, user: dict = Depends(_require_admin)):
+    """小墨AI 消费单列视图（D4=B：独立账本，不混入项目生成统计）。"""
+    return {
+        "items": db.list_assistant_billing(user_id=user_id, project_id=project_id,
+                                           status=status, limit=limit),
+        "stats": db.assistant_billing_stats(),
+    }
+
+
+@app.post("/api/admin/assistant-billing/{billing_id}/retry")
+def admin_retry_assistant_billing(billing_id: int, user: dict = Depends(_require_admin)):
+    """D3=3B 待补扣重试：只补扣费，不重复调用模型。"""
+    from ..assistant import service
+
+    try:
+        row = service.retry_pending_billing(int(billing_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    logger.info("小墨待补扣重试: billing=%d by=%s charged=%.2f",
+                billing_id, user["username"], float(row.get("charged") or 0))
+    return {"ok": True, "billing": row}
+
+
 @app.get("/api/admin/projects")
 def admin_projects(user: dict = Depends(_require_admin)):
     """所有项目总览：标题 / 归属用户 / 题材 / 进度 / 状态。"""

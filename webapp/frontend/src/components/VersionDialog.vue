@@ -43,11 +43,28 @@
         <!-- 改稿建议：默认折叠，避免长列表刷屏（窄屏尤为拥挤） -->
         <div v-if="v.quality && (v.quality.issues || []).length" class="ver-issues">
           <div class="ver-issues-head">改稿建议（{{ v.quality.issue_count || v.quality.issues.length }} 处）</div>
-          <div v-for="(it, i) in visibleIssues(v)" :key="i" class="ver-issue">
-            <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
-            <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
-            <span class="ver-issue-detail">{{ it.detail }}</span>
-            <el-button v-if="kind === 'chapter'" size="small" link type="warning" @click="$emit('appeal', it)">申诉</el-button>
+          <div v-for="(it, i) in visibleIssues(v)" :key="i" class="ver-issue-card">
+            <div class="ver-issue">
+              <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
+              <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
+              <span class="ver-issue-detail">{{ it.detail }}</span>
+              <el-button v-if="kind === 'chapter'" size="small" link type="warning" @click="$emit('appeal', it)">申诉</el-button>
+              <el-button v-if="kind === 'chapter'" size="small" link type="primary"
+                         :loading="rewritingKey === `${v.v}-${i}`" :disabled="!!rewritingKey"
+                         title="只改写这条建议命中的段落，其余正文保持不变"
+                         @click="onRewriteIssue(it, v, i)">按此改</el-button>
+            </div>
+            <!-- R1：凭什么这么说（原文证据）与具体怎么改（改法说明），缺失时明确留白 -->
+            <div class="ver-issue-why">
+              <div class="why-line">
+                <span class="why-label">证据</span>
+                <span class="why-text" :class="{ 'why-empty': evidenceInfo(it).empty }">{{ evidenceInfo(it).text }}</span>
+              </div>
+              <div class="why-line">
+                <span class="why-label">改法</span>
+                <span class="why-text" :class="{ 'why-empty': fixInfo(it).empty }">{{ fixInfo(it).text }}</span>
+              </div>
+            </div>
           </div>
           <el-button v-if="(v.quality.issues || []).length > 3" size="small" link type="primary"
                      class="ver-issue-toggle" @click="toggleIssues(v.v)">
@@ -97,7 +114,9 @@ import VersionReview from './VersionReview.vue'
 import {
   getChapterVersions, selectChapterVersion, deleteChapterVersion,
   getProductVersions, selectProductVersion, getVersionSelectImpact, getVersionReview,
+  rewriteChapterIssue,
 } from '../api/novel'
+import { evidenceInfo, fixInfo } from './issueText'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -118,6 +137,7 @@ const versionList = ref([])
 const compareSel = ref([])   // 勾选待对比的两个版本号
 const reviewView = ref(null) // 评审接口响应（审校/评审两视角）
 const expanded = reactive({})  // 各版本改稿建议的折叠态（按版本号 v 记录）
+const rewritingKey = ref('')   // 正在「按此改」的问题键（`${v}-${index}`），防重复提交
 // 版本数超阈值时不提供逐对对比入口
 const canCompare = computed(() => versionList.value.length <= MAX_COMPARE_VERSIONS)
 
@@ -138,7 +158,7 @@ const emptyText = computed(() => props.kind === 'chapter'
   ? '暂无历史版本（重写/重生成会自动保留多版本）'
   : '暂无历史版本（重生成会自动保留旧版）')
 const tipText = computed(() => props.kind === 'chapter'
-  ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。勾选两个版本可看【审校 + 评审】两视角评论（引用原文说明好在哪、问题在哪、具体怎么改）；版本较多时不再提供逐对对比，请直接看各版本的徽章与改稿建议。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
+  ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。勾选两个版本可看【审校 + 评审】两视角评论（引用原文说明好在哪、问题在哪、具体怎么改）；版本较多时不再提供逐对对比，请直接看各版本的徽章与改稿建议。每条改稿建议都给出「证据（引用原文）」与「改法」，可直接点「按此改」只改写命中段落并新增一个版本（旧版保留，按新增版本字数计费；定位失败会明确报错，不会整章重写）。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
   : '每次重生成都会追加新版本、保留旧版；选择某个版本＝把它设为当前生效版本，不会删除已生成正文。勾选两个版本可看【审校 + 评审】两视角评论（本版多了什么、缺了什么、要不要从另一版补回）。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
 
 function sourceText(src) {
@@ -247,6 +267,36 @@ async function onDelete(v) {
   }
 }
 
+// R1 按此改：只改命中段落 → 后端新增版本并设为当前，旧版保留；按新版本字数计费
+async function onRewriteIssue(it, v, index) {
+  if (rewritingKey.value) return
+  try {
+    await ElMessageBox.confirm(
+      '将只改写这条建议命中的段落，其余正文保持不变；系统会新增一个版本并设为当前（旧版本全部保留）。'
+      + '改写按新版本字数计费（自备 API Key 的项目不扣平台费），是否继续？',
+      `按此改 · v${v.v}`, { type: 'warning', confirmButtonText: '开始改写', cancelButtonText: '取消' })
+  } catch { return }
+  rewritingKey.value = `${v.v}-${index}`
+  try {
+    const res = await rewriteChapterIssue(props.pid, props.chapterNo, {
+      type: it.type || '',
+      detail: it.detail || '',
+      evidence: it.evidence || '',
+      fix_suggestion: it.fix_suggestion || '',
+      level: it.level || '',
+      version: v.v,
+    })
+    if (res.versions) versionList.value = res.versions
+    const cost = Number(res.due || 0) > 0 ? `，扣费 ¥${Number(res.due).toFixed(2)}` : ''
+    ElMessage.success(`已按建议局部改写：新增 v${res.version}（改动 ${res.rewritten_chars} 字${cost}）`)
+    emit('changed')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '局部改写失败')
+  } finally {
+    rewritingKey.value = ''
+  }
+}
+
 watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
   if (vis) load()
 })
@@ -274,12 +324,25 @@ watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
 .ver-charge { color: var(--gold-deep); font-size: 12px; font-variant-numeric: tabular-nums; }
 .ver-issues { margin-top: 8px; }
 .ver-issues-head { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.ver-issue { font-size: 12px; display: flex; gap: 6px; align-items: baseline; margin-bottom: 3px; }
+.ver-issue-card { margin-bottom: 8px; }
+.ver-issue { font-size: 12px; display: flex; gap: 6px; align-items: baseline; margin-bottom: 4px; }
 .ver-issue-detail { flex: 1; min-width: 0; }
 .lv-big { color: var(--danger); flex-shrink: 0; }
 .lv-mid { color: var(--gold-deep); flex-shrink: 0; }
 .lv-small { color: var(--muted); flex-shrink: 0; }
 .ver-issue-type { color: var(--muted); flex-shrink: 0; }
+/* R1：证据与改法双行说明，弱化底色以区别于问题标题行 */
+.ver-issue-why {
+  padding: 6px 8px;
+  border-left: 2px solid var(--card-line);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.032);
+}
+.why-line { display: flex; gap: 8px; font-size: 12px; line-height: 1.7; }
+.why-line + .why-line { margin-top: 2px; }
+.why-label { flex-shrink: 0; color: var(--gold-deep); }
+.why-text { min-width: 0; color: var(--ink-soft); word-break: break-word; }
+.why-empty { color: var(--muted); }
 .ver-issue-toggle { padding-left: 0; margin-top: 2px; }
 .ver-noq { font-size: 12px; color: var(--muted); margin-top: 8px; }
 /* 第四层：操作 */

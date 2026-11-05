@@ -4,11 +4,12 @@
 按产物类型统计「AI 实际生成的文本字符数」，供 `webapp/settle_ledger.py` 按版本结算。
 纯函数、无外部依赖、可离线单测；调用方只需传产物对象或其 `to_dict()` 结果。
 
-计费口径约定（与 TECH-Agent用户化与版本化 §4.4 一致）：
+计费口径约定（与 TECH-Agent用户化与版本化 §4.4、TECH-小墨AI计费 v0.2 一致）：
 - 章节：正文 `content` 字符数（与现网 `len(c.content)` 一致）；
 - 大纲：总纲 + 各卷 + 各章的标题/简介/目标字符数；
 - 分卷：卷简介 + 该卷章节标题/目标字符数（调用方组装 payload）；
-- 世界观：递归累加所有字符串值长度（字段漂移免疫，新增卡片自动计入）。
+- 世界观：递归累加所有字符串值长度（字段漂移免疫，新增卡片自动计入）；
+- 小墨AI 回答：正文去首尾空白后的字符数（不计系统提示、用户提问与卡片模板）。
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ def count_words(kind: str, payload: Any) -> int:
     """统计指定产物的 AI 生成字数。
 
     Args:
-        kind: 产物类型，`chapter` / `outline` / `volume` / `world`。
+        kind: 产物类型，`chapter` / `outline` / `volume` / `world` / `assistant`。
         payload: 产物对象（带 `to_dict()`）或其 dict 形式。
 
     Returns:
@@ -44,6 +45,8 @@ def count_words(kind: str, payload: Any) -> int:
         return _count_volume(payload)
     if kind == "world":
         return _count_text_deep(payload)
+    if kind == "assistant":
+        return _count_assistant(payload)
     raise ValueError(f"不支持的产物类型: {kind}")
 
 
@@ -71,6 +74,12 @@ def _sum_fields(item: Any, fields: tuple[str, ...]) -> int:
 
 def _count_chapter(payload: Any) -> int:
     return _text_len(_as_dict(payload).get("content"))
+
+
+def _count_assistant(payload: Any) -> int:
+    """小墨AI 回答：仅统计正文，去首尾空白（空回答/纯空白计 0）。"""
+    content = _as_dict(payload).get("content")
+    return len(content.strip()) if isinstance(content, str) else 0
 
 
 def _count_outline(payload: Any) -> int:

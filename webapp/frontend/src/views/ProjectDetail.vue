@@ -124,6 +124,11 @@
         <section v-if="visited.tools" v-show="tab === 'tools'">
           <ToolsPanel :pid="pid" />
         </section>
+
+        <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
+        <section v-if="visited.health" v-show="tab === 'health'">
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" />
+        </section>
       </main>
     </div>
 
@@ -193,6 +198,7 @@ import WorldEditor from '../components/world/WorldEditor.vue'
 import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
+import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'

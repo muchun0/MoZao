@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from novel_gen.config import NovelConfig                       # noqa: E402
+from novel_gen.llm.base import LLMError                         # noqa: E402
 from novel_gen.store.project import ProjectStore               # noqa: E402
 from novel_gen.store.schemas import Chapter                    # noqa: E402
 from webapp import chapter_quality_service as cqs              # noqa: E402
@@ -56,6 +57,9 @@ class _FakeChecker:
             return self.result
         self.inner.check = _check
         return self.inner.recheck(*args, **kwargs)
+
+    def persist_review(self, chapter_no, result, strict=True):
+        return self.inner.persist_review(chapter_no, result, strict=strict)
 
 
 @pytest.fixture
@@ -149,3 +153,104 @@ def test_no_available_model_rejected(store):
     with pytest.raises(ValueError):
         cqs.recheck_chapter_quality(store, SimpleNamespace(
             cfg=store.load_config(), llm=None, trace=None, guard=None), 1, version=2)
+
+
+# ---------------------------------------------------------------------------
+# R14 fail-closed：真实链路（真实 QualityChecker + 全部评委调用抛错/不可解析）
+# ---------------------------------------------------------------------------
+
+class _RaisingLLM:
+    """真实链路替身：任何调用都抛 LLMError（等价于「模型地址不可用」）。"""
+
+    def chat(self, *args, **kwargs):
+        raise LLMError("[deepseek] 调用失败: Connection error.")
+
+
+class _UnparseableLLM:
+    """真实链路替身：调用成功但返回不可解析内容（等价于评审全部降级）。"""
+
+    def chat(self, *args, **kwargs):
+        return "抱歉，我这次无法按 JSON 格式输出。"
+
+
+def _real_checker(store: ProjectStore, llm):
+    """用真实 QualityChecker（不打桩 check），只替换底层的 llm。"""
+    return cqs.QualityChecker(store.load_config(), llm, store,
+                              trace=None, guard=None, memory=None)
+
+
+@pytest.mark.p0
+def test_real_chain_llm_all_failed_returns_503_without_writes(wired, monkeypatch):
+    """模型全挂：真实链路吞异常路径必须被识别 → 503，且 quality/review 都不写。"""
+    _seed(wired)
+    checker = _real_checker(wired, _RaisingLLM())
+    monkeypatch.setattr(cqs, "_build_checker", lambda pipeline, s: checker)
+
+    with pytest.raises(HTTPException) as ei:
+        pc.recheck_chapter_quality("pid", 1, req={"version": 2}, user={"id": 1})
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "模型暂不可用，请稍后重试"
+    assert _quality(wired, 2) is None                       # 版本 quality 仍为空
+    assert not (wired.dir / "review.json").exists()          # review 未创建
+
+
+@pytest.mark.p0
+def test_real_chain_unparseable_output_returns_503_without_writes(wired, monkeypatch):
+    """干净正文 + 输出不可解析：不得把「降级空结果」写成 passed=true/score=100。"""
+    _seed(wired)
+    checker = _real_checker(wired, _UnparseableLLM())
+    monkeypatch.setattr(cqs, "_build_checker", lambda pipeline, s: checker)
+
+    with pytest.raises(HTTPException) as ei:
+        pc.recheck_chapter_quality("pid", 1, req={"version": 2}, user={"id": 1})
+
+    assert ei.value.status_code == 503
+    assert _quality(wired, 2) is None
+
+
+@pytest.mark.p0
+def test_real_chain_failure_keeps_existing_review_untouched(wired, monkeypatch):
+    """失败时既有 review.json 必须原样保留（不追加、不改写该章记录）。"""
+    _seed(wired)
+    original = [{"chapter": 1, "issues": [], "auto_revised": False,
+                 "quality_check": {"passed": True, "score": 66, "checked_at": 1}}]
+    (wired.dir / "review.json").write_text(
+        json.dumps(original, ensure_ascii=False), encoding="utf-8")
+
+    checker = _real_checker(wired, _RaisingLLM())
+    monkeypatch.setattr(cqs, "_build_checker", lambda pipeline, s: checker)
+    with pytest.raises(HTTPException) as ei:
+        pc.recheck_chapter_quality("pid", 1, req={"version": 2}, user={"id": 1})
+
+    assert ei.value.status_code == 503
+    assert json.loads((wired.dir / "review.json").read_text(encoding="utf-8")) == original
+    assert _quality(wired, 2) is None
+
+
+@pytest.mark.p0
+def test_review_write_failure_rolls_back_quality(wired, monkeypatch):
+    """写回顺序：先 version quality、后 review.json；review 失败必须回滚 quality。"""
+    _seed(wired)
+    calls: list[str] = []
+    real_write = type(wired)._write_json
+
+    def _write(path, data):
+        name = Path(path).name
+        calls.append(name)
+        if name == "review.json":
+            raise OSError("磁盘写入失败（模拟）")
+        return real_write(path, data)
+
+    monkeypatch.setattr(wired, "_write_json", _write)
+    fake = _FakeChecker(wired, result={"passed": True, "score": 90, "issues": []})
+    with pytest.raises(HTTPException) as ei:
+        _call(wired, fake, monkeypatch, {"version": 2, "force": True})
+
+    assert ei.value.status_code == 500
+    # 第一条写是版本 quality；review 失败后最后一条写是把 quality 回滚为空
+    assert calls[0] == "chapter_versions.json"
+    assert "review.json" in calls
+    assert calls[-1] == "chapter_versions.json"
+    assert _quality(wired, 2) is None
+    assert not (wired.dir / "review.json").exists()

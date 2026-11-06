@@ -10,6 +10,7 @@ from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作
 from ..version_recommend import attach_chapter_recommendations
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
 from ..chapter_quality_service import recheck_chapter_quality as _recheck_chapter_quality  # R14 单章重检
+from novel_gen.pipeline.quality.checker import QualityUnavailable  # R14 模型失败 fail-closed
 from novel_gen.pipeline.templates import _style_reference
 import time
 
@@ -98,6 +99,11 @@ def recheck_chapter_quality(project_id: str, no: int, req: dict = Body(default=N
     try:
         pipeline = _open_pipeline(store)
         result = _recheck_chapter_quality(store, pipeline, no, version=version, force=force)
+    except QualityUnavailable as exc:
+        # 关键评委失败/全部评委失败：fail-closed，不写任何结果，用户可稍后重试
+        logger.warning("单章重检模型不可用: project=%s no=%d v=%d reason=%s",
+                       project_id, no, version, exc)
+        raise HTTPException(status_code=503, detail="模型暂不可用，请稍后重试")
     except ValueError as exc:
         # 版本不存在 / 正文为空 / 无可用模型：可预期的业务失败
         raise HTTPException(status_code=422, detail=str(exc))

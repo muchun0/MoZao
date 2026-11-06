@@ -16,11 +16,32 @@ from novel_gen.store.project import ProjectStore
 
 logger = logging.getLogger("webapp.chapter_quality")
 
+# 质检是用户点击后的交互请求：宁可快速失败让用户重试，也不让 SDK 长重试拖住请求。
+# 单次超时 30s 覆盖评委正常延迟（reader 1200 tokens）；重试 0 次——连接失败/超时
+# 立即返回 503，用户再点一次即重试（接口幂等、失败不写盘，重复调用无副作用）。
+QUALITY_LLM_TIMEOUT = 30.0
+QUALITY_LLM_MAX_RETRIES = 0
+
+
+def _quality_llm(pipeline):
+    """构造质检专用 LLM：沿用项目同一 provider/model/key，但缩短超时、关闭 SDK 重试。
+
+    不支持限时克隆的客户端（如 MockClient）原样复用，行为不变。
+    """
+    llm = getattr(pipeline, "llm", None)
+    clone = getattr(llm, "clone_limited", None)
+    if callable(clone):
+        try:
+            return clone(timeout=QUALITY_LLM_TIMEOUT, max_retries=QUALITY_LLM_MAX_RETRIES)
+        except Exception:
+            logger.warning("构建质检限时客户端失败，复用原客户端", exc_info=True)
+    return llm
+
 
 def _build_checker(pipeline, store: ProjectStore) -> QualityChecker:
     """复用生成链路同一权威实现；memory=None 避免重检污染小说级踩坑账本。"""
     return QualityChecker(
-        pipeline.cfg, pipeline.llm, store,
+        pipeline.cfg, _quality_llm(pipeline), store,
         trace=getattr(pipeline, "trace", None),
         guard=getattr(pipeline, "guard", None),
         memory=None,
@@ -96,13 +117,26 @@ def recheck_chapter_quality(store: ProjectStore, pipeline, no: int,
 
     title, goal, core_event = _chapter_plan(store, no)
     checker = _build_checker(pipeline, store)
-    # 摘要传空：改写后旧摘要可能已过期（B 组暂缓），避免用旧摘要制造「摘要不一致」假阳性
+    # 摘要传空：改写后旧摘要可能已过期（B 组暂缓），避免用旧摘要制造「摘要不一致」假阳性。
+    # fail_closed=True：关键评委失败 → QualityUnavailable，此时尚未写任何盘（见 recheck）。
+    # save_review=False：由本层按「先版本 quality、后 review.json」顺序落盘。
     result = checker.recheck(no, title, goal, content, summary="",
                              baseline=_panel_baseline(store, no),
-                             core_event=core_event, strict_review=True)
+                             core_event=core_event, save_review=False, fail_closed=True)
     snap = quality_snapshot(result, include_hook=True)
     if not store.update_version_quality(no, v, snap):
         raise RuntimeError(f"质检完成但写入版本 v{v} 失败（版本可能已被删除）")
+    try:
+        # 第二步写 review.json；失败则回滚版本 quality，避免「review 有新结果、版本 quality 为空」
+        checker.persist_review(no, result, strict=True)
+    except Exception:
+        logger.error("review.json 写入失败，回滚版本 quality: chapter=%s v=%s", no, v,
+                     exc_info=True)
+        try:
+            store.update_version_quality(no, v, quality)
+        except Exception:
+            logger.exception("回滚版本 quality 失败（需人工核对）: chapter=%s v=%s", no, v)
+        raise
     logger.info("单章重检完成: project=%s chapter=%s v=%s score=%s issues=%s force=%s",
                 store.dir.name, no, v, snap["score"], snap["issue_count"], force)
     return _payload(no, v, snap, reused=False)

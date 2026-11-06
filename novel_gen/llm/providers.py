@@ -31,21 +31,43 @@ class OpenAICompatibleClient(LLMClient):
         top_p: float = 0.0,
         max_tokens: int = 4096,
         timeout: float = 180.0,
+        max_retries: int = 3,
     ):
         super().__init__()
         if not api_key:
             raise LLMError(f"provider[{provider}] 缺少 api_key，无法创建客户端")
         self.provider = provider
         self.model = model
+        self._api_key = api_key
+        self._base_url = base_url or ""
         self._temperature = temperature
         self._top_p = top_p
         self._max_tokens = max_tokens
+        self._timeout = timeout
+        self._max_retries = max_retries
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
             timeout=timeout,
-            max_retries=3,  # SDK 内置指数退避重试
+            max_retries=max_retries,  # SDK 内置指数退避重试
         )
+
+    def clone_limited(self, timeout: float, max_retries: int) -> "OpenAICompatibleClient":
+        """复用同一 provider/model/key，但用更短超时与更少重试（质检等交互路径快速失败）。
+
+        usage / recorder / guard 与原客户端共享：token 统计、全链路 trace 与
+        AgentGuard 防护口径保持不变，只改变网络等待策略。
+        """
+        cloned = OpenAICompatibleClient(
+            provider=self.provider, model=self.model, api_key=self._api_key,
+            base_url=self._base_url, temperature=self._temperature,
+            top_p=self._top_p, max_tokens=self._max_tokens,
+            timeout=timeout, max_retries=max_retries,
+        )
+        cloned.usage = self.usage
+        cloned.recorder = self.recorder
+        cloned.guard = self.guard
+        return cloned
 
     def _chat_impl(
         self,

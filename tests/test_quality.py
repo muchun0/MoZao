@@ -460,7 +460,7 @@ def test_consistency_llm_event_duplicate_detected():
         '后一处又写坡地上苏妄言再被赤尉围、陆沉又冲下去救——同一事件两版本"}]}'
     )
     qc = QualityChecker(cfg, llm, None)
-    issues = qc._consistency_llm_check(1, "正文若干")
+    issues, _err = qc._consistency_llm_check(1, "正文若干")
     assert any("事件重复" in (i.get("type", "") or "") and i["level"] == "大改" for i in issues)
 
 
@@ -789,7 +789,7 @@ def test_consistency_llm_filters_interrupted_continuation():
         ']}'
     )
     qc = QualityChecker(cfg, llm, None)
-    issues = qc._consistency_llm_check(6, content)
+    issues, _err = qc._consistency_llm_check(6, content)
     # 承接形态被剔除：不产生事件重复大改，切断整章重写连锁
     assert issues == []
 
@@ -804,7 +804,7 @@ def test_consistency_llm_kept_carries_metadata():
         '"detail": "前一处空地救苏妄言；后一处坡地再围再救", "suggestion": "统一为一次救援"}]}'
     )
     qc = QualityChecker(cfg, llm, None)
-    issues = qc._consistency_llm_check(1, "正文若干")
+    issues, _err = qc._consistency_llm_check(1, "正文若干")
     assert len(issues) == 1
     hit = issues[0]
     assert hit["source"] == "llm:consistency"

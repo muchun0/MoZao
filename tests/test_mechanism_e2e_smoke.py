@@ -124,7 +124,8 @@ def test_ruleset_book_quality_judge_eligible_panel_short_circuited(tmp_path):
                   '"suggestion":"删除回应行为"}]}')
     checker = QualityChecker(store.load_config(), llm, store, memory=None)
 
-    rule_issues, rule_delta = checker._check_rule_consistency(1, "正文" * 100)
+    rule_issues, rule_delta, _attempted, _err = checker._check_rule_consistency(
+        1, "正文" * 100)
     assert llm.calls, "规则怪谈必须调用规则一致性 judge"
     assert len(rule_issues) == 1 and rule_issues[0]["level"] == "大改"
     assert rule_delta == -25
@@ -164,7 +165,7 @@ def test_none_book_quality_both_checks_short_circuited(tmp_path):
     llm = _LLMRec('{"violations": []}')
     checker = QualityChecker(store.load_config(), llm, store, memory=None)
 
-    rule_issues, _ = checker._check_rule_consistency(1, "正文" * 100)
+    rule_issues, _, _attempted, _err = checker._check_rule_consistency(1, "正文" * 100)
     panel_issues, panel_delta = checker._check_panel_progress("剩余次数：3" * 30)
     assert rule_issues == [] and panel_issues == [] and panel_delta == 0
     assert llm.calls == []
@@ -211,7 +212,7 @@ def test_numeric_book_panel_check_not_gated(tmp_path):
     llm = _LLMRec('{"events": []}')
     checker = QualityChecker(store.load_config(), llm, store, memory=None)
     # 规则一致性对非 rule_set 短路；面板检查进入实现（不抛错即链路打通）
-    rule_issues, _ = checker._check_rule_consistency(1, "正文" * 100)
+    rule_issues, _, _attempted, _err = checker._check_rule_consistency(1, "正文" * 100)
     assert rule_issues == []
     panel_issues, panel_delta = checker._check_panel_progress("剩余次数：3 剩余次数：3" * 20)
     assert isinstance(panel_issues, list) and panel_delta <= 0
@@ -252,7 +253,8 @@ def test_mixed_book_both_checks_eligible(tmp_path):
     llm = _LLMRec('{"violations":[{"code":"rule_conflict","rule_id":"R1",'
                   '"detail":"正文主角奔跑了","suggestion":"删除奔跑行为"}]}')
     checker = QualityChecker(store.load_config(), llm, store, memory=None)
-    rule_issues, rule_delta = checker._check_rule_consistency(1, "正文" * 100)
+    rule_issues, rule_delta, _attempted, _err = checker._check_rule_consistency(
+        1, "正文" * 100)
     assert llm.calls and len(rule_issues) == 1 and rule_delta == -25
     # 面板检查对 numeric_panel 类型同样不短路
     panel_issues, _ = checker._check_panel_progress("剩余次数：3 剩余次数：3" * 20)

@@ -582,6 +582,10 @@ class ProjectStore:
         d = self._chapter_facade().select(str(no), ver)
         return Chapter.from_dict(d) if d else None
 
+    def update_version_quality(self, no: int, ver: int, quality: dict) -> bool:
+        """给既有版本补写质检结果（R14 单章重检），不新增版本、不改 HEAD/正文。"""
+        return self._chapter_facade().set_quality(str(no), ver, quality)
+
     def list_versions(self, no: int) -> list[dict]:
         """返回该章版本列表（升序），每项 {v, selected, source, ts, words, quality}。
 

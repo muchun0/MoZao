@@ -56,6 +56,34 @@ from .reviewers import (
 logger = logging.getLogger("novel_gen.pipeline.quality")
 
 
+def quality_snapshot(result: dict, include_hook: bool = False) -> dict:
+    """质检结果 → 版本库 quality 快照（生成链路与单章重检共用同一口径）。
+
+    include_hook：单章重检额外带上 hook_score（追更欲），供版本弹窗展示；
+    生成链路保持原字段不变，避免影响既有消费方。
+    """
+    issues = result.get("issues") or []
+    snap = {
+        "passed": bool(result.get("passed")),
+        "score": int(result.get("score", 0) or 0),
+        "issue_count": len(issues),
+        "issues": [
+            {"level": it.get("level", ""), "type": it.get("type", ""),
+             "detail": (it.get("detail") or "")[:120],
+             # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
+             # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
+             "evidence": _aggregate.issue_evidence(it)[:120],
+             # R1：具体改法落版本快照，版本弹窗直接展示「怎么改」；
+             # 没有就存空串，前端显示「未给出改法」，不编造
+             "fix_suggestion": (it.get("fix_suggestion") or "")[:120]}
+            for it in issues
+        ],
+    }
+    if include_hook:
+        snap["hook_score"] = result.get("hook_score")
+    return snap
+
+
 class QualityChecker:
     """章级质量校验器（确定性规则 + 读者视角 LLM 校验）。"""
 
@@ -139,28 +167,12 @@ class QualityChecker:
                   auto: bool) -> None:
             if versions and versions[-1]["content"] == content:
                 return  # 内容未变不重复记录（重写无效/抢救无变化）
-            issues = res.get("issues") or []
             versions.append({
                 "round": round_no,
                 "content": content,
                 "summary": smry,
                 "auto_revised": bool(auto),
-                "quality": {
-                    "passed": bool(res.get("passed")),
-                    "score": int(res.get("score", 0)),
-                    "issue_count": len(issues),
-                    "issues": [
-                        {"level": it.get("level", ""), "type": it.get("type", ""),
-                         "detail": (it.get("detail") or "")[:120],
-                         # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
-                         # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
-                         "evidence": _aggregate.issue_evidence(it)[:120],
-                         # R1：具体改法落版本快照，版本弹窗直接展示「怎么改」；
-                         # 没有就存空串，前端显示「未给出改法」，不编造
-                         "fix_suggestion": (it.get("fix_suggestion") or "")[:120]}
-                        for it in issues
-                    ],
-                },
+                "quality": quality_snapshot(res),
             })
 
         result = self.check(chapter_no, plan_title, plan_goal, content, summary,
@@ -1906,9 +1918,27 @@ class QualityChecker:
         return joined[:max_chars]
 
     # ---------- 落库与工具 ----------
+    def recheck(self, chapter_no: int, plan_title: str, plan_goal: str,
+                content: str, summary: str = "",
+                baseline: dict | None = None, core_event: str = "",
+                strict_review: bool = False) -> dict:
+        """R14 单章重检：复用 check() 的同一权威判定，只判定、不改写正文、不产生新版本。
+
+        与 ensure_quality 的区别：不触发自动重写/抢救，版本文件与 HEAD 一律不动
+        （用户点「按此改」得到的定稿必须保持原样）；只把结果并入 review.json。
+        """
+        result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                            baseline=baseline, core_event=core_event)
+        self._save_review(chapter_no, result.get("issues") or [], result,
+                          auto_revised=False, strict=strict_review)
+        return result
+
     def _save_review(self, chapter_no: int, issues: list[dict], result: dict,
-                      auto_revised: bool = False) -> None:
-        """与既有 review.json 格式兼容：该章记录合并校验问题。"""
+                      auto_revised: bool = False, strict: bool = False) -> None:
+        """与既有 review.json 格式兼容：该章记录合并校验问题。
+
+        strict=True（单章重检）时写盘失败必须显式抛出，禁止把空结果当成质检通过。
+        """
         try:
             path = self.store.dir / "review.json"
             existing = []
@@ -1929,7 +1959,10 @@ class QualityChecker:
                     "checked_at": time.time(),
                 },
             })
-            path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 原子写（临时文件 + os.replace），避免进程中断留下半截 review.json
+            self.store._write_json(path, existing)
         except Exception:
-            pass
+            if strict:
+                raise
+            logger.warning("review.json 写入失败（已降级继续）: chapter=%s", chapter_no, exc_info=True)
 

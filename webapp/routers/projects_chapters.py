@@ -9,6 +9,7 @@ from novel_gen.pipeline import artifact_staleness  # R13 派生记录标脏（�
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
+from ..chapter_quality_service import recheck_chapter_quality as _recheck_chapter_quality  # R14 单章重检
 from novel_gen.pipeline.templates import _style_reference
 import time
 
@@ -65,6 +66,51 @@ def delete_chapter_version(project_id: str, no: int, v: int,
     logger.info("章节版本删除: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
     versions = attach_chapter_recommendations(store, no, store.list_versions(no))
     return {"no": no, "deleted_version": v, "versions": versions}
+
+
+@app.post("/api/projects/{project_id}/chapters/{no}/quality-check")
+def recheck_chapter_quality(project_id: str, no: int, req: dict = Body(default=None),
+                            user: dict = Depends(_require_user)):
+    """R14 单章重检：对指定版本补做质检，写回该版本 quality 与 review.json。
+
+    契约：
+    - version 省略/0 → 当前选中版本（无 selected 取最新）；force=false 时若该版本已有
+      quality 直接复用（不调用模型，幂等）；force=true 才重跑。
+    - 计费：不计平台按字数费，但会消耗模型 token（前端点击前须如实提示）。
+    - 失败：模型/写盘失败返回 5xx/4xx 且不写入任何「通过」结果，可直接重试。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    if store.load_chapter(no) is None:
+        raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
+    _assert_not_locked(store, "chapter", no, "本章已被用户锁定，如需重新质检请先解锁")
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中")
+
+    req = req or {}
+    try:
+        version = int(req.get("version") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="version 参数不合法")
+    force = bool(req.get("force"))
+
+    try:
+        pipeline = _open_pipeline(store)
+        result = _recheck_chapter_quality(store, pipeline, no, version=version, force=force)
+    except ValueError as exc:
+        # 版本不存在 / 正文为空 / 无可用模型：可预期的业务失败
+        raise HTTPException(status_code=422, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("单章重检失败: project=%s no=%d v=%d", project_id, no, version)
+        raise HTTPException(status_code=500, detail=f"质检失败，请重试：{exc}")
+
+    result["versions"] = attach_chapter_recommendations(store, no, store.list_versions(no))
+    logger.info("单章重检: uid=%d project=%s no=%d v=%d reused=%s",
+                user["id"], project_id, no, result["version"], result["reused"])
+    return result
 
 
 @app.post("/api/projects/{project_id}/chapters/{no}/issues/rewrite")

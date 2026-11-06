@@ -306,6 +306,26 @@ class VersionedProduct:
             self.store._write_json(self.spec.index_path(self.store), index)
             return True
 
+    def set_quality(self, key, v: int, quality: dict) -> bool:
+        """给既有版本补写质检结果（单章重检）：只改 history 的 quality，不新增版本、不改 HEAD。
+
+        与 commit 共用同一把 per-project 锁，避免与并发生成/改写互相覆盖索引。
+        """
+        key = self.spec.norm_key(key)
+        with _project_lock(self.store.dir):
+            index = self._load_index()
+            rec = index.get(key)
+            if not isinstance(rec, dict) or v not in self._versions(rec):
+                return False
+            for h in rec.get("history") or []:
+                if isinstance(h, dict) and h.get("v") == v:
+                    h["quality"] = quality
+                    break
+            else:
+                return False
+            self.store._write_json(self.spec.index_path(self.store), index)
+            return True
+
     def load_version(self, key, v: int) -> Optional[dict]:
         key = self.spec.norm_key(key)
         return self.store._read_json(self.spec.version_path(self.store, key, v), None)

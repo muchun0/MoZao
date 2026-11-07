@@ -11,7 +11,11 @@ from __future__ import annotations
 import logging
 
 from novel_gen.pipeline.chapter_state import panel_baseline_dict
-from novel_gen.pipeline.quality.checker import QualityChecker, quality_snapshot
+from novel_gen.pipeline.quality.checker import (
+    QUALITY_TOTAL_BUDGET_S,
+    QualityChecker,
+    quality_snapshot,
+)
 from novel_gen.store.project import ProjectStore
 
 logger = logging.getLogger("webapp.chapter_quality")
@@ -21,6 +25,9 @@ logger = logging.getLogger("webapp.chapter_quality")
 # 立即返回 503，用户再点一次即重试（接口幂等、失败不写盘，重复调用无副作用）。
 QUALITY_LLM_TIMEOUT = 30.0
 QUALITY_LLM_MAX_RETRIES = 0
+# 连接阶段单独限时：黑洞网络下 TCP 握手可能被系统层拖到 ~21s，5s 足以区分
+# 「端点不可达」与「模型慢」，让连接类失败快速降级；响应阶段仍用 30s。
+QUALITY_LLM_CONNECT_TIMEOUT = 5.0
 
 
 def _quality_llm(pipeline):
@@ -32,7 +39,8 @@ def _quality_llm(pipeline):
     clone = getattr(llm, "clone_limited", None)
     if callable(clone):
         try:
-            return clone(timeout=QUALITY_LLM_TIMEOUT, max_retries=QUALITY_LLM_MAX_RETRIES)
+            return clone(timeout=QUALITY_LLM_TIMEOUT, max_retries=QUALITY_LLM_MAX_RETRIES,
+                         connect_timeout=QUALITY_LLM_CONNECT_TIMEOUT)
         except Exception:
             logger.warning("构建质检限时客户端失败，复用原客户端", exc_info=True)
     return llm
@@ -120,9 +128,12 @@ def recheck_chapter_quality(store: ProjectStore, pipeline, no: int,
     # 摘要传空：改写后旧摘要可能已过期（B 组暂缓），避免用旧摘要制造「摘要不一致」假阳性。
     # fail_closed=True：关键评委失败 → QualityUnavailable，此时尚未写任何盘（见 recheck）。
     # save_review=False：由本层按「先版本 quality、后 review.json」顺序落盘。
+    # R16：交互式重检走有界并发（3 路）+ 整体 60s 墙钟上限；超时/连接失败按模型
+    # 不可用 fail-closed，不写版本 quality、不写 review.json。
     result = checker.recheck(no, title, goal, content, summary="",
                              baseline=_panel_baseline(store, no),
-                             core_event=core_event, save_review=False, fail_closed=True)
+                             core_event=core_event, save_review=False, fail_closed=True,
+                             parallel=True, total_budget=QUALITY_TOTAL_BUDGET_S)
     snap = quality_snapshot(result, include_hook=True)
     if not store.update_version_quality(no, v, snap):
         raise RuntimeError(f"质检完成但写入版本 v{v} 失败（版本可能已被删除）")

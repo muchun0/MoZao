@@ -19,7 +19,7 @@
       <div v-if="!card.has_record" class="a-muted">本章尚无质检记录（未跑质检或旧版本）。</div>
     </template>
 
-    <!-- 问题清单 -->
+    <!-- 改稿建议（摘要）：详情与操作统一在章节版本弹窗 -->
     <template v-else-if="card.type === 'issues'">
       <div v-for="it in card.items" :key="it.id" class="a-issue">
         <span class="a-issue-id">{{ it.id }}</span>
@@ -27,6 +27,7 @@
         <span v-if="it.type" class="a-issue-type">[{{ it.type }}]</span>
         <span class="a-issue-detail">{{ it.detail }}</span>
       </div>
+      <div class="a-muted">逐条证据与改法见「章节 → 版本」弹窗。</div>
     </template>
 
     <!-- 版本对比 -->

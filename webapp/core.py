@@ -88,7 +88,14 @@ from .core_generate import *  # noqa: F401,F403  预生成注入/生成线程
 
 @asynccontextmanager
 async def _lifespan(_app):
-    """服务启动：重拾崩溃残留的生成任务 + 导入拆书库种子。"""
+    """服务启动：按开关显式初始化数据库 + 重拾崩溃残留的生成任务 + 导入拆书库种子。"""
+    # 建表/默认配置只在服务启动时显式执行；导入 webapp.db 不再有任何隐式副作用。
+    # 生产环境默认关闭（MOZAO_ENV=production），需要时用 MOZAO_AUTO_INIT=1 显式开启。
+    if db.auto_init_enabled():
+        db.init_schema()
+        db.seed_defaults()
+    else:
+        logger.info("MOZAO_AUTO_INIT 已关闭：跳过建表与默认配置初始化")
     try:
         _resume_interrupted_tasks()
     except Exception:

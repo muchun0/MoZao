@@ -1941,15 +1941,25 @@ class ChapterWriter:
                 # 文本相似度与事件清单双漏检）。对刚生成的场景正文做事件槽位提取
                 # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
                 # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
-                if piece and done_events:
+                # 2026-11-08 漏检修复（Q1 ch3 实证）：此前比对集合只有 done_events，
+                # 场景1 的 done_events 为空、场景2 重复内容又恰是"本场景自己的事件"被排除，
+                # 于是"场景1提前写完事件2、场景2再演一遍"全程无人比对。把「剩余未消费
+                # 事件」并入比对集合，给越权消费补上事后拦截；重试仍越权则登记账本兜底。
+                _future_events = _remaining_events(_event_plan, _consumed_ids, idx)
+                _future_descs = [d for _, d in _future_events]
+                _check_descs = list(dict.fromkeys([*done_events, *_future_descs]))
+                _future_over = ""
+                if piece and _check_descs:
                     dup_ev = _scene_text_rewrites_event(
-                        piece, done_events, conflict_names,
+                        piece, _check_descs, conflict_names,
                         llm=self.llm,
                         use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
                     )
                     if dup_ev:
+                        _future_over = dup_ev if dup_ev in _future_descs else ""
                         if not silent:
-                            logger.warning(f"  [场景] 第{idx}个场景复写了已发生事件"
+                            _kind = "尚未发生事件（越权消费）" if _future_over else "已发生事件"
+                            logger.warning(f"  [场景] 第{idx}个场景复写了{_kind}"
                                   f"（{dup_ev[:50]}），重试强制只写本场景唯一事件")
                         sys_c3, user_c3 = scene_prompt(
                             self.cfg, chapter_no, plan_title, idx, sc,
@@ -1976,10 +1986,11 @@ class ChapterWriter:
                         )
                         retry3 = _strip_html_tags(retry3)
                         if retry3 and not _scene_text_rewrites_event(
-                                retry3, done_events, conflict_names,
+                                retry3, _check_descs, conflict_names,
                                 llm=self.llm,
                                 use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
                             piece = retry3
+                            _future_over = ""
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
                 # 文本相似度/救援动词防线全漏检（§7.2 根因 C/D/E），用节拍序列指纹比对；
@@ -2204,7 +2215,19 @@ class ChapterWriter:
                             _mem.record_event_consumed(ev, chapter_no)
                     except Exception:
                         pass
-                # 场景状态推进抽取（REQ-token优化 P0-1）：
+                # 越权消费兜底登记（2026-11-08）：重试后仍写出后续事件 → 该事件按「已发生」
+                # 入账（含原文锚点）。后续场景既不再把它列为「剩余未消费」，复写检测也会命中。
+                if _future_over:
+                    _fid = next((sid for sid, d in _future_events if d == _future_over), "")
+                    if _fid and _fid not in {e.get("id") for e in event_ledger}:
+                        event_ledger.append({
+                            "id": _fid, "desc": _future_over,
+                            "summary": _event_summary(_future_over),
+                            "anchor": _event_anchor(piece, _future_over),
+                            "consumed_scene_idx": idx, "over": True,
+                        })
+                    if _future_over not in done_events:
+                        done_events.append(_future_over)
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。
                 if idx < len(scenes):

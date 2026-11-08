@@ -470,6 +470,47 @@ def test_remaining_events_excludes_consumed_and_current():
 
 
 @pytest.mark.p1
+def test_scene1_overwrite_future_event_triggers_retry(store, monkeypatch):
+    """Q1 ch3 病根回归：场景1写出后续事件 → 比对集合含「剩余未消费事件」并触发重试。
+
+    此前比对集合只有 done_events（场景1为空），越权消费全程无人拦截；修复后场景1
+    的比对清单必须包含事件2，命中即重试，重试稿干净则采用。
+    """
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+    seen: list[list[str]] = []
+
+    def _fake_check(text, descs, names=(), llm=None, use_llm=True):
+        seen.append(list(descs))
+        # 只有越权稿带「硬接」；命中时返回最后一个清单项（= 剩余未消费事件2）
+        return descs[-1] if "硬接" in (text or "") else ""
+
+    monkeypatch.setattr(_stages, "_scene_text_rewrites_event", _fake_check)
+    offending = "陆沉硬接失控术法碎片，挡在苏妄言身前，死了一次。"
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生事件语义去重评审
+        _SPLIT_JSON,                 # 拆场景
+        offending,                   # 场景1（越权写完事件2）
+        _NORMAL_SCENE,               # 场景1重试（干净）
+        _NORMAL_SCENE,               # 场景2
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    # 场景1 的比对清单必须含后续事件（原实现只含 done_events=空 → 不调用检测）
+    assert seen and seen[0], "场景1未把剩余未消费事件纳入比对"
+    assert any("挡" in d for d in seen[0])
+    retry_user = llm.chat.call_args_list[3][0][1]
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in retry_user
+    assert "重试强制规则" in retry_user
+
+
+@pytest.mark.p1
 def test_scene_prompt_unconsumed_events_hard_constraint():
     """upcoming_events 注入【本章剩余未消费事件（硬约束·禁越权消费）】及编号事件。"""
     cfg = NovelConfig(title="测试书", chapter_words=2500)

@@ -13,7 +13,11 @@ import os
 
 from fastapi import HTTPException
 
-from novel_gen.config import LLMConfig, PROVIDER_DEFAULTS, NovelConfig
+from novel_gen.config import (
+    LLMConfig, PROVIDER_DEFAULTS, NovelConfig,
+    _apply_provider_defaults, validate_llm_config,
+)
+from novel_gen.llm.capabilities import normalize_provider, resolve_profile
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.manager import NovelPipeline
 from novel_gen.store.project import ProjectStore, _safe_name
@@ -62,6 +66,11 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
             "temperature": cfg.llm.temperature,
             "top_p": cfg.llm.top_p,
             "max_tokens": cfg.llm.max_tokens,
+            "thinking": cfg.llm.thinking,
+            "extra_body": dict(cfg.llm.extra_body or {}),
+            "headers": dict(cfg.llm.headers or {}),
+            "timeout": cfg.llm.timeout,
+            "max_retries": cfg.llm.max_retries,
             "has_api_key": bool(cfg.llm.api_key),
         },
         "search": {"provider": cfg.search.provider, "has_api_key": bool(cfg.search.api_key)},
@@ -70,8 +79,22 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
 
 def _server_api_key(provider: str) -> str:
     """从服务端环境变量取 API Key（Key 集中管理，前端不可见）。"""
-    env_key = PROVIDER_DEFAULTS.get(provider, {}).get("env_key", "")
+    env_key = (resolve_profile(provider) or {}).get("env_key", "")
     return os.environ.get(env_key, "") if env_key else ""
+
+
+def resolve_platform_llm(temperature: float = 0.2, top_p: float = 0.7,
+                         max_tokens: int = 2000) -> LLMConfig:
+    """平台内部功能（大纲解析/拆书等）统一取模型配置。
+
+    provider 可用环境变量 PLATFORM_LLM_PROVIDER 切换（默认 deepseek 只是能力档案的
+    默认值，不再是写死的语义）；Key 仍只从服务端环境变量读取。
+    """
+    provider = normalize_provider(os.environ.get("PLATFORM_LLM_PROVIDER", "deepseek"))
+    cfg = LLMConfig(provider=provider, temperature=temperature,
+                    top_p=top_p, max_tokens=max_tokens)
+    # 补齐默认 model/base_url 并从服务端环境变量读 Key（调用方可直接检查缺失并报错）
+    return _apply_provider_defaults(cfg)
 
 
 def _resolve_llm(provider: str, model: str, base_url: str,
@@ -198,9 +221,16 @@ def _open_pipeline(store: ProjectStore, trace_id: str = "") -> NovelPipeline:
             cfg.llm.base_url = user_llm["base_url"]
         if user_llm.get("model"):
             cfg.llm.model = user_llm["model"]
+        # 思考开关随用户配置生效（Ark/deepseek 等思考型模型不再默认吃满预算）
+        cfg.llm.thinking = user_llm.get("thinking") or "auto"
     elif cfg.llm.provider != "mock" and not cfg.llm.api_key:
         # 平台 key：从服务端环境变量补齐
         cfg.llm.api_key = _server_api_key(cfg.llm.provider)
+    # 生成前校验：配置不可用必须立刻给出可定位的 400，而不是发一次必败请求
+    _apply_provider_defaults(cfg.llm)
+    issues = validate_llm_config(cfg.llm)
+    if issues:
+        raise HTTPException(status_code=400, detail="模型配置不可用：" + "；".join(issues))
     if cfg.search.provider and not cfg.search.api_key:
         from novel_gen.config import SEARCH_PROVIDER_DEFAULTS
         cfg.search.api_key = os.environ.get(

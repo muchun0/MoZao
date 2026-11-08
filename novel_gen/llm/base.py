@@ -22,8 +22,39 @@ from typing import Optional
 from .usage import Usage
 
 
+# 结构化错误码：让上层（路由/前端/日志）能区分「错在哪」，而不是统一吞成一句话。
+# 非重试类错误（retriable=False）绝不再用同一组参数重试——那只会放大成本与延迟。
+E_AUTH_FAILED = "AUTH_FAILED"              # 401/403：Key 无效或与 base_url 不匹配
+E_MODEL_NOT_FOUND = "MODEL_NOT_FOUND"      # 404：模型名不存在/接入点未发布
+E_ENDPOINT_NOT_FOUND = "ENDPOINT_NOT_FOUND"  # 404：base_url 端点不存在
+E_PARAM_UNSUPPORTED = "PARAM_UNSUPPORTED"  # 400/422：参数不被该模型接受
+E_EMPTY_CONTENT_THINKING = "EMPTY_CONTENT_THINKING"  # 200 但正文空且疑似思考占满预算
+E_EMPTY_CONTENT = "EMPTY_CONTENT"          # 200 但正文空（其它原因）
+E_RATE_LIMITED = "RATE_LIMITED"            # 429
+E_TIMEOUT = "TIMEOUT"                      # 超时
+E_CONNECTION_FAILED = "CONNECTION_FAILED" # 连接失败/DNS/代理
+E_SERVER_ERROR = "SERVER_ERROR"            # 5xx
+E_QUOTA_EXCEEDED = "QUOTA_EXCEEDED"        # 余额/配额不足
+E_API_ERROR = "API_ERROR"                  # 其它厂商错误
+E_JSON_PARSE_FAILED = "JSON_PARSE_FAILED"  # 输出无法解析为 JSON
+E_CONFIG_INVALID = "CONFIG_INVALID"        # 配置本身不合法（缺 base_url 等）
+
+
 class LLMError(Exception):
-    """LLM 调用失败（网络、鉴权、限流、格式错误等）。"""
+    """LLM 调用失败（网络、鉴权、限流、格式错误等）。
+
+    code：结构化错误码（见上方 E_* 常量），便于上层分流与前端展示；
+    retriable：是否值得用同一组参数再试（False 的错误重试纯属浪费）；
+    diagnostics：上下文（status/model/base_url/finish_reason/usage/错误体等），
+    用于「配置了不生效」类问题的定位。旧调用方 `LLMError("msg")` 仍然兼容。
+    """
+
+    def __init__(self, message: str = "", code: str = E_API_ERROR,
+                 retriable: bool = True, diagnostics: Optional[dict] = None):
+        super().__init__(message)
+        self.code = code
+        self.retriable = retriable
+        self.diagnostics = diagnostics or {}
 
 
 class LLMClient(ABC):
@@ -121,6 +152,11 @@ class LLMClient(ABC):
                         "call_index": call_index,
                         # REQ-超长篇攻坚 S4.1：前缀缓存命中 token（DeepSeek 返回），供命中率验证
                         "prompt_cache_hit_tokens": self.usage.last_prompt_cache_hit_tokens,
+                        # 2026-11：可观测性——网关是否换了模型/输出是否被截断/错误码/被丢弃的参数
+                        "finish_reason": getattr(self, "last_finish_reason", ""),
+                        "response_model": getattr(self, "last_response_model", ""),
+                        "error_code": getattr(exc, "code", "") if exc else "",
+                        "param_dropped": list(getattr(self, "last_param_dropped", []) or []),
                     },
                 )
             except Exception:
@@ -160,6 +196,7 @@ class LLMClient(ABC):
         # 记录本次调用实际使用的 max_tokens，截断时自动增大
         cur_max_tokens = max_tokens
         use_json_mode = self.json_schema_output if json_mode is None else json_mode
+        json_mode_retried = False
         for attempt in range(retries + 1):
             try:
                 text = self.chat(
@@ -174,6 +211,15 @@ class LLMClient(ABC):
                 return _parse_json_strict(text)
             except (json.JSONDecodeError, LLMError) as exc:
                 last_err = exc
+                # 非重试类错误（错 key/错 model/空正文）：同参数重试必然同样失败，立即上抛
+                if isinstance(exc, LLMError) and not exc.retriable:
+                    raise
+                # 参数不被支持：关闭 json_mode 再试一次（兑现「不支持自动降级」的承诺）
+                if (isinstance(exc, LLMError) and exc.code == E_PARAM_UNSUPPORTED
+                        and use_json_mode and not json_mode_retried):
+                    use_json_mode = False
+                    json_mode_retried = True
+                    continue
                 if attempt < retries:
                     if _is_json_truncation(exc):
                         # 输出被 max_tokens 截断：自动增大上限重试
@@ -191,7 +237,13 @@ class LLMClient(ABC):
                             f"{user}\n\n上一次输出无法解析为 JSON，错误：{exc}\n"
                             f"请重新输出，只返回一个合法的 JSON 对象。"
                         )
-        raise LLMError(f"模型输出无法解析为 JSON，已重试 {retries} 次。原因：{last_err}")
+        # 保留最后一次的真实错误码与诊断，避免「真实原因被 JSON 解析错误盖住」
+        code = getattr(last_err, "code", E_JSON_PARSE_FAILED)
+        diagnostics = dict(getattr(last_err, "diagnostics", {}) or {})
+        raise LLMError(
+            f"模型输出无法解析为 JSON，已重试 {retries} 次。原因：[{code}] {last_err}",
+            code=code, retriable=False, diagnostics=diagnostics,
+        )
 
 
 def _parse_json_strict(text: str) -> dict:

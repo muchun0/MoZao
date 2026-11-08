@@ -116,6 +116,7 @@ RETIRED_FLAGS: tuple[str, ...] = (
     "anti_similarity",        # 防同质化：已固化开启
     "character_depth",        # 人物立体化：已固化开启
     "high_quality_mode",      # 高质量模式：已固化开启（普通模式不再存在）
+    "state_ledger",           # 旧状态账本开关：代码已无此开关，仅清理本地/历史库的残留行
 )
 
 

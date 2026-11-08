@@ -132,6 +132,13 @@ class UserLlmReq(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = ""
+    thinking: str = "auto"   # auto=按能力档案自动关思考 / on / off
+
+
+class UserLlmTestReq(UserLlmReq):
+    """测试连接请求：可直接用表单值（未保存也能测），Key 留空则回退到已保存配置。"""
+    timeout: float = 30.0
+    max_tokens: int = 200
 
 
 class OutlineChapterReq(BaseModel):
@@ -177,5 +184,6 @@ __all__ = [
     "RegisterReq", "SendCodeReq", "ResetPasswordReq", "BindReferrerReq",
     "RechargeAdminReq", "RefundApplyReq", "RefundHandleReq", "LoginReq",
     "SkillReq", "StyleRoleReq", "StyleRoleSkillReq", "AgentSetReq", "UserLlmReq",
+    "UserLlmTestReq",
     "OutlineChapterReq", "OutlineVolumeReq", "OutlineSaveReq", "ChapterEditReq",
 ]

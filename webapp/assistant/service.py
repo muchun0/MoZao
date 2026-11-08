@@ -21,6 +21,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from novel_gen.config import _apply_provider_defaults, validate_llm_config
 from novel_gen.llm.factory import create_llm
 from novel_gen.pipeline.guard import AgentGuard
 from novel_gen.pipeline.trace import TraceRecorder
@@ -104,9 +105,15 @@ def _build_llm(store, cfg, user_id: int, byok: dict | None, mode_src: str):
             cfg.llm.base_url = byok["base_url"]
         if byok.get("model"):
             cfg.llm.model = byok["model"]
+        cfg.llm.thinking = byok.get("thinking") or "auto"
     elif mode_src in (MODE_PLATFORM, MODE_ADMIN_FREE):
         if cfg.llm.provider != "mock" and not cfg.llm.api_key:
             cfg.llm.api_key = _server_api_key(cfg.llm.provider)
+    # 对话前校验：与生成链路同一判据，避免「配了不生效」到调用时才暴露
+    _apply_provider_defaults(cfg.llm)
+    issues = validate_llm_config(cfg.llm)
+    if issues:
+        raise HTTPException(status_code=400, detail="模型配置不可用：" + "；".join(issues))
     llm = create_llm(cfg.llm)
     try:
         from ..db.traces import MysqlTraceSink

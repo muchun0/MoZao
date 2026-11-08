@@ -208,6 +208,45 @@ def _llm_event_derive(beats: list[str], names: tuple[str, ...], llm
     return slots, merge_set
 
 
+_QUOTE_OPEN = "『“‘「《〈"
+_QUOTE_CLOSE = "』”’」》〉"
+
+
+def _is_cjk(ch: str) -> bool:
+    return bool(ch) and "\u4e00" <= ch <= "\u9fff"
+
+
+def _split_moves_beats(text: str) -> list[str]:
+    """按 beat 分隔符切分 moves。
+
+    以下 → 不是分隔符：
+    - 引号/书名号内的 →（如『死→活』、《死→活》、"死→活"）；
+    - 未加引号的单字/短词对（如 死→活、失败→成功）。
+    其余顶层 → 视为 beat 分隔符（A→B 仍切两拍）。
+    """
+    beats: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == '"':
+            depth = depth - 1 if depth > 0 else depth + 1
+        elif ch in _QUOTE_OPEN:
+            depth += 1
+        elif ch in _QUOTE_CLOSE and depth:
+            depth -= 1
+        if ch == "→" and depth == 0:
+            prev_seg = "".join(buf).strip()
+            if prev_seg and len(prev_seg) <= 2 and all(_is_cjk(c) for c in prev_seg):
+                buf.append(ch)  # 单字/短词对，词义箭头，不切
+                continue
+            beats.append(prev_seg)
+            buf = []
+            continue
+        buf.append(ch)
+    beats.append("".join(buf).strip())
+    return [b for b in beats if b]
+
+
 def _derive_events_from_moves(moves: str, chapter_words: int = 0,
                               names: tuple[str, ...] = (),
                               llm=None, use_llm: bool = True) -> list[dict]:
@@ -215,9 +254,8 @@ def _derive_events_from_moves(moves: str, chapter_words: int = 0,
     if not moves or not str(moves).strip():
         return []
     text = str(moves).strip()
-    if "→" in text:
-        beats = [b.strip() for b in text.split("→")]
-    else:
+    beats = _split_moves_beats(text)
+    if len(beats) < 2:  # 无引号外的 → 时回退句读切分
         beats = [b.strip() for b in re.split(r"[。；;]", text) if b.strip()]
     beats = [b for b in beats if b]
     if len(beats) < 2:

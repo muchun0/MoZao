@@ -30,6 +30,9 @@ from novel_gen.pipeline.beats import (
 )
 from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
+from novel_gen.pipeline.scene_event_utils import (
+    _split_moves_beats, _derive_events_from_moves,
+)
 
 
 @pytest.fixture
@@ -354,6 +357,77 @@ def test_scene_prompt_done_beats_absent_when_empty():
         core_event="核心事件", scene_state_hint="", event_progress="",
     )
     assert "本章已发生节拍序列" not in user
+
+
+# ---------- 事件派生：引号/单字对内的箭头不得作为 beat 分隔符（L2 ch3 实证） ----------
+
+#: L2 ch3 大纲原文：『死→活』里的箭头是语义，不是 beat 分隔符
+_L2_CH3_MOVES = (
+    "陆沉：推林半夏时喊『跑啊！』——这是他全书第一次主动为别人冒死。"
+    "林半夏：跑出五十步后停住，本能地用共情去『看』陆沉的状态，感知到『死→活』的断层，"
+    "她脸色变了，但没跑回去。赤尉蚀：追林半夏到第四层边界被碎晶屏障弹回。"
+)
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_cn_quotes():
+    """中文引号内的 → 不切分，整段保留一个 beat。"""
+    beats = _split_moves_beats(_L2_CH3_MOVES)
+    assert len(beats) == 1
+    assert "死→活" in beats[0]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_ascii_and_title_marks():
+    """英文引号 / 书名号内的 → 同样不切分。"""
+    for text in (
+        '他问"死→活是什么意思"，她没答。',
+        "他反复念《死→活》三个字。",
+        "她只说了句「生→灭」就走了。",
+    ):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_keeps_unquoted_short_cjk_pair():
+    """未加引号的单字/短词对 → 视为词义箭头，不切。"""
+    for text in ("死→活", "失败→成功", "死→活。然后离开"):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_latin_placeholder_beats():
+    """A→B 作为两个 beat，仍需切分（与单字对区分）。"""
+    assert _split_moves_beats("A→B") == ["A", "B"]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_clause_arrows():
+    """完整分句之间的 → 仍是 beat 分隔符。"""
+    beats = _split_moves_beats("陆沉进铁匠铺→苏妄言盘问→陆沉装傻")
+    assert len(beats) == 3
+
+
+@pytest.mark.p1
+def test_derive_events_no_residual_fragment():
+    """修复前 str.split('→') 会产生 '活』…' 残句；修复后事件不再残句开头。"""
+    legacy = [b.strip() for b in _L2_CH3_MOVES.split("→")]
+    assert legacy[1].startswith("活』")  # 旧行为可复现
+    events = _derive_events_from_moves(_L2_CH3_MOVES, chapter_words=2200, use_llm=False)
+    assert events
+    assert any("死→活" in ev["desc"] for ev in events)
+    for ev in events:
+        assert not ev["desc"].startswith("活』")  # 旧实现残句
+        assert not ev["desc"].startswith("』")
+
+
+@pytest.mark.p1
+def test_derive_events_top_level_arrow_still_splits():
+    """顶层 → 仍按 beat 派生事件。"""
+    events = _derive_events_from_moves(
+        "陆沉进铁匠铺→苏妄言盘问→陆沉装傻", chapter_words=10000, use_llm=False,
+    )
+    assert len(events) == 3
 
 
 # ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------

@@ -309,9 +309,26 @@ export function conflictCategory(item = {}) {
 export function conflictHeadline(item = {}) {
   if (item.category === 'repetition') return '两处同类动作写得几乎一样'
   if (item.category === 'duplicate_event') return '同一件事写了两遍'
-  if (item.category === 'advisory') return '这是一条阅读/节奏建议'
+  if (item.category === 'advisory') {
+    return item.category_label === '文风/表达提醒'
+      ? '这是一条文风提醒，不是设定矛盾'
+      : '这是一条阅读/节奏建议'
+  }
   if (item.category === 'insufficient') return '这条质检只写了结论，没给原文依据'
   return item.detail || '有一处前后对不上'
+}
+
+// 计数口径：把后端 sources 翻成作者能自己核对的一句话（来源不同，数字本来就不必相等）
+export function conflictSourceText(sources = {}) {
+  const verify = Number(sources?.verify?.included) || 0
+  const quality = Number(sources?.chapter_quality?.included) || 0
+  const merged = Number(sources?.merged?.total) || 0
+  const deduped = Number(sources?.merged?.deduped) || 0
+  const skipped = Number(sources?.verify?.skipped) || 0
+  const parts = [`全书校验 ${verify} 条`, `单章质检 ${quality} 条`,
+    deduped ? `合并去重后 ${merged} 条` : `合并后 ${merged} 条`]
+  if (skipped) parts.push(`另有 ${skipped} 条无法定位章号`)
+  return parts.join(' · ')
 }
 
 // 依据来源：检查记录 + 对照的设定条目（含设定原文）

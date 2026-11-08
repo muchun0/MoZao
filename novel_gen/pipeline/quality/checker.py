@@ -15,13 +15,19 @@ ReaderAgent 内置结果自校验（模块4）：输出前自动校验业务质�
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
+from dataclasses import dataclass, field
+from typing import Optional
 
 from ...config import NovelConfig
-from ...llm.base import LLMClient
+from ...llm.base import LLMClient, LLMError
 from ...llm.json_parse import parse_json_obj
 from ...store.project import ProjectStore
 from ...store.schemas import Chapter
@@ -55,6 +61,308 @@ from .reviewers import (
 
 logger = logging.getLogger("novel_gen.pipeline.quality")
 
+#: 关键评委：读者体验（reader）与章内前后矛盾（consistency）。
+#: 两者是「质检结论是否可信」的底线——任一实际发起后失败即 fail-closed（503），
+#: 部分降级（如仅 rule/plot 失败）可继续返回结果但必须留日志。
+CRITICAL_LLM_JUDGES = frozenset({"reader", "consistency"})
+
+
+class QualityUnavailable(RuntimeError):
+    """质检模型不可用（关键评委失败）。
+
+    调用方必须返回 5xx（建议 503）且不得写回任何「通过」结果/版本 quality，
+    让用户看到「模型暂不可用，请稍后重试」而不是伪造的低分或满分。
+    """
+
+    def __init__(self, message: str, failures: list[dict] | None = None):
+        super().__init__(message)
+        self.failures = failures or []
+
+
+def llm_failure_reason(result: dict) -> str:
+    """按统一口径判断质检结果是否因评委失败而不可信；返回原因串（空串=可用）。
+
+    口径（写进接口契约，见 REQ-R14 §6.1）：
+    1) 全部实际发起的评委都失败 → 不可信；
+    2) 关键评委（reader / consistency）任一实际发起后失败 → 不可信；
+    3) 仅非关键评委（rule/plot）失败 → 可用（部分降级，仅记日志）。
+    """
+    attempts = list(result.get("llm_attempts") or [])
+    failures = list(result.get("llm_failures") or [])
+    if not attempts or not failures:
+        return ""
+    if len(failures) >= len(attempts):
+        return f"全部 {len(attempts)} 个质检评委调用失败"
+    critical = [f for f in failures if f.get("judge") in CRITICAL_LLM_JUDGES]
+    if critical:
+        names = "、".join(str(f.get("judge")) for f in critical)
+        return f"关键评委调用失败：{names}"
+    return ""
+
+
+# ---------- R16：质检评委并行调度 / 总时限 / 降级留痕 ----------
+#: 单章重检的有界并发度。依据：同一 provider/key 下并发过高易触发渠道限流（429）；
+#: 3 路既能覆盖 5~7 路评委的主要等待，又给同渠道留出余量。
+QUALITY_PARALLEL_WORKERS = 3
+#: 单章重检的整体墙钟上限（并行后是「整体上限」而非「逐路累加」）。
+#: 正常 3 并发下 5~7 路评委约 10~20s；60s 可容纳两次 30s 单次超时的波次，
+#: 又能在渠道整体不可用时及时 fail-closed（串行方案曾拟 45s）。
+QUALITY_TOTAL_BUDGET_S = 60.0
+
+#: 评委任务名 → 执行方法名。字典顺序即串行时代的调用顺序，消费时按同序应用结果，
+#: 保证 issue 顺序与旧实现一致。
+_JUDGE_METHODS = {
+    "panel": "_check_panel_progress",
+    "beats": "_check_beat_cycle",
+    "ai_taste": "_check_ai_and_style",
+    "reader": "_reader_llm_check",
+    "consistency": "_check_consistency",
+    "rule": "_check_rule_consistency",
+    "plot": "_run_plot_reviewer",
+}
+
+_NETWORK_ERROR_TYPES = frozenset({
+    "APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout",
+    "ConnectTimeoutError", "ConnectionError", "TimeoutError", "Timeout",
+})
+_NETWORK_ERROR_MARKERS = (
+    "connection error", "connection refused", "connection reset", "connection aborted",
+    "connect timeout", "timed out", "timeout", "getaddrinfo", "name or service not known",
+    "无法连接", "连接失败", "连接超时", "已短路",
+)
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """连接类/超时类失败：判定后其余未发起的评委直接短路，不再逐路等满。"""
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in _NETWORK_ERROR_TYPES:
+            return True
+        text = str(cur).lower()
+        if any(m in text for m in _NETWORK_ERROR_MARKERS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _degrade_reason(errors: list[Exception], error_text: str) -> str:
+    """把失败归入运维可读的四类：超时 / 连接失败 / 不可解析 / 其它异常。"""
+    text = " ".join([str(e) for e in errors] + [error_text or ""]).lower()
+    if "无法解析" in text or "json" in text or "parse" in text:
+        return "不可解析"
+    if "timed out" in text or "timeout" in text or "超时" in text:
+        return "超时"
+    if any(m in text for m in _NETWORK_ERROR_MARKERS):
+        return "连接失败"
+    return "其它异常"
+
+
+class QualityDeadlineExceeded(QualityUnavailable):
+    """总时限触发：未完成的评委按「模型不可用」处理，调用方按 503 fail-closed。"""
+
+
+class _ConnectionBreaker:
+    """一次重检内的连接短路器：首个连接类失败后，尚未发起的评委直接跳过。"""
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._error = ""
+
+    def trip(self, exc: Exception) -> None:
+        if not self._event.is_set():
+            self._error = f"{type(exc).__name__}: {exc}"
+        self._event.set()
+
+    @property
+    def tripped(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+
+class _JudgeLLMProxy:
+    """评委任务专用 LLM 代理：记录每次调用耗时/异常，并执行连接短路。
+
+    每个评委任务持有独立代理（挂在 QualityChecker 的浅拷贝上），并行时各路线程的
+    计数互不覆盖；底层仍共用同一 LLMClient（usage/recorder/guard 已线程安全）。
+    """
+
+    def __init__(self, inner: LLMClient, breaker: _ConnectionBreaker):
+        self._inner = inner
+        self._breaker = breaker
+        self._lock = threading.Lock()
+        self.calls = 0          # 真正进入底层 chat 的调用次数
+        self.skipped = 0        # 因连接短路未发起的次数
+        self.errors: list[Exception] = []
+        self.elapsed_s = 0.0
+
+    def __getattr__(self, name: str):
+        # 只转发 chat 等业务属性；下划线开头的不转发，避免递归
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    def chat(self, *args, **kwargs) -> str:
+        if self._breaker.tripped:
+            with self._lock:
+                self.skipped += 1
+            raise LLMError(
+                f"连接类失败已短路，本路评委未发起调用（首个失败：{self._breaker.error}）")
+        started = time.monotonic()
+        try:
+            text = self._inner.chat(*args, **kwargs)
+        except Exception as exc:
+            with self._lock:
+                self.calls += 1
+                self.errors.append(exc)
+                self.elapsed_s += time.monotonic() - started
+            if _is_network_error(exc):
+                self._breaker.trip(exc)
+            raise
+        with self._lock:
+            self.calls += 1
+            self.elapsed_s += time.monotonic() - started
+        return text
+
+    def error_text(self) -> str:
+        with self._lock:
+            errors = list(self.errors)
+        return "; ".join(f"{type(e).__name__}: {e}" for e in errors)[:300]
+
+
+@dataclass
+class _JudgeOutcome:
+    """单路评委的规范结果：串行/并行共用，日志与 llm_failures 由此同源生成。"""
+    key: str
+    issues: list[dict] = field(default_factory=list)
+    delta: int = 0
+    hook: int | None = None
+    plot: object = None
+    attempted: bool = False
+    error: str = ""
+    reason: str = ""
+    elapsed_s: float = 0.0
+    skipped: bool = False
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.attempted and self.error)
+
+
+def _split_judge_payload(key: str, raw) -> tuple[list[dict], int, int | None, object, bool | None, str]:
+    """把各评委方法的原始返回统一拆成 (issues, delta, hook, plot, 是否发起, 错误)。"""
+    if key in ("panel", "beats", "ai_taste"):
+        issues, delta = raw
+        return issues, delta, None, None, None, ""
+    if key == "reader":
+        issues, hook, err = raw
+        return issues, 0, hook, None, None, err or ""
+    if key in ("consistency", "rule"):
+        issues, delta, attempted, err = raw
+        return issues, delta, None, None, attempted, err or ""
+    if raw is None:  # plot 未发起（开关/降频/无 llm）
+        return [], 0, None, None, None, ""
+    dim = raw.dimension
+    err = "评审失败已降级" if dim.note == "评审失败已降级" else ""
+    return [], 0, None, raw, None, err
+
+
+class _JudgeRunner:
+    """有界并发调度 + 整体墙钟时限 + 按原顺序消费（保证 issue 顺序不变）。"""
+
+    def __init__(self, owner: "QualityChecker", chapter_no: int,
+                 judge_args: dict[str, tuple], budget: float):
+        self.owner = owner
+        self.chapter_no = chapter_no
+        self.budget = max(1.0, float(budget or QUALITY_TOTAL_BUDGET_S))
+        self.deadline = time.monotonic() + self.budget
+        self.breaker = _ConnectionBreaker()
+        self._pool = ThreadPoolExecutor(max_workers=QUALITY_PARALLEL_WORKERS,
+                                        thread_name_prefix="qc-judge")
+        self._futures = {
+            key: self._pool.submit(owner._judge_worker, key, args, self.breaker)
+            for key, args in judge_args.items()
+        }
+        self._closed = False
+
+    @staticmethod
+    def _critical(key: str) -> bool:
+        return key in CRITICAL_LLM_JUDGES
+
+    def take(self, key: str) -> _JudgeOutcome:
+        """按调用顺序取回某一路结果；总时限到点立即截断并抛 QualityDeadlineExceeded。"""
+        remaining = self.deadline - time.monotonic()
+        try:
+            if remaining <= 0:
+                raise FuturesTimeout()
+            outcome = self._futures[key].result(timeout=remaining)
+        except FuturesTimeout:
+            self._truncate(key)
+        except Exception as exc:  # 工作线程兜底：单路异常不打断整次质检
+            outcome = _JudgeOutcome(
+                key=key, attempted=True, error=f"{type(exc).__name__}: {exc}",
+                reason=_degrade_reason([exc], str(exc)),
+                elapsed_s=self.budget - max(0.0, self.deadline - time.monotonic()),
+            )
+        if outcome.skipped:
+            logger.warning(
+                "[quality-degrade] ch=%s judge=%s critical=%s reason=连接类失败短路（未发起调用） "
+                "elapsed=%.2fs", self.chapter_no, key, self._critical(key), outcome.elapsed_s)
+        elif outcome.failed:
+            logger.warning(
+                "[quality-degrade] ch=%s judge=%s critical=%s reason=%s elapsed=%.2fs error=%s",
+                self.chapter_no, key, self._critical(key), outcome.reason,
+                outcome.elapsed_s, outcome.error)
+        return outcome
+
+    def _truncate(self, key: str) -> None:
+        elapsed = self.budget - max(0.0, self.deadline - time.monotonic())
+        logger.warning(
+            "[quality-degrade] ch=%s judge=%s critical=%s reason=总时限截断 "
+            "elapsed=%.2fs budget=%.0fs（非自然失败，按模型不可用处理）",
+            self.chapter_no, key, self._critical(key), elapsed, self.budget)
+        self.close()
+        raise QualityDeadlineExceeded(
+            f"质检总时限 {self.budget:.0f} 秒触发降级：未完成的评委按模型不可用处理，请稍后重试")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+def quality_snapshot(result: dict, include_hook: bool = False) -> dict:
+    """质检结果 → 版本库 quality 快照（生成链路与单章重检共用同一口径）。
+
+    include_hook：单章重检额外带上 hook_score（追更欲），供版本弹窗展示；
+    生成链路保持原字段不变，避免影响既有消费方。
+    """
+    issues = result.get("issues") or []
+    snap = {
+        "passed": bool(result.get("passed")),
+        "score": int(result.get("score", 0) or 0),
+        "issue_count": len(issues),
+        "issues": [
+            {"level": it.get("level", ""), "type": it.get("type", ""),
+             "detail": (it.get("detail") or "")[:120],
+             # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
+             # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
+             "evidence": _aggregate.issue_evidence(it)[:120],
+             # R1：具体改法落版本快照，版本弹窗直接展示「怎么改」；
+             # 没有就存空串，前端显示「未给出改法」，不编造
+             "fix_suggestion": (it.get("fix_suggestion") or "")[:120]}
+            for it in issues
+        ],
+    }
+    if include_hook:
+        snap["hook_score"] = result.get("hook_score")
+    return snap
+
 
 class QualityChecker:
     """章级质量校验器（确定性规则 + 读者视角 LLM 校验）。"""
@@ -68,6 +376,8 @@ class QualityChecker:
         self.guard = guard
         # P0-7 小说级记忆：None/关闭时全部记忆行为安全跳过（老调用方不受影响）
         self.memory = memory
+        # R16：单章重检的并行调度器（用于异常路径兜底关闭线程池）
+        self._active_runner = None
 
     # ---------- 对外入口 ----------
     def _record_pitfalls(self, chapter_no: int, issues: list[dict]) -> None:
@@ -139,28 +449,12 @@ class QualityChecker:
                   auto: bool) -> None:
             if versions and versions[-1]["content"] == content:
                 return  # 内容未变不重复记录（重写无效/抢救无变化）
-            issues = res.get("issues") or []
             versions.append({
                 "round": round_no,
                 "content": content,
                 "summary": smry,
                 "auto_revised": bool(auto),
-                "quality": {
-                    "passed": bool(res.get("passed")),
-                    "score": int(res.get("score", 0)),
-                    "issue_count": len(issues),
-                    "issues": [
-                        {"level": it.get("level", ""), "type": it.get("type", ""),
-                         "detail": (it.get("detail") or "")[:120],
-                         # 正文引用片段（版本对比的"引用原文"素材，零 LLM）：
-                         # 只存真实 evidence，没有就存空串（版本评审据此留白，不编造）
-                         "evidence": _aggregate.issue_evidence(it)[:120],
-                         # R1：具体改法落版本快照，版本弹窗直接展示「怎么改」；
-                         # 没有就存空串，前端显示「未给出改法」，不编造
-                         "fix_suggestion": (it.get("fix_suggestion") or "")[:120]}
-                        for it in issues
-                    ],
-                },
+                "quality": quality_snapshot(res),
             })
 
         result = self.check(chapter_no, plan_title, plan_goal, content, summary,
@@ -294,7 +588,9 @@ class QualityChecker:
     def check(self, chapter_no: int, plan_title: str, plan_goal: str,
               content: str, summary: str = "",
               baseline: dict | None = None,
-              core_event: str = "") -> dict:
+              core_event: str = "",
+              parallel: bool = False,
+              total_budget: float | None = None) -> dict:
         """执行全部校验维度，返回 {"passed": bool, "issues": [...], "score": int}。
 
         baseline：机制数字基线（panel_baseline_dict(numbers)，P0-5 从场景循环透传）；
@@ -302,11 +598,17 @@ class QualityChecker:
         core_event：P0-17（2026-10-10）本章大纲核心事件（非空时叠加正文覆盖校验：
         正文必须覆盖核心事件 ≥60% 分段，否则大改——治 v9 ch6 大纲「忘忧阁密报」
         未进正文）。
+        parallel/total_budget：R16 单章重检专用。parallel=True 时互不依赖的 LLM 评委
+        有界并发执行，并受整体墙钟时限约束；默认 False 保持生成链路原串行行为不变。
         """
         issues: list[dict] = []
         score = 100
         # L1 确定性候选集合（供 L3 快照分层归类；旧 issues 顺序与去重口径不变）
         l1_issues: list[dict] = []
+        # 评委调用状态：单章重检据此 fail-closed；生成链路只读附加字段，不改变既有行为
+        llm_attempts: list[str] = []
+        llm_failures: list[dict] = []
+        judge_outcomes: list[_JudgeOutcome] = []
 
         def _tag_l1(rows: list[dict]) -> list[dict]:
             for x in rows:
@@ -322,6 +624,35 @@ class QualityChecker:
                 x.setdefault("dimension", dimension)
             return rows
 
+        layered = bool(getattr(self.cfg, "reviewer_layered", True))
+        judge_args: dict[str, tuple] = {
+            "panel": (content,),
+            "beats": (content,),
+            "ai_taste": (content, chapter_no),
+            "reader": (chapter_no, plan_title, plan_goal, content),
+            "consistency": (chapter_no, content),
+            "rule": (chapter_no, content),
+        }
+        if layered:
+            judge_args["plot"] = (chapter_no, plan_title, plan_goal, content, core_event)
+
+        runner: _JudgeRunner | None = None
+        self._active_runner = None
+        if parallel and self.llm is not None:
+            # 场景统一在派发前设定：避免各工作线程 enter_scene 相互覆盖 guard/trace 场景
+            if self.guard is not None:
+                self.guard.enter_scene("review")
+            runner = _JudgeRunner(self, chapter_no, judge_args,
+                                  total_budget or QUALITY_TOTAL_BUDGET_S)
+            self._active_runner = runner
+
+        def _take(key: str) -> _JudgeOutcome:
+            """按串行时代的顺序消费评委结果；无并发时原地执行，保证行为等价。"""
+            outcome = (self._run_judge_serial(key, judge_args[key])
+                       if runner is None else runner.take(key))
+            judge_outcomes.append(outcome)
+            return outcome
+
         # 1. 结构要求（确定性）
         target = max(self.cfg.chapter_words, 1)
         _it, _d = self._check_structure(content, target)
@@ -335,9 +666,9 @@ class QualityChecker:
         _it, _d = self._check_repeat_sentence(content)
         issues.extend(_tag_l1(_it)); score += _d
 
-        # 2.8 机制数字结算校验（确定性）
-        _it, _d = self._check_panel_progress(content)
-        issues.extend(_tag_l1(_it)); score += _d
+        # 2.8 机制数字结算校验（确定性 + 面板锚点 LLM，可并行）
+        _o = _take("panel")
+        issues.extend(_tag_l1(_o.issues)); score += _o.delta
 
         # 2.8b 面板数字方向校验（P0-5）
         _it, _d = self._check_panel_direction(content, baseline)
@@ -355,9 +686,9 @@ class QualityChecker:
         _it, _d = self._check_dialogue_loop(content)
         issues.extend(_tag_l1(_it)); score += _d
 
-        # 2.12 情节级重演检测（确定性，2026-10-09）
-        _it, _d = self._check_beat_cycle(content)
-        issues.extend(_tag_l1(_it)); score += _d
+        # 2.12 情节级重演检测（确定性 + 节拍抽取 LLM，可并行）
+        _o = _take("beats")
+        issues.extend(_tag_l1(_o.issues)); score += _o.delta
 
         # 2.10 字数审计（确定性·仅提示）
         _it, _d = self._check_length_audit(content)
@@ -371,18 +702,18 @@ class QualityChecker:
         _it, _d = self._check_ending(content)
         issues.extend(_tag_l1(_it)); score += _d
 
-        # 2.5 AI 痕迹 + 文风漂移 + 同质度检测（确定性，各子项独立开关）
-        ai_style_issues, ai_style_delta = self._check_ai_and_style(content, chapter_no)
-        issues.extend(_tag_l1(ai_style_issues))
-        score += ai_style_delta
+        # 2.5 AI 痕迹 + 文风漂移 + 同质度检测（各子项独立开关；AI 语义判定 LLM 可并行）
+        _o = _take("ai_taste")
+        issues.extend(_tag_l1(_o.issues)); score += _o.delta
 
         # 3. 输出合规（模块3 基础合规校验）
         _it, _d = self._check_compliance(content)
         issues.extend(_tag_l1(_it)); score += _d
 
-        # 4. 读者体验（LLM：代入感/爽点/钩子/主动性 + 人物一致性）
-        llm_issues, hook_score = self._reader_llm_check(chapter_no, plan_title, plan_goal, content)
-        for it in _tag_llm(llm_issues, "llm:reader", "reader"):
+        # 4. 读者体验（LLM：代入感/爽点/钩子/主动性 + 人物一致性，可并行）
+        _o = _take("reader")
+        hook_score = _o.hook
+        for it in _tag_llm(_o.issues, "llm:reader", "reader"):
             issues.append(it)
         if hook_score is not None:
             if hook_score <= 2:
@@ -396,21 +727,19 @@ class QualityChecker:
                 issues.append(_low)
                 score -= 20
 
-        # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展）
-        _it, _d = self._check_consistency(chapter_no, content)
-        issues.extend(_tag_llm(_it, "llm:consistency", "consistency")); score += _d
+        # 4.5 章内前后矛盾自检（LLM，REQ-章内自洽与机制账本·扩展，可并行）
+        _o = _take("consistency")
+        issues.extend(_tag_llm(_o.issues, "llm:consistency", "consistency")); score += _o.delta
 
-        # 4.6 规则条款一致性（LLM，REQ-通用机制类型适配；仅 rule_set 类型启用）
-        _it, _d = self._check_rule_consistency(chapter_no, content)
-        issues.extend(_tag_llm(_it, "llm:consistency", "consistency")); score += _d
+        # 4.6 规则条款一致性（LLM，REQ-通用机制类型适配；仅 rule_set 类型启用，可并行）
+        _o = _take("rule")
+        issues.extend(_tag_llm(_o.issues, "llm:consistency", "consistency")); score += _o.delta
 
         # L2 新增评委：plot 情节结构（唯一新增 LLM 调用，开关 + 普通模式降频；
         # reader/consistency/prose 复用上方已发起的现有调用，不重复计费，TECH §3.2）。
         plot_result: ReviewerResult | None = None
-        layered = bool(getattr(self.cfg, "reviewer_layered", True))
         if layered:
-            plot_result = self._run_plot_reviewer(
-                chapter_no, plan_title, plan_goal, content, core_event)
+            plot_result = _take("plot").plot
             if plot_result and plot_result.dimension.available:
                 for ri in plot_result.raw_issues:
                     d = ri.to_dict()
@@ -421,18 +750,109 @@ class QualityChecker:
         # 去重 + 排序 + 诊断回喂
         passed, uniq, score = self._finalize_issues(issues, score)
 
+        # 评委调用状态与日志/结果同源（R16）：日志里出现的降级项必然能在此处找到，
+        # 反之亦然；「降频/开关未发起」不计入 attempts/failures，也不报降级。
+        llm_attempts = [o.key for o in judge_outcomes if o.attempted]
+        llm_failures = [{
+            "judge": o.key,
+            "error": o.error,
+            "reason": o.reason,
+            "elapsed_ms": int(o.elapsed_s * 1000),
+            "critical": o.key in CRITICAL_LLM_JUDGES,
+        } for o in judge_outcomes if o.attempted and o.error]
+        llm_skipped = [{
+            "judge": o.key, "reason": "连接类失败短路", "critical": o.key in CRITICAL_LLM_JUDGES,
+        } for o in judge_outcomes if o.skipped]
+
         result = {
             "passed": passed,
             "issues": uniq,
             "score": max(0, min(100, score)),
             "hook_score": hook_score,   # P0-5 追更欲（1-5/None），供 stages 透传入账
+            # 评委调用状态（R14 fail-closed 判据；生成链路只读附加字段，行为不变）
+            "llm_attempts": llm_attempts,
+            "llm_failures": llm_failures,
+            "llm_skipped": llm_skipped,
+            "llm_timings_ms": {o.key: int(o.elapsed_s * 1000) for o in judge_outcomes},
         }
+        if llm_failures:
+            logger.warning("[quality] ch=%s 评委调用失败 %d/%d：%s",
+                           chapter_no, len(llm_failures), len(llm_attempts),
+                           "; ".join(f"{f['judge']}({f['reason']}): {f['error']}"
+                                     for f in llm_failures))
 
         # L3 附加快照（D-1：不接管旧 score/门禁，仅附加 dimensions/recommendations/layers）
         if layered:
             result.update(self._build_layered_snapshot(
                 uniq, score, hook_score, plot_result, l1_issues))
+        if runner is not None:
+            runner.close()
+            self._active_runner = None
         return result
+
+    # ---------- R16 评委执行（串行/并行共用） ----------
+    def _run_judge_serial(self, key: str, args: tuple) -> _JudgeOutcome:
+        """串行路径：与旧实现完全同序执行，只把返回规范化为 outcome。"""
+        started = time.monotonic()
+        raw = getattr(self, _JUDGE_METHODS[key])(*args)
+        elapsed = time.monotonic() - started
+        issues, delta, hook, plot, method_attempted, method_err = \
+            _split_judge_payload(key, raw)
+        if key in ("panel", "beats", "ai_taste"):
+            # 隐藏语义判定：串行时代未计入 attempts/failures，这里保持等价
+            attempted = False
+        elif key in ("consistency", "rule"):
+            attempted = bool(method_attempted)
+        elif key == "reader":
+            attempted = True
+        else:  # plot：真正调用过（成功或降级）才算发起
+            attempted = bool(plot is not None and self.llm is not None
+                             and (plot.dimension.available
+                                  or plot.dimension.note == "评审失败已降级"))
+        return _JudgeOutcome(
+            key=key, issues=issues, delta=delta, hook=hook, plot=plot,
+            attempted=attempted, error=method_err,
+            reason=_degrade_reason([], method_err) if method_err else "",
+            elapsed_s=elapsed,
+        )
+
+    def _judge_worker(self, key: str, args: tuple,
+                      breaker: _ConnectionBreaker) -> _JudgeOutcome:
+        """工作线程：浅拷贝 checker + 独立 LLM 代理，评委之间互不写同一状态。"""
+        proxy = _JudgeLLMProxy(self.llm, breaker)
+        worker = copy.copy(self)
+        worker.llm = proxy
+        started = time.monotonic()
+        try:
+            raw = getattr(worker, _JUDGE_METHODS[key])(*args)
+        except Exception as exc:  # noqa: BLE001 单路失败不打断其它评委
+            return _JudgeOutcome(
+                key=key, attempted=proxy.calls > 0,
+                error=f"{type(exc).__name__}: {exc}",
+                reason=_degrade_reason(proxy.errors + [exc], str(exc)),
+                elapsed_s=time.monotonic() - started,
+            )
+        return worker._normalize_judge(key, raw, proxy, time.monotonic() - started)
+
+    def _normalize_judge(self, key: str, raw, proxy: _JudgeLLMProxy,
+                         elapsed: float) -> _JudgeOutcome:
+        """并行路径：把方法返回 + 代理记录统一成 outcome。"""
+        issues, delta, hook, plot, method_attempted, method_err = \
+            _split_judge_payload(key, raw)
+        skipped = proxy.skipped > 0 and proxy.calls == 0
+        attempted = proxy.calls > 0
+        if key in ("consistency", "rule"):
+            attempted = bool(method_attempted) and proxy.calls > 0
+        if skipped:
+            err, reason = "", "连接类失败短路（未发起调用）"
+        else:
+            err = "; ".join(x for x in (method_err, proxy.error_text()) if x)[:300]
+            reason = _degrade_reason(proxy.errors, err) if err else ""
+        return _JudgeOutcome(
+            key=key, issues=issues, delta=delta, hook=hook, plot=plot,
+            attempted=False if skipped else attempted,
+            error=err, reason=reason, elapsed_s=elapsed, skipped=skipped,
+        )
 
     def _run_plot_reviewer(self, chapter_no: int, plan_title: str, plan_goal: str,
                            content: str, core_event: str) -> ReviewerResult | None:
@@ -723,18 +1143,23 @@ class QualityChecker:
             "rule_phrase": "；".join(b.get("phrase", "") for b in bad),
         }], -40)
 
-    def _check_consistency(self, chapter_no: int, content: str) -> tuple[list, int]:
+    def _check_consistency(self, chapter_no: int, content: str) -> tuple[list, int, bool, str]:
         """4.5 章内前后矛盾自检（LLM，REQ-章内自洽）：确定性+读者视角都漏的硬矛盾。
-        高质量模式每章开启；普通模式按 consistency_llm_every 降频。"""
+        高质量模式每章开启；普通模式按 consistency_llm_every 降频。
+
+        返回 (issues, score_delta, attempted, error)：attempted=False 表示降频/开关跳过，
+        不计入 R14 的评委失败统计；error 非空表示已发起但调用/解析失败。
+        """
         _hq = getattr(self.cfg, "high_quality_mode", False)
         _every = max(1, int(getattr(self.cfg, "consistency_llm_every", 3) or 3))
         if not (_hq or (getattr(self.cfg, "consistency_llm_check", False) and chapter_no % _every == 1)):
-            return [], 0
+            return [], 0, False, ""
         issues, score = [], 0
-        for it in self._consistency_llm_check(chapter_no, content):
+        rows, err = self._consistency_llm_check(chapter_no, content)
+        for it in rows:
             issues.append(it)
             score -= 25
-        return issues, score
+        return issues, score, True, err
 
     #: 规则一致性 code → (问题级别, 扣分)；rule_conflict 与章内矛盾同级大改
     _RULE_CODE_POLICY = {
@@ -743,39 +1168,43 @@ class QualityChecker:
         "rule_scope": ("中改", -10),
     }
 
-    def _check_rule_consistency(self, chapter_no: int, content: str) -> tuple[list[dict], int]:
+    def _check_rule_consistency(self, chapter_no: int,
+                                content: str) -> tuple[list[dict], int, bool, str]:
         """4.6 规则条款一致性 LLM judge（REQ-通用机制类型适配）。
 
         启用条件（全部满足才调用）：开关开启；world 类型集合含 rule_set；ruleset 非空；
         高质量模式每章执行，普通模式按 rule_consistency_every 降频。仅对当前副本生效
         的条款（global + 当前实例 + 角色/能力作用域）做对照；抽取/LLM/解析失败一律
         返回空列表并 warning 留痕，不阻塞主流程。
+
+        返回 (issues, score_delta, attempted, error)：rule 为非关键评委，
+        失败只计入 R14 诊断日志，不单独触发 fail-closed。
         """
         if not content:
-            return [], 0
+            return [], 0, False, ""
         try:
             if not getattr(self.cfg, "rule_consistency_check", True):
-                return [], 0
+                return [], 0, False, ""
             world = self.store.load_world()
             if world is None:
-                return [], 0
+                return [], 0, False, ""
             from ..mechanism_types import has_type, resolve_types
             if not has_type(resolve_types(world), "rule_set"):
-                return [], 0
+                return [], 0, False, ""
             ruleset = getattr(world, "mechanism_ruleset", None) or []
             if not ruleset:
-                return [], 0
+                return [], 0, False, ""
             hq = getattr(self.cfg, "high_quality_mode", False)
             every = max(1, int(getattr(self.cfg, "rule_consistency_every", 1) or 1))
             if not (hq or chapter_no % every == 1):
-                return [], 0
+                return [], 0, False, ""
 
             from ..chapter_state import active_rules_for_instance
             state = self.store.load_chapter_state() or {}
             instance = str(state.get("current_instance") or "").strip()
             active = active_rules_for_instance(ruleset, instance)
             if not active:
-                return [], 0
+                return [], 0, False, ""
 
             rule_lines = []
             for rule in active:
@@ -797,6 +1226,9 @@ class QualityChecker:
             )
             raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
             data = parse_json_obj(raw)
+            # 契约要求返回 violations 数组；缺失=不可解析，视为评委失败（非关键，仅留痕）
+            if not isinstance(data.get("violations"), list):
+                raise ValueError("规则一致性评委返回缺少 violations 数组")
             issues: list[dict] = []
             score = 0
             for item in (data.get("violations") or []):
@@ -814,10 +1246,10 @@ class QualityChecker:
                     "fix_suggestion": str(item.get("suggestion") or "").strip(),
                 })
                 score += delta
-            return issues, score
+            return issues, score, True, ""
         except Exception as exc:
             logger.warning("[quality] 规则一致性校验降级跳过（ch=%s）：%s", chapter_no, exc)
-            return [], 0
+            return [], 0, True, str(exc)
 
     def _finalize_issues(self, issues: list[dict], score: int) -> tuple[bool, list[dict], int]:
         """去重 + 排序（大改在前）+ 诊断回喂，返回 (passed, uniq, score)。"""
@@ -1314,7 +1746,7 @@ class QualityChecker:
 
     # ---------- LLM 校验（读者视角 + 人物一致性） ----------
     def _reader_llm_check(self, chapter_no: int, plan_title: str, plan_goal: str,
-                          content: str) -> tuple[list[dict], int | None]:
+                          content: str) -> tuple[list[dict], int | None, str]:
         if self.guard is not None:
             self.guard.enter_scene("review")
         try:
@@ -1337,6 +1769,10 @@ class QualityChecker:
                 )
             raw = self.llm.chat(system, user, temperature=0.3, max_tokens=1200)
             data = parse_json_obj(raw)
+            # 空 dict = 模型输出不可解析（或未按契约返回）：必须识别为评委失败，
+            # 否则「降级空结果」会被误当成「零问题通过」（R14 fail-closed 根因）。
+            if not data:
+                raise ValueError("读者评委返回无法解析为 JSON 对象")
             issues = [{
                 "pos": it.get("pos", ""),
                 "type": f"读者-{it.get('type', '')}",
@@ -1346,12 +1782,13 @@ class QualityChecker:
             } for it in (data.get("issues") or []) if isinstance(it, dict)]
             hook = data.get("追更欲")
             hook_score = int(hook) if isinstance(hook, (int, float)) and 1 <= int(hook) <= 5 else None
-            return issues, hook_score
-        except Exception:
-            return [], None
+            return issues, hook_score, ""
+        except Exception as exc:
+            logger.warning("[quality] 读者评委调用失败（ch=%s）：%s", chapter_no, exc)
+            return [], None, str(exc)
 
     # ---------- 章内前后矛盾自检（LLM） ----------
-    def _consistency_llm_check(self, chapter_no: int, content: str) -> list[dict]:
+    def _consistency_llm_check(self, chapter_no: int, content: str) -> tuple[list[dict], str]:
         """通读全章找硬矛盾：①主角身体状态（伤口位置/知觉范围/服饰损坏）前后不一；
         ②同一类生物/配角的行为模式前后不一；③方位/指代错误（人在A地却描述B地）；
         ④同一意象的比喻出现两个版本；⑤同一事件出现两个版本（同人物+同冲突+同结果，
@@ -1362,7 +1799,7 @@ class QualityChecker:
         其余候选 fail-open 保留。a/b/c 排除条款原文锁定不变，d 条款来自单一权威常量。
         """
         if not content:
-            return []
+            return [], ""
         try:
             persona_r = _load_persona("reviewer")
             sys = (
@@ -1391,6 +1828,9 @@ class QualityChecker:
             )
             raw = self.llm.chat(sys, user, temperature=0.2, max_tokens=800)
             data = parse_json_obj(raw)
+            # 契约要求返回 contradictions 数组；缺失=不可解析，视为评委失败
+            if not isinstance(data.get("contradictions"), list):
+                raise ValueError("章内一致性评委返回缺少 contradictions 数组")
             out: list[dict] = []
             for it in (data.get("contradictions") or []):
                 if not isinstance(it, dict):
@@ -1414,9 +1854,10 @@ class QualityChecker:
                 logger.warning(
                     "[quality] ch=%s 事件重复候选识别为承接形态已剔除（signals=%s）：%s",
                     chapter_no, f.get("review_signals"), str(f.get("detail", ""))[:120])
-            return kept
-        except Exception:
-            return []
+            return kept, ""
+        except Exception as exc:
+            logger.warning("[quality] 章内一致性评委调用失败（ch=%s）：%s", chapter_no, exc)
+            return [], str(exc)
 
     # ---------- 自动重写（1 次；REQ-token优化 P1-4：定点化，不整章重出） ----------
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,
@@ -1906,9 +2347,52 @@ class QualityChecker:
         return joined[:max_chars]
 
     # ---------- 落库与工具 ----------
+    def recheck(self, chapter_no: int, plan_title: str, plan_goal: str,
+                content: str, summary: str = "",
+                baseline: dict | None = None, core_event: str = "",
+                strict_review: bool = False, save_review: bool = True,
+                fail_closed: bool = True,
+                parallel: bool = True,
+                total_budget: float | None = QUALITY_TOTAL_BUDGET_S) -> dict:
+        """R14 单章重检：复用 check() 的同一权威判定，只判定、不改写正文、不产生新版本。
+
+        与 ensure_quality 的区别：不触发自动重写/抢救，版本文件与 HEAD 一律不动
+        （用户点「按此改」得到的定稿必须保持原样）。
+
+        fail_closed=True 时：关键评委失败/全部评委失败 → 抛 QualityUnavailable，
+        此时尚未做任何写盘（不会产出版本 quality 或 review 记录）。
+        save_review=False 供服务层「先写版本 quality、后写 review」的顺序编排。
+        parallel=True（R16）：交互式重检走有界并发 + 整体墙钟时限；总时限到点抛
+        QualityDeadlineExceeded（QualityUnavailable 子类），仍是 503 且不写盘。
+        """
+        try:
+            result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                                baseline=baseline, core_event=core_event,
+                                parallel=parallel, total_budget=total_budget)
+        finally:
+            # 异常路径（总时限/意外异常）兜底回收线程池，避免请求结束后残留等待
+            if self._active_runner is not None:
+                self._active_runner.close()
+                self._active_runner = None
+        if fail_closed:
+            reason = llm_failure_reason(result)
+            if reason:
+                raise QualityUnavailable(reason, result.get("llm_failures") or [])
+        if save_review:
+            self.persist_review(chapter_no, result, strict=strict_review)
+        return result
+
+    def persist_review(self, chapter_no: int, result: dict, strict: bool = True) -> None:
+        """把质检结果并入 review.json（独立一步，便于调用方先写版本 quality 再写它）。"""
+        self._save_review(chapter_no, result.get("issues") or [], result,
+                          auto_revised=False, strict=strict)
+
     def _save_review(self, chapter_no: int, issues: list[dict], result: dict,
-                      auto_revised: bool = False) -> None:
-        """与既有 review.json 格式兼容：该章记录合并校验问题。"""
+                      auto_revised: bool = False, strict: bool = False) -> None:
+        """与既有 review.json 格式兼容：该章记录合并校验问题。
+
+        strict=True（单章重检）时写盘失败必须显式抛出，禁止把空结果当成质检通过。
+        """
         try:
             path = self.store.dir / "review.json"
             existing = []
@@ -1929,7 +2413,10 @@ class QualityChecker:
                     "checked_at": time.time(),
                 },
             })
-            path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 原子写（临时文件 + os.replace），避免进程中断留下半截 review.json
+            self.store._write_json(path, existing)
         except Exception:
-            pass
+            if strict:
+                raise
+            logger.warning("review.json 写入失败（已降级继续）: chapter=%s", chapter_no, exc_info=True)
 

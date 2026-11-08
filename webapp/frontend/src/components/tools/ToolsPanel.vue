@@ -65,6 +65,8 @@
         <div style="margin-top:4px"><b>产出 · 场景清单</b>
           <span v-if="sceneCountHint" class="muted" style="margin-left:6px">{{ sceneCountHint }}</span>
         </div>
+        <!-- R13：这一章改过正文时，提示下面的场景清单可能还是改之前的 -->
+        <StaleNotice v-if="staleNotice" :notice="staleNotice" />
         <p v-if="!sceneItems.length" class="cot-empty">{{ sceneEmptyText }}</p>
         <div v-for="(sc, i) in sceneItems" :key="i" class="cot-scene">
           <div class="cot-scene-head" @click="toggleScene(i)">
@@ -111,7 +113,7 @@
     <!-- 质量校验 -->
     <el-card class="tool-card">
       <template #header><b>质量校验</b></template>
-      <p class="muted">AI检查设定一致性/剧情逻辑/合规</p>
+      <p class="muted">临时自检设定一致性/剧情逻辑/合规，结果不写入章节质检记录；逐章改稿建议见「章节 → 版本」弹窗。</p>
       <el-space wrap>
         <el-button size="small" @click="runVerify('consistency', '设定一致性')">设定一致性</el-button>
         <el-button size="small" @click="runVerify('logic', '剧情逻辑')">剧情逻辑</el-button>
@@ -127,7 +129,7 @@
     <!-- 全书质检（全书质量汇总/终审/一致性校验；每章改稿建议已整合进章节版本弹窗） -->
     <el-card class="tool-card">
       <template #header><b>全书质检</b></template>
-      <p class="muted">全书质量汇总与终审；每章改稿建议见「章节 → 版本」弹窗</p>
+      <p class="muted">这里发起检查、查看原始记录；每章改稿建议见「章节 → 版本」弹窗。要按作者视角看分类汇总，去左侧「全书体检」，那里只读汇总、不重复跑检查。</p>
       <el-button size="small" @click="loadReview">查看全书质检</el-button>
       <div class="result-area">
         <div v-if="!reviewLoaded" class="muted">点击按钮加载</div>
@@ -135,7 +137,7 @@
           <div v-if="!reviewSummary.chapter_count && !finalReview && !verifyIssues.length" class="ok-box">暂无质检记录</div>
           <div v-if="reviewSummary.chapter_count" class="summary-box">
             <b>全书质量汇总</b>
-            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
+            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿建议 {{ reviewSummary.issue_total }} 处
               <span v-if="reviewSummary.score_avg">｜平均质检分 {{ reviewSummary.score_avg }}/100</span>
             </div>
             <!-- P0-5/P1：进度盘色带（与 Admin 质量报表一致：未过红/追更>=4绿/自动重写黄/通过灰） -->
@@ -153,10 +155,14 @@
               </div>
             </div>
             <div v-if="Object.keys(reviewSummary.issue_by_type||{}).length" class="summary-line">
-              问题类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
+              改稿建议类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
             </div>
             <div v-if="reviewSummary.verify_issue_total" class="summary-line">
               一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
+            </div>
+            <!-- 口径说明：两份记录来源不同，数字本来就不必相等，避免作者以为是同一个数 -->
+            <div class="summary-line muted">
+              「改稿建议」是逐章质检的全部条目（含字数、对话、钩子等非一致性项），逐条证据与改法在对应章的「版本」弹窗；「一致性/审稿校验问题」是全书通读检查记录。两者来源不同，数字不必相等；体检页会把后者与单章一致性质检合并，所以会再大一些。
             </div>
           </div>
           <div v-if="finalReview" class="final-review-box">
@@ -171,7 +177,7 @@
           <div v-if="verifyIssues.length" class="verify-block">
             <b>一致性校验 / 读者自检 / 编辑审稿问题</b>
             <div v-for="(it, i) in verifyIssues" :key="i" class="review-issue">
-              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
+              <span class="review-pos">第{{ it.chapter }}章：</span>{{ it.problem || it.detail || it.title || '（原记录未单列问题描述）' }}<span v-if="it.suggestion" class="muted">（建议：{{ it.suggestion }}）</span>
             </div>
           </div>
         </template>
@@ -320,6 +326,8 @@ import {
   normalizeForeshadowSummary, buildForeshadowFilters, filterForeshadowItems,
   foreshadowStateTag, foreshadowProgressText, unstructuredNote,
 } from '../../utils/foreshadow'
+import StaleNotice from '../common/StaleNotice.vue'
+import { staleNoticeOf } from '../../utils/staleness'
 
 const props = defineProps({ pid: String })
 
@@ -429,6 +437,8 @@ const summaryShort = computed(() => clipText(summaryText.value))
 const sceneEmptyText = SCENE_EMPTY_TEXT
 const designEmptyText = DESIGN_EMPTY_TEXT
 const summaryEmptyText = SUMMARY_EMPTY_TEXT
+// R13：改章后派生记录标脏提示（与体检页同一后端判定与文案）
+const staleNotice = computed(() => staleNoticeOf(cotView.value))
 function toggleScene(i) {
   openScenes.value = { ...openScenes.value, [i]: !openScenes.value[i] }
 }

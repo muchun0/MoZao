@@ -5,21 +5,26 @@ LLM Token 用量统计（模块1/2 共用）。
 - Usage 累计 prompt/completion/total token，并保留最近一次调用用量（last_*），
   供埋点（模块1）与成本防护（模块2）读取。
 - Provider 在 _chat_impl 内拿到响应后调用 note() 上报；拿不到 usage 时不上报（保持 0）。
+
+并发安全（R16）：质检多路评委并行时会共享同一个 Usage。
+- 累计值（prompt/completion/total）用锁保护，避免并发自增丢计数；
+- last_* 改为线程本地（threading.local）：每次调用只读取本线程刚上报的值，
+  防止并发调用互相覆盖「最近一次用量」导致埋点/成本防护串味。
 """
 from __future__ import annotations
+
+import threading
 
 
 class Usage:
     def __init__(self):
+        self._lock = threading.Lock()
+        self._local = threading.local()
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
-        self.last_prompt_tokens = 0
-        self.last_completion_tokens = 0
-        self.last_total_tokens = 0
         # REQ-超长篇攻坚 S4.1：前缀缓存命中 token（DeepSeek 等返回，用于 cache_hit 埋点验证命中率）
         self.prompt_cache_hit_tokens = 0
-        self.last_prompt_cache_hit_tokens = 0
 
     def note(self, prompt_tokens: int = 0, completion_tokens: int = 0,
              total_tokens: int = 0, prompt_cache_hit_tokens: int = 0) -> None:
@@ -27,15 +32,36 @@ class Usage:
         total = int(total_tokens or 0)
         if total <= 0:
             total = int(prompt_tokens or 0) + int(completion_tokens or 0)
-        self.prompt_tokens += int(prompt_tokens or 0)
-        self.completion_tokens += int(completion_tokens or 0)
-        self.total_tokens += total
-        self.last_prompt_tokens = int(prompt_tokens or 0)
-        self.last_completion_tokens = int(completion_tokens or 0)
-        self.last_total_tokens = total
+        prompt = int(prompt_tokens or 0)
+        completion = int(completion_tokens or 0)
         hit = int(prompt_cache_hit_tokens or 0)
-        self.prompt_cache_hit_tokens += hit
-        self.last_prompt_cache_hit_tokens = hit
+        # 累计值共享，必须加锁；last_* 只属于当前线程，写入无需跨线程同步
+        with self._lock:
+            self.prompt_tokens += prompt
+            self.completion_tokens += completion
+            self.total_tokens += total
+            self.prompt_cache_hit_tokens += hit
+        local = self._local
+        local.last_prompt_tokens = prompt
+        local.last_completion_tokens = completion
+        local.last_total_tokens = total
+        local.last_prompt_cache_hit_tokens = hit
+
+    @property
+    def last_prompt_tokens(self) -> int:
+        return int(getattr(self._local, "last_prompt_tokens", 0) or 0)
+
+    @property
+    def last_completion_tokens(self) -> int:
+        return int(getattr(self._local, "last_completion_tokens", 0) or 0)
+
+    @property
+    def last_total_tokens(self) -> int:
+        return int(getattr(self._local, "last_total_tokens", 0) or 0)
+
+    @property
+    def last_prompt_cache_hit_tokens(self) -> int:
+        return int(getattr(self._local, "last_prompt_cache_hit_tokens", 0) or 0)
 
     def reset(self) -> None:
         """重置累计（一般用于单任务粒度重新计数）。"""

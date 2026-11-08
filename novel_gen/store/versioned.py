@@ -247,6 +247,9 @@ class VersionedProduct:
         # 2. 索引（原子写）
         index[key] = {"versions": versions, "selected": selected,
                       "history": history, "user_managed": user_managed}
+        if rec.get("selected_at"):
+            # REQ-R13：回退时刻要跨后续提交保留，否则标脏判定会丢掉「曾回退」这条依据
+            index[key]["selected_at"] = rec["selected_at"]
         self.store._write_json(self.spec.index_path(self.store), index)
 
         # 3. 最后写 HEAD（HEAD = selected 版本内容；commit_head 场景 HEAD 已在盘上）
@@ -274,6 +277,8 @@ class VersionedProduct:
             if isinstance(rec, dict) and v in (rec.get("versions") or []):
                 rec["selected"] = v
                 rec["user_managed"] = True
+                # REQ-R13：记下回退时刻，供派生记录标脏判定（回退不改历史 ts，否则判不出来）
+                rec["selected_at"] = int(time.time())
                 index[key] = rec
                 self.store._write_json(self.spec.index_path(self.store), index)
             self.store._write_json(self.spec.head_path(self.store, key), data)
@@ -298,6 +303,26 @@ class VersionedProduct:
             rec["history"] = [h for h in (rec.get("history") or [])
                               if not (isinstance(h, dict) and h.get("v") == v)]
             index[key] = rec
+            self.store._write_json(self.spec.index_path(self.store), index)
+            return True
+
+    def set_quality(self, key, v: int, quality: dict) -> bool:
+        """给既有版本补写质检结果（单章重检）：只改 history 的 quality，不新增版本、不改 HEAD。
+
+        与 commit 共用同一把 per-project 锁，避免与并发生成/改写互相覆盖索引。
+        """
+        key = self.spec.norm_key(key)
+        with _project_lock(self.store.dir):
+            index = self._load_index()
+            rec = index.get(key)
+            if not isinstance(rec, dict) or v not in self._versions(rec):
+                return False
+            for h in rec.get("history") or []:
+                if isinstance(h, dict) and h.get("v") == v:
+                    h["quality"] = quality
+                    break
+            else:
+                return False
             self.store._write_json(self.spec.index_path(self.store), index)
             return True
 

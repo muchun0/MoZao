@@ -16,6 +16,7 @@ Agent 全链路中间状态持久化（模块1）：TraceSink 接口 + TraceReco
 """
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -63,6 +64,8 @@ class TraceRecorder:
         self.scene = scene
         self.step_name_prefix = step_name_prefix
         self._order = 0
+        # R16：质检评委并行时多条快照会并发落库，锁保证 step_order 不重号、sink 写入不并发
+        self._lock = threading.Lock()
 
     def set_scene(self, scene: str) -> None:
         """切换业务场景（research/outline/world/chapter/revise/review...）。"""
@@ -93,6 +96,28 @@ class TraceRecorder:
         extra: Optional[dict] = None,
     ) -> None:
         """写入一条快照记录（吞异常，绝不干扰生成主流程）。"""
+        # 串行化组装 + sink 写入：并行评委下避免 step_order 重号或 DB 会话并发串话
+        with self._lock:
+            self._record_locked(
+                step_type, step_name, system, user, output, token_in, token_out,
+                duration_ms, success, error, model, extra,
+            )
+
+    def _record_locked(
+        self,
+        step_type: str,
+        step_name: str,
+        system: str,
+        user: str,
+        output: str,
+        token_in: int,
+        token_out: int,
+        duration_ms: int,
+        success: bool,
+        error: str,
+        model: str,
+        extra: Optional[dict],
+    ) -> None:
         try:
             self.sink.record({
                 "trace_id": self.trace_id,

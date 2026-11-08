@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import threading
 from typing import Optional
 
 from ..config import AgentGuardConfig
@@ -30,6 +31,8 @@ class AgentGuard:
         self.total_tokens = 0
         self.scene = ""
         self._scene_counts: dict[str, int] = {}
+        # R16：质检评委并行时同一 guard 被多线程驱动，计数与场景台账必须加锁
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -37,15 +40,17 @@ class AgentGuard:
 
     def enter_scene(self, scene: str) -> None:
         """切换业务场景（research/outline/world/chapter/revise/review...）。"""
-        self.scene = scene or ""
+        with self._lock:
+            self.scene = scene or ""
         if self.recorder is not None:
             self.recorder.set_scene(scene)
 
     def reset(self) -> None:
         """重置计数（一般不调用：guard 生命周期 = 单任务生命周期）。"""
-        self.loop_count = 0
-        self.total_tokens = 0
-        self._scene_counts.clear()
+        with self._lock:
+            self.loop_count = 0
+            self.total_tokens = 0
+            self._scene_counts.clear()
 
     def reset_scene_counts(self) -> None:
         """P0-8：只清场景计数（保留全局 loop/token 上限）。
@@ -55,28 +60,35 @@ class AgentGuard:
         一致性校验（_run_verify）全部被 guard 拦停。生成每章开始时调用一次，
         让每章享有独立场景配额；全局 loop/token 上限不受影响。
         """
-        self._scene_counts.clear()
+        with self._lock:
+            self._scene_counts.clear()
 
     # ---------- LLMClient 模板方法驱动 ----------
     def before_call(self) -> None:
         if not self.enabled:
             return
-        self.loop_count += 1
-        if self.loop_count > self.cfg.max_loops:
+        with self._lock:
+            self.loop_count += 1
+            loop_count = self.loop_count
+            scene = self.scene
+            limit = 0
+            if loop_count <= self.cfg.max_loops and scene:
+                self._scene_counts[scene] = self._scene_counts.get(scene, 0) + 1
+                limit = (self.cfg.scene_limits or {}).get(scene)
+        if loop_count > self.cfg.max_loops:
             self._hit("loop", f"单任务 LLM 调用次数超过上限（{self.cfg.max_loops} 次），已终止生成。")
             return
-        if self.scene:
-            self._scene_counts[self.scene] = self._scene_counts.get(self.scene, 0) + 1
-            limit = (self.cfg.scene_limits or {}).get(self.scene)
-            if limit and self._scene_counts[self.scene] > int(limit):
-                self._hit("scene_loop",
-                          f"场景[{self.scene}]调用次数超过上限（{limit} 次），已终止生成。")
+        if scene and limit and self._scene_counts[scene] > int(limit):
+            self._hit("scene_loop",
+                      f"场景[{scene}]调用次数超过上限（{limit} 次），已终止生成。")
 
     def after_call(self, usage) -> None:
         if not self.enabled:
             return
-        self.total_tokens += int(getattr(usage, "last_total_tokens", 0) or 0)
-        if self.total_tokens > self.cfg.max_tokens:
+        with self._lock:
+            self.total_tokens += int(getattr(usage, "last_total_tokens", 0) or 0)
+            over = self.total_tokens > self.cfg.max_tokens
+        if over:
             self._hit("token",
                       f"单任务 Token 消耗超过上限（{self.cfg.max_tokens}），已终止生成。")
 

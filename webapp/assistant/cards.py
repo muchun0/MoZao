@@ -50,7 +50,7 @@ def _issue_card(snap: dict) -> dict | None:
             "type": it.get("type") or "",
             "detail": it.get("detail") or "",
         })
-    return {"type": "issues", "title": "质检问题清单", "chapter": snap.get("chapter_no"),
+    return {"type": "issues", "title": "改稿建议（摘要）", "chapter": snap.get("chapter_no"),
             "items": items}
 
 

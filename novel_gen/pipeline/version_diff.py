@@ -300,7 +300,7 @@ def _reasons(item: dict, target_words: Optional[int],
     if isinstance(hook, (int, float)) and hook >= 4:
         reasons.append(f"读者追更欲 {hook}/5，达标")
     if not qc.get("compliance_rejected") and _big_issue_count(qc) == 0:
-        reasons.append("无大改级问题")
+        reasons.append("无大改级改稿建议")
     if beat_pass.get(v):
         reasons.append("大纲拍点兑现（beat_gate=pass）")
     if target_words and _word_in_range(words, target_words):
@@ -319,7 +319,7 @@ def _fatal(v: int, qc: dict, words: int, target: Optional[int],
         return f"读者追更欲仅 {hook}/5"
     big = _big_issue_count(qc)
     if big:
-        return f"存在 {big} 条大改问题"
+        return f"含 {big} 条大改改稿建议"
     if qc.get("passed") is False:
         return "质检未过线"
     if target and target > 0:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+import httpx
 from openai import OpenAI
 
 from .base import LLMClient, LLMError
@@ -31,21 +32,54 @@ class OpenAICompatibleClient(LLMClient):
         top_p: float = 0.0,
         max_tokens: int = 4096,
         timeout: float = 180.0,
+        max_retries: int = 3,
+        connect_timeout: Optional[float] = None,
     ):
         super().__init__()
         if not api_key:
             raise LLMError(f"provider[{provider}] 缺少 api_key，无法创建客户端")
         self.provider = provider
         self.model = model
+        self._api_key = api_key
+        self._base_url = base_url or ""
         self._temperature = temperature
         self._top_p = top_p
         self._max_tokens = max_tokens
+        self._timeout = timeout
+        self._max_retries = max_retries
+        # R16：连接阶段与响应阶段分开限时。黑洞网络下 TCP 握手可能被系统层拖到 ~21s，
+        # 只设总 timeout 无法区分「连不上」与「模型慢」；连接超时更短可快速降级。
+        sdk_timeout = timeout
+        if connect_timeout:
+            sdk_timeout = httpx.Timeout(
+                connect=float(connect_timeout), read=float(timeout),
+                write=float(timeout), pool=float(timeout),
+            )
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
-            timeout=timeout,
-            max_retries=3,  # SDK 内置指数退避重试
+            timeout=sdk_timeout,
+            max_retries=max_retries,  # SDK 内置指数退避重试
         )
+
+    def clone_limited(self, timeout: float, max_retries: int,
+                      connect_timeout: Optional[float] = None) -> "OpenAICompatibleClient":
+        """复用同一 provider/model/key，但用更短超时与更少重试（质检等交互路径快速失败）。
+
+        usage / recorder / guard 与原客户端共享：token 统计、全链路 trace 与
+        AgentGuard 防护口径保持不变，只改变网络等待策略。
+        """
+        cloned = OpenAICompatibleClient(
+            provider=self.provider, model=self.model, api_key=self._api_key,
+            base_url=self._base_url, temperature=self._temperature,
+            top_p=self._top_p, max_tokens=self._max_tokens,
+            timeout=timeout, max_retries=max_retries,
+            connect_timeout=connect_timeout,
+        )
+        cloned.usage = self.usage
+        cloned.recorder = self.recorder
+        cloned.guard = self.guard
+        return cloned
 
     def _chat_impl(
         self,

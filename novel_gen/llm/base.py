@@ -14,6 +14,7 @@ LLM 抽象基类：所有 Provider 统一实现 chat / chat_json 两个能力。
 from __future__ import annotations
 
 import json
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -34,6 +35,8 @@ class LLMClient(ABC):
         # 阶段1：调用统计（Token 防护与监控用）
         self.usage = Usage()
         self.call_count = 0
+        # R16：质检多路评委并行共用同一客户端，调用计数需原子自增（埋点 call_index 不串号）
+        self._stat_lock = threading.Lock()
         # 阶段1：埋点与防护挂载点（由 NovelPipeline 注入）
         self.recorder = None   # TraceRecorder | None
         self.guard = None      # AgentGuard | None
@@ -91,7 +94,9 @@ class LLMClient(ABC):
     def _after_call(self, system: str, user: str, text: Optional[str],
                     exc: Optional[Exception], start: float) -> None:
         duration_ms = int((time.monotonic() - start) * 1000)
-        self.call_count += 1
+        with self._stat_lock:
+            self.call_count += 1
+            call_index = self.call_count
         tok_in = self.usage.last_prompt_tokens
         tok_out = self.usage.last_completion_tokens
         # 模块2：Token 阈值检查（调用后，按真实消耗累计）
@@ -113,7 +118,7 @@ class LLMClient(ABC):
                     error=f"{type(exc).__name__}: {exc}" if exc else "",
                     model=self.model_label(),
                     extra={
-                        "call_index": self.call_count,
+                        "call_index": call_index,
                         # REQ-超长篇攻坚 S4.1：前缀缓存命中 token（DeepSeek 返回），供命中率验证
                         "prompt_cache_hit_tokens": self.usage.last_prompt_cache_hit_tokens,
                     },

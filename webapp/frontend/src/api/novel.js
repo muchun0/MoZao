@@ -1,6 +1,8 @@
 import request from './request'
 
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
+// R12 章节质量总览：一次性取各章选中版本的质检摘要（只读，不逐章读版本）
+export const getChapterQualityOverview = (pid) => request.get(`/projects/${pid}/chapters/quality-overview`)
 export const getChapter = (pid, no) => request.get(`/projects/${pid}/chapters/${no}`)
 export const updateChapterContent = (pid, no, data) => request.put(`/projects/${pid}/chapters/${no}`, data)
 // REQ-章节版本化：章节版本列表 / 选择版本 / 删除版本
@@ -9,6 +11,8 @@ export const selectChapterVersion = (pid, no, v) => request.post(`/projects/${pi
 export const deleteChapterVersion = (pid, no, v) => request.delete(`/projects/${pid}/chapters/${no}/versions/${v}`)
 // R1 按此改：对单条改稿建议做定点局部改写（只替换命中段落，新增版本并设为当前）
 export const rewriteChapterIssue = (pid, no, data) => request.post(`/projects/${pid}/chapters/${no}/issues/rewrite`, data)
+// R14 单章重检：对指定版本补做质检（默认幂等复用已有结果，force=true 才重跑）
+export const recheckChapterQuality = (pid, no, data) => request.post(`/projects/${pid}/chapters/${no}/quality-check`, data)
 export const getOutline = (pid) => request.get(`/projects/${pid}/outline`)
 export const saveOutline = (pid, data) => request.put(`/projects/${pid}/outline`, data)
 export const getWorld = (pid) => request.get(`/projects/${pid}/world`)

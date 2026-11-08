@@ -46,12 +46,44 @@
       <main class="pd-main">
         <!-- 章节 -->
         <section v-if="visited.chapters" v-show="tab === 'chapters'">
+          <div v-if="chapters.length" class="ch-quality-bar">
+            <div class="ch-quality-summary">
+              <el-tag v-if="worstText" type="danger" size="small" effect="plain" class="ch-worst-tag clickable"
+                      role="button" tabindex="0" title="查看该章的改稿建议与改法"
+                      @click="openWorstVersions" @keydown.enter.prevent="openWorstVersions">
+                {{ worstText }}
+              </el-tag>
+              <span v-else class="ch-quality-empty">{{ qualityGap || '本书暂无质检记录，无法比较章节质量' }}</span>
+              <span v-if="worstText && qualityGap" class="ch-quality-gap">{{ qualityGap }}</span>
+            </div>
+            <div class="ch-quality-controls">
+              <el-radio-group v-model="qualitySort" size="small">
+                <el-radio-button value="chapter">按章号</el-radio-button>
+                <el-radio-button value="quality">质量最差优先</el-radio-button>
+              </el-radio-group>
+              <el-checkbox v-model="qualityOnly" size="small">只看需要处理的章</el-checkbox>
+            </div>
+          </div>
           <div v-if="chapters.length" class="ch-list">
-            <div v-for="g in groupedChapters" :key="g.key" class="ch-group">
+            <div v-for="g in displayGroups" :key="g.key" class="ch-group">
               <div class="ch-group-title">{{ g.name }}</div>
               <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
                 <span class="ch-no">第{{ c.no }}章</span>
-                <span class="ch-title">{{ c.title }}</span>
+                <span class="ch-title-wrap">
+                  <span class="ch-title">{{ c.title }}</span>
+                </span>
+                <!-- 质量徽标：只做索引（等级/分数/条数），点击进入唯一的改稿建议详情面 -->
+                <span v-if="c.quality" class="ch-quality" role="button" tabindex="0"
+                      :title="qualityIndexTitle(c.quality)" @click.stop="openVersions(c)"
+                      @keydown.enter.prevent.stop="openVersions(c)">
+                  <el-tag size="small" :type="qualityMeta(c.quality.severity).type" effect="plain">
+                    {{ qualityMeta(c.quality.severity).label }}
+                  </el-tag>
+                  <span v-if="c.quality.has_quality && c.quality.score !== null" class="ch-score">
+                    {{ c.quality.score }}分
+                  </span>
+                  <span v-if="c.quality.has_quality" class="ch-issue-count">{{ c.quality.issue_count }}处</span>
+                </span>
                 <span class="ch-words">{{ c.words ? fmtWords(c.words) : '未生成' }}</span>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
                 <div class="ch-actions" @click.stop>
@@ -66,6 +98,9 @@
                 </div>
               </div>
             </div>
+            <el-empty v-if="!displayGroups.length" description="没有符合筛选条件的章节">
+              <el-button size="small" @click="qualityOnly = false">查看全部章节</el-button>
+            </el-empty>
           </div>
           <el-empty v-else :description="outlineReady ? '大纲已就绪，还没有章节正文' : '还没有章节，需要先生成大纲'">
             <el-button v-if="outlineReady" type="primary" @click="tab = 'agent'">去 Agent 页生成正文</el-button>
@@ -127,7 +162,8 @@
 
         <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
+                            @open-versions="openVersionsByNo" />
         </section>
       </main>
     </div>
@@ -190,7 +226,11 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun, getAgentRun } from '../api/project'
-import { getChapters, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getChapters, getChapterQualityOverview, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import {
+  qualityMeta, sortRowsByQuality, filterRows, qualityIndexTitle,
+  qualityWorstText, qualityGapText,
+} from '../utils/chapterQuality'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -305,6 +345,45 @@ const groupedChapters = computed(() => {
   return out
 })
 
+// ===== R12 章节质量总览（只读展示） =====
+const qualityOverview = ref(null)   // GET /chapters/quality-overview 的响应
+const qualitySort = ref('chapter')  // chapter=按章号 / quality=质量最差优先
+const qualityOnly = ref(false)      // 只看需要处理的章（未通过或含大改）
+// 章号 → 质量摘要（后端按选中版本统一计算，前端只做展示）
+const qualityMap = computed(() => {
+  const map = {}
+  ;((qualityOverview.value || {}).chapters || []).forEach(q => { map[q.no] = q })
+  return map
+})
+// 把质量摘要挂到章节行；未写正文的章不挂（不显示「未质检」误导）
+const displayGroups = computed(() => {
+  let groups = groupedChapters.value.map(g => ({ ...g, list: g.list.map(row => ({
+    ...row, quality: row.words ? qualityMap.value[row.no] : null,
+  })) }))
+  if (qualityOnly.value) {
+    groups = groups
+      .map(g => ({ ...g, list: filterRows(g.list, true) }))
+      .filter(g => g.list.length)
+  }
+  if (qualitySort.value === 'quality') {
+    // 最差优先时按章平铺，分卷骨架会打乱全局排名
+    const flat = sortRowsByQuality(groups.flatMap(g => g.list))
+    return flat.length ? [{ key: 'quality', name: '按质量最差优先', list: flat }] : []
+  }
+  return groups
+})
+const worstText = computed(() => qualityWorstText(qualityOverview.value, chapters.value))
+const qualityGap = computed(() => qualityGapText(qualityOverview.value))
+
+async function loadQualityOverview() {
+  try {
+    qualityOverview.value = await getChapterQualityOverview(pid)
+  } catch {
+    // 只读汇总失败不阻断章节列表：降级为无质量数据并给出说明
+    qualityOverview.value = { chapters: [], worst: null, data_gaps: ['质量数据加载失败，本次未展示质检信息'] }
+  }
+}
+
 async function regenChapter(c) {
   try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
@@ -358,6 +437,18 @@ function openVersions(c) {
   versionsNo.value = c.no
   versionsDialog.value = true
 }
+// 列表顶部「最需要处理」只做索引：点击直达该章唯一的改稿建议详情面
+function openWorstVersions() {
+  const worst = qualityOverview.value && qualityOverview.value.worst
+  if (!worst) return
+  openVersionsByNo(worst.no)
+}
+// 体检页冲突卡直达单章改稿建议（不进入阅读、不触发任何检查）
+function openVersionsByNo(no) {
+  const ch = chapters.value.find(c => Number(c.no) === Number(no))
+  if (ch) openVersions(ch)
+  else ElMessage.warning(`第 ${no} 章还未生成`)
+}
 function openProductVersions(kind) {
   versionsKind.value = kind
   versionsNo.value = 0
@@ -376,8 +467,10 @@ async function loadAll() {
     project.value = await getProject(pid)
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
-    chapters.value = (await getChapters(pid)).chapters || []
     genTotal.value = outline.value?.chapters?.length || 0
+    // 章节列表与质量总览并行拉取（质量总览只读且已内部降级）
+    const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+    chapters.value = chsRes.chapters || []
     genDoneCount.value = chapters.value.length
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     // 首次进入且用户未手动选过导航时，按数据状态引导：无大纲→大纲页，有大纲→章节页
@@ -465,7 +558,9 @@ function onAgentStarted({ agent, task_id }) {
 }
 
 async function loadChapters() {
-  chapters.value = (await getChapters(pid)).chapters || []
+  // 切版本 / 生成完成后同步刷新质量总览，保证列表分数与版本弹窗一致
+  const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+  chapters.value = chsRes.chapters || []
 }
 
 async function openChapter(c) {
@@ -484,6 +579,12 @@ function locateChapter(no) {
   const ch = chapters.value.find(c => Number(c.no) === Number(no))
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
+}
+
+// 体检页「去工具看原始记录」：只切页，不触发任何检查（体检零 LLM、零扣费）
+function openToolsPanel() {
+  navTouched.value = true
+  tab.value = 'tools'
 }
 
 function startEdit() {
@@ -794,12 +895,35 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-item:last-child { border-bottom: none; }
 .ch-item:hover { background: rgba(201,162,39,.04); }
 .ch-no { color: var(--muted); font-size: 12px; width: 60px; flex-shrink: 0; }
-.ch-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+/* 标题单行省略；问题类型不再在行内展示，统一进版本弹窗 */
+.ch-title-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ch-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+/* 质量徽标：等级 + 分数 + 条数，点击进入唯一的改稿建议详情面 */
+.ch-quality {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  padding: 2px 4px; margin: -2px 0; border-radius: 4px; cursor: pointer;
+  transition: background-color .12s ease;
+}
+.ch-quality:hover, .ch-quality:focus-visible { background: rgba(201,162,39,.08); outline: none; }
+.ch-score { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.ch-issue-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ch-words { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
 .ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; pointer-events: auto; }
 /* 触屏设备无 hover，操作常驻 */
 @media (hover: none) { .ch-actions { opacity: 1; pointer-events: auto; } }
+
+/* ===== R12 章节质量总览条：最需要处理提示 + 排序/筛选 ===== */
+.ch-quality-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.ch-quality-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ch-worst-tag { max-width: 100%; }
+.ch-worst-tag.clickable { cursor: pointer; }
+.ch-quality-empty, .ch-quality-gap { font-size: 12px; color: var(--muted); }
+.ch-quality-gap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ch-quality-controls { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
 
 /* ===== 面板工具条（大纲页） ===== */
 .panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

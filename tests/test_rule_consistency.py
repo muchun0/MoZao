@@ -77,7 +77,7 @@ def test_non_rule_set_skips_judge(tmp_path):
     })
     store = _make_store(tmp_path, world)
     llm = FakeLLM()
-    issues, delta = _checker(store, llm)._check_rule_consistency(1, "正文内容" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm)._check_rule_consistency(1, "正文内容" * 100)
     assert issues == [] and delta == 0
     assert llm.calls == []
 
@@ -91,7 +91,7 @@ def test_empty_ruleset_skips_judge(tmp_path):
     })
     store = _make_store(tmp_path, world)
     llm = FakeLLM()
-    issues, delta = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
     assert issues == [] and delta == 0
     assert llm.calls == []
 
@@ -103,7 +103,7 @@ def test_switch_disabled_skips_judge(tmp_path):
     cfg = NovelConfig(title="x", chapter_words=2500, total_words=10000)
     cfg.rule_consistency_check = False
     llm = FakeLLM()
-    issues, delta = _checker(store, llm, cfg)._check_rule_consistency(1, "正文" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm, cfg)._check_rule_consistency(1, "正文" * 100)
     assert issues == [] and delta == 0
     assert llm.calls == []
 
@@ -115,7 +115,7 @@ def test_rule_conflict_is_major_minus_25(tmp_path):
     llm = FakeLLM('{"violations":[{"code":"rule_conflict","rule_id":"R1",'
                   '"detail":"规则：不得回应陌生人；正文：主角回应了陌生人搭话",'
                   '"suggestion":"删除回应行为"}]}')
-    issues, delta = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
     assert len(issues) == 1
     assert issues[0]["type"] == "规则一致性-rule_conflict"
     assert issues[0]["level"] == "大改"
@@ -132,7 +132,7 @@ def test_rule_added_and_scope_are_medium_minus_10(tmp_path):
                   '"suggestion":"删除私增条款"},'
                   '{"code":"rule_scope","rule_id":"R1","detail":"他副本规则被套到当前副本",'
                   '"suggestion":"限定回原副本"}]}')
-    issues, delta = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
     levels = [i["level"] for i in issues]
     assert levels == ["中改", "中改"]
     assert delta == -20
@@ -163,7 +163,7 @@ def test_llm_exception_returns_empty(tmp_path):
     """LLM 抛异常 → 空列表、0 分，不向外抛。"""
     store = _make_store(tmp_path, _rule_world())
     llm = FakeLLM(exc=RuntimeError("network down"))
-    issues, delta = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
+    issues, delta, _attempted, _err = _checker(store, llm)._check_rule_consistency(1, "正文" * 100)
     assert issues == [] and delta == 0
 
 
@@ -175,9 +175,9 @@ def test_normal_mode_frequency_gating(tmp_path):
     cfg.high_quality_mode = False
     cfg.rule_consistency_every = 3
     checker = _checker(store, FakeLLM('{"violations": []}'), cfg)
-    issues1, _ = checker._check_rule_consistency(1, "正文" * 100)
+    issues1, _, _a1, _e1 = checker._check_rule_consistency(1, "正文" * 100)
     assert checker.llm.calls  # 第 1 章执行
     checker.llm.calls.clear()
-    issues2, _ = checker._check_rule_consistency(2, "正文" * 100)
+    issues2, _, _a2, _e2 = checker._check_rule_consistency(2, "正文" * 100)
     assert issues2 == []
     assert checker.llm.calls == []

@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+import httpx
 from openai import OpenAI
 
 from .base import LLMClient, LLMError
@@ -32,6 +33,7 @@ class OpenAICompatibleClient(LLMClient):
         max_tokens: int = 4096,
         timeout: float = 180.0,
         max_retries: int = 3,
+        connect_timeout: Optional[float] = None,
     ):
         super().__init__()
         if not api_key:
@@ -45,14 +47,23 @@ class OpenAICompatibleClient(LLMClient):
         self._max_tokens = max_tokens
         self._timeout = timeout
         self._max_retries = max_retries
+        # R16：连接阶段与响应阶段分开限时。黑洞网络下 TCP 握手可能被系统层拖到 ~21s，
+        # 只设总 timeout 无法区分「连不上」与「模型慢」；连接超时更短可快速降级。
+        sdk_timeout = timeout
+        if connect_timeout:
+            sdk_timeout = httpx.Timeout(
+                connect=float(connect_timeout), read=float(timeout),
+                write=float(timeout), pool=float(timeout),
+            )
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
-            timeout=timeout,
+            timeout=sdk_timeout,
             max_retries=max_retries,  # SDK 内置指数退避重试
         )
 
-    def clone_limited(self, timeout: float, max_retries: int) -> "OpenAICompatibleClient":
+    def clone_limited(self, timeout: float, max_retries: int,
+                      connect_timeout: Optional[float] = None) -> "OpenAICompatibleClient":
         """复用同一 provider/model/key，但用更短超时与更少重试（质检等交互路径快速失败）。
 
         usage / recorder / guard 与原客户端共享：token 统计、全链路 trace 与
@@ -63,6 +74,7 @@ class OpenAICompatibleClient(LLMClient):
             base_url=self._base_url, temperature=self._temperature,
             top_p=self._top_p, max_tokens=self._max_tokens,
             timeout=timeout, max_retries=max_retries,
+            connect_timeout=connect_timeout,
         )
         cloned.usage = self.usage
         cloned.recorder = self.recorder

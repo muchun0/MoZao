@@ -264,17 +264,22 @@ SEARCH_PROVIDER_DEFAULTS: dict[str, dict] = {
 }
 
 
+# 平台默认 provider 与默认模型（新项目/新配置的落点；换 provider 时见 _apply_provider_defaults）
+DEFAULT_LLM_PROVIDER = "doubao"
+DEFAULT_LLM_MODEL = "ep-20261108190349-55bnh"
+
+
 @dataclass
 class LLMConfig:
-    provider: str = "deepseek"      # deepseek / doubao(火山方舟) / openai / zhipu / qwen / moonshot / custom / mock
-    model: str = ""                 # 留空则取能力档案的默认模型（custom 必填）
+    provider: str = DEFAULT_LLM_PROVIDER   # 默认走火山方舟（Ark 接入点）；deepseek / openai / zhipu / qwen / moonshot / custom / mock 可按需切换
+    model: str = DEFAULT_LLM_MODEL         # 默认 Ark 接入点；留空则取能力档案默认模型（custom 必填）
     api_key: str = ""               # 留空则读环境变量（custom 无 env_key，需显式提供）
     base_url: str = ""              # 留空则取能力档案的默认地址（custom 必填）
     temperature: float = 0.8        # 生成随机度：大纲/人物偏低，正文偏高
     top_p: float = 0.0              # 0 表示不设置（由 API 默认）；防同质化建议 0.75-0.85
     max_tokens: int = 4096          # 单次响应上限（单章输出建议 >= 4000）
     # ---- 多 Provider 兼容（2026-11：配置全量透传，不再写死策略）----
-    thinking: str = "auto"          # auto=按能力档案关闭默认思考 / on / off
+    thinking: str = "off"           # 默认关闭思考（Ark 接入点背后为思考型模型，避免推理 token 挤占正文）；auto=按能力档案 / on / off
     extra_body: dict = field(default_factory=dict)   # 厂商私有参数透传（top_k/thinking 等）
     headers: dict = field(default_factory=dict)      # 自定义请求头（网关/代理鉴权用）
     timeout: float = 180.0          # 单次响应超时（质检场景可克隆为更短）
@@ -486,11 +491,15 @@ def _apply_provider_defaults(llm: LLMConfig) -> LLMConfig:
     """用能力档案补齐 provider 名/默认模型/base_url，并回填环境变量中的 API Key。
 
     - provider 先归一（大小写/别名），避免 `DeepSeek` 绕过能力档案。
+    - 平台默认模型只属于默认 provider：切到别的 provider 时视为未填，回落该
+      provider 的档案默认（custom 保持为空由校验报错），避免把 Ark 接入点带到别家端点。
     - custom 不提供任何默认 base_url/model：缺失保持为空，由 validate_llm_config
       显式报错，绝不静默回落到 api.openai.com。
     """
     llm.provider = normalize_provider(llm.provider)
     profile = resolve_profile(llm.provider) or {}
+    if llm.provider != DEFAULT_LLM_PROVIDER and llm.model == DEFAULT_LLM_MODEL:
+        llm.model = ""
     if not llm.model:
         llm.model = profile.get("default_model", "")
     if not llm.base_url:

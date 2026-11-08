@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 
 
 class LLMReq(BaseModel):
-    provider: str = "deepseek"
-    model: str = ""
+    provider: str = "doubao"    # 新项目默认走火山方舟
+    model: str = "ep-20261108190349-55bnh"
     base_url: str = ""
     temperature: float = 0.8
     top_p: float = 0.8

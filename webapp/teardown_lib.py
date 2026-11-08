@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from . import db
@@ -96,12 +95,12 @@ _MANUAL_MAX_WORDS = 20000 # 上限：控制 LLM 耗时与滥用（接口同步�
 
 
 def _default_llm():
-    """用平台默认 LLM（deepseek）跑拆解：api_key 从环境变量补齐，与生成流程一致。"""
-    from novel_gen.config import PROVIDER_DEFAULTS, LLMConfig
+    """用平台默认 LLM 跑拆解：provider 读项目配置（PLATFORM_LLM_PROVIDER），Key 从环境变量补齐。"""
+    from .core_project import resolve_platform_llm
     from novel_gen.llm.factory import create_llm
-    llm_cfg = LLMConfig()
-    env_key = PROVIDER_DEFAULTS.get(llm_cfg.provider, {}).get("env_key", "")
-    llm_cfg.api_key = os.environ.get(env_key, "")
+    llm_cfg = resolve_platform_llm()
+    if not llm_cfg.api_key:
+        logger.error("平台模型未配置 Key：provider=%s，拆解功能不可用", llm_cfg.provider)
     return create_llm(llm_cfg)
 
 

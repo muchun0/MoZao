@@ -243,24 +243,29 @@ def get_user_llm(user_id: int) -> dict:
     """
     with _connect() as conn:
         row = conn.execute(
-            "SELECT llm_provider, llm_api_key, llm_base_url, llm_model FROM users WHERE id=%s",
+            "SELECT llm_provider, llm_api_key, llm_base_url, llm_model, llm_thinking "
+            "FROM users WHERE id=%s",
             (user_id,)).fetchone()
     if not row:
-        return {"provider": "", "api_key": "", "base_url": "", "model": ""}
+        return {"provider": "", "api_key": "", "base_url": "", "model": "", "thinking": "auto"}
     return {
         "provider": row.get("llm_provider") or "",
         "api_key": decrypt_secret(row.get("llm_api_key") or ""),
         "base_url": row.get("llm_base_url") or "",
         "model": row.get("llm_model") or "",
+        "thinking": row.get("llm_thinking") or "auto",
     }
 
 
-def set_user_llm(user_id: int, provider: str, api_key: str, base_url: str, model: str) -> None:
+def set_user_llm(user_id: int, provider: str, api_key: str, base_url: str, model: str,
+                 thinking: str = "auto") -> None:
     """保存用户自配 LLM。api_key 加密后落库（DB 泄露不暴露明文）。"""
     with _connect() as conn:
         conn.execute(
-            "UPDATE users SET llm_provider=%s, llm_api_key=%s, llm_base_url=%s, llm_model=%s WHERE id=%s",
-            (provider, encrypt_secret(api_key), base_url, model, user_id))
+            "UPDATE users SET llm_provider=%s, llm_api_key=%s, llm_base_url=%s, "
+            "llm_model=%s, llm_thinking=%s WHERE id=%s",
+            (provider, encrypt_secret(api_key), base_url, model,
+             thinking or "auto", user_id))
 
 
 # ---------- 用户查询 ----------

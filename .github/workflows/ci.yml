@@ -12,7 +12,7 @@ on:
 jobs:
   p0-and-guard:
     runs-on: ubuntu-latest
-    # P0 用例在 import webapp.db 时即初始化 schema，必须提供真实 MySQL；
+    # P0 用例由 tests/conftest.py 在会话启动时显式建表，必须提供真实 MySQL；
     # 生产镜像仍只装 requirements.txt，测试依赖只装在 CI
     services:
       mysql:
@@ -45,7 +45,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: Init database schema
-        run: python -c "import webapp.db"
+        # 导入 webapp.db 已不再建表，CI 作为独立入口显式初始化 schema 与默认配置
+        run: python -c "from webapp import db; db.init_schema(); db.seed_defaults()"
       - name: Seed admin (idempotent)
         # CI 固定测试账号 admin/admin（非真实凭据，不使用 secrets）；已存在则不改密码
         run: |

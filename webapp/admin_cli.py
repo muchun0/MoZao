@@ -173,6 +173,9 @@ def main() -> None:
         for name in COMMANDS:
             print(f"    {name}")
         sys.exit(1)
+    # CLI 入口显式初始化（导入 webapp.db 不再自动建表）：建表 + 默认配置后才执行业务命令
+    db.init_schema()
+    db.seed_defaults()
     COMMANDS[sys.argv[1]](sys.argv[2:])
 
 

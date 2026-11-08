@@ -122,6 +122,12 @@ class ProjectStore:
                 "temperature": cfg.llm.temperature,
                 "top_p": cfg.llm.top_p,
                 "max_tokens": cfg.llm.max_tokens,
+                # 多 Provider 兼容配置：不落盘会「重启即丢」，必须与 LLMConfig 字段同步
+                "thinking": cfg.llm.thinking,
+                "extra_body": dict(cfg.llm.extra_body or {}),
+                "headers": dict(cfg.llm.headers or {}),
+                "timeout": cfg.llm.timeout,
+                "max_retries": cfg.llm.max_retries,
                 # 注意：不落盘 api_key，避免密钥明文留在项目目录
             },
         }
@@ -190,6 +196,12 @@ class ProjectStore:
             temperature=float(llm_d.get("temperature", 0.8)),
             top_p=float(llm_d.get("top_p", 0.0)),
             max_tokens=int(llm_d.get("max_tokens", 4096)),
+            thinking=str(llm_d.get("thinking", "auto")),
+            # 只接受 dict：写成字符串会在运行期 **kwargs 崩溃
+            extra_body=llm_d.get("extra_body") if isinstance(llm_d.get("extra_body"), dict) else {},
+            headers=llm_d.get("headers") if isinstance(llm_d.get("headers"), dict) else {},
+            timeout=float(llm_d.get("timeout", 180.0)),
+            max_retries=int(llm_d.get("max_retries", 3)),
         )
         return NovelConfig(**kwargs)
 

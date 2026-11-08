@@ -2145,10 +2145,12 @@ class ChapterWriter:
                     _slim = self._slim_scene(piece, sc, chapter_no, plan_title, idx, silent)
                     if _slim and len(_slim) < len(piece):
                         piece = _slim
-                        running_tail = piece[-120:] if piece else running_tail
+                        # REQ-R17（B2）：衔接上下文 120→600 字，让后一场景读到足够前情，
+                        # 减少「换措辞/换视角把同一过程再演一遍」（实测大改 6→4）
+                        running_tail = piece[-600:] if piece else running_tail
                 scene_texts.append(piece)
                 # 下一场景的衔接用本场景结尾
-                running_tail = piece[-120:] if piece else running_tail
+                running_tail = piece[-600:] if piece else running_tail
                 # 正文级节拍序列登记（措施3）：最终采用场景正文的节拍指纹，供后续场景比对
                 _bs = extract_beats(
                     piece, llm=self.llm,

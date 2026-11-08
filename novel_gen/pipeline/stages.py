@@ -2050,12 +2050,14 @@ class ChapterWriter:
                             logger.warning(f"  [场景] 第{idx}个场景连续 2 次重试仍重演完整循环，回退整章生成")
                         # P0-8：回退整章补基线校验——用本章场景累计数字（已推进场景的
                         # 结算值）做权威基线，整章正文数字必须从这些值继续单调推进
+                        # 回退整章路径返回单值正文，契约要求 (正文, scenes) 二元组，
+                        # 故显式补空 scenes（修复此处漏第二元素导致的解包 ValueError）
                         return self._fallback_whole_chapter(
                             chapter_no, plan_title, plan_goal,
                             memory_context, prev_tail, is_final,
                             plan_core_event, fallback_events, silent,
                             panel_baseline=scene_state_acc or None,
-                            pitfall=_inj)
+                            pitfall=_inj), []
                 # P0-3 面板数字确定性方向校验（2026-10-09 生成端第三轮，治面板账本崩坏）：
                 # 正文中机制数字与基线比对（次数/剩余只许递减、蚀化/进度只许递增），
                 # 违反 → 带错重试（重试 prompt 注入基线 + 违规描述），同一场景至多 2 次；

@@ -32,6 +32,7 @@ from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
 from novel_gen.pipeline.scene_event_utils import (
     _split_moves_beats, _derive_events_from_moves,
+    _event_summary, _event_anchor, _remaining_events,
 )
 
 
@@ -430,5 +431,57 @@ def test_derive_events_top_level_arrow_still_splits():
     assert len(events) == 3
 
 
-# ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------
+# ---------- 事件锚点账本（2026-11-08）：id + 摘要 + 原文锚点；剩余未消费事件清单 ----------
+
+@pytest.mark.p1
+def test_event_summary_truncates_and_collapses():
+    """摘要压空白并截断到 40 字，超长以省略号收尾；短描述原样返回。"""
+    assert _event_summary("短事件") == "短事件"
+    assert _event_summary("陆沉  推林半夏") == "陆沉 推林半夏"
+    long = "陆沉" * 30
+    assert len(_event_summary(long)) == 41  # 40 字 + 省略号
+    assert _event_summary(long).endswith("…")
+
+
+@pytest.mark.p1
+def test_event_anchor_picks_original_sentence():
+    """原文锚点取与事件描述字面重合最高的整句，零 LLM。"""
+    piece = ("林半夏站在巷口，布包带子勒着肩。她跑出五十步，停住。"
+             "三息后，陆沉从酸液坑里爬出来，半边脸还是烂的。他哑着嗓子问墟苔采到没有。")
+    desc = "陆沉：从酸液坑里爬出，问林半夏墟苔采到了吗"
+    anchor = _event_anchor(piece, desc)
+    assert "陆沉从酸液坑里爬出来" in anchor
+    assert "林半夏站在巷口" not in anchor
+
+
+@pytest.mark.p1
+def test_event_anchor_empty_piece():
+    assert _event_anchor("", "事件描述") == ""
+
+
+@pytest.mark.p1
+def test_remaining_events_excludes_consumed_and_current():
+    """剩余事件只含当前场景之后、且账本未消费的条目（当前场景自身不出现）。"""
+    plan = [("事件1", "推人冒死"), ("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 1) == [("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    # 事件2 已被前序场景越权消费 → 不再作为「剩余未消费」列出
+    assert _remaining_events(plan, {"事件1", "事件2"}, 1) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 3) == []
+
+
+@pytest.mark.p1
+def test_scene_prompt_unconsumed_events_hard_constraint():
+    """upcoming_events 注入【本章剩余未消费事件（硬约束·禁越权消费）】及编号事件。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500)
+    sc = {"location": "裂隙口", "event": "推人冒死", "emotion": "紧张",
+          "anchors": [], "target_words": 1100, "time_marker": "午后"}
+    _, user = scene_prompt(
+        cfg, 1, "第三章", 1, sc, "前情", "上一场景结尾", "",
+        upcoming_events="- 事件2（尚未发生）：复活问墟苔\n- 事件3（尚未发生）：赤尉追击",
+    )
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in user
+    assert "禁止写出它们的完整流程" in user
+    assert "事件2（尚未发生）：复活问墟苔" in user
+    assert "本章后续事件预览" not in user
+
 

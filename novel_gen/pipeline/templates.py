@@ -1050,9 +1050,9 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"同样视为重演；如需呼应，只用一句话带过结果）】\n{consumed_events}\n"
     ) if consumed_events else ""
     upcoming_block = (
-        f"\n【本章后续事件预览（禁提前消费：以下事件留给各自的场景推进，本场景正文"
-        f"禁止写出它们的完整流程、动作、冲突或结果；只可做一句铺垫性提及，"
-        f"不得展开演绎）】\n{upcoming_events}\n"
+        f"\n【本章剩余未消费事件（硬约束·禁越权消费：以下事件尚未发生，编号对应后续场景；"
+        f"本场景正文禁止写出它们的完整流程、动作、冲突或结果——连'试探-遭遇-对视-冲过去'"
+        f"这类起手式也禁止；只可对最近一件做一句铺垫性提及，且不得推进其结果）】\n{upcoming_events}\n"
     ) if upcoming_events else ""
     # P0-3 面板数字确定性闭环（2026-10-09 生成端第三轮）：权威基线注入 + 违反方向规则重试。
     # 2026-10-17 机制数字软提示与通用化（REQ-机制数字软提示与通用化）：基线降为

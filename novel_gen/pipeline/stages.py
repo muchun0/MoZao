@@ -1751,6 +1751,17 @@ class ChapterWriter:
         # 禁提前消费完整流程）——治"跨场景分布型重演"（事件无 consumed 标记 +
         # 模型对已写事件仍有完整执行权，decisions.md 2026-10-09 §7.2 根因 A）。
         event_ledger: list[dict] = []
+        # 事件锚点账本（2026-11-08）：事件 id 取拆场景 scene_event_ref（与派生事件编号一致），
+        # 每场景结束登记 {id, desc, summary, anchor}；anchor 为该事件在正文里的原文锚点，
+        # 后续场景据此回避「换措辞复述同一事件」。
+        _scene_event_ids = [
+            str(sc.get("scene_event_ref") or "").strip() or f"事件{i}"
+            for i, sc in enumerate(scenes, start=1)
+        ]
+        _event_plan = [
+            (sid, str(sc.get("event") or "").strip())
+            for sid, sc in zip(_scene_event_ids, scenes)
+        ]
         # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
         # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
@@ -1794,13 +1805,18 @@ class ChapterWriter:
                                 "禁止跨场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block)
             else:
                 mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
-            # P0-1 事件消费账本注入：已消费事件（只许回响）/ 后续事件预览（禁提前消费）
+            # P0-1 事件消费账本注入：已消费事件（只许回响；带 id/摘要/原文锚点）/
+            # 剩余未消费事件（硬约束禁止提前消费，逐条带编号与摘要）
+            _consumed_ids = {e.get("id") for e in event_ledger}
             consumed_events_text = "\n".join(
-                f"- {e.get('desc','')}" for e in event_ledger if e.get("desc")
+                (f"- {e.get('id','')}『{e.get('summary') or _event_summary(e.get('desc',''))}』"
+                 f"（原文锚点：{e['anchor']}）") if e.get("anchor")
+                else f"- {e.get('id','')}『{e.get('summary') or _event_summary(e.get('desc',''))}』"
+                for e in event_ledger
             )
             upcoming_events_text = "\n".join(
-                f"- {str(s.get('event') or '').strip()}"
-                for s in scenes[idx:] if str(s.get("event") or "").strip()
+                f"- {sid}（尚未发生）：{_event_summary(desc)}"
+                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx)
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
             # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
@@ -2171,9 +2187,16 @@ class ChapterWriter:
                                + "\n".join(f"{i}. {e}" for i, e in enumerate(done_events, 1)))
                     scene_state_hint = (scene_state_hint + ev_hint) if scene_state_hint else ev_hint
                 # P0-1 事件消费账本登记：本场景事件标记 consumed（供后续场景「已消费事件」
-                # 注入；desc 为空时用规划事件文本，避免账本缺环）
-                if ev:
-                    event_ledger.append({"desc": ev, "consumed_scene_idx": idx})
+                # 注入；desc 为空时用规划事件文本，避免账本缺环）。事件锚点账本（2026-11-08）
+                # 同时登记 id + 摘要 + 原文锚点，让后续场景看到「原文已写成什么样」。
+                ev_id = _scene_event_ids[idx - 1]
+                if ev and ev_id not in {e.get("id") for e in event_ledger}:
+                    event_ledger.append({
+                        "id": ev_id, "desc": ev,
+                        "summary": _event_summary(ev),
+                        "anchor": _event_anchor(piece, ev),
+                        "consumed_scene_idx": idx,
+                    })
                     # P0-7 小说级记忆：跨章持久化事件消费（零 LLM，失败静默）
                     try:
                         _mem = self._memory()
@@ -2479,6 +2502,7 @@ from .scene_event_utils import (
     _expand_scene_event_refs, _normalize_scene_targets,
     _validate_scene_plan, _scene_events_overlap, _split_summary,
     _is_repetitive_text, _summary_invented_words,
+    _event_summary, _event_anchor, _remaining_events,
     _strip_html_tags, _strip_json_block, _extract_json_field,
     _SCENE_EVENT_OVERLAP_RATIO, _SCENE_ADJACENT_REPEAT_RATIO,
     _SCENE_ADJACENT_SPAN_RATIO,

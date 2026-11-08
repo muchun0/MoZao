@@ -105,6 +105,46 @@ def _event_conflict(text: str, names: tuple[str, ...] = ()) -> str:
     return ""
 
 
+_EVENT_SUMMARY_LIMIT = 40
+_EVENT_ANCHOR_LIMIT = 80
+
+
+def _event_summary(desc: str, limit: int = _EVENT_SUMMARY_LIMIT) -> str:
+    """事件摘要（确定性零 LLM）：压空白并截断，超长以省略号收尾。"""
+    text = re.sub(r"\s+", " ", str(desc or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip("，。；、,; ") + "…"
+
+
+def _event_anchor(piece: str, desc: str, limit: int = _EVENT_ANCHOR_LIMIT) -> str:
+    """从场景正文取一句最能佐证该事件的原文（字符 bigram 重合度最高）。
+
+    零 LLM：按「事件描述 vs 正文句子」的字面 2-gram 重合打分；全无重合时回退末句
+    （事件通常落在场景收束处）。得到的原文锚点登记进事件账本，供后续场景回避复述。
+    """
+    sents = [s.strip() for s in re.split(r"[。！？\n]", piece or "") if s.strip()]
+    if not sents:
+        return ""
+    desc_grams = {desc[i:i + 2] for i in range(len(desc) - 1)} if desc else set()
+
+    def _score(sent: str) -> int:
+        grams = {sent[i:i + 2] for i in range(len(sent) - 1)}
+        return len(desc_grams & grams)
+
+    best = max(sents, key=_score)
+    return best if len(best) <= limit else best[:limit] + "…"
+
+
+def _remaining_events(event_plan: list[tuple[str, str]], consumed_ids: set[str],
+                      start_idx: int) -> list[tuple[str, str]]:
+    """取 start_idx（0 基，指向当前场景之后）起、账本尚未消费的 (事件id, 描述)。"""
+    return [
+        (sid, desc) for sid, desc in event_plan[start_idx:]
+        if desc and sid not in consumed_ids
+    ]
+
+
 def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
                                names: tuple[str, ...] = (),
                                llm=None, use_llm: bool = True) -> str:

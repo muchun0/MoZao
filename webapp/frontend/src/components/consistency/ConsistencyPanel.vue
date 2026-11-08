@@ -116,7 +116,11 @@
               <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`${g.key}-${i}`)">
                 {{ isExpanded(`${g.key}-${i}`) ? '收起原文' : '展开原文' }}
               </el-button>
-              <el-button v-if="it.jump" size="small" text type="primary" @click="emitLocate(it.jump)">打开第 {{ it.jump }} 章</el-button>
+              <el-button v-if="it.jump && it.source !== 'chapter_quality'" size="small" text type="primary"
+                         @click="emitLocate(it.jump)">打开第 {{ it.jump }} 章</el-button>
+              <!-- 单章质检来源：详情与操作统一在版本弹窗（证据 / 改法 / 按此改） -->
+              <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
+                         @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
             </div>
           </article>
           <p v-if="g.total > g.items.length" class="cp-group-more">
@@ -264,7 +268,7 @@
               {{ conflictSourceLine }}
               <el-button size="small" text type="primary" @click="emit('open-tools')">去工具看原始记录</el-button>
             </p>
-            <p class="cp-source-hint">全书校验来自「工具 → 全书质检」跑出的通读记录，单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对。</p>
+            <p class="cp-source-hint">全书校验来自「工具 → 全书质检」跑出的通读记录，单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对；逐条证据与改法统一在对应章的「版本」弹窗里看。</p>
             <p v-if="confLoaded && !confItems.length" class="cp-group-empty">{{ confEmptyText }}</p>
             <article v-for="(it, i) in confItems" :key="i" class="cp-card">
               <div class="cp-card-top">
@@ -297,7 +301,10 @@
                 <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`c-${i}`)">
                   {{ isExpanded(`c-${i}`) ? '收起原文' : '展开原文' }}
                 </el-button>
-                <el-button v-if="it.chapter" size="small" text type="primary" @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
+                <el-button v-if="it.chapter && it.source !== 'chapter_quality'" size="small" text type="primary"
+                           @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
+                <el-button v-if="it.chapter && it.source === 'chapter_quality'" size="small" text type="primary"
+                           @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
@@ -378,7 +385,7 @@ import { staleNoticeOf, isItemStale, staleChaptersOf } from '../../utils/stalene
 import StaleNotice from '../common/StaleNotice.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
-const emit = defineEmits(['locate', 'open-tools'])
+const emit = defineEmits(['locate', 'open-tools', 'open-versions'])
 
 const loading = ref(false)
 const overview = ref(null)
@@ -632,6 +639,7 @@ function buildGroupedItems(ov) {
       categoryLabel: it.categoryLabel,
       recordStale: isItemStale(it),
       advice: conflictAdvice(it), jump: it.chapter || 0,
+      source: it.source, chapter: it.chapter || 0,
     })
   }
 

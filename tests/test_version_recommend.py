@@ -71,7 +71,7 @@ class TestBadgeStateMachine:
         b1 = next(x for x in out if x["v"] == 1)
         b2 = next(x for x in out if x["v"] == 2)
         assert b1["badge"] == "neutral"
-        assert b1["fatal_issue"] == "存在 1 条大改问题"
+        assert b1["fatal_issue"] == "含 1 条大改改稿建议"
         assert b2["badge"] == "recommended"
 
     def test_hook_higher_ranked_first(self):

@@ -40,9 +40,12 @@
           <div v-for="(r, i) in v.reasons" :key="i" class="ver-reason">✓ {{ r }}</div>
         </div>
         <div v-if="v.fatal_issue" class="ver-fatal">⚠ {{ v.fatal_issue }}</div>
-        <!-- 改稿建议：默认折叠，避免长列表刷屏（窄屏尤为拥挤） -->
-        <div v-if="v.quality && (v.quality.issues || []).length" class="ver-issues">
-          <div class="ver-issues-head">改稿建议（{{ v.quality.issue_count || v.quality.issues.length }} 处）</div>
+        <!-- 改稿建议：本弹窗是唯一的 issue 详情与操作面；标题与列表行同口径（分桶 + 总数） -->
+        <div v-if="hasIssueDetail(v)" class="ver-issues">
+          <div class="ver-issues-head">改稿建议（{{ issueText(v.quality) }}）</div>
+          <div v-if="!(v.quality.issues || []).length" class="ver-issues-empty">
+            本版只记录了问题数，逐条明细未留存；可重新质检生成明细。
+          </div>
           <div v-for="(it, i) in visibleIssues(v)" :key="i" class="ver-issue-card">
             <div class="ver-issue">
               <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
@@ -124,6 +127,7 @@ import {
 } from '../api/novel'
 import { evidenceInfo, fixInfo } from './issueText'
 import { needsRecheck, noIssueText, recheckConfirmText, recheckResultText } from './versionQuality'
+import { issueSummaryText } from '../utils/chapterQuality'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -154,6 +158,9 @@ function visibleIssues(v) {
   const list = (v.quality && v.quality.issues) || []
   return expanded[v.v] ? list : list.slice(0, 3)
 }
+// 详情面唯一计数口径：与列表行「大改/中改/小改 + 条数」一致
+const issueText = (q) => issueSummaryText(q && q.issues, q && q.issue_count)
+const hasIssueDetail = (v) => !!issueText(v && v.quality)
 function toggleIssues(no) {
   expanded[no] = !expanded[no]
 }
@@ -353,6 +360,7 @@ watch(() => [props.modelValue, props.chapterNo, props.kind], ([vis]) => {
 .ver-charge { color: var(--gold-deep); font-size: 12px; font-variant-numeric: tabular-nums; }
 .ver-issues { margin-top: 8px; }
 .ver-issues-head { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.ver-issues-empty { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
 .ver-issue-card { margin-bottom: 8px; }
 .ver-issue { font-size: 12px; display: flex; gap: 6px; align-items: baseline; margin-bottom: 4px; }
 .ver-issue-detail { flex: 1; min-width: 0; }

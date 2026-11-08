@@ -113,7 +113,7 @@
     <!-- 质量校验 -->
     <el-card class="tool-card">
       <template #header><b>质量校验</b></template>
-      <p class="muted">AI检查设定一致性/剧情逻辑/合规</p>
+      <p class="muted">临时自检设定一致性/剧情逻辑/合规，结果不写入章节质检记录；逐章改稿建议见「章节 → 版本」弹窗。</p>
       <el-space wrap>
         <el-button size="small" @click="runVerify('consistency', '设定一致性')">设定一致性</el-button>
         <el-button size="small" @click="runVerify('logic', '剧情逻辑')">剧情逻辑</el-button>
@@ -137,7 +137,7 @@
           <div v-if="!reviewSummary.chapter_count && !finalReview && !verifyIssues.length" class="ok-box">暂无质检记录</div>
           <div v-if="reviewSummary.chapter_count" class="summary-box">
             <b>全书质量汇总</b>
-            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿问题 {{ reviewSummary.issue_total }} 处
+            <div class="summary-line">质检章节 {{ reviewSummary.chapter_count }} 章｜改稿建议 {{ reviewSummary.issue_total }} 处
               <span v-if="reviewSummary.score_avg">｜平均质检分 {{ reviewSummary.score_avg }}/100</span>
             </div>
             <!-- P0-5/P1：进度盘色带（与 Admin 质量报表一致：未过红/追更>=4绿/自动重写黄/通过灰） -->
@@ -155,14 +155,14 @@
               </div>
             </div>
             <div v-if="Object.keys(reviewSummary.issue_by_type||{}).length" class="summary-line">
-              问题类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
+              改稿建议类型：<span v-for="(n, t) in reviewSummary.issue_by_type" :key="t" class="tag-todo">{{ t }}×{{ n }}</span>
             </div>
             <div v-if="reviewSummary.verify_issue_total" class="summary-line">
               一致性/审稿校验问题 {{ reviewSummary.verify_issue_total }} 条（涉及 {{ Object.keys(reviewSummary.verify_by_chapter||{}).length }} 章）
             </div>
             <!-- 口径说明：两份记录来源不同，数字本来就不必相等，避免作者以为是同一个数 -->
             <div class="summary-line muted">
-              「改稿问题」是逐章质检的全部建议（含字数、对话、钩子等非一致性项）；「一致性/审稿校验问题」是全书通读检查记录。两者来源不同，数字不必相等；体检页会把后者与单章一致性质检合并，所以会再大一些。
+              「改稿建议」是逐章质检的全部条目（含字数、对话、钩子等非一致性项），逐条证据与改法在对应章的「版本」弹窗；「一致性/审稿校验问题」是全书通读检查记录。两者来源不同，数字不必相等；体检页会把后者与单章一致性质检合并，所以会再大一些。
             </div>
           </div>
           <div v-if="finalReview" class="final-review-box">

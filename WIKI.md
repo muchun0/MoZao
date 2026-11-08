@@ -247,7 +247,7 @@ D:\PythonProjects\DouBao\
 | assistant_billing | **小墨AI 独立计费账本（TECH v0.2 D4=B）**：user_id, project_id, conversation_id, request_id, 消息 id, mode(platform/user_llm/admin_free), status(settled/pending), chars, due/charged/owe, commission_granted；`UNIQUE(project_id, request_id)` 幂等；不写 `settle.json`、不写 `ai_words_total`、不动项目累计金额 |
 
 - 章节存项目目录文件（不在 DB），`source=ai|user` 记录在文件头；**章节版本化**：`chapters/<no>.json` 为当前选中版本，历史版本存档 `chapters/<no>/v<k>.json` + `chapter_versions.json` 索引（每章上限 15、HEAD 不淘汰），`load_chapter`/`list_chapters` 读当前选中版本（对外行为不变）
-- `init_db()` 启动时自动建表 + 增量迁移
+- `init_schema()` / `seed_defaults()` 启动时显式建表 + 增量迁移 + 默认配置（导入 `webapp.db` 不再触发）
 
 ---
 

@@ -472,6 +472,9 @@ def _migrate_user_columns(conn, cols) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(200) NOT NULL DEFAULT ''")
     if "llm_model" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN llm_model VARCHAR(100) NOT NULL DEFAULT ''")
+    if "llm_thinking" not in cols:
+        # BYOK 思考开关（auto/on/off）：Ark 等思考型模型关掉思考才不会被推理吃满预算
+        conn.execute("ALTER TABLE users ADD COLUMN llm_thinking VARCHAR(10) NOT NULL DEFAULT 'auto'")
 
 
 def _migrate_skill_columns(conn) -> None:

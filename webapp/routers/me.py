@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """me路由（第三批拆分，从 server.py 迁移，逻辑未改动）。"""
+import time
+
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
+# 多 Provider 兼容：能力档案与配置校验显式引入（不依赖星号导入的偶然可见性）
+from novel_gen.config import LLMConfig, _apply_provider_defaults, validate_llm_config
+from novel_gen.llm.base import LLMError
+from novel_gen.llm.capabilities import list_providers, normalize_provider
+from novel_gen.llm.factory import create_llm
 
 @app.get("/api/me")
 def me(user: dict = Depends(_require_user)):
@@ -64,26 +71,85 @@ def me_llm(user: dict = Depends(_require_user)):
         "api_key_masked": masked,
         "base_url": u.get("base_url", ""),
         "model": u.get("model", ""),
+        "thinking": u.get("thinking", "auto"),
         "enabled": bool(key and u.get("provider")),
+        # provider 清单来自能力档案（单一权威源），前端不再各自维护一份白名单
+        "providers": list_providers(),
     }
 
 
 @app.put("/api/me/llm")
 def save_me_llm(req: UserLlmReq, user: dict = Depends(_require_user)):
-    provider = (req.provider or "").strip().lower()
+    provider = normalize_provider(req.provider)
     api_key = (req.api_key or "").strip()
     base_url = (req.base_url or "").strip()
     model = (req.model or "").strip()
+    thinking = (req.thinking or "auto").strip().lower()
     if api_key:
-        if provider not in ("deepseek", "openai", "zhipu", "qwen", "moonshot", "custom"):
-            raise HTTPException(status_code=400, detail="暂不支持该 provider")
+        # 保存时即校验：未知 provider / custom 缺 base_url/model / thinking 非法 → 400
+        probe = LLMConfig(provider=provider, model=model, api_key=api_key,
+                          base_url=base_url, thinking=thinking)
+        _apply_provider_defaults(probe)
+        issues = validate_llm_config(probe)
+        if issues:
+            raise HTTPException(status_code=400, detail="；".join(issues))
     else:
         # 清空 = 回到平台 key
-        provider = ""
-    db.set_user_llm(user["id"], provider, api_key, base_url, model)
-    logger.info("用户更新自配模型: uid=%d provider=%s has_key=%s",
-                user["id"], provider, bool(api_key))
+        provider, thinking = "", "auto"
+    db.set_user_llm(user["id"], provider, api_key, base_url, model, thinking)
+    logger.info("用户更新自配模型: uid=%d provider=%s has_key=%s thinking=%s",
+                user["id"], provider, bool(api_key), thinking)
     return {"ok": True, "enabled": bool(api_key and provider)}
+
+
+@app.post("/api/me/llm/test")
+def test_me_llm(req: UserLlmTestReq, user: dict = Depends(_require_user)):
+    """测试连接：用当前表单值（未保存也可）发一次极小请求，返回结构化结果。
+
+    真实调用仅 1 次（max_tokens 默认 200），失败时把 code/diagnostics 原样返回，
+    让「配了不生效」当场可见，而不是等用户生成到一半才发现。
+    """
+    provider = normalize_provider(req.provider)
+    saved = db.get_user_llm(user["id"])
+    saved_same = normalize_provider(saved.get("provider", "")) == provider
+    api_key = (req.api_key or "").strip() or (saved.get("api_key", "") if saved_same else "")
+    base_url = (req.base_url or "").strip() or (saved.get("base_url", "") if saved_same else "")
+    model = (req.model or "").strip() or (saved.get("model", "") if saved_same else "")
+    cfg = LLMConfig(
+        provider=provider, model=model, api_key=api_key, base_url=base_url,
+        thinking=(req.thinking or "auto"), temperature=0.0,
+        max_tokens=max(1, min(int(req.max_tokens or 200), 500)),
+        timeout=max(5.0, min(float(req.timeout or 30.0), 60.0)),
+        max_retries=0,   # 测试连接不重试：错误要快、要原样
+    )
+    _apply_provider_defaults(cfg)
+    issues = validate_llm_config(cfg)
+    if issues:
+        return {"ok": False, "error_code": "CONFIG_INVALID",
+                "detail": "；".join(issues), "diagnostics": {}}
+    llm = None
+    start = time.monotonic()
+    try:
+        llm = create_llm(cfg)
+        reply = llm.chat("你是连通性测试助手。", "只回复两个字符：OK", temperature=0.0,
+                         max_tokens=max(1, min(int(req.max_tokens or 200), 500)))
+        return {
+            "ok": True,
+            "reply": (reply or "")[:100],
+            "model": cfg.model,
+            "response_model": getattr(llm, "last_response_model", "") or cfg.model,
+            "finish_reason": getattr(llm, "last_finish_reason", ""),
+            "usage": {"prompt_tokens": llm.usage.last_prompt_tokens,
+                      "completion_tokens": llm.usage.last_completion_tokens},
+            "latency_ms": int((time.monotonic() - start) * 1000),
+        }
+    except LLMError as e:
+        return {"ok": False, "error_code": e.code, "detail": str(e),
+                "diagnostics": e.diagnostics,
+                "latency_ms": int((time.monotonic() - start) * 1000)}
+    finally:
+        if llm is not None:
+            llm.close()
 
 
 @app.get("/api/me/refundable")

@@ -64,11 +64,19 @@ async def parse_outline(file: UploadFile = File(...), user: dict = Depends(_requ
     except ValueError as e:
         logger.info(f"解析大纲失败（文件读取/格式）：{e}，user={user['username']}")
         raise HTTPException(status_code=400, detail=str(e))
-    api_key = _server_api_key("deepseek")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="服务端未配置解析模型（DEEPSEEK_API_KEY），请联系站长")
-    llm = create_llm(LLMConfig(provider="deepseek", model="", base_url="", api_key=api_key,
-                               temperature=0.2, top_p=0.7, max_tokens=2000))
+    # 平台内部功能统一读项目配置（PLATFORM_LLM_PROVIDER），不再写死 deepseek
+    llm_cfg = resolve_platform_llm(temperature=0.2, top_p=0.7, max_tokens=2000)
+    if not llm_cfg.api_key:
+        env_name = (resolve_profile(llm_cfg.provider) or {}).get("env_key", "") or "（用户自备 Key）"
+        raise HTTPException(
+            status_code=503,
+            detail=f"服务端未配置平台模型（provider={llm_cfg.provider}，env={env_name}），请联系站长",
+        )
+    try:
+        llm = create_llm(llm_cfg)
+    except Exception as e:
+        logger.error("平台模型客户端构造失败：provider=%s err=%s", llm_cfg.provider, e)
+        raise HTTPException(status_code=503, detail=f"平台模型不可用：{e}")
     try:
         result = parse_outline_text(text, llm)
     except Exception as e:

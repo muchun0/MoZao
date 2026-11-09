@@ -547,12 +547,16 @@ class NovelPipeline:
             logger.exception("读者认知账本章末推进失败（降级跳过）: no=%d", no)
             return False
 
-    def _commit_after_chapter(self, no: int, silent: bool = False) -> None:
+    def _commit_after_chapter(self, no: int, silent: bool = False,
+                             force: bool = False) -> dict:
         """REQ-借鉴webnovel A：把每章收尾的章后入账收敛为一次统一提交。
 
         开关 chapter_commit=False 时回退原分散调用（各动作自带开关与降级，行为不变）；
         开启时经 ChapterCommitter 统一编排 4 个账本动作——先落提交基线、失败留痕到
         chapter_commit.json、同章幂等，并写 projection_log 供一致性体检。失败不阻塞生成。
+
+        force=True 时跳过"已 committed 即跳过"的幂等短路，用于正文被改写后重跑账本
+        （如 R1「按此改」局部改写）。
         """
         if not getattr(self.cfg, "chapter_commit", True):
             # 回退：保持原分散调用语义（各动作自带开关与降级）
@@ -564,7 +568,7 @@ class NovelPipeline:
                 self._update_reveal_status(no, silent=silent)
             if getattr(self.cfg, "reader_ledger", True):
                 self._update_reader_ledger(no, silent=silent)
-            return
+            return {"chapter": int(no), "status": "disabled"}
         committer = getattr(self, "_committer", None)
         if committer is None:
             from .commit import ChapterCommitter
@@ -578,7 +582,21 @@ class NovelPipeline:
             committer.add_action("reader_ledger", self._update_reader_ledger,
                                  enabled=getattr(self.cfg, "reader_ledger", True))
             self._committer = committer
-        committer.commit_chapter(no, silent=silent)
+        return committer.commit_chapter(no, force=force, silent=silent)
+
+    def commit_chapter_ledgers(self, no: int, *, force: bool = False,
+                               silent: bool = True) -> dict:
+        """章后账本统一提交的公共入口（Web 与 CLI 共用）。
+
+        与 CLI `resume()` 内的章后入账同源同口径：人物状态 / 章末状态 / 揭示跟踪 /
+        读者认知账本。失败降级留痕、绝不抛出——账本一致性不得阻断写章与结算。
+        """
+        try:
+            return self._commit_after_chapter(no, silent=silent, force=force)
+        except Exception as exc:  # 兜底：chapter_commit=False 分支的动作异常
+            logger.exception("章后账本提交异常（降级跳过）: no=%d", no)
+            return {"chapter": int(no), "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}"}
 
     def _report_reveal_issues(self, silent: bool = False) -> None:
         """REQ-揭示执行跟踪：全书完成后汇总揭示执行问题（提前剧透 fatal /

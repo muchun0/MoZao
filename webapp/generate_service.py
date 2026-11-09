@@ -924,6 +924,9 @@ def _generate_one_chapter(store, pipeline, outline, research, no: int, total: in
     results = settle_ledger.settle_chapter_versions(store, no, prev,
                                                     mode=billing["mode"],
                                                     project_id=project_id)
+    # 章后账本统一提交（人物状态/章末状态/揭示跟踪/读者账本）：
+    # 与 CLI resume 同源同口径；结算之后独立执行，失败降级不阻断写章与扣费
+    pipeline.commit_chapter_ledgers(no)
     _record_chapter_feedback(store, no, results, outputs, entries)
 
 

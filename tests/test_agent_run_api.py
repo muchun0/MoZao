@@ -82,7 +82,8 @@ class _MockWriter:
 
 def _mock_pipeline(store, writer=None):
     return SimpleNamespace(cfg=store.load_config(), llm=None,
-                           chapter_writer=writer or _MockWriter(store, SimpleNamespace()))
+                           chapter_writer=writer or _MockWriter(store, SimpleNamespace()),
+                           commit_chapter_ledgers=lambda *a, **k: None)
 
 
 # ---------- 202 返回体 + task.json 落盘 ----------

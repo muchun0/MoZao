@@ -64,12 +64,14 @@
               <el-checkbox v-model="qualityOnly" size="small">只看需要处理的章</el-checkbox>
             </div>
           </div>
-          <!-- 档1 上游过期提示：读时推导，只提示不阻断；点章号直接跳到对应章节 -->
-          <div v-if="staleHint || staleUnknownHint" class="ch-stale-bar">
+          <!-- 档1/档2 过期提示：读时推导，只提示不阻断；两种成因分开说，点章号直接跳章 -->
+          <div v-if="staleHint || prevRewriteHint || staleUnknownHint" class="ch-stale-bar">
             <el-tag v-if="staleHint" size="small" type="warning" effect="plain">上游已更新</el-tag>
             <span v-if="staleHint" class="ch-stale-text">{{ staleHint }}</span>
+            <el-tag v-if="prevRewriteHint" size="small" type="danger" effect="plain">前文已重写</el-tag>
+            <span v-if="prevRewriteHint" class="ch-stale-text">{{ prevRewriteHint }}</span>
             <span v-if="staleUnknownHint" class="ch-stale-sub">{{ staleUnknownHint }}</span>
-            <span v-if="staleHint" class="ch-stale-jumps">
+            <span v-if="staleHint || prevRewriteHint" class="ch-stale-jumps">
               <el-button v-for="n in staleJumpChapters.slice(0, 6)" :key="n" size="small" link type="warning"
                          @click="jumpToStale(n)">第{{ n }}章</el-button>
               <span v-if="staleJumpChapters.length > 6" class="ch-stale-sub">…</span>
@@ -97,7 +99,7 @@
                 </span>
                 <span class="ch-words">{{ c.words ? fmtWords(c.words) : '未生成' }}</span>
                 <el-tag v-if="isStale(c.no)" size="small" type="warning" effect="plain"
-                        :title="`该章基于旧版${staleDimsText(c.no)}生成，可能已过期`">
+                        :title="staleReasonTitle(c.no)">
                   可能过期
                 </el-tag>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
@@ -415,12 +417,43 @@ const staleUnknownHint = computed(() => {
     ? `另有 ${s.unknown_count} 章缺少生成时的上游版本记录，无法判断是否过期`
     : ''
 })
+// 档2「前文重写」提示：与上游大纲/世界观成因分开说，如「第3章已重写（v1→v2），影响第4–6章」
+const prevRewriteHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  const items = (s && s.prev_rewrites) || []
+  if (!items.length) return ''
+  return items.map(it => {
+    const act = it.direction === 'reverted' ? '已切回旧版' : '已重写'
+    return `第${it.ch}章${act}（v${it.based_on}→v${it.current}），影响${fmtNos(it.affected)}`
+  }).join('；')
+})
 const staleJumpChapters = computed(() => ((staleness.value || {}).summary || {}).stale_chapters || [])
 function isStale(no) { return (staleMap.value[no] || {}).status === 'stale' }
-// 过期维度文案（用于单章 tag 的 title）
-function staleDimsText(no) {
-  const dims = ((staleMap.value[no] || {}).reason || {}).stale_dims || {}
-  return Object.keys(dims).map(k => (k === 'outline' ? '大纲' : '世界观')).join('、')
+// 连续章号压缩：「第4章、第5章」→「第4–5章」
+function fmtNos(list) {
+  const out = []
+  let start = null
+  let prev = null
+  for (const n of list || []) {
+    if (start === null) { start = prev = n; continue }
+    if (n === prev + 1) { prev = n; continue }
+    out.push(start === prev ? `第${start}章` : `第${start}–${prev}章`)
+    start = prev = n
+  }
+  if (start !== null) out.push(start === prev ? `第${start}章` : `第${start}–${prev}章`)
+  return out.join('、')
+}
+// 单章 tag 的 title：把两种成因都说清楚（大纲/世界观更新 + 前文被重写）
+function staleReasonTitle(no) {
+  const r = (staleMap.value[no] || {}).reason || {}
+  const parts = []
+  const dims = Object.keys(r.stale_dims || {}).map(k => (k === 'outline' ? '大纲' : '世界观'))
+  if (dims.length) parts.push(`${dims.join('、')}已更新`)
+  const rewrites = r.prev_rewrites || []
+  if (rewrites.length) {
+    parts.push(rewrites.map(it => `第${it.ch}章已重写（v${it.based_on}→v${it.current}）`).join('、'))
+  }
+  return parts.length ? `该章基于旧版生成：${parts.join('；')}，可能已过期` : '该章可能已过期'
 }
 function jumpToStale(no) {
   const c = chapters.value.find(x => Number(x.no) === Number(no))

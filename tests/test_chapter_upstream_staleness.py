@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -18,9 +20,11 @@ sys.path.insert(0, str(ROOT))
 
 from novel_gen.config import NovelConfig                             # noqa: E402
 from novel_gen.pipeline import chapter_staleness as st               # noqa: E402
+from novel_gen.pipeline.manager import NovelPipeline                 # noqa: E402
 from novel_gen.store.project import ProjectStore                     # noqa: E402
 from novel_gen.store.schemas import Chapter                          # noqa: E402
 from novel_gen.store.versioned import VersionedProduct               # noqa: E402
+from webapp.routers import projects_chapters as pc                   # noqa: E402
 from webapp.routers import projects_staleness as ps                  # noqa: E402
 
 USER = {"id": 1, "username": "tester"}
@@ -42,9 +46,11 @@ def _commit_world(store, tag: str) -> int:
 
 
 def _write_chapters(store, nos=(1, 2)) -> None:
-    """在既有上游版本下写章节：版本库会自动记录 upstream。"""
+    """模拟档2生成：版本库记录 outline/world，同时记录章节级依赖（前文各章 v1）。"""
     for no in nos:
-        store.save_chapter(Chapter(no=no, title=f"第{no}章", content=f"第{no}章正文。"))
+        prev = [{"ch": k, "v": 1} for k in range(1, no)]
+        store.save_chapter(Chapter(no=no, title=f"第{no}章", content=f"第{no}章正文。"),
+                           prev_chapters=prev)
 
 
 @pytest.fixture
@@ -137,7 +143,131 @@ def test_all_latest_is_fresh(fresh_book):
     assert data["data_gaps"] == []
 
 
-# ---------------------------------------------------------------- 接口层鉴权
+# ---------------------------------------------------------------- 档2：前文重写传播
+
+@pytest.mark.p1
+def test_prev_chapter_rewrite_marks_downstream_stale(fresh_book):
+    """①第3章重写后：第4、5章判 stale，成因标 prev_chapter；1–3 章仍 fresh。"""
+    _write_chapters(fresh_book, (1, 2, 3, 4, 5))
+    fresh_book.save_chapter(Chapter(no=3, title="第3章", content="第3章重写后的正文。"),
+                            source="rewrite")
+
+    data = st.build_chapter_staleness(fresh_book)
+    status = {r["chapter"]: r["status"] for r in data["chapters"]}
+
+    assert status == {1: "fresh", 2: "fresh", 3: "fresh", 4: "stale", 5: "stale"}
+    reason = data["chapters"][3]["reason"]
+    assert reason["prev_rewrites"] == [
+        {"ch": 3, "based_on": 1, "current": 2, "direction": "rewritten"}]
+    assert reason["stale_causes"] == ["prev_chapter"]
+    assert data["summary"]["prev_rewrites"] == [
+        {"ch": 3, "based_on": 1, "current": 2,
+         "direction": "rewritten", "affected": [4, 5]}]
+
+
+@pytest.mark.p1
+def test_both_causes_coexist(fresh_book):
+    """②大纲升版 + 前文重写同时发生：两种成因都报出来。"""
+    _write_chapters(fresh_book, (1, 2, 3, 4))
+    fresh_book.save_chapter(Chapter(no=2, title="第2章", content="第2章重写。"),
+                            source="rewrite")
+    _commit_outline(fresh_book, "v2")
+
+    data = st.build_chapter_staleness(fresh_book)
+    row4 = data["chapters"][3]
+    assert row4["status"] == "stale"
+    assert set(row4["reason"]["stale_causes"]) == {"outline", "prev_chapter"}
+    assert set(row4["reason"]["stale_dims"]) == {"outline"}
+    assert row4["reason"]["prev_rewrites"][0]["ch"] == 2
+    kinds = {c["kind"] for c in data["summary"]["causes"]}
+    assert kinds == {"outline"}
+
+
+@pytest.mark.p1
+def test_legacy_chapter_without_prev_dependency_is_unknown(fresh_book):
+    """③有 upstream 但没有 prev_chapters（档2前生成）→ unknown，不能判 fresh。"""
+    _write_chapters(fresh_book, (1, 2))
+    index = fresh_book.load_chapter_versions()
+    for h in index["2"]["history"]:
+        (h.get("upstream") or {}).pop("prev_chapters", None)
+    fresh_book.save_chapter_versions(index)
+
+    data = st.build_chapter_staleness(fresh_book)
+    row2 = data["chapters"][1]
+    assert row2["status"] == "unknown"
+    assert row2["reason"]["unknown_reason"] == "no_prev_dependency_record"
+    # 首章记了空依赖列表 → 仍是 fresh
+    assert data["chapters"][0]["status"] == "fresh"
+    assert data["summary"]["unknown_chapters"] == [2]
+    assert any("前文是否被重写" in gap for gap in data["data_gaps"])
+
+
+# ---------------------------------------------------------------- 档2：版本切换同步账本
+
+def _prep_switch(store) -> NovelConfig:
+    """准备一章两版正文 + 场景记录 + 只开章末状态的账本配置。"""
+    _commit_outline(store, "v1")
+    _commit_world(store, "v1")
+    store.save_chapter(Chapter(no=1, title="第1章", content="A版正文。"), prev_chapters=[])
+    store.save_chapter(Chapter(no=1, title="第1章", content="B版正文。"), prev_chapters=[])
+    store.save_scenes(1, [{"no": 1, "goal": "场景A"}])
+    cfg = store.load_config()
+    cfg.character_state_tracking = False
+    cfg.reveal_tracking = False
+    cfg.reader_ledger = False
+    cfg.book_memory = False
+    cfg.chapter_state_tracking = True
+    store.save_config(cfg)
+    return cfg
+
+
+def _patch_route(monkeypatch, store, pipe=None):
+    monkeypatch.setattr(pc, "_check_project_access", lambda pid, user: None)
+    monkeypatch.setattr(pc, "_find_project", lambda pid: store)
+    monkeypatch.setattr(pc, "_assert_not_locked", lambda *a, **k: None)
+    monkeypatch.setattr(pc, "_open_pipeline",
+                        lambda s, trace_id="": pipe or MagicMock())
+
+
+@pytest.mark.p1
+def test_version_switch_syncs_ledgers(store, monkeypatch):
+    """④切换版本后走 sync_after_rewrite：摘要刷新、场景标脏、章末账本状态可读。"""
+    cfg = _prep_switch(store)
+    pipe = NovelPipeline(cfg, store, MagicMock())
+    monkeypatch.setattr(pipe.chapter_writer, "_gen_summary", lambda *a, **k: "B版新摘要")
+    monkeypatch.setattr(
+        "novel_gen.pipeline.chapter_state.extract_chapter_state",
+        lambda *a, **k: {"chapter": 1, "numbers": {}})
+    _patch_route(monkeypatch, store, pipe)
+
+    res = pc.select_chapter_version("p1", 1, 1, USER)
+
+    assert res["selected_version"] == 1
+    assert res["ledger"]["chapter_state"] in {"written", "skipped_backward"}
+    assert res["ledger"]["summary"] is True
+    assert res["ledger"]["scenes_stale"] is True
+    assert any(s.get("summary") == "B版新摘要" for s in store.load_summaries())
+    assert "stale" in (store.load_scenes().get("1") or {})
+
+
+@pytest.mark.p1
+def test_ledger_sync_failure_does_not_block_switch(store, monkeypatch, caplog):
+    """⑤账本同步炸了：版本切换仍成功、正文已切换，失败留 ERROR 日志并可感知。"""
+    _prep_switch(store)
+    _patch_route(monkeypatch, store, MagicMock())
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger boom")
+
+    monkeypatch.setattr(pc, "sync_after_rewrite", _boom)
+    with caplog.at_level(logging.ERROR):
+        res = pc.select_chapter_version("p1", 1, 1, USER)
+
+    assert res["selected_version"] == 1
+    assert res["ledger"]["status"] == "failed"
+    assert "ledger boom" in caplog.text
+    assert store.load_chapter(1).content == "A版正文。"
+
 
 @pytest.mark.p1
 def test_route_forbids_other_users_project(store, monkeypatch):

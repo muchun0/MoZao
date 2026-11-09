@@ -100,8 +100,49 @@ def _compare(kind: str, based_on, current: dict) -> dict | None:
     }
 
 
-def _judge(no: int, rec: dict, outline: dict, world: dict) -> dict:
-    """单章判定：fresh / stale / unknown + 依据。"""
+def _as_int(value) -> int:
+    """宽松转 int（章号/版本号比较用）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _prev_dependency(upstream: dict, index: dict) -> tuple[str, list[dict]]:
+    """章节级依赖（档2）比对：返回 (状态, 前文变更列表)。
+
+    状态：recorded=有依赖记录；missing=存量章无该字段（必须判 unknown）；
+    前文变更项：`{ch, based_on, current, direction}`，direction=rewritten（当前更新）
+    或 reverted（当前被切回更旧版本）。无版本记录的存量章记 0，避免误报。
+    """
+    if "prev_chapters" not in upstream:
+        return "missing", []
+    refs = upstream.get("prev_chapters")
+    if not isinstance(refs, list):
+        return "unknown", []
+    changed = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        ch = _as_int(ref.get("ch"))
+        based = _as_int(ref.get("v"))
+        if ch <= 0:
+            continue
+        rec = index.get(str(ch)) or {}
+        cur = _as_int(rec.get("selected"))
+        if cur == based:
+            continue
+        changed.append({
+            "ch": ch,
+            "based_on": based,
+            "current": cur,
+            "direction": "rewritten" if cur > based else "reverted",
+        })
+    return "recorded", changed
+
+
+def _judge(no: int, rec: dict, outline: dict, world: dict, index: dict) -> dict:
+    """单章判定：fresh / stale / unknown + 依据（两种成因可并存）。"""
     reason = _base_reason(outline, world)
     entry = _selected_entry(rec)
     if entry is None:
@@ -121,15 +162,31 @@ def _judge(no: int, rec: dict, outline: dict, world: dict) -> dict:
         reason["unknown_reason"] = "current_upstream_unavailable"
         return {"chapter": no, "status": "unknown", "reason": reason}
 
+    # 档2：前文重写检测（存量章无该字段 → unknown，绝不判 fresh）
+    prev_state, prev_changed = _prev_dependency(upstream, index)
+    reason["prev_dependency"] = prev_state
+    if prev_state == "missing":
+        reason["unknown_reason"] = "no_prev_dependency_record"
+        return {"chapter": no, "status": "unknown", "reason": reason}
+    if prev_state == "unknown":
+        reason["unknown_reason"] = "invalid_prev_dependency_record"
+        return {"chapter": no, "status": "unknown", "reason": reason}
+    if prev_changed:
+        reason["prev_rewrites"] = prev_changed
+
     stale_dims = {}
     for kind in UPSTREAM_KINDS:
         diff = _compare(kind, based_on[kind], outline if kind == "outline" else world)
         if diff is not None:
             stale_dims[kind] = diff
-    if not stale_dims:
+    if not stale_dims and not prev_changed:
         return {"chapter": no, "status": "fresh", "reason": reason}
-    reason["stale_dims"] = stale_dims
-    # changed_at 取发生变化的维度里最晚的变更时间（legacy 版本 ts 为 0 → 保持 None）
+    if stale_dims:
+        reason["stale_dims"] = stale_dims
+    # stale_causes 让前端一眼分清「大纲/世界观变了」还是「前文被重写」
+    causes = list(stale_dims.keys()) + (["prev_chapter"] if prev_changed else [])
+    reason["stale_causes"] = causes
+    # changed_at 取上游维度变更时间；前文重写没有稳定 ts（版本历史可查），不伪造
     stamps = [d["changed_at"] for d in stale_dims.values() if d["changed_at"]]
     reason["changed_at"] = max(stamps) if stamps else None
     return {"chapter": no, "status": "stale", "reason": reason}
@@ -157,6 +214,18 @@ def _causes(rows: list[dict]) -> list[dict]:
     return causes
 
 
+def _prev_rewrite_summary(rows: list[dict]) -> list[dict]:
+    """按「被重写的前文章」聚合受影响章节，供前端生成「第3章已重写，影响第4–6章」。"""
+    agg: dict[tuple, list[int]] = {}
+    for row in rows:
+        for item in row["reason"].get("prev_rewrites") or []:
+            key = (item["ch"], item["based_on"], item["current"], item["direction"])
+            agg.setdefault(key, []).append(row["chapter"])
+    return [{"ch": ch, "based_on": based, "current": cur,
+             "direction": direction, "affected": sorted(affected)}
+            for (ch, based, cur, direction), affected in sorted(agg.items())]
+
+
 def build_chapter_staleness(store) -> dict:
     """构建全书章节过期标记（只读）。返回逐章判定 + 汇总，不抛异常。"""
     data_gaps: list[str] = []
@@ -177,7 +246,7 @@ def build_chapter_staleness(store) -> dict:
         index = {}
         data_gaps.append("读取章节版本索引失败，本章判定全部降级为 unknown")
 
-    rows = [_judge(no, index.get(str(no)) or {}, outline, world) for no in numbers]
+    rows = [_judge(no, index.get(str(no)) or {}, outline, world, index) for no in numbers]
     stale = [r["chapter"] for r in rows if r["status"] == "stale"]
     unknown = [r["chapter"] for r in rows if r["status"] == "unknown"]
     fresh_count = len(rows) - len(stale) - len(unknown)
@@ -187,6 +256,11 @@ def build_chapter_staleness(store) -> dict:
     elif unknown:
         data_gaps.append(
             f"{len(unknown)} 章缺少生成时的上游版本记录，无法判断是否过期（不视为正常）")
+        legacy = sum(1 for r in rows
+                     if r["reason"].get("unknown_reason") == "no_prev_dependency_record")
+        if legacy:
+            data_gaps.append(
+                f"其中 {legacy} 章产生于章节依赖记录上线前，无法判断前文是否被重写")
 
     return {
         "chapters": rows,
@@ -200,6 +274,7 @@ def build_chapter_staleness(store) -> dict:
             "regenerate_from": stale[0] if stale else None,
             "ranges": _ranges(stale),
             "causes": _causes(rows),
+            "prev_rewrites": _prev_rewrite_summary(rows),
             "current": {
                 "outline_v": outline["v"],
                 "world_v": world["v"],

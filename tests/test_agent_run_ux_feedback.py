@@ -158,7 +158,7 @@ class _MockWriterV:
     def __init__(self, store):
         self.store = store
 
-    def write(self, no, title, goal, research, is_final=False):
+    def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
         self.store.save_chapter(Chapter(no=no, title=title, content=f"第一版正文{no}" * 300))
         self.store.save_chapter(Chapter(no=no, title=title, content=f"第二版正文{no}" * 300),
                                 quality={"score": 55, "passed": False, "issue_count": 3,
@@ -204,7 +204,7 @@ class _MockWriterSimple:
     def __init__(self, store):
         self.store = store
 
-    def write(self, no, title, goal, research, is_final=False):
+    def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
         self.store.save_chapter(Chapter(no=no, title=title, content=f"正文{no}" * 300))
 
 

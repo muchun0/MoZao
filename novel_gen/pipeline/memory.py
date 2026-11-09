@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from ..store.project import ProjectStore
 from ..store.schemas import World
 from .mechanism_types import has_type, resolve_types
@@ -45,13 +47,19 @@ class Memory:
         # 档2：本章上下文实际消费过的前文章号（L4 摘要 + L4.5 正文直读），
         # 供生成落盘时写入 upstream.prev_chapters（读时记录，不臆测）
         self._consumed_chapters: set[int] = set()
+        # 档3：本次装配的过期章（默认空，避免直接调用子方法时缺属性）
+        self._unstable_chapters: set[int] = set()
 
     def consumed_chapters(self) -> list[int]:
         """返回最近一次 build_context 实际读取过的前文章号（升序）。"""
         return sorted(self._consumed_chapters)
 
-    def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "") -> str:
+    def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "",
+                      unstable_chapters: Optional[list[int]] = None) -> str:
         """为第 up_to_chapter 章构建记忆上下文。
+
+        unstable_chapters：档3「已知不一致继续」时的过期章号（可选，默认 None）。
+        命中的 L4 摘要会加前缀标注；不改变装配结构与层级顺序。
 
         L1 全局设定库：按章触发注入（P1-3）——只注入预测出场人物卡与相关伏笔；
             用户强约束 / 锁定项 / 核心世界观永不裁剪，置于 prompt 末尾。
@@ -66,6 +74,8 @@ class Memory:
         parts: list[str] = []
         key_parts: list[str] = []   # 强约束区：放 prompt 末尾（权重最高）
         self._consumed_chapters = set()   # 每次装配重新统计，避免跨章串味
+        # 档3：本次「已知不一致继续」涉及的过期章（只用于摘要前缀标注）
+        self._unstable_chapters = {int(n) for n in (unstable_chapters or [])}
 
         # L1 全局设定库（P1-3 Lorebook 式裁剪）
         if world is not None:
@@ -123,6 +133,9 @@ class Memory:
             from .character_state import format_state_line
             cs = self.store.load_character_states()
             if cs:
+                # 档3：只注入目标章之前已发生的人物状态，防止回写早期章时被未来事实污染
+                cs = {k: v for k, v in cs.items()
+                      if int(v.get("last_seen", 0) or 0) < up_to_chapter}
                 items = sorted(
                     cs.items(),
                     key=lambda kv: int(kv[1].get("last_seen", 0) or 0),
@@ -199,7 +212,13 @@ class Memory:
         if recent:
             # 档2：摘要实际进上下文 → 记为本章依赖
             self._consumed_chapters.update(int(s["no"]) for s in recent if s.get("no") is not None)
-            lines = [f"第{s['no']}章：{s['summary']}" for s in recent]
+            # 档3：已知不一致继续时，给过期章的摘要加前缀，提醒模型不要盲从旧设定
+            lines = []
+            for s in recent:
+                text = f"第{s['no']}章：{s['summary']}"
+                if int(s.get("no", 0) or 0) in self._unstable_chapters:
+                    text = f"（基于旧版第{s['no']}章撰写，可能与最新设定不一致）" + text
+                lines.append(text)
             parts.append(
                 f"[L4·前章剧情摘要·最近 {len(recent)} 章]\n" + "\n".join(lines)
             )

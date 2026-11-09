@@ -475,9 +475,10 @@ class VersionedProduct:
 
         档2：章节额外支持 `prev_chapters`（章节级依赖）。仅当显式 dict 携带该键时，
         才自动补齐 outline/world（否则按调用方传入的逻辑透传），避免丢失上游维度。
+        档3：`unstable` 与 `prev_chapters` 同属章节版本元数据，携带时同样补齐上游维度。
         """
         if upstream is not None:
-            if self.kind != "chapter" or "prev_chapters" not in upstream:
+            if self.kind != "chapter" or not ({"prev_chapters", "unstable"} & set(upstream)):
                 return dict(upstream)
         out: dict[str, int] = {}
         explicit = dict(upstream or {})

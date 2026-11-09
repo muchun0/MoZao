@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import re
 
+from typing import Optional
+
 logger = logging.getLogger(__name__)
 
 from ..config import NovelConfig
@@ -665,6 +667,7 @@ class ChapterWriter:
     def _write_body(
         self, chapter_no: int, plan_title: str, plan_goal: str,
         research: ResearchReport | None, is_final: bool, silent: bool,
+        unstable_chapters: Optional[list[int]] = None,
     ) -> tuple[str, str, str, str, str]:
         """生成并清洗正文，返回 (content, summary, system, plan_core_event, plan_moves, scenes)。
 
@@ -688,6 +691,7 @@ class ChapterWriter:
             pass
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
+            unstable_chapters=unstable_chapters,
         )
         prev_tail = self._prev_tail(chapter_no)
         # 档2：记录本章上下文实际消费的前文章节及版本（记忆装配后取，不臆测）
@@ -819,10 +823,13 @@ class ChapterWriter:
         research: ResearchReport | None,
         silent: bool = False,
         is_final: bool = False,
+        unstable_chapters: Optional[list[int]] = None,
     ) -> Chapter:
+        # 档3：已知不一致继续时，过期章号只用于摘要前缀标注 + upstream.unstable 落痕
         (content, summary, system, plan_core_event, plan_moves, scenes,
          prev_refs) = self._write_body(
             chapter_no, plan_title, plan_goal, research, is_final, silent,
+            unstable_chapters=unstable_chapters,
         )
 
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
@@ -982,6 +989,7 @@ class ChapterWriter:
                         quality=_v.get("quality") if isinstance(_v.get("quality"), dict) else None,
                         promote=False,
                         prev_chapters=prev_refs,
+                        unstable=bool(unstable_chapters),
                     )
                 _final = _qc_versions[-1]
                 _final_ch = Chapter(no=chapter_no, title=plan_title,
@@ -994,6 +1002,7 @@ class ChapterWriter:
                     quality=_final.get("quality") if isinstance(_final.get("quality"), dict) else None,
                     promote=not kept_previous,
                     prev_chapters=prev_refs,
+                    unstable=bool(unstable_chapters),
                 )
             except Exception:
                 logger.exception("质检版本落库失败: no=%d", chapter_no)
@@ -1001,7 +1010,8 @@ class ChapterWriter:
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         if not _qc_versions and not compliance_rejected:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
-            self.store.save_chapter(chapter, prev_chapters=prev_refs)
+            self.store.save_chapter(chapter, prev_chapters=prev_refs,
+                                    unstable=bool(unstable_chapters))
         self._write_post_gates(chapter_no, plan_title, content, summary,
                                plan_moves, plan_core_event, scenes, silent)
         return chapter

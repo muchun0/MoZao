@@ -73,7 +73,7 @@ class _MockWriter:
         self.stop_at = stop_at
         self.written: list[int] = []
 
-    def write(self, no, title, goal, research, is_final=False):
+    def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
         self.store.save_chapter(Chapter(no=no, title=title, content="正文片段" * 300))
         self.written.append(no)
         if no == self.stop_at:

@@ -158,7 +158,7 @@ def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, wired, monke
     store.save_chapter(Chapter(no=1, title="第1章", content="初稿" * 500), source="ai")
 
     class _FakeWriter:
-        def write(self, no, title, goal, research, is_final=False):
+        def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
             content = "重写正文" * 800
             store.save_chapter(Chapter(no=no, title=title, content=content), source="rewrite")
             return Chapter(no=no, title=title, content=content)

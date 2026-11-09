@@ -310,6 +310,8 @@
       </div>
     </el-card>
 
+    <!-- 档3：批量生成的生成前一致性门禁（409 stale_gate）二次确认 -->
+    <StaleGateDialog ref="staleGateRef" />
   </div>
 </template>
 
@@ -327,9 +329,12 @@ import {
   foreshadowStateTag, foreshadowProgressText, unstructuredNote,
 } from '../../utils/foreshadow'
 import StaleNotice from '../common/StaleNotice.vue'
+import StaleGateDialog from '../common/StaleGateDialog.vue'
 import { staleNoticeOf } from '../../utils/staleness'
 
 const props = defineProps({ pid: String })
+// 档3：生成前一致性门禁弹窗（409 stale_gate）
+const staleGateRef = ref(null)
 
 const verifyResult = ref([])
 const reviewSummary = ref({})
@@ -506,17 +511,29 @@ async function pollBatch() {
 async function doBatch() {
   if (batchRunning.value) return
   if (batchEnd.value < batchStart.value) { ElMessage.warning('结束章不能小于起始章'); return }
+  const payload = { agent: 'writer.chapter', params: { scope: 'range', from_ch: batchStart.value, to_ch: batchEnd.value } }
   try {
-    await startAgentRun(props.pid, { agent: 'writer.chapter', params: { scope: 'range', from_ch: batchStart.value, to_ch: batchEnd.value } })
-    ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
-    batchRunning.value = true
-    batchError.value = ''
-    batchPct.value = 0
-    batchStatus.value = '批量生成中…'
-    stopBatchPolling()
-    batchTimer = setInterval(pollBatch, 3000)
-    pollBatch()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '批量生成失败') }
+    await startAgentRun(props.pid, payload)
+    onBatchStarted()
+  } catch (e) {
+    const d = e?.response?.data?.detail
+    // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(props.pid, d, payload, onBatchStarted)) {
+      ElMessage.error(typeof d === 'string' ? d : (d?.message || '批量生成失败'))
+    }
+  }
+}
+
+// 批量生成启动成功后的统一后续（直接启动与门禁弹窗放行共用）
+function onBatchStarted() {
+  ElMessage.success(`已开始批量生成第${batchStart.value}-${batchEnd.value}章`)
+  batchRunning.value = true
+  batchError.value = ''
+  batchPct.value = 0
+  batchStatus.value = '批量生成中…'
+  stopBatchPolling()
+  batchTimer = setInterval(pollBatch, 3000)
+  pollBatch()
 }
 
 const fsInput = ref('')

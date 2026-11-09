@@ -3,6 +3,8 @@ import request from './request'
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
 // R12 章节质量总览：一次性取各章选中版本的质检摘要（只读，不逐章读版本）
 export const getChapterQualityOverview = (pid) => request.get(`/projects/${pid}/chapters/quality-overview`)
+// 档1 上游过期标记：读时推导各章基于的大纲/世界观版本是否落后（只读）
+export const getChapterStaleness = (pid) => request.get(`/projects/${pid}/chapters/staleness`)
 export const getChapter = (pid, no) => request.get(`/projects/${pid}/chapters/${no}`)
 export const updateChapterContent = (pid, no, data) => request.put(`/projects/${pid}/chapters/${no}`, data)
 // REQ-章节版本化：章节版本列表 / 选择版本 / 删除版本

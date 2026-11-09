@@ -64,6 +64,17 @@
               <el-checkbox v-model="qualityOnly" size="small">只看需要处理的章</el-checkbox>
             </div>
           </div>
+          <!-- 档1 上游过期提示：读时推导，只提示不阻断；点章号直接跳到对应章节 -->
+          <div v-if="staleHint || staleUnknownHint" class="ch-stale-bar">
+            <el-tag v-if="staleHint" size="small" type="warning" effect="plain">上游已更新</el-tag>
+            <span v-if="staleHint" class="ch-stale-text">{{ staleHint }}</span>
+            <span v-if="staleUnknownHint" class="ch-stale-sub">{{ staleUnknownHint }}</span>
+            <span v-if="staleHint" class="ch-stale-jumps">
+              <el-button v-for="n in staleJumpChapters.slice(0, 6)" :key="n" size="small" link type="warning"
+                         @click="jumpToStale(n)">第{{ n }}章</el-button>
+              <span v-if="staleJumpChapters.length > 6" class="ch-stale-sub">…</span>
+            </span>
+          </div>
           <div v-if="chapters.length" class="ch-list">
             <div v-for="g in displayGroups" :key="g.key" class="ch-group">
               <div class="ch-group-title">{{ g.name }}</div>
@@ -85,6 +96,10 @@
                   <span v-if="c.quality.has_quality" class="ch-issue-count">{{ c.quality.issue_count }}处</span>
                 </span>
                 <span class="ch-words">{{ c.words ? fmtWords(c.words) : '未生成' }}</span>
+                <el-tag v-if="isStale(c.no)" size="small" type="warning" effect="plain"
+                        :title="`该章基于旧版${staleDimsText(c.no)}生成，可能已过期`">
+                  可能过期
+                </el-tag>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
                 <div class="ch-actions" @click.stop>
                   <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
@@ -226,7 +241,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun, getAgentRun } from '../api/project'
-import { getChapters, getChapterQualityOverview, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
   qualityMeta, sortRowsByQuality, filterRows, qualityIndexTitle,
   qualityWorstText, qualityGapText,
@@ -375,6 +390,53 @@ const displayGroups = computed(() => {
 const worstText = computed(() => qualityWorstText(qualityOverview.value, chapters.value))
 const qualityGap = computed(() => qualityGapText(qualityOverview.value))
 
+// ===== 档1 上游过期标记（读时推导，只读展示） =====
+const staleness = ref(null)   // GET /chapters/staleness 的响应
+const staleMap = computed(() => {
+  const map = {}
+  ;((staleness.value || {}).chapters || []).forEach(r => { map[r.chapter] = r })
+  return map
+})
+function fmtRange(r) { return r.from === r.to ? `第${r.from}章` : `第${r.from}–${r.to}章` }
+// 一条轻量提示：「第 3–5 章可能已过期，因为大纲更新到 v5」
+const staleHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  if (!s || !s.stale_count) return ''
+  const ranges = (s.ranges || []).map(fmtRange).join('、')
+  const current = s.current || {}
+  const causes = (s.causes || [])
+    .map(c => `${c.label}更新到 v${current[c.kind + '_v']}`)
+    .join('、')
+  return `${ranges}可能已过期${causes ? `，因为${causes}` : ''}`
+})
+const staleUnknownHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  return s && s.unknown_count
+    ? `另有 ${s.unknown_count} 章缺少生成时的上游版本记录，无法判断是否过期`
+    : ''
+})
+const staleJumpChapters = computed(() => ((staleness.value || {}).summary || {}).stale_chapters || [])
+function isStale(no) { return (staleMap.value[no] || {}).status === 'stale' }
+// 过期维度文案（用于单章 tag 的 title）
+function staleDimsText(no) {
+  const dims = ((staleMap.value[no] || {}).reason || {}).stale_dims || {}
+  return Object.keys(dims).map(k => (k === 'outline' ? '大纲' : '世界观')).join('、')
+}
+function jumpToStale(no) {
+  const c = chapters.value.find(x => Number(x.no) === Number(no))
+  if (c) openChapter(c)
+  else ElMessage.info(`第${no}章正文已不存在，无法跳转`)
+}
+
+async function loadStaleness() {
+  try {
+    staleness.value = await getChapterStaleness(pid)
+  } catch {
+    // 只读判定失败不阻断章节列表：降级为无提示
+    staleness.value = { chapters: [], summary: { stale_count: 0, unknown_count: 0 }, data_gaps: ['过期检查失败，本次未展示'] }
+  }
+}
+
 async function loadQualityOverview() {
   try {
     qualityOverview.value = await getChapterQualityOverview(pid)
@@ -468,8 +530,8 @@ async function loadAll() {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
     genTotal.value = outline.value?.chapters?.length || 0
-    // 章节列表与质量总览并行拉取（质量总览只读且已内部降级）
-    const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+    // 章节列表、质量总览与上游过期标记并行拉取（后两者只读且已内部降级）
+    const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview(), loadStaleness()])
     chapters.value = chsRes.chapters || []
     genDoneCount.value = chapters.value.length
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
@@ -529,6 +591,7 @@ async function refreshAfterGen(quiet = false) {
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     genDoneCount.value = chapters.value.length
+    await loadStaleness()
     outlineReloadKey.value++
     loadSnapshots()
     if (!quiet) ElMessage.success('任务已完成，数据已刷新')
@@ -558,8 +621,8 @@ function onAgentStarted({ agent, task_id }) {
 }
 
 async function loadChapters() {
-  // 切版本 / 生成完成后同步刷新质量总览，保证列表分数与版本弹窗一致
-  const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+  // 切版本 / 生成完成后同步刷新质量总览与过期标记，保证列表分数/提示与版本一致
+  const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview(), loadStaleness()])
   chapters.value = chsRes.chapters || []
 }
 
@@ -924,6 +987,16 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-quality-empty, .ch-quality-gap { font-size: 12px; color: var(--muted); }
 .ch-quality-gap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .ch-quality-controls { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+/* ===== 档1 上游过期提示（轻量条，不占额外版块） ===== */
+.ch-stale-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 10px; padding: 6px 10px; border-radius: 6px;
+  background: var(--el-color-warning-light-9, #fdf6ec);
+  border: 1px solid var(--el-color-warning-light-7, #faecd8);
+}
+.ch-stale-text { font-size: 12px; color: var(--el-color-warning-dark-2, #b88230); }
+.ch-stale-sub { font-size: 12px; color: var(--muted); }
+.ch-stale-jumps { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; }
 
 /* ===== 面板工具条（大纲页） ===== */
 .panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

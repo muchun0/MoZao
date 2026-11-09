@@ -277,6 +277,23 @@ class ProjectStore:
     def load_scenes(self) -> dict:
         return self._read_json(self.scenes_path(), {})
 
+    def mark_scenes_stale(self, chapter_no: int, reason: str = "",
+                          version: int | None = None) -> bool:
+        """把本章场景记录标记为过期（正文被局部改写后调用）。
+
+        不重跑拆场景（额外 LLM + 正文漂移风险），只在原记录上追加 stale 元信息，
+        供回看/复用时提示"场景计划与当前正文可能不一致"。无场景记录返回 False。
+        """
+        data = self._read_json(self.scenes_path(), {})
+        rec = data.get(str(chapter_no))
+        if not isinstance(rec, dict):
+            return False
+        rec["stale"] = {"reason": reason, "version": version,
+                        "ts": int(time.time())}
+        data[str(chapter_no)] = rec
+        self._write_json(self.scenes_path(), data)
+        return True
+
     # ---------- 大纲 ----------
     def outline_path(self) -> Path:
         return self.dir / "outline.json"

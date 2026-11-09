@@ -9,6 +9,7 @@ from novel_gen.pipeline import artifact_staleness  # R13 派生记录标脏（�
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
+from novel_gen.pipeline.chapter_ledger import sync_after_rewrite  # 档2 版本切换后账本同步
 from ..chapter_quality_service import recheck_chapter_quality as _recheck_chapter_quality  # R14 单章重检
 from novel_gen.pipeline.quality.checker import QualityUnavailable  # R14 模型失败 fail-closed
 from novel_gen.pipeline.templates import _style_reference
@@ -44,9 +45,19 @@ def select_chapter_version(project_id: str, no: int, v: int,
     ch = store.select_version(no, v)
     if ch is None:
         raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在（可能已被淘汰）")
+    # 档2：切换后本章正文变了，账本（摘要/人物/章末/揭示/读者）必须跟着同步。
+    # 复用 R1 改写同一条路径（sync_after_rewrite）；结算语义不变，失败只留痕不阻断。
+    ledger = {"status": "skipped"}
+    try:
+        ledger = sync_after_rewrite(store, _open_pipeline(store), no, version=v)
+    except Exception as exc:
+        logger.exception("版本切换后账本同步异常（版本切换已生效，账本可能落后）: "
+                         "project=%s no=%d v=%d", project_id, no, v)
+        ledger = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     # P2（REQ §5 验收10）：切换后账本为该版本投影，仅提示，不重放
-    logger.info("章节版本选择: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
-    return {"no": no, "selected_version": v, "words": len(ch.content)}
+    logger.info("章节版本选择: uid=%d project=%s no=%d v=%d ledger=%s",
+                user["id"], project_id, no, v, ledger.get("chapter_state"))
+    return {"no": no, "selected_version": v, "words": len(ch.content), "ledger": ledger}
 
 
 @app.delete("/api/projects/{project_id}/chapters/{no}/versions/{v}")

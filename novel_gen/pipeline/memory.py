@@ -42,6 +42,13 @@ class Memory:
     def __init__(self, store: ProjectStore, memory_window: int = 5):
         self.store = store
         self.memory_window = max(0, memory_window)
+        # 档2：本章上下文实际消费过的前文章号（L4 摘要 + L4.5 正文直读），
+        # 供生成落盘时写入 upstream.prev_chapters（读时记录，不臆测）
+        self._consumed_chapters: set[int] = set()
+
+    def consumed_chapters(self) -> list[int]:
+        """返回最近一次 build_context 实际读取过的前文章号（升序）。"""
+        return sorted(self._consumed_chapters)
 
     def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "") -> str:
         """为第 up_to_chapter 章构建记忆上下文。
@@ -58,6 +65,7 @@ class Memory:
         """
         parts: list[str] = []
         key_parts: list[str] = []   # 强约束区：放 prompt 末尾（权重最高）
+        self._consumed_chapters = set()   # 每次装配重新统计，避免跨章串味
 
         # L1 全局设定库（P1-3 Lorebook 式裁剪）
         if world is not None:
@@ -189,6 +197,8 @@ class Memory:
         recent = [s for s in summaries if int(s.get("no", 0)) < up_to_chapter]
         recent = recent[-self.memory_window:] if self.memory_window else recent
         if recent:
+            # 档2：摘要实际进上下文 → 记为本章依赖
+            self._consumed_chapters.update(int(s["no"]) for s in recent if s.get("no") is not None)
             lines = [f"第{s['no']}章：{s['summary']}" for s in recent]
             parts.append(
                 f"[L4·前章剧情摘要·最近 {len(recent)} 章]\n" + "\n".join(lines)
@@ -207,6 +217,7 @@ class Memory:
                     if ch and ch.content:
                         tail = ch.content.strip()[-chars_d:]
                         if tail:
+                            self._consumed_chapters.add(int(dno))   # 档2：正文直读 → 依赖
                             direct_lines.append(f"第{dno}章《{ch.title}》：{tail}")
                 if direct_lines:
                     parts.append(

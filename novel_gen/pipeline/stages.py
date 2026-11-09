@@ -690,6 +690,8 @@ class ChapterWriter:
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
         )
         prev_tail = self._prev_tail(chapter_no)
+        # 档2：记录本章上下文实际消费的前文章节及版本（记忆装配后取，不臆测）
+        prev_refs = self._prev_chapter_refs(chapter_no)
 
         memory_context, plan_core_event, plan_moves = self._inject_memory_blocks(
             chapter_no, world, memory_context, plan_title, plan_goal,
@@ -805,7 +807,9 @@ class ChapterWriter:
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 logger.warning(f'  [读者审校] 跳过: {e}')
-        return content, summary, system, plan_core_event, plan_moves, scenes
+        # 档2：把本章实际消费的前文章节依赖一并返回，供 write() 落盘 upstream
+        return (content, summary, system, plan_core_event, plan_moves, scenes,
+                prev_refs)
 
     def write(
         self,
@@ -816,7 +820,8 @@ class ChapterWriter:
         silent: bool = False,
         is_final: bool = False,
     ) -> Chapter:
-        content, summary, system, plan_core_event, plan_moves, scenes = self._write_body(
+        (content, summary, system, plan_core_event, plan_moves, scenes,
+         prev_refs) = self._write_body(
             chapter_no, plan_title, plan_goal, research, is_final, silent,
         )
 
@@ -976,6 +981,7 @@ class ChapterWriter:
                         source="rewrite" if _v.get("auto_revised") else "ai",
                         quality=_v.get("quality") if isinstance(_v.get("quality"), dict) else None,
                         promote=False,
+                        prev_chapters=prev_refs,
                     )
                 _final = _qc_versions[-1]
                 _final_ch = Chapter(no=chapter_no, title=plan_title,
@@ -987,6 +993,7 @@ class ChapterWriter:
                     source="rewrite" if _final.get("auto_revised") else "ai",
                     quality=_final.get("quality") if isinstance(_final.get("quality"), dict) else None,
                     promote=not kept_previous,
+                    prev_chapters=prev_refs,
                 )
             except Exception:
                 logger.exception("质检版本落库失败: no=%d", chapter_no)
@@ -994,7 +1001,7 @@ class ChapterWriter:
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         if not _qc_versions and not compliance_rejected:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
-            self.store.save_chapter(chapter)
+            self.store.save_chapter(chapter, prev_chapters=prev_refs)
         self._write_post_gates(chapter_no, plan_title, content, summary,
                                plan_moves, plan_core_event, scenes, silent)
         return chapter
@@ -2385,6 +2392,36 @@ class ChapterWriter:
             ).strip()
         except Exception:
             return ""
+
+    def _prev_chapter_refs(self, chapter_no: int) -> list[dict]:
+        """本章章节级依赖：`[{"ch": 3, "v": 2}]`（档2 写入 upstream.prev_chapters）。
+
+        来源只有两处真实读入上下文的位置：`Memory` 记录的 L4/L4.5 消费章节，
+        以及 `_prev_tail` 直读的上一章结尾。无版本索引的存量章记 v=0——
+        后续它一旦被重写产生 v>=1，下游即可判定「前文已改」。
+        """
+        try:
+            nos = set(self.memory.consumed_chapters())
+        except Exception:
+            logger.warning("读取记忆消费章节失败（本章依赖降级为空）: no=%d", chapter_no, exc_info=True)
+            nos = set()
+        try:
+            if chapter_no > 1:
+                prev = self.store.load_chapter(chapter_no - 1)
+                if prev and prev.content:
+                    nos.add(chapter_no - 1)
+        except Exception:
+            logger.warning("读取上一章失败（依赖记录可能缺章）: no=%d", chapter_no, exc_info=True)
+        try:
+            index = self.store.load_chapter_versions() or {}
+        except Exception:
+            logger.warning("读取章节版本索引失败（本章依赖记录为空）: no=%d", chapter_no, exc_info=True)
+            return []
+        refs = []
+        for no in sorted(nos):
+            selected = (index.get(str(no)) or {}).get("selected")
+            refs.append({"ch": int(no), "v": int(selected) if isinstance(selected, int) else 0})
+        return refs
 
     def _prev_tail(self, chapter_no: int) -> str:
         """取上一章结尾约 120 字作为衔接提示，减少章节断裂感。"""

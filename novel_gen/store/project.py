@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -28,6 +29,8 @@ from typing import Optional
 from ..config import AgentGuardConfig, LLMConfig, NovelConfig, SearchConfig
 from ..utils.paths import get_output_dir
 from .schemas import Chapter, Outline, ProjectState, World
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_name(name: str) -> str:
@@ -464,21 +467,43 @@ class ProjectStore:
     def save_chapter(self, chapter: Chapter, source: Optional[str] = None,
                      version_limit: Optional[int] = None,
                      quality: Optional[dict] = None,
-                     promote: bool = True) -> Optional[int]:
+                     promote: bool = True,
+                     prev_chapters: Optional[list] = None) -> Optional[int]:
         """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
 
         `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
         门面（统一三类产物版本库）；`False` → 走 `_save_chapter_legacy` 原实现（紧急回退）。
-        对外签名与行为语义不变，详见 `_save_chapter_legacy` docstring。
+
+        档2：`prev_chapters` = 本章上下文实际消费的章节及当时版本
+        （`[{"ch": 3, "v": 2}]`），写入 `upstream.prev_chapters`（与 outline/world 同文件）。
+        传 None 表示"调用方未提供"：同章再生成/改写时沿用上一选中版本的依赖记录，
+        避免把已有的依赖元数据抹掉；存量章无记录则保持缺失（判定为 unknown）。
         """
         if self.versioned_enabled():
+            if prev_chapters is None:
+                prev_chapters = self._carry_prev_chapters(chapter.no)
+            upstream = ({"prev_chapters": prev_chapters}
+                        if prev_chapters is not None else None)
             from .versioned import VersionedProduct
             return VersionedProduct(self, "chapter").commit(
                 str(chapter.no), chapter.to_dict(),
                 source=source or getattr(chapter, "source", "ai") or "ai",
-                quality=quality, promote=promote, limit=version_limit)
+                quality=quality, promote=promote, limit=version_limit,
+                upstream=upstream)
         return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
                                          quality=quality, promote=promote)
+
+    def _carry_prev_chapters(self, no: int) -> Optional[list]:
+        """读取该章当前选中版本的章节依赖记录（同章改写时沿用）；失败降级 None。"""
+        try:
+            rec = (self.load_chapter_versions() or {}).get(str(no)) or {}
+            for item in rec.get("history") or []:
+                if isinstance(item, dict) and item.get("v") == rec.get("selected"):
+                    prev = (item.get("upstream") or {}).get("prev_chapters")
+                    return prev if isinstance(prev, list) else None
+        except Exception:
+            logger.warning("读取章节依赖记录失败（沿用空）: no=%s", no, exc_info=True)
+        return None
 
     def _save_chapter_legacy(self, chapter: Chapter, source: Optional[str] = None,
                              version_limit: Optional[int] = None,

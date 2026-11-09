@@ -1062,46 +1062,11 @@ class ChapterWriter:
         # 多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板误计）→ 累计虚高 → 锚正反馈
         # 放大。蚀化差只跟随正文面板链（面板正确性由质检 2.8c「本章死亡必+1、
         # 未死亡必不变」保证），账本与面板永远一致。
+        # P0-10/14/15/16 机制状态账本（零 LLM，确定性）：逻辑抽到 chapter_ledger，
+        # 生成链路与 R1 局部改写共用同一实现，避免两条路径口径漂移。
         try:
-            _mem_st = self._memory()
-            if _mem_st is not None:
-                from .chapter_state import _EROSION_SEQ_RE as _eseq
-                _eros = None
-                _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
-                if _mv:
-                    _eros = max(_mv)
-                _prev_eros = None
-                try:
-                    _st0 = _mem_st.load().get("state") or {}
-                    _prev_ch = [c for c in _st0.get("chapters", [])
-                                if int(c.get("ch", 0)) < int(chapter_no)]
-                    if _prev_ch:
-                        _prev_eros = _prev_ch[-1].get("erosion")
-                except Exception:
-                    _prev_eros = None
-                # v11 实证（2026-10-10）：ch5 无面板 → erosion=None 断链 → 质检 2.8c
-                # _base 回落起始 97 → ch6 蚀化差误算 101-97=4（把 ch3/ch4 死亡计入 ch6）
-                # → ledger_check 报「4 次死亡」误伤。无面板=无事件=蚀化不变：缺失时
-                # 继承上一章末（与 numbers 链式 chapter_ledger 同口径，账本永不破链）。
-                if _eros is None and _prev_eros is not None:
-                    _eros = int(_prev_eros)
-                _deaths = 0
-                if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
-                    _deaths = _eros - int(_prev_eros or 0)
-                # P0-15/16 通用版：注册字段末值链式入账（ledger_extract_numbers 零 LLM
-                # 抽取；本章未提及字段由 chapter_ledger 继承上一章末值，治 ch5 断链）
-                _nums = {}
-                try:
-                    from .chapter_state import (mechanism_field_registry as _mreg2,
-                                                ledger_extract_numbers as _lex)
-                    _canon2 = (_mem_st.load().get("canon") or {})
-                    _reg2 = _mreg2(_canon2.get("mechanism_baseline") or {})
-                    if _reg2:
-                        _nums = _lex(content or "", _reg2)
-                except Exception:
-                    _nums = {}
-                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros,
-                                             numbers=_nums)
+            from .chapter_ledger import record_mechanism_state
+            record_mechanism_state(self._memory(), chapter_no, content)
         except Exception:
             pass
         # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；

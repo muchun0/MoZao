@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 
 from novel_gen.pipeline.book_memory import BookMemory
+from novel_gen.pipeline.chapter_ledger import sync_after_rewrite
 from novel_gen.pipeline.quality.issue_rewrite import rewrite_issue
 from novel_gen.store.schemas import Chapter
 from novel_gen.store.project import ProjectStore
@@ -140,10 +141,19 @@ def apply_issue_rewrite(store: ProjectStore, pipeline, chapter: Chapter,
 
     charged = round(sum(float(s.get("charged") or 0) for s in settles), 2)
     due = round(sum(float(s.get("due") or 0) for s in settles), 2)
+    # 结算之后的独立步骤：同步本章派生账本（摘要/场景标脏/机制账本/章末状态）。
+    # 放在临界区之外（避免持锁跑 LLM），失败只留日志、不回滚已结算版本。
+    ledger = {"status": "skipped"}
+    try:
+        ledger = sync_after_rewrite(store, pipeline, no, version=new_v)
+    except Exception:
+        logger.exception("按此改账本同步异常（正文与结算已保留）: project=%s no=%d",
+                         store.dir.name, no)
     logger.info("按此改: project=%s no=%d from_v=%d new_v=%d span=%s rewrite_chars=%d "
-                "charged=%.2f mode=%s",
+                "charged=%.2f mode=%s ledger=%s",
                 store.dir.name, no, from_version, new_v, result["span"],
-                result["rewritten_chars"], charged, billing_mode)
+                result["rewritten_chars"], charged, billing_mode,
+                ledger.get("commit"))
     return {"no": no, "from_version": from_version, "version": new_v,
             "span": list(result["span"]), "rewritten_chars": result["rewritten_chars"],
-            "charged": charged, "due": due}
+            "charged": charged, "due": due, "ledger": ledger}

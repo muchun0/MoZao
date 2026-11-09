@@ -168,7 +168,8 @@ class _MockWriterV:
 
 def _mock_pipeline(store, writer=None):
     return SimpleNamespace(cfg=store.load_config(), llm=None,
-                           chapter_writer=writer or _MockWriterV(store))
+                           chapter_writer=writer or _MockWriterV(store),
+                           commit_chapter_ledgers=lambda *a, **k: None)
 
 
 @pytest.mark.p0
@@ -222,7 +223,8 @@ def test_exec_chapters_progress_all_reaches_total(store, byok_db, cleanup_runs):
     """U1-A：scope=all 补完剩余章 → chapters_done 与 chapters_total 同口径（100%）。"""
     store = _store_5ch_3done(store)
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
-                               chapter_writer=_MockWriterSimple(store))
+                               chapter_writer=_MockWriterSimple(store),
+                               commit_chapter_ledgers=lambda *a, **k: None)
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "all"},
                       {"mode": "user_llm", "project_id": store.dir.name},
@@ -241,7 +243,8 @@ def test_exec_chapters_progress_single_absolute(store, byok_db, cleanup_runs):
     """U1-A：单章重生成（未完成章）→ chapters_done 为书级绝对完成数（baseline+1）。"""
     store = _store_5ch_3done(store)
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
-                               chapter_writer=_MockWriterSimple(store))
+                               chapter_writer=_MockWriterSimple(store),
+                               commit_chapter_ledgers=lambda *a, **k: None)
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 4},
                       {"mode": "user_llm", "project_id": store.dir.name},
@@ -259,7 +262,8 @@ def test_exec_chapters_progress_regen_existing(store, byok_db, cleanup_runs):
     """N2：重生成已存在的第 2 章 → chapters_done 不重复计数（仍 3，而非 4）。"""
     store = _store_5ch_3done(store)
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
-                               chapter_writer=_MockWriterSimple(store))
+                               chapter_writer=_MockWriterSimple(store),
+                               commit_chapter_ledgers=lambda *a, **k: None)
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 2},
                       {"mode": "user_llm", "project_id": store.dir.name},
@@ -278,7 +282,8 @@ def test_exec_chapters_progress_regen_full_book(store, byok_db, cleanup_runs):
     for no in (4, 5):
         store.save_chapter(Chapter(no=no, title=f"第{no}章", content=f"旧正文{no}" * 300))
     pipeline = SimpleNamespace(cfg=store.load_config(), llm=None,
-                               chapter_writer=_MockWriterSimple(store))
+                               chapter_writer=_MockWriterSimple(store),
+                               commit_chapter_ledgers=lambda *a, **k: None)
     handle = core._RunHandle()
     gs._exec_chapters(store, pipeline, handle, {"scope": "single", "ch_no": 5},
                       {"mode": "user_llm", "project_id": store.dir.name},

@@ -191,6 +191,9 @@
 
     <RechargeDialog ref="rechargeRef" />
 
+    <!-- 档3：生成前一致性门禁（可确认继续，不硬拒绝） -->
+    <StaleGateDialog ref="staleGateRef" @started="onGateStarted" />
+
     <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh" @closed="hideSelFloat">
       <template #header>
         <div class="reader-header">
@@ -259,6 +262,8 @@ import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'
+// 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
+import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {
   begin, applyStatus, isRunning, errorText, reset, AGENT_PHASE,
 } from '../composables/useGenerationProgress'
@@ -277,6 +282,7 @@ const versionsDialog = ref(false)
 const versionsNo = ref(0)
 const versionsKind = ref('chapter')  // 阶段 1C：统一版本弹窗的当前产物类型（chapter/outline/world）
 const rechargeRef = ref(null)
+const staleGateRef = ref(null)
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
 // 导致 outlineReady 翻转、编辑器被空态替换。用 hadOutline 保住工具条与编辑器（生成中置灰而非隐藏）。
@@ -482,8 +488,9 @@ async function loadQualityOverview() {
 async function regenChapter(c) {
   try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
+  const payload = { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } }
   try {
-    const body = await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } })
+    const body = await startAgentRun(pid, payload)
     ElMessage.success(`已开始重新生成第${c.no}章`)
     // 单章重写走 getAgentRun 轮询（running 态带 progress；done 态 outputs 带质检/候选反馈，F1）
     const s = await new Promise((resolve) => {
@@ -504,7 +511,10 @@ async function regenChapter(c) {
       ElMessage.success(`第${c.no}章已重新生成`)
     }
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '重生成失败')
+    // 档3：目标章之前存在未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
+      ElMessage.error(e?.response?.data?.detail || '重生成失败')
+    }
   } finally { regenNo.value = 0 }
 }
 
@@ -808,14 +818,25 @@ async function doRegenWorld() {
   } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
 }
 async function startGen() {
+  const payload = { agent: 'writer.chapter', params: { scope: 'all' } }
   try {
-    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'all' } })
+    await startAgentRun(pid, payload)
     ElMessage.success('已开始生成')
     beginGenUI('正在启动写作…')
     startPolling()
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '启动失败')
+    // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
+      ElMessage.error(e.response?.data?.detail || '启动失败')
+    }
   }
+}
+
+// 门禁弹窗确认放行后的统一后续：单章重写与「从第X章起重写」都用全局进度跟踪
+function onGateStarted() {
+  ElMessage.success('已开始处理')
+  beginGenUI('正在重写过期章节…')
+  startPolling()
 }
 
 async function cancelGen() {

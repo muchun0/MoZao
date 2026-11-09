@@ -468,7 +468,8 @@ class ProjectStore:
                      version_limit: Optional[int] = None,
                      quality: Optional[dict] = None,
                      promote: bool = True,
-                     prev_chapters: Optional[list] = None) -> Optional[int]:
+                     prev_chapters: Optional[list] = None,
+                     unstable: bool = False) -> Optional[int]:
         """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
 
         `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
@@ -478,18 +479,23 @@ class ProjectStore:
         （`[{"ch": 3, "v": 2}]`），写入 `upstream.prev_chapters`（与 outline/world 同文件）。
         传 None 表示"调用方未提供"：同章再生成/改写时沿用上一选中版本的依赖记录，
         避免把已有的依赖元数据抹掉；存量章无记录则保持缺失（判定为 unknown）。
+        档3：`unstable=True` 表示本章是在"已知前文不一致"下生成的，写入
+        `upstream.unstable`（同文件同权威源，无新账本）。
         """
         if self.versioned_enabled():
             if prev_chapters is None:
                 prev_chapters = self._carry_prev_chapters(chapter.no)
-            upstream = ({"prev_chapters": prev_chapters}
-                        if prev_chapters is not None else None)
+            upstream = {}
+            if prev_chapters is not None:
+                upstream["prev_chapters"] = prev_chapters
+            if unstable:
+                upstream["unstable"] = True
             from .versioned import VersionedProduct
             return VersionedProduct(self, "chapter").commit(
                 str(chapter.no), chapter.to_dict(),
                 source=source or getattr(chapter, "source", "ai") or "ai",
                 quality=quality, promote=promote, limit=version_limit,
-                upstream=upstream)
+                upstream=upstream or None)
         return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
                                          quality=quality, promote=promote)
 

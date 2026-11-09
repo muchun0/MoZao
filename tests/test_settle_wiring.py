@@ -81,7 +81,7 @@ class _FakePipeline:
         pass
 
     def commit_chapter_ledgers(self, no: int, force: bool = False,
-                               silent: bool = True):
+                               silent: bool = True, source: str = "unknown"):
         """测试桩：章后账本提交由 test_web_ledger_commit.py 覆盖，此处只需存在。"""
         return {"chapter": int(no), "status": "skipped"}
 
@@ -169,7 +169,7 @@ def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, wired, monke
             self.chapter_writer = _FakeWriter()
 
         def commit_chapter_ledgers(self, no: int, force: bool = False,
-                                   silent: bool = True):
+                                   silent: bool = True, source: str = "unknown"):
             return {"chapter": int(no), "status": "skipped"}
 
     monkeypatch.setattr(server, "_open_pipeline",

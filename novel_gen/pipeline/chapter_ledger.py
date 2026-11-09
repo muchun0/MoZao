@@ -17,7 +17,51 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["record_mechanism_state", "sync_after_rewrite"]
+__all__ = ["record_mechanism_state", "sync_after_rewrite",
+           "write_chapter_state_guarded"]
+
+
+def _as_int(value) -> int:
+    """宽松转 int；无法转换返回 0（用于章号比较）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _project_id(store) -> str:
+    """项目标识（仅用于日志，取目录名）。"""
+    return getattr(getattr(store, "dir", None), "name", "") or ""
+
+
+def write_chapter_state_guarded(store, state: dict,
+                                source: str = "unknown") -> tuple[str, dict]:
+    """写章末状态快照，带"章号倒退"护栏。
+
+    `chapter_state.json` 是全书单条"最近一章"快照，没有版本维度。旧章被改写后
+    若直接覆盖，全书承接点会倒退回旧章，故仅在目标章号不早于已记录章号时写入。
+
+    返回 (status, detail)，status 三种情形：
+      - "written"：成功写入（首章 / 正常前进 / 同章幂等覆盖）
+      - "skipped_backward"：目标章号 < 已记录章号，保留更靠后的快照（warning 留痕）
+      - "skipped_empty"：无有效章号，未写入（warning 留痕）
+    """
+    target = _as_int((state or {}).get("chapter"))
+    pid = _project_id(store)
+    if target <= 0:
+        logger.warning("章末状态未写入：缺少有效章号 project=%s source=%s",
+                       pid, source)
+        return "skipped_empty", {"target": None, "current": None,
+                                 "source": source}
+    current = _as_int((store.load_chapter_state() or {}).get("chapter"))
+    if current and target < current:
+        logger.warning(
+            "章末状态未写入：章号倒退，保留较新快照 project=%s target=%d "
+            "current=%d source=%s", pid, target, current, source)
+        return "skipped_backward", {"target": target, "current": current,
+                                    "source": source}
+    store.save_chapter_state(state)
+    return "written", {"target": target, "current": current, "source": source}
 
 
 def record_mechanism_state(memory, chapter_no: int, content: str) -> bool:
@@ -89,7 +133,7 @@ def sync_after_rewrite(store, pipeline, chapter_no: int,
     便于上层感知"正文与账本可能不一致"。
     """
     result = {"summary": False, "scenes_stale": False,
-              "book_memory": False, "commit": None}
+              "book_memory": False, "commit": None, "chapter_state": "not_applied"}
     chapter = store.load_chapter(chapter_no)
     if chapter is None or not chapter.content:
         logger.warning("账本同步跳过：章节不存在或正文为空 no=%s", chapter_no)
@@ -125,7 +169,13 @@ def sync_after_rewrite(store, pipeline, chapter_no: int,
 
     # 4) 章末状态 / 人物状态 / 揭示跟踪 / 读者账本：force 跳过"已提交即跳过"短路
     try:
-        result["commit"] = pipeline.commit_chapter_ledgers(chapter_no, force=True)
+        result["commit"] = pipeline.commit_chapter_ledgers(
+            chapter_no, force=True, source="rewrite_sync")
+        # 把 chapter_state 的落盘状态摊到 ledger 顶层，上层可直接判断本章账本
+        # 是否跟上正文：written / skipped_backward / skipped_idempotent / not_applied
+        result["chapter_state"] = ((result["commit"] or {}).get(
+            "chapter_state_status") or "not_applied")
     except Exception:
         logger.warning("改写后章末账本提交失败（降级）: no=%s", chapter_no, exc_info=True)
+        result["chapter_state"] = "failed"
     return result

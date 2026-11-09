@@ -496,7 +496,12 @@ class NovelPipeline:
             state = extract_chapter_state(self.llm, self.cfg, world, ch, no,
                                           old_state=self.store.load_chapter_state())
             if state:
-                self.store.save_chapter_state(state)
+                # 章号倒退护栏：目标章 < 已记录章时跳过覆盖（"最近一章"语义不可倒退）
+                from .chapter_ledger import write_chapter_state_guarded
+                status, _detail = write_chapter_state_guarded(
+                    self.store, state,
+                    source=getattr(self, "_ledger_source", "") or "unknown")
+                self._last_chapter_state_status = status
             return True
         except Exception:
             logger.exception("章末状态抽取失败（降级跳过）: no=%d", no)
@@ -548,7 +553,7 @@ class NovelPipeline:
             return False
 
     def _commit_after_chapter(self, no: int, silent: bool = False,
-                             force: bool = False) -> dict:
+                             force: bool = False, source: str = "cli") -> dict:
         """REQ-借鉴webnovel A：把每章收尾的章后入账收敛为一次统一提交。
 
         开关 chapter_commit=False 时回退原分散调用（各动作自带开关与降级，行为不变）；
@@ -556,8 +561,11 @@ class NovelPipeline:
         chapter_commit.json、同章幂等，并写 projection_log 供一致性体检。失败不阻塞生成。
 
         force=True 时跳过"已 committed 即跳过"的幂等短路，用于正文被改写后重跑账本
-        （如 R1「按此改」局部改写）。
+        （如 R1「按此改」局部改写）。source 仅用于日志与返回状态溯源（cli/web/rewrite）。
         """
+        # 每次提交重置：chapter_state 的落盘状态由 _update_chapter_state 回填
+        self._ledger_source = source
+        self._last_chapter_state_status = ""
         if not getattr(self.cfg, "chapter_commit", True):
             # 回退：保持原分散调用语义（各动作自带开关与降级）
             if getattr(self.cfg, "character_state_tracking", True):
@@ -568,7 +576,8 @@ class NovelPipeline:
                 self._update_reveal_status(no, silent=silent)
             if getattr(self.cfg, "reader_ledger", True):
                 self._update_reader_ledger(no, silent=silent)
-            return {"chapter": int(no), "status": "disabled"}
+            return {"chapter": int(no), "status": "disabled",
+                    "chapter_state_status": self._last_chapter_state_status or "disabled"}
         committer = getattr(self, "_committer", None)
         if committer is None:
             from .commit import ChapterCommitter
@@ -582,17 +591,28 @@ class NovelPipeline:
             committer.add_action("reader_ledger", self._update_reader_ledger,
                                  enabled=getattr(self.cfg, "reader_ledger", True))
             self._committer = committer
-        return committer.commit_chapter(no, force=force, silent=silent)
+        result = committer.commit_chapter(no, force=force, silent=silent)
+        # 三种情形可区分：written（成功写入）/ skipped_idempotent（同章已提交跳过）
+        # / skipped_backward（章号倒退护栏跳过，见 write_chapter_state_guarded）
+        if result.get("status") == "skipped":
+            result["chapter_state_status"] = "skipped_idempotent"
+        else:
+            result["chapter_state_status"] = (self._last_chapter_state_status
+                                              or "not_applied")
+        return result
 
     def commit_chapter_ledgers(self, no: int, *, force: bool = False,
-                               silent: bool = True) -> dict:
+                               silent: bool = True,
+                               source: str = "unknown") -> dict:
         """章后账本统一提交的公共入口（Web 与 CLI 共用）。
 
         与 CLI `resume()` 内的章后入账同源同口径：人物状态 / 章末状态 / 揭示跟踪 /
         读者认知账本。失败降级留痕、绝不抛出——账本一致性不得阻断写章与结算。
+        source 仅用于溯源日志（web_generation / rewrite_sync / cli）。
         """
         try:
-            return self._commit_after_chapter(no, silent=silent, force=force)
+            return self._commit_after_chapter(no, silent=silent, force=force,
+                                              source=source)
         except Exception as exc:  # 兜底：chapter_commit=False 分支的动作异常
             logger.exception("章后账本提交异常（降级跳过）: no=%d", no)
             return {"chapter": int(no), "status": "failed",

@@ -333,7 +333,7 @@ def _run_generation(store: ProjectStore, handle, start_from: int = 0) -> None:
                                                   project_id=project_id)
             # 章后账本统一提交（人物状态/章末状态/揭示跟踪/读者账本）：
             # 与 CLI resume 同源同口径；结算之后独立执行，失败降级不阻断写章与扣费
-            pipeline.commit_chapter_ledgers(no)
+            pipeline.commit_chapter_ledgers(no, source="web_generation")
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why
@@ -428,7 +428,7 @@ def _run_batch(store: ProjectStore, handle, start: int, end: int) -> None:
                                                   project_id=project_id)
             # 章后账本统一提交（人物状态/章末状态/揭示跟踪/读者账本）：
             # 与 CLI resume 同源同口径；结算之后独立执行，失败降级不阻断写章与扣费
-            pipeline.commit_chapter_ledgers(no)
+            pipeline.commit_chapter_ledgers(no, source="web_generation")
             stop, why = _settle_incremental(store)
             if stop:
                 handle.error = why

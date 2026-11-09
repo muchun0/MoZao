@@ -104,7 +104,8 @@ def test_rewrite_syncs_summary_scenes_and_commit(store, wallet):
     scenes = store.load_scenes()["1"]
     assert scenes["stale"]["reason"] == "issue_rewrite"
     assert scenes["scenes"] == [{"summary": "陆沉守碑"}]
-    pipeline.commit_chapter_ledgers.assert_called_once_with(1, force=True)
+    pipeline.commit_chapter_ledgers.assert_called_once_with(
+        1, force=True, source="rewrite_sync")
     assert res["ledger"]["commit"]["status"] == "committed"
 
 
@@ -135,7 +136,8 @@ def test_sync_skips_when_chapter_missing(store):
     pipeline.cfg = _cfg()
     result = sync_after_rewrite(store, pipeline, 99, version=1)
     assert result == {"summary": False, "scenes_stale": False,
-                      "book_memory": False, "commit": None}
+                      "book_memory": False, "commit": None,
+                      "chapter_state": "not_applied"}
     pipeline.commit_chapter_ledgers.assert_not_called()
 
 

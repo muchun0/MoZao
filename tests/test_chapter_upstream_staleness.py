@@ -184,6 +184,53 @@ def test_both_causes_coexist(fresh_book):
 
 
 @pytest.mark.p1
+def test_legacy_book_with_bumped_outline_is_stale_not_unknown(fresh_book):
+    """①口径修正：旧书（无 prev_chapters）但大纲已升版 → 直接 stale，成因 outline。"""
+    index = fresh_book.load_chapter_versions()
+    for rec in index.values():
+        for h in rec.get("history") or []:
+            (h.get("upstream") or {}).pop("prev_chapters", None)
+    fresh_book.save_chapter_versions(index)
+    _commit_outline(fresh_book, "v2")
+
+    data = st.build_chapter_staleness(fresh_book)
+
+    assert [r["status"] for r in data["chapters"]] == ["stale", "stale"]
+    assert data["summary"]["stale_count"] == 2
+    assert data["summary"]["unknown_count"] == 0          # 不再整本变 unknown
+    assert data["chapters"][0]["reason"]["stale_causes"] == ["outline"]
+    assert data["summary"]["causes"] == [
+        {"kind": "outline", "label": "大纲", "chapters": [1, 2]}]
+
+
+@pytest.mark.p1
+def test_mixed_summary_counts_follow_new_priority(fresh_book):
+    """③新旧混合：有依赖且一致=fresh、无依赖且维度一致=unknown、维度不一致=stale。"""
+    _write_chapters(fresh_book, (1, 2, 3))
+    index = fresh_book.load_chapter_versions()
+    # 第1章模拟旧书：抹掉依赖记录（维度保持与当前一致）
+    for h in index["1"]["history"]:
+        (h.get("upstream") or {}).pop("prev_chapters", None)
+    # 第3章模拟基于更早大纲生成（明确不一致）
+    for h in index["3"]["history"]:
+        (h.get("upstream") or {})["outline_v"] = 0
+    fresh_book.save_chapter_versions(index)
+
+    data = st.build_chapter_staleness(fresh_book)
+    summary = data["summary"]
+
+    assert {r["chapter"]: r["status"] for r in data["chapters"]} == {
+        1: "unknown", 2: "fresh", 3: "stale"}
+    assert summary["fresh_count"] == 1
+    assert summary["stale_count"] == 1
+    assert summary["unknown_count"] == 1
+    assert summary["stale_chapters"] == [3]
+    assert summary["unknown_chapters"] == [1]
+    assert summary["regenerate_from"] == 3
+    assert summary["causes"] == [{"kind": "outline", "label": "大纲", "chapters": [3]}]
+
+
+@pytest.mark.p1
 def test_legacy_chapter_without_prev_dependency_is_unknown(fresh_book):
     """③有 upstream 但没有 prev_chapters（档2前生成）→ unknown，不能判 fresh。"""
     _write_chapters(fresh_book, (1, 2))

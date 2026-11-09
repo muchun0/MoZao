@@ -6,13 +6,12 @@
 本模块不做任何落盘，也不新建 `staleness.json`——落盘会形成第二个权威源，
 违反「跨模块可变状态收敛到单一权威源」的硬红线。
 
-判定语义（作者视角）：
-- fresh：当前选中版本的 upstream 与当前 outline/world 选中版本**完全一致**；
-- stale：任一上游版本号不一致（落后或超前），reason 指明维度、差几版、变更时间；
-- unknown：没有 upstream 记录 / 只有部分维度 / 当前上游版本不可读。
-  存量章节必须落到 unknown，**不能**当作 fresh 给用户假的安全感。
-
-档 1 只做「标记 + 可见」，不触发任何重写或自动传播（档 2 再做）。
+判定语义（作者视角，档2修正后的优先级）：
+- stale：任一**已知**上游维度（outline_v/world_v）与当前版本不一致，无论有无
+  `prev_chapters` 都判 stale；或 `prev_chapters` 中任一章被重写（两种成因可并存）；
+- unknown：完全没有 upstream / 上游版本不可读；或所有已知维度一致**且缺少**
+  `prev_chapters` 记录（存量章，无法判断前文是否被重写）。**不能**当作 fresh；
+- fresh：所有已知维度一致，且 `prev_chapters` 存在并全部未变。
 """
 from __future__ import annotations
 
@@ -111,7 +110,8 @@ def _as_int(value) -> int:
 def _prev_dependency(upstream: dict, index: dict) -> tuple[str, list[dict]]:
     """章节级依赖（档2）比对：返回 (状态, 前文变更列表)。
 
-    状态：recorded=有依赖记录；missing=存量章无该字段（必须判 unknown）；
+    状态：recorded=有依赖记录；missing=存量章无该字段（**仅在维度全一致时**才判
+    unknown）；unknown=字段格式非法；changed=有前文章被重写。
     前文变更项：`{ch, based_on, current, direction}`，direction=rewritten（当前更新）
     或 reverted（当前被切回更旧版本）。无版本记录的存量章记 0，避免误报。
     """
@@ -155,41 +155,48 @@ def _judge(no: int, rec: dict, outline: dict, world: dict, index: dict) -> dict:
     based_on = {k: upstream.get(f"{k}_v") for k in UPSTREAM_KINDS}
     reason["based_on_outline_v"] = based_on["outline"]
     reason["based_on_world_v"] = based_on["world"]
-    if any(v is None for v in based_on.values()):
-        reason["unknown_reason"] = "partial_upstream_record"
-        return {"chapter": no, "status": "unknown", "reason": reason}
-    if any(c["v"] is None for c in (outline, world)):
-        reason["unknown_reason"] = "current_upstream_unavailable"
-        return {"chapter": no, "status": "unknown", "reason": reason}
 
-    # 档2：前文重写检测（存量章无该字段 → unknown，绝不判 fresh）
+    # 1) 先算已知维度的明确不一致：只要有一维能确定变了，就直接 stale，
+    #    不受「缺 prev_chapters」影响（否则旧书会被 unknown 盖住已知的大纲变更）。
+    stale_dims = {}
+    unjudgeable = False
+    for kind in UPSTREAM_KINDS:
+        current = (outline if kind == "outline" else world)["v"]
+        if based_on[kind] is None or current is None:
+            unjudgeable = True
+            continue
+        diff = _compare(kind, based_on[kind], outline if kind == "outline" else world)
+        if diff is not None:
+            stale_dims[kind] = diff
+
+    # 2) 前文重写检测（档2）
     prev_state, prev_changed = _prev_dependency(upstream, index)
     reason["prev_dependency"] = prev_state
+    if prev_changed:
+        reason["prev_rewrites"] = prev_changed
+
+    if stale_dims or prev_changed:
+        if stale_dims:
+            reason["stale_dims"] = stale_dims
+        # stale_causes 让前端一眼分清「大纲/世界观变了」还是「前文被重写」
+        reason["stale_causes"] = list(stale_dims) + (["prev_chapter"] if prev_changed else [])
+        # changed_at 取上游维度变更时间；前文重写没有稳定 ts（版本历史可查），不伪造
+        stamps = [d["changed_at"] for d in stale_dims.values() if d["changed_at"]]
+        reason["changed_at"] = max(stamps) if stamps else None
+        return {"chapter": no, "status": "stale", "reason": reason}
+
+    # 3) 维度全一致后，才由依赖记录决定 unknown / fresh
     if prev_state == "missing":
         reason["unknown_reason"] = "no_prev_dependency_record"
         return {"chapter": no, "status": "unknown", "reason": reason}
     if prev_state == "unknown":
         reason["unknown_reason"] = "invalid_prev_dependency_record"
         return {"chapter": no, "status": "unknown", "reason": reason}
-    if prev_changed:
-        reason["prev_rewrites"] = prev_changed
-
-    stale_dims = {}
-    for kind in UPSTREAM_KINDS:
-        diff = _compare(kind, based_on[kind], outline if kind == "outline" else world)
-        if diff is not None:
-            stale_dims[kind] = diff
-    if not stale_dims and not prev_changed:
-        return {"chapter": no, "status": "fresh", "reason": reason}
-    if stale_dims:
-        reason["stale_dims"] = stale_dims
-    # stale_causes 让前端一眼分清「大纲/世界观变了」还是「前文被重写」
-    causes = list(stale_dims.keys()) + (["prev_chapter"] if prev_changed else [])
-    reason["stale_causes"] = causes
-    # changed_at 取上游维度变更时间；前文重写没有稳定 ts（版本历史可查），不伪造
-    stamps = [d["changed_at"] for d in stale_dims.values() if d["changed_at"]]
-    reason["changed_at"] = max(stamps) if stamps else None
-    return {"chapter": no, "status": "stale", "reason": reason}
+    if unjudgeable:
+        # 有维度缺记录/当前版本不可读，无法确认全一致，不能给 fresh
+        reason["unknown_reason"] = "partial_upstream_record"
+        return {"chapter": no, "status": "unknown", "reason": reason}
+    return {"chapter": no, "status": "fresh", "reason": reason}
 
 
 def _ranges(numbers: list[int]) -> list[dict]:
@@ -255,7 +262,7 @@ def build_chapter_staleness(store) -> dict:
         data_gaps.append("还没有章节正文，暂无可判定的章节")
     elif unknown:
         data_gaps.append(
-            f"{len(unknown)} 章缺少生成时的上游版本记录，无法判断是否过期（不视为正常）")
+            f"{len(unknown)} 章缺乏足够的版本记录，无法判断是否过期（不视为正常）")
         legacy = sum(1 for r in rows
                      if r["reason"].get("unknown_reason") == "no_prev_dependency_record")
         if legacy:

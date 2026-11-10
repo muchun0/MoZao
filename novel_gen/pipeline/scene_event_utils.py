@@ -36,8 +36,12 @@ _SCENE_ACTION_NORM = {
     "挡": "抵挡", "抵挡": "抵挡", "防守": "抵挡", "阻挡": "抵挡",
     "偷袭": "偷袭", "刺杀": "刺杀", "对峙": "对峙", "埋伏": "埋伏", "侦查": "侦查", "探索": "探索",
 }
-#: 救援专属动词
+#: 救援专属动词（仅作无锚点时的旧兜底，2026-11-10 起锚点判据为主）
 _SCENE_RESCUE_VERBS = ("救", "引开", "砸", "挡", "扑", "迎")
+#: 锚点命中判据：覆盖率阈值 / 最少 2-gram 命中数 / 锚点最短归一化长度
+_SCENE_ANCHOR_RATIO = 0.50
+_SCENE_ANCHOR_MIN_HIT = 5
+_SCENE_ANCHOR_MIN_LEN = 8
 #: 拆场景结构校验：场景数上限（2-4 个）
 _SCENE_COUNT_MIN, _SCENE_COUNT_MAX = 2, 4
 #: target_words 之和允许偏离 chapter_words 的幅度（±10%）
@@ -201,14 +205,41 @@ def _scene_text_repeats_generated(text: str, done_texts: list[str]) -> str:
     return ""
 
 
+def _anchor_cover(text: str, anchor: str) -> tuple[float, int]:
+    """锚点（原句/关键短语）在正文最佳句中的字符 bigram 覆盖率与命中数。
+
+    复用 `_event_anchor` 的 bigram 打分取「最能佐证该锚点的正文句子」，再算该句
+    覆盖了锚点多少 2-gram。零 LLM，供场景复写兜底判据使用（2026-11-10 修复②）：
+    不再依赖 `_SCENE_RESCUE_VERBS` 救援动词表，离席/破门/签约等非救援事件一样可比。
+    """
+    ref = _norm_scene_event(anchor)
+    if len(ref) < _SCENE_ANCHOR_MIN_LEN:
+        return 0.0, 0
+    best = _event_anchor(text, anchor, limit=10 ** 6)
+    if not best:
+        return 0.0, 0
+    ref_grams = {ref[i:i + 2] for i in range(len(ref) - 1)}
+    sent = _norm_scene_event(best)
+    sent_grams = {sent[i:i + 2] for i in range(len(sent) - 1)}
+    hit = len(ref_grams & sent_grams)
+    return (hit / len(ref_grams) if ref_grams else 0.0), hit
+
+
 def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
                                names: tuple[str, ...] = (),
-                               llm=None, use_llm: bool = True) -> str:
+                               llm=None, use_llm: bool = True,
+                               anchors: list[list[str]] | None = None) -> str:
     """场景正文事件级复写检测。
 
     优先走 LLM 语义判定（`scene_rewrite_prompt`，识别换措辞复写）；无 llm /
-    use_llm=False / 调用异常 / 无已发生事件时，回退确定性词表逻辑
-    （`_event_conflict` + `_SCENE_RESCUE_VERBS`）。命中则返回复写的事件原文，否则 ""。
+    use_llm=False / 调用异常 / 无已发生事件时走确定性兜底，两段判据：
+
+    - 兜底 A（2026-11-10 修复②）锚点命中：`anchors` 与 descs 同序，每项是该事件的
+      原文锚点（账本已写原句）+ 计划关键短语。任一锚点在正文中基本被照写
+      （覆盖率 ≥0.50 且命中 ≥5 个 2-gram）即判复写——通用判据，不含动作词表；
+    - 兜底 B 兼容旧行为：冲突对象 + 救援动词表（无 anchors 时的最后保险）。
+
+    命中则返回复写的事件原文，否则 ""。
     """
     if not done_event_descs:
         return ""
@@ -225,8 +256,17 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
                     return done_event_descs[idx]
                 return ""  # LLM 明确判定不复写（如 -1），不回退词表
         except Exception as e:
-            logger.warning("scene_rewrite LLM 判定失败，回退词表逻辑: %s", e)
-    # 词表兜底（确定性）
+            logger.warning("scene_rewrite LLM 判定失败，回退锚点/词表逻辑: %s", e)
+    # 兜底 A：锚点命中（阈值依据：锚点是一句已写原文/一条 8-30 字关键短语，
+    # 正常推进最多沿用其中人物与物件名（2-4 个 2-gram），不会重写其一半以上）
+    if anchors:
+        for desc, refs in zip(done_event_descs, anchors):
+            for ref in (refs or []):
+                ratio, hit = _anchor_cover(text, ref)
+                if ratio >= _SCENE_ANCHOR_RATIO and hit >= _SCENE_ANCHOR_MIN_HIT:
+                    logger.warning(f"  锚点命中复写：覆盖率={ratio:.2f} 命中={hit} 锚点={ref[:30]}")
+                    return desc
+    # 兜底 B：词表（冲突对象 + 救援动词），无锚点或锚点未命中时保留的旧保险
     c = _event_conflict(text, names)
     if not c or not any(v in text for v in _SCENE_RESCUE_VERBS):
         return ""
@@ -237,6 +277,7 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
         if c == ec or c in ec or ec in c:
             return ev
     return ""
+
 
 
 def _long_sentence_overlap_ratio(prev: str, cur: str) -> float:

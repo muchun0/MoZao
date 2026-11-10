@@ -1744,6 +1744,13 @@ class ChapterWriter:
             (sid, str(sc.get("event") or "").strip())
             for sid, sc in zip(_scene_event_ids, scenes)
         ]
+        # 2026-11-10 修复②：事件计划锚点（拆场景产出 anchors），按事件 id 归档，
+        # 与账本里的原文锚点一起作为「复写/越权」兜底比对的通用判据（零词表）。
+        _plan_anchors: dict[str, list[str]] = {
+            sid: [str(a).strip() for a in (sc.get("anchors") or []) if str(a).strip()]
+            for sid, sc in zip(_scene_event_ids, scenes)
+        }
+        _desc_to_id: dict[str, str] = {d: sid for sid, d in _event_plan if d}
         # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
         # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
@@ -1941,6 +1948,17 @@ class ChapterWriter:
                 _future_descs = [d for _, d in _future_events]
                 _check_descs = _scene_check_descs(
                     done_events, _own_ev, _own_consumed, _future_descs)
+                # 2026-11-10 修复②：与 descs 同序的锚点清单——已发生事件优先用账本里的
+                # 原文锚点（那句实际写成的话），后续未消费事件用拆场景 anchors 关键短语。
+                # 兜底判据由「救援动词表」改为「锚点 bigram 命中」，离席/破门/签约同样可比。
+                _anchor_by_id = {str(e.get("id")): str(e.get("anchor") or "")
+                                 for e in event_ledger}
+                _check_anchors = []
+                for _d in _check_descs:
+                    _aid = _desc_to_id.get(_d, "")
+                    _refs = [r for r in (_anchor_by_id.get(_aid),) if r]
+                    _refs.extend(_plan_anchors.get(_aid, []))
+                    _check_anchors.append(_refs)
                 _future_over = ""
                 _rep_src = _scene_text_repeats_generated(piece, scene_texts) if piece else ""
                 if piece and (_check_descs or scene_texts):
@@ -1948,6 +1966,7 @@ class ChapterWriter:
                         piece, _check_descs, conflict_names,
                         llm=self.llm,
                         use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                        anchors=_check_anchors,
                     )
                     if dup_ev:
                         _future_over = dup_ev if dup_ev in _future_descs else ""
@@ -1982,7 +2001,8 @@ class ChapterWriter:
                         if retry3 and not _scene_text_rewrites_event(
                                 retry3, _check_descs, conflict_names,
                                 llm=self.llm,
-                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))) \
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                                anchors=_check_anchors) \
                                 and not _scene_text_repeats_generated(retry3, scene_texts):
                             piece = retry3
                             _future_over = ""

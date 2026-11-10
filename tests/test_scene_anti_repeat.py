@@ -34,6 +34,7 @@ from novel_gen.pipeline.scene_event_utils import (
     _split_moves_beats, _derive_events_from_moves,
     _event_summary, _event_anchor, _remaining_events,
     _scene_check_descs, _scene_text_repeats_generated,
+    _anchor_cover, _scene_text_rewrites_event,
 )
 
 
@@ -461,6 +462,34 @@ def test_event_anchor_empty_piece():
 
 
 @pytest.mark.p1
+def test_anchor_cover_detects_non_rescue_repeat():
+    """修复②：兜底判据换成锚点 bigram 命中，不再只认救援动词。
+
+    「破门」不含 救/引开/砸/挡 等救援词，旧词表必然漏检；锚点判据能命中。
+    """
+    anchor = "他冲向包间门，肩膀撞上去，门板纹丝不动"
+    text = "卫衣男骂了一声。他冲向包间门，肩膀撞上去，门板纹丝不动，发出一声闷响。"
+    ratio, hit = _anchor_cover(text, anchor)
+    assert ratio >= 0.5 and hit >= 5
+    out = _scene_text_rewrites_event(
+        text, ["相亲对象B强行破门失败"],
+        anchors=[["他冲向包间门，肩膀撞上去，门板纹丝不动"]])
+    assert out == "相亲对象B强行破门失败"
+
+
+@pytest.mark.p1
+def test_anchor_cover_not_triggered_by_normal_progression():
+    """误伤评估：正常推进只会沿用人物/物件名，不会把锚点句照写一半以上。"""
+    anchor = "他冲向包间门，肩膀撞上去，门板纹丝不动"
+    text = "沈决走到门边，侧耳贴上门板听了两秒。门外很静，走廊灯亮着。"
+    ratio, hit = _anchor_cover(text, anchor)
+    assert not (ratio >= 0.5 and hit >= 5)
+    assert _scene_text_rewrites_event(
+        text, ["相亲对象B强行破门失败"],
+        anchors=[["他冲向包间门，肩膀撞上去，门板纹丝不动"]]) == ""
+
+
+@pytest.mark.p1
 def test_remaining_events_uses_zero_based_current_index():
     """current_idx 是当前场景 0 基下标：只返回其后未消费事件；末场景切空才是对的。
 
@@ -508,7 +537,7 @@ def test_scene1_overwrite_future_event_triggers_retry(store, monkeypatch):
     import novel_gen.pipeline.stages as _stages
     seen: list[list[str]] = []
 
-    def _fake_check(text, descs, names=(), llm=None, use_llm=True):
+    def _fake_check(text, descs, names=(), llm=None, use_llm=True, anchors=None):
         seen.append(list(descs))
         # 只有越权稿带「硬接」；命中时返回最后一个清单项（= 剩余未消费事件2）
         return descs[-1] if "硬接" in (text or "") else ""

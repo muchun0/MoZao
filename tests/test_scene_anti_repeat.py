@@ -33,6 +33,7 @@ from novel_gen.pipeline.stages import ChapterWriter
 from novel_gen.pipeline.scene_event_utils import (
     _split_moves_beats, _derive_events_from_moves,
     _event_summary, _event_anchor, _remaining_events,
+    _scene_check_descs, _scene_text_repeats_generated,
 )
 
 
@@ -460,13 +461,40 @@ def test_event_anchor_empty_piece():
 
 
 @pytest.mark.p1
-def test_remaining_events_excludes_consumed_and_current():
-    """剩余事件只含当前场景之后、且账本未消费的条目（当前场景自身不出现）。"""
+def test_remaining_events_uses_zero_based_current_index():
+    """current_idx 是当前场景 0 基下标：只返回其后未消费事件；末场景切空才是对的。
+
+    旧实现调用方传 1 基 idx，切片靠"错位刚好"才对上前一场景之后的清单，
+    最后一场景必然得到空清单，掩盖了"末场景没有比对对象"的缺陷。
+    """
     plan = [("事件1", "推人冒死"), ("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
-    assert _remaining_events(plan, set(), 1) == [("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 0) == [("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
     # 事件2 已被前序场景越权消费 → 不再作为「剩余未消费」列出
-    assert _remaining_events(plan, {"事件1", "事件2"}, 1) == [("事件3", "赤尉追击")]
-    assert _remaining_events(plan, set(), 3) == []
+    assert _remaining_events(plan, {"事件1", "事件2"}, 0) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 1) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 2) == []
+
+
+@pytest.mark.p1
+def test_scene_check_descs_includes_own_event_only_when_consumed():
+    """自身事件仅在已被前序场景越权消费时纳入比对，正常推进不误判复写。"""
+    assert _scene_check_descs(["事件1"], "事件2", False, []) == ["事件1"]
+    assert _scene_check_descs(["事件1"], "事件2", True, []) == ["事件1", "事件2"]
+    # 保序去重：自身事件与后续清单重复时只留一条
+    assert _scene_check_descs(["事件1"], "事件2", True, ["事件2", "事件3"]) == [
+        "事件1", "事件2", "事件3"]
+
+
+@pytest.mark.p1
+def test_scene_text_repeats_generated_detects_restart_opening():
+    """拼接缝"同一段落重新起头"：开头句照抄即判重复（ch1「包间门合上」形态）。"""
+    scene1 = "包间门合上的那一声，很轻。陈婉把茶盏推回来，指腹在杯沿停了一停。"
+    scene2 = ("包间门合上的那一声，很轻。陈婉把茶盏推回来，指腹在杯沿停了一停。"
+              "她抬头看向窗外，雨声压住了后半句话。")
+    assert _scene_text_repeats_generated(scene2, [scene1])
+    # 正常承接（开场不同）不误判
+    scene3 = "雨在檐口连成线。陈婉没有回头，只把账本翻到最后一页，指尖压在墨迹上。"
+    assert _scene_text_repeats_generated(scene3, [scene1]) == ""
 
 
 @pytest.mark.p1

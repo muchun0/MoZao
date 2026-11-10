@@ -1798,7 +1798,7 @@ class ChapterWriter:
             )
             upcoming_events_text = "\n".join(
                 f"- {sid}（尚未发生）：{_event_summary(desc)}"
-                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx)
+                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx - 1)
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
             # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
@@ -1927,12 +1927,24 @@ class ChapterWriter:
                 # 场景1 的 done_events 为空、场景2 重复内容又恰是"本场景自己的事件"被排除，
                 # 于是"场景1提前写完事件2、场景2再演一遍"全程无人比对。把「剩余未消费
                 # 事件」并入比对集合，给越权消费补上事后拦截；重试仍越权则登记账本兜底。
-                _future_events = _remaining_events(_event_plan, _consumed_ids, idx)
+                # 2026-11-10 修复①（末场景纳入比对）：比对集合此前只有 done_events +
+                # 「剩余未消费事件」，而剩余事件用 1 基下标切最后一场景恒为空、
+                # 本场景自身事件又不在集合里——「场景1越权写完事件2、场景2 整章重写」
+                # 时末场景没有任何可比对对象。改为显式 0 基取后续事件 + 自身事件在
+                # 已被前序越权消费时纳入（正常推进不算复写）。
+                # 另一维度：已生成场景**正文**也参与比对（`_scene_text_repeats_generated`），
+                # 治"同一段落重新起头"——整章重写时事件措辞可能全变，但开头句照抄。
+                _own_ev = str(sc.get("event") or "").strip()
+                _own_consumed = any(
+                    e.get("id") == _scene_event_ids[idx - 1] for e in event_ledger)
+                _future_events = _remaining_events(_event_plan, _consumed_ids, idx - 1)
                 _future_descs = [d for _, d in _future_events]
-                _check_descs = list(dict.fromkeys([*done_events, *_future_descs]))
+                _check_descs = _scene_check_descs(
+                    done_events, _own_ev, _own_consumed, _future_descs)
                 _future_over = ""
-                if piece and _check_descs:
-                    dup_ev = _scene_text_rewrites_event(
+                _rep_src = _scene_text_repeats_generated(piece, scene_texts) if piece else ""
+                if piece and (_check_descs or scene_texts):
+                    dup_ev = _rep_src or _scene_text_rewrites_event(
                         piece, _check_descs, conflict_names,
                         llm=self.llm,
                         use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
@@ -1970,7 +1982,8 @@ class ChapterWriter:
                         if retry3 and not _scene_text_rewrites_event(
                                 retry3, _check_descs, conflict_names,
                                 llm=self.llm,
-                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))) \
+                                and not _scene_text_repeats_generated(retry3, scene_texts):
                             piece = retry3
                             _future_over = ""
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
@@ -2538,6 +2551,7 @@ from .scene_event_utils import (
     _validate_scene_plan, _scene_events_overlap, _split_summary,
     _is_repetitive_text, _summary_invented_words,
     _event_summary, _event_anchor, _remaining_events,
+    _scene_check_descs, _scene_text_repeats_generated,
     _strip_html_tags, _strip_json_block, _extract_json_field,
     _SCENE_EVENT_OVERLAP_RATIO, _SCENE_ADJACENT_REPEAT_RATIO,
     _SCENE_ADJACENT_SPAN_RATIO,

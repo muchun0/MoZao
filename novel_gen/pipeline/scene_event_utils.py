@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 
@@ -137,12 +138,67 @@ def _event_anchor(piece: str, desc: str, limit: int = _EVENT_ANCHOR_LIMIT) -> st
 
 
 def _remaining_events(event_plan: list[tuple[str, str]], consumed_ids: set[str],
-                      start_idx: int) -> list[tuple[str, str]]:
-    """取 start_idx（0 基，指向当前场景之后）起、账本尚未消费的 (事件id, 描述)。"""
+                      current_idx: int) -> list[tuple[str, str]]:
+    """取当前场景**之后**、账本尚未消费的 (事件id, 描述)。
+
+    current_idx 为当前场景的 0 基下标（即 ``enumerate(scenes, start=1)`` 的 idx - 1）。
+    旧实现让调用方传 1 基 idx，切片虽恰好落在「当前场景之后」，但契约含糊、
+    最后一场景必然切空，**且本场景自身事件不在比对集合**——于是「末场景整章重写」
+    全程无人比对（《契裂之眼》第 1 章两场景版实证）。这里改为显式 0 基；
+    自身事件是否纳入比对由 `_scene_check_descs` 单独决定。
+    """
     return [
-        (sid, desc) for sid, desc in event_plan[start_idx:]
+        (sid, desc) for sid, desc in event_plan[current_idx + 1:]
         if desc and sid not in consumed_ids
     ]
+
+
+def _scene_check_descs(done_events: list[str], own_event: str,
+                       own_consumed: bool, future_descs: list[str]) -> list[str]:
+    """场景正文复写比对的候选事件清单（保序去重）。
+
+    - done_events：前序场景的规划事件（已发生）；
+    - own_event：本场景自身事件，**仅当已被前序场景越权消费**（own_consumed）才纳入。
+      正常人写下自己的事件不算复写，无条件纳入会把「本场景正常推进」误判成复写、
+      陷入反复重试；
+    - future_descs：后续未消费事件（越权消费检测）。
+    """
+    descs = list(done_events)
+    if own_consumed and own_event:
+        descs.append(own_event)
+    descs.extend(future_descs)
+    return list(dict.fromkeys(d for d in descs if d))
+
+
+#: 场景"同一段落重新起头"判定：归一化后取开头字符数 / 相似度阈值 / 最短可比长度
+_REPEAT_OPEN_CHARS = 60
+_REPEAT_OPEN_RATIO = 0.8
+_REPEAT_OPEN_MIN_LEN = 20
+
+
+def _scene_text_repeats_generated(text: str, done_texts: list[str]) -> str:
+    """当前场景是否把某个已生成场景的正文重新起头（返回该场景开头摘录，否则 ""）。
+
+    确定性、零 LLM：只比「开头 60 字（去标点空白）」的字面相似度。整章重写 /
+    拼接缝重启的典型形态就是新场景用上一场景的开头句重新讲一遍
+    （《契裂之眼》第 1 章：「包间门合上的那一声，很轻。」在 0 / 1929 两次出现）；
+    正常推进的场景不会与前序场景开头重合到 80%。事件描述比对
+    （`_scene_text_rewrites_event`）对"措辞全换、结构照抄"会漏，本判据补这一维度。
+    """
+    if not text or not done_texts:
+        return ""
+    head = _norm_scene_event(text)[:_REPEAT_OPEN_CHARS]
+    if len(head) < _REPEAT_OPEN_MIN_LEN:
+        return ""
+    for dt in done_texts:
+        dhead = _norm_scene_event(dt)[:_REPEAT_OPEN_CHARS]
+        if len(dhead) < _REPEAT_OPEN_MIN_LEN:
+            continue
+        # 只比两段开头的最小公共长度：短场景（<60 字）不能被长场景的长度优势拉低相似度
+        n = min(len(head), len(dhead))
+        if difflib.SequenceMatcher(None, head[:n], dhead[:n]).ratio() >= _REPEAT_OPEN_RATIO:
+            return re.sub(r"\s+", " ", str(dt)).strip()[:_EVENT_SUMMARY_LIMIT]
+    return ""
 
 
 def _scene_text_rewrites_event(text: str, done_event_descs: list[str],

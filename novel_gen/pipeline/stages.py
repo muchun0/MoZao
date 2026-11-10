@@ -2176,6 +2176,60 @@ class ChapterWriter:
                         if not _panel_ok and not silent:
                             logger.warning(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
                                   f"采用最后稿（质检层二次拦截）")
+                # 2026-11-10 修复③（章级终检）：末场景写完后，把「已生成场景正文 + 末场景」
+                # 拼成章文本做最后一道流程复述检测。补场景级判据的盲区：同一段离场/位移
+                # 流程被前一场景走过、末场景换措辞再走一遍时，事件账本（规划事件已消费）、
+                # `_SCENE_ANCHOR_RATIO`（要求同一句原文被照写）都不命中，字面 Jaccard 也
+                # 无法区分（实测 v4 0.07-0.13 / v5 0.06-0.09）——故走语义判定。
+                # 命中只重跑末场景 1 次（不整章回退）；重跑稿不合格则保原稿并留日志。
+                if piece and idx == len(scenes) and scene_texts:
+                    _prev_joined = "\n\n".join(t for t in scene_texts if t)
+                    _sem_on = bool(getattr(self.cfg, "llm_semantic_scene_events", True))
+                    _flow_dup = chapter_flow_repeat(
+                        self.llm, _prev_joined, piece, use_llm=_sem_on)
+                    _clause_dups = _rule_clause_conflicts(_prev_joined, piece)
+                    if _flow_dup or _clause_dups:
+                        if not silent:
+                            _why = ("复述前一场景已写流程" if _flow_dup
+                                    else "守则兜底条款出现第二套口径")
+                            logger.warning(f"  [场景] 章级终检命中（{_why}），"
+                                  f"只重跑末场景一次（不整章回退）")
+                        sys_c6, user_c6 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=_flow_dup or _clause_dups[0],
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
+                            state_anchor=state_anchor_text,
+                        )
+                        _reconcile_scene(idx, 6, sys_c6, user_c6)
+                        retry6 = self.llm.chat(
+                            self._with_persona(sys_c6), user_c6,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.35,
+                            presence_penalty=0.2,
+                        )
+                        retry6 = _strip_html_tags(retry6)
+                        # 采纳门槛：非空 + 不短于原稿 60%（防"删段逃逸"式糊弄）+ 复检通过
+                        _ok6 = bool(retry6) and len(retry6) >= int(len(piece) * 0.6)
+                        if _ok6:
+                            _ok6 = not chapter_flow_repeat(
+                                self.llm, _prev_joined, retry6, use_llm=_sem_on)
+                        if _ok6:
+                            _ok6 = not _rule_clause_conflicts(_prev_joined, retry6)
+                        if _ok6:
+                            piece = retry6
+                        else:
+                            logger.warning("  [场景] 章级终检重跑稿未通过复检"
+                                  "（空稿/过短/仍复述或条文仍冲突），保留原稿（不整章回退）")
                 # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
                 # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
                 # 数字、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留
@@ -2572,6 +2626,7 @@ from .scene_event_utils import (
     _is_repetitive_text, _summary_invented_words,
     _event_summary, _event_anchor, _remaining_events,
     _scene_check_descs, _scene_text_repeats_generated,
+    _rule_clause_conflicts, chapter_flow_repeat,
     _strip_html_tags, _strip_json_block, _extract_json_field,
     _SCENE_EVENT_OVERLAP_RATIO, _SCENE_ADJACENT_REPEAT_RATIO,
     _SCENE_ADJACENT_SPAN_RATIO,

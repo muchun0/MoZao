@@ -1882,6 +1882,34 @@ def scene_rewrite_prompt(text: str, done_events: list[str]) -> tuple[str, str]:
     return system, user
 
 
+def chapter_flow_repeat_prompt(prev_text: str, cur_text: str) -> tuple[str, str]:
+    """2026-11-10 修复③ 章级终检：后一场景是否把前一场景已写过的流程又走一遍。
+
+    与 `scene_rewrite_prompt`（按规划事件清单比对）互补：这里面向「事件清单之外、
+    换措辞重述同一段流程」——《契裂之眼》第 1 章离场动线（走廊尽头→拐弯→大堂→
+    包柱→推旋转门）在前一场景与末场景各走一遍。字面判据实测无效（v4 各接缝
+    700 字 Jaccard 0.073-0.134，v5 仅 0.056-0.094），只能走语义判定。
+    """
+    system = (
+        "你是小说质检编辑。判断【后一场景】是否把【前一场景】已经写过的同一段流程又走了一遍。\n"
+        "判为复述（三条同时成立）：\n"
+        "1. 同一人物 + 同一动线/同一动作序列（如已写「走出包间→走廊尽头→拐弯→大堂→推门离开」，"
+        "后文又写「拐过弯→大堂暖光→靠包柱→推开旋转门」）；\n"
+        "2. 动作顺序可一一对应，只是换了措辞、视角或细节；\n"
+        "3. 后文不是从上一段结束处继续往前推进，而是回到同一流程的上游重新走。\n"
+        "不算复述：后文推进新动作/新信息/新对话，或对前文只用一句话回应。\n"
+        "宁可漏报不误杀：拿不准输出 false。\n"
+        '只输出合法 JSON：{"repeat": true, "evidence": "被复述流程的一句话"} '
+        '或 {"repeat": false, "evidence": ""}。不要代码块标记、解释或省略号。'
+    )
+    user = (
+        "【前一场景（结尾片段）】\n" + (prev_text[-1500:] if prev_text else "（无）") + "\n\n"
+        "【后一场景（开头片段）】\n" + (cur_text[:2000] if cur_text else "（无）") + "\n\n"
+        "后一场景是否复述了前一场景已写过的流程？"
+    )
+    return system, user
+
+
 def mechanism_check_prompt(mechanism: str) -> tuple[str, str]:
     """REQ-词表换LLM 批次一 validator.py：机制卡三要素 LLM 语义校验（每本 1 次）。
 

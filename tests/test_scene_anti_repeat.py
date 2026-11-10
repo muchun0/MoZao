@@ -35,6 +35,7 @@ from novel_gen.pipeline.scene_event_utils import (
     _event_summary, _event_anchor, _remaining_events,
     _scene_check_descs, _scene_text_repeats_generated,
     _anchor_cover, _scene_text_rewrites_event,
+    _rule_clause_conflicts, chapter_flow_repeat,
 )
 
 
@@ -581,5 +582,133 @@ def test_scene_prompt_unconsumed_events_hard_constraint():
     assert "禁止写出它们的完整流程" in user
     assert "事件2（尚未发生）：复活问墟苔" in user
     assert "本章后续事件预览" not in user
+
+
+# ---------- 2026-11-10 修复③：章级终检（流程复述 + 守则兜底条款口径） ----------
+
+@pytest.mark.p1
+def test_rule_clause_conflicts_detects_second_fallback_clause():
+    """v5 第1章实证：末场景出现第二套守则兜底口径 → 判冲突并返回该条文。"""
+    prev = "他翻到第七条：本守则未写明之事，视为允许。看完便把册子合上。"
+    cur = "她顿了顿：'本守则未尽事宜，以包间内实际发生为准。'说完抬眼看他。"
+    conflicts = _rule_clause_conflicts(prev, cur)
+    assert len(conflicts) == 1
+    assert "未尽事宜" in conflicts[0]
+
+
+@pytest.mark.p1
+def test_rule_clause_conflicts_ignores_same_wording_and_plain_reference():
+    """同措辞重复 / 单纯引用守则条目 / 前文没有兜底条款 → 不判冲突（防误伤）。"""
+    prev = "本守则未写明之事，视为允许。"
+    assert _rule_clause_conflicts(prev, "他重复了一遍：本守则未写明之事，视为允许。") == []
+    # 前文只有普通引用、无兜底语义 → 不构成"两套口径"
+    assert _rule_clause_conflicts("本守则第三条约定押金。", "本守则未尽事宜，以现场为准。") == []
+    assert _rule_clause_conflicts("", "本守则未尽事宜，以现场为准。") == []
+
+
+@pytest.mark.p1
+def test_chapter_flow_repeat_semantic_hit_and_degrade():
+    """LLM 判定命中返回证据；未启用/异常/非结构化一律降级为空串（保稿不重跑）。"""
+    prev = "沈决走到走廊尽头，拐过弯，看见餐厅大堂的旋转门。"
+    cur = "拐过弯，大堂的暖光铺过来。沈决靠在大堂一根包柱上。"
+
+    llm = MagicMock()
+    llm.chat.return_value = '{"repeat": true, "evidence": "走廊→拐弯→大堂→推门"}'
+    assert chapter_flow_repeat(llm, prev, cur) == "走廊→拐弯→大堂→推门"
+
+    llm.chat.return_value = '{"repeat": false, "evidence": ""}'
+    assert chapter_flow_repeat(llm, prev, cur) == ""
+
+    # 降级：无 llm / 关闭开关 / 调用异常
+    assert chapter_flow_repeat(None, prev, cur) == ""
+    assert chapter_flow_repeat(llm, prev, cur, use_llm=False) == ""
+    boom = MagicMock()
+    boom.chat.side_effect = RuntimeError("provider down")
+    assert chapter_flow_repeat(boom, prev, cur) == ""
+
+
+#: 章级终检集成用：后一场景换措辞重走前一场景的离场动线（v5 形态）
+_FLOW_LAST = (
+    "拐过弯，大堂的暖光铺过来，沈决靠在大堂一根包柱上，看着门外的人流。"
+    "过了一会儿，他把旋转门推开一条缝，让身后的姑娘先出去。"
+) * 2
+#: 合格重跑稿（长度接近原稿，不复述离场流程）
+_FLOW_RETRY_OK = (
+    "沈决把账本翻到最后一页，指着那行新墨问了两句。姑娘摇头，他便不再追问，"
+    "只把账本合上收进袖里。"
+) * 3
+
+
+@pytest.mark.p1
+def test_final_scene_flow_repeat_reruns_last_scene_once(store, monkeypatch):
+    """章级终检命中 → 只重跑末场景一次（不整章回退），复检通过即采用重跑稿。"""
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+
+    calls: list[str] = []
+
+    def _fake_flow(llm, prev_text, cur_text, use_llm=True):
+        calls.append(cur_text)
+        # 首次（原稿）判复述；复检（重跑稿）判不重复
+        return "离场流程：走廊→拐弯→大堂→包柱→推门" if len(calls) == 1 else ""
+
+    monkeypatch.setattr(_stages, "chapter_flow_repeat", _fake_flow)
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生事件语义去重评审
+        _SPLIT_JSON,                 # 拆场景
+        _NORMAL_SCENE,               # 场景1
+        _FLOW_LAST,                  # 场景2（复述离场流程）
+        _FLOW_RETRY_OK,              # 场景2 章级终检重跑
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+
+    # 只跑「首次判定 + 复检」两次，没有第二次重跑
+    assert len(calls) == 2
+    # 第 5 次调用（下标 4）是末场景重跑，prompt 带重试强制规则与被禁流程
+    retry_user = llm.chat.call_args_list[4][0][1]
+    assert "重试强制规则" in retry_user
+    assert "走廊→拐弯→大堂→包柱→推门" in retry_user
+
+
+@pytest.mark.p1
+def test_final_scene_flow_repeat_keeps_original_when_retry_too_short(store, monkeypatch, caplog):
+    """重跑稿过短（<原稿 60%）→ 不采纳、保原稿、留日志，且不再重跑第二次。"""
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+
+    calls: list[str] = []
+
+    def _fake_flow(llm, prev_text, cur_text, use_llm=True):
+        calls.append(cur_text)
+        return "离场流程：走廊→拐弯→大堂→包柱→推门" if len(calls) == 1 else ""
+
+    monkeypatch.setattr(_stages, "chapter_flow_repeat", _fake_flow)
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',
+        _SPLIT_JSON,
+        _NORMAL_SCENE,
+        _FLOW_LAST,
+        _NORMAL_SCENE,               # 重跑稿过短 → 拒收
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    with caplog.at_level("WARNING"):
+        _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert any("保留原稿" in r.message for r in caplog.records)
+    assert len(calls) == 1  # 拒收后不进入复检、不二次重跑
 
 

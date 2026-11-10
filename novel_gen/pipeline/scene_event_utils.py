@@ -17,7 +17,9 @@ import re
 
 from ..llm.json_parse import parse_json_obj
 from ..utils.text import longest_common_substr_len as _lcs_len
-from .templates import scene_event_derive_prompt, scene_rewrite_prompt
+from .templates import (
+    chapter_flow_repeat_prompt, scene_event_derive_prompt, scene_rewrite_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +279,73 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
         if c == ec or c in ec or ec in c:
             return ev
     return ""
+
+
+#: 守则兜底条款：「本守则」起 60 字内出现兜底语义才算条款（普通引用不算，降误伤）
+_RULE_FALLBACK_RE = re.compile(
+    r"本守则[^。；;\n]{0,60}?(?:视为允许|视为禁止|不予追究|未尽事宜|未写明|最终解释权)")
+#: 同一守则两条条款归一化相似度低于该值 → 判「两套口径」
+_RULE_CLAUSE_SAME_RATIO = 0.80
+
+
+def _rule_clause_conflicts(prev_text: str, cur_text: str) -> list[str]:
+    """后一场景是否给出与已写正文不同口径的「本守则…」兜底条款（返回冲突条文）。
+
+    确定性、零 LLM：只比对「前文已有条款 vs 后文条款」的归一化相似度，同一措辞
+    重复（≥0.80）不算冲突，因此正常复述守则不会误伤。背景：《契裂之眼》v5 第 1 章
+    同时存在「本守则未写明之事，视为允许」(约 @404) 与「本守则未尽事宜，以包间内
+    实际发生为准」(约 @2525)，两套兜底口径互相打架。
+    """
+    def _clauses(text: str) -> list[str]:
+        out: list[str] = []
+        for m in _RULE_FALLBACK_RE.finditer(text or ""):
+            c = re.sub(r"\s+", "", m.group())
+            if c not in out:
+                out.append(c)
+        return out
+
+    prev = _clauses(prev_text)
+    if not prev:
+        return []
+    conflicts: list[str] = []
+    for cur in _clauses(cur_text):
+        best = max((difflib.SequenceMatcher(None, cur, p).ratio() for p in prev), default=0.0)
+        if best < _RULE_CLAUSE_SAME_RATIO:
+            conflicts.append(cur)
+    return conflicts
+
+
+def chapter_flow_repeat(llm, prev_text: str, cur_text: str, use_llm: bool = True) -> str:
+    """章级终检：后一场景是否把前一场景已写过的流程换措辞又走一遍（返回摘录，否则 ""）。
+
+    为什么必须走语义判定：字面判据实测打不着——v4 各接缝 700 字窗口 Jaccard
+    0.073-0.134、v5 仅 0.056-0.094，与正常承接无法区分；`_SCENE_ANCHOR_RATIO`
+    要求同一句原文被照写，对「走廊尽头→拐弯→大堂→包柱→推门」这种换词重排的
+    位移链同样失效。语义判据比的是「动作序列是否可一一对应 + 是否回到流程上游
+    重走」，与措辞无关，因此能覆盖第 2 轮漏掉的形态。
+
+    成本：每章 1 次调用（前场景尾 1500 字 + 后场景头 2000 字，输出 ≤256 tokens）。
+    失败降级：无 llm / 关闭 / 异常 / 输出不可解析 → logger 留痕后返回 ""，
+    不重跑、保当前稿——判定失败绝不阻断生成。
+    """
+    if not prev_text or not cur_text:
+        return ""
+    if llm is None or not use_llm:
+        logger.info("章级终检跳过流程复述判定（未启用 LLM 语义判据，保稿不重跑）")
+        return ""
+    try:
+        system, user = chapter_flow_repeat_prompt(prev_text, cur_text)
+        raw = llm.chat(system, user, temperature=0.1, max_tokens=256)
+        data = parse_json_obj(raw)
+        if not isinstance(data, dict) or "repeat" not in data:
+            logger.warning("章级终检 LLM 输出非结构化，本轮跳过流程复述判定（保稿不重跑）")
+            return ""
+        if not data.get("repeat"):
+            return ""
+        return str(data.get("evidence") or "").strip() or "上一场景已写过的同一段流程"
+    except Exception as e:
+        logger.warning("章级终检流程复述判定失败（保稿不重跑）: %s", e)
+        return ""
 
 
 

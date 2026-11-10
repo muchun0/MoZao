@@ -3,7 +3,7 @@
 多用户数据层（MySQL）：连接池 + 按业务域拆分的数据访问函数。
 
 拆分说明：原 webapp/db.py（1409 行单文件）按域拆分为本包：
-    base.py        连接池/事务包装/表结构 DDL/建表初始化（init_db）
+    base.py        连接池/事务包装/表结构 DDL/初始化（init_schema + seed_defaults）
     users.py       用户/密码/代理邀请/返佣/认证/会话/余额/管理统计
     projects.py    项目归属/退款
     skills.py      平台技能/用户技能/技能市场
@@ -16,7 +16,7 @@
 from .base import (  # noqa: F401
     DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
     _TxConn, _connect, _column_names, _get_pool, _valid_email,
-    init_db,
+    auto_init_enabled, init_schema, seed_defaults, init_db,
 )
 from .users import *  # noqa: F401,F403
 from .projects import *  # noqa: F401,F403
@@ -28,7 +28,6 @@ from .assistant_billing import *  # noqa: F401,F403
 from .traces import *  # noqa: F401,F403
 from .config import *  # noqa: F401,F403
 
-# 模块加载时初始化（建表 + 老数据补全 + 风格角色种子化）。
-# 必须在全部子模块导入完成之后调用：init_db 内部延迟导入的
-# _seed_style_roles（style_roles.py）等此时已就绪。
-init_db()
+# 本包只做导出，导入期不建表、不连库、不灌数据（历史副作用已移除）。
+# 建表与默认配置由调用方显式执行：init_schema() + seed_defaults()。
+# FastAPI 入口在 lifespan 中按 MOZAO_AUTO_INIT 调用；CLI/脚本/测试入口各自调用。

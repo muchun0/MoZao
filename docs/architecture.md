@@ -111,7 +111,7 @@
 | `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 把 `sys_config` 实时值合并进 `NovelConfig`（顶层字段 + agent_guard 标量 + scene_limits），DB 异常回退快照/默认并 logger 留痕；生成链路（`core._open_pipeline`）与小墨AI 对话（`assistant/service.py`）共用，避免同一逻辑两处维护 |
 | `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装四层上下文：system 人设+Bible / 层2 事实块 / 层3 对话窗口 / 层4 提问；按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 组装 → LLM → 失败降级 → 输出合规 → 落库） |
 | `routers/` | 按域拆分路由（见 2.4） |
-| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_db，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
+| `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_schema+seed_defaults，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
 | `pricing.py` | 定价档位（统一 3 元/万字，普通模式下线） |
 | `referral.py` | 代理商业参数：`AGENT_DISCOUNT`(0.8) / `COMMISSION_RATE`(0.1) / `COMMISSION_BASE` / `REFERRAL_BONUS` |
@@ -211,7 +211,7 @@
 | 输入/输出防护（模块3） | API 输入注入检测（命中 400）+ 拼 system 前清洗（custom_prompt/skill/用户技能）+ 输出基础合规校验 | 防 Prompt 注入篡改系统约束；正常创作输入零误报 |
 | 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace；**2026-10-28 词表换LLM 批次二**：机制面板结算事件锚点判定可 LLM 语义化（`llm_semantic_panel_anchor` 默认开，判两处面板数字间是否真实结算，失败回退锚点正则，issue 保持小改） | 减少人工返工；异常降级不阻塞 |
 | 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
-| 全局开关覆盖（后台管理） | `FEATURE_FLAGS` 注册表 = 默认值唯一事实来源；`init_db` seed 幂等同步进 `sys_config`（新增开关自动入表）；`_open_pipeline` 内 `_apply_global_overrides` 以表为准内存态覆盖 cfg（顶层/agent_guard/scene_limits），**config.json 项目快照不迁移不改写**；DB 异常降级走快照/默认并留痕 | 运行时开关收敛到管理后台、以表中数据为准；新增开关历史项目零迁移统一生效（用户核心动机） |
+| 全局开关覆盖（后台管理） | `FEATURE_FLAGS` 注册表 = 默认值唯一事实来源；启动初始化 `seed_defaults` 幂等同步进 `sys_config`（新增开关自动入表）；`_open_pipeline` 内 `_apply_global_overrides` 以表为准内存态覆盖 cfg（顶层/agent_guard/scene_limits），**config.json 项目快照不迁移不改写**；DB 异常降级走快照/默认并留痕 | 运行时开关收敛到管理后台、以表中数据为准；新增开关历史项目零迁移统一生效（用户核心动机） |
 
 ## 6. 部署架构
 

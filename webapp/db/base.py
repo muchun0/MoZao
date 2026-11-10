@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-数据层基础设施：MySQL 连接池、事务包装、表结构 DDL 与建表初始化（init_db）。
+数据层基础设施：MySQL 连接池、事务包装、表结构 DDL 与初始化。
+
+初始化拆分为两步，由调用方显式组合：
+    init_schema()    建表 + 结构/数据迁移（幂等）
+    seed_defaults()  灌默认配置（风格角色 / sys_config 开关，幂等）
+本模块导入期不建表、不连库（连接池仍为懒加载）。
 
 连接配置从环境变量读取（.env 或系统环境变量）：
     DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME（默认 mozao）
@@ -37,7 +42,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 __all__ = [
     "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
     "_TxConn", "_connect", "_column_names", "_get_pool", "_valid_email",
-    "init_db",
+    "auto_init_enabled", "init_schema", "seed_defaults", "init_db",
 ]
 
 
@@ -420,13 +425,31 @@ _SYS_CONFIG_LOG = """CREATE TABLE IF NOT EXISTS sys_config_log (
 """
 
 
-def init_db() -> None:
-    # 延迟导入：避免 base <-> 业务子模块的循环依赖；
-    # 本函数仅在 webapp/db/__init__.py 末尾（全部子模块加载完成后）调用一次。
-    from .style_roles import _seed_style_roles
+def auto_init_enabled() -> bool:
+    """是否允许进程启动时自动建表/灌默认配置（导入模块永远不触发）。
+
+    优先级：MOZAO_AUTO_INIT 显式设置 > MOZAO_ENV 推断。
+    - MOZAO_AUTO_INIT=1/true/yes/on → 开；=0/false/no/off → 关；
+    - 未显式设置时：MOZAO_ENV=production/prod → 关（生产不隐式建表），
+      其余（开发/测试）→ 开。
+    """
+    raw = (os.environ.get("MOZAO_AUTO_INIT") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    env = (os.environ.get("MOZAO_ENV") or "").strip().lower()
+    return env not in ("production", "prod")
+
+
+def init_schema() -> None:
+    """建表 + 结构/数据迁移（幂等，IF NOT EXISTS / 缺列才补）。
+
+    只负责 schema 与历史数据迁移，不灌业务默认配置；默认配置交给 seed_defaults。
+    """
+    # 延迟导入：避免 base <-> 业务子模块的循环依赖
     from .teardowns import _ensure_teardown_user_id
     from .users import _make_invite_code
-    from .config import seed_feature_flags
 
     with _connect() as conn:
         _run_schema_ddl(conn)
@@ -436,12 +459,28 @@ def init_db() -> None:
         _migrate_skill_columns(conn)
         _backfill_invite_codes(conn, _make_invite_code)
         _migrate_byok_keys(conn, cols)
-        _seed_guarded(_seed_style_roles, "风格角色")
-        _seed_guarded(seed_feature_flags, "sys_config 开关")
+
+
+def seed_defaults() -> None:
+    """灌默认配置（风格角色 + sys_config 开关），幂等；单个失败仅告警不阻断启动。"""
+    from .style_roles import _seed_style_roles
+    from .config import seed_feature_flags
+
+    _seed_guarded(_seed_style_roles, "风格角色")
+    _seed_guarded(seed_feature_flags, "sys_config 开关")
+
+
+def init_db() -> None:
+    """兼容入口：建表 + 灌默认配置。
+
+    新代码请按需分别调用 init_schema() / seed_defaults()（谁启动谁负责）。
+    """
+    init_schema()
+    seed_defaults()
 
 
 def _run_schema_ddl(conn) -> None:
-    """init_db 拆：执行全量建表 DDL（幂等，IF NOT EXISTS）。"""
+    """init_schema 拆：执行全量建表 DDL（幂等，IF NOT EXISTS）。"""
     for ddl in (_SCHEMA, _SESSIONS, _PROJECT_OWNER, _RECHARGES, _COMMISSION, _REFUNDS, _SKILLS, _USER_SKILLS, _SKILL_MARKET,
                 _STYLE_ROLES, _STYLE_ROLE_SKILLS, _TEARDOWN, _AGENT_TRACE, _SKILLS_UNIFIED,
                 _SYS_CONFIG, _SYS_CONFIG_LOG, _CONVERSATIONS, _MESSAGES,
@@ -450,7 +489,7 @@ def _run_schema_ddl(conn) -> None:
 
 
 def _migrate_user_columns(conn, cols) -> None:
-    """init_db 拆：老 users 表缺列时补列（幂等保护）。"""
+    """init_schema 拆：老 users 表缺列时补列（幂等保护）。"""
     if "email" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN email VARCHAR(120)")
         conn.execute("ALTER TABLE users ADD UNIQUE KEY uk_users_email (email)")
@@ -478,7 +517,7 @@ def _migrate_user_columns(conn, cols) -> None:
 
 
 def _migrate_skill_columns(conn) -> None:
-    """init_db 拆：user_skills/project_owner/writing_skills/skill_market/style_roles/style_role_skills 缺列补列。"""
+    """init_schema 拆：user_skills/project_owner/writing_skills/skill_market/style_roles/style_role_skills 缺列补列。"""
     usk_cols = _column_names(conn, "user_skills")
     if "market_id" not in usk_cols:
         conn.execute("ALTER TABLE user_skills ADD COLUMN market_id INT NOT NULL DEFAULT 0")
@@ -524,7 +563,7 @@ def _migrate_skill_columns(conn) -> None:
 
 
 def _backfill_invite_codes(conn, make_invite_code) -> None:
-    """init_db 拆：老用户补邀请码（无码则按 id 生成 INV+id）。"""
+    """init_schema 拆：老用户补邀请码（无码则按 id 生成 INV+id）。"""
     rows = conn.execute(
         "SELECT id FROM users WHERE invite_code IS NULL OR invite_code=''").fetchall()
     for r in rows:
@@ -533,7 +572,7 @@ def _backfill_invite_codes(conn, make_invite_code) -> None:
 
 
 def _migrate_byok_keys(conn, cols) -> None:
-    """init_db 拆：存量明文 BYOK Key 迁移为密文（enc:v1: 前缀幂等；密钥缺失时跳过并警告）。"""
+    """init_schema 拆：存量明文 BYOK Key 迁移为密文（enc:v1: 前缀幂等；密钥缺失时跳过并警告）。"""
     if "llm_api_key" in cols:
         plain_rows = conn.execute(
             "SELECT id, llm_api_key FROM users "
@@ -548,7 +587,7 @@ def _migrate_byok_keys(conn, cols) -> None:
 
 
 def _seed_guarded(seed_fn, label) -> None:
-    """init_db 拆：种子化（幂等，失败仅告警不阻断启动）。"""
+    """seed_defaults 拆：种子化（幂等，失败仅告警不阻断启动）。"""
     try:
         seed_fn()
     except Exception as e:

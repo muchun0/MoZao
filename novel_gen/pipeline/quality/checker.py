@@ -2198,8 +2198,12 @@ class QualityChecker:
 
     def _rewrite_span(self, chapter_no: int, plan_title: str, plan_goal: str,
                       content: str, span: tuple[int, int], issues: list[dict],
-                      baseline: dict | None = None) -> str:
-        """只重写问题窗口：上下文 + 问题段 → LLM 输出替换段 → Python 拼回（零结构破坏）。"""
+                      baseline: dict | None = None, hard_block: str = "") -> str:
+        """只重写问题窗口：上下文 + 问题段 → LLM 输出替换段 → Python 拼回（零结构破坏）。
+
+        `hard_block`：2026-11-10 修复④①，事件重复等「必须删除/合并」的硬约束，
+        追加到 prompt 末尾，避免模型只做措辞润色。
+        """
         try:
             s, e = span
             ctx_before = content[max(0, s - 200):s]
@@ -2243,6 +2247,7 @@ class QualityChecker:
                 f"2. 针对性修复上述问题（去重复/修正矛盾/补足内容）；机制数字必须按机制卡随事件结算\n"
                 f"3. 只输出替换后的这一个段落，不要解释，不要输出【摘要】\n"
                 f"4. 以句末标点完整收尾"
+                + (f"\n\n{hard_block}" if hard_block else "")
             )
             # REQ-踩坑账本注入对账 - 第 3 步（P1 重写路径 span）：prompt 拼装完成、chat 之前
             if getattr(self.cfg, "pitfall_reconcile", True):

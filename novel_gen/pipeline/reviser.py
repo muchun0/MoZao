@@ -3,6 +3,8 @@
 单章改稿器：四步流程（通读定位→分类判定→分层修改→回读校验）。
 
 只改小改问题；中改以上只记录不自动改。
+2026-11-10 修复④①：`自相矛盾-事件重复`（中改以上）升格为硬约束，与小改同批执行，
+并用确定性判据验证「后一处现场搬演」确实被删掉；未删除则保留原版并留痕。
 改稿失败或引入新问题时保留原版。
 """
 from __future__ import annotations
@@ -13,6 +15,11 @@ import logging
 from ..config import NovelConfig
 from ..llm.base import LLMClient
 from ..store.project import ProjectStore
+from .quality.consistency_review import (
+    event_duplicate_hard_block,
+    event_duplicate_resolved,
+    is_event_duplicate,
+)
 from .templates import (
     revise_locate_prompt,
     revise_apply_prompt,
@@ -63,16 +70,23 @@ class ChapterReviser:
         # 步骤2：分类（代码层）
         small = [it for it in issues if it.get("level", "小改") == "小改"]
         medium_plus = [it for it in issues if it.get("level", "小改") != "小改"]
+        # 2026-11-10 修复④①：事件重复不能只"记录"，必须与小改同批硬性执行
+        hard = [it for it in medium_plus if is_event_duplicate(it)]
+        batch = small + hard
+        hard_block = "\n".join(
+            b for b in (event_duplicate_hard_block(it, content) for it in hard) if b
+        )
 
-        # 步骤3：只改小改
-        if not small:
+        # 步骤3：改小改 + 事件重复硬约束
+        if not batch:
             if not silent:
-                logger.info(f"  [改稿] 第{chapter_no}章 {len(medium_plus)} 个中改以上问题，记录但不自动改")
+                logger.info(
+                    f"  [改稿] 第{chapter_no}章 {len(medium_plus)} 个中改以上问题，记录但不自动改")
             self._save_review(chapter_no, issues, content, content)
             return content
 
         sys_a, user_a = revise_apply_prompt(
-            self.cfg, chapter_no, chapter_title, content, small
+            self.cfg, chapter_no, chapter_title, content, batch, hard_block=hard_block
         )
         sys_a = self._sys(sys_a)
         revised = self.llm.chat(
@@ -82,9 +96,22 @@ class ChapterReviser:
         )
         revised = revised.strip()
 
+        # 步骤3.5：硬约束确定性验收（不依赖模型自述，防"只润色没删重复段"）
+        if hard:
+            for it in hard:
+                ok, note = event_duplicate_resolved(content, revised, it)
+                if not ok:
+                    logger.warning(
+                        "  [改稿] 第%d章 事件重复硬约束未执行（%s），保留原版",
+                        chapter_no, note)
+                    self._save_review(chapter_no, issues, content, content)
+                    return content
+            if not silent:
+                logger.info(f"  [改稿] 第{chapter_no}章 事件重复硬约束已消除重复现场")
+
         # 步骤4：回读校验
         sys_v, user_v = revise_verify_prompt(
-            self.cfg, chapter_no, revised, small
+            self.cfg, chapter_no, revised, batch
         )
         sys_v = self._sys(sys_v)
         raw_v = self.llm.chat(sys_v, user_v, temperature=0.3, max_tokens=500)
@@ -92,12 +119,14 @@ class ChapterReviser:
 
         if verify.get("ok") and not verify.get("new_issues"):
             if not silent:
-                logger.info(f"  [改稿] 第{chapter_no}章已自动修改 {len(small)} 个小问题")
+                logger.info(
+                    f"  [改稿] 第{chapter_no}章已自动修改 {len(small)} 个小问题"
+                    + (f" + {len(hard)} 个事件重复硬约束" if hard else ""))
             self._save_review(chapter_no, issues, content, revised)
             return revised
         else:
-            if not silent:
-                logger.warning(f"  [改稿] 第{chapter_no}章改后引入新问题，保留原版")
+            logger.warning(f"  [改稿] 第{chapter_no}章改后引入新问题，保留原版（硬约束已执行）"
+                           if hard else f"  [改稿] 第{chapter_no}章改后引入新问题，保留原版")
             self._save_review(chapter_no, issues, content, content)
             return content
 

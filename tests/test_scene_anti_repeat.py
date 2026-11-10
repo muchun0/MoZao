@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,6 +31,11 @@ from novel_gen.pipeline.beats import (
 )
 from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
+from novel_gen.pipeline.reviser import ChapterReviser
+from novel_gen.pipeline.quality.consistency_review import (
+    review_event_duplicates, event_duplicate_hard_block, event_duplicate_resolved,
+    event_duplicate_span, count_on_page,
+)
 from novel_gen.pipeline.scene_event_utils import (
     _split_moves_beats, _derive_events_from_moves,
     _event_summary, _event_anchor, _remaining_events,
@@ -710,5 +716,116 @@ def test_final_scene_flow_repeat_keeps_original_when_retry_too_short(store, monk
         _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
     assert any("保留原稿" in r.message for r in caplog.records)
     assert len(calls) == 1  # 拒收后不进入复检、不二次重跑
+
+
+# ---------- 2026-11-10 修复④：事件重复误判治理 + 硬约束执行 ----------
+
+#: v6 第1章真实形态：起身只现场发生一次（@1882），@2129 收束，@2719 对话回引
+_V6_LIKE_TEXT = (
+    "沈决把茶杯推回桌面。\n"
+    "戴眼镜男人站起来，椅子腿刮过地砖。\n"
+    "“您坐下。”\n"
+    "“我坐不住。”\n"
+    "沈决伸手按住他的胳膊，把他按回去，男人重新坐下，屁股只沾了椅面三分之一。\n"
+    "沈决低头看表。\n"
+    "“您刚才站起来要下去，算不算离席？”李姐问。\n"
+)
+_V6_LIKE_DETAIL = (
+    "前一处：沈决说“您坐下。”戴眼镜男人回“我坐不住。”并“往门口走”，"
+    "沈决劝阻后他“重新坐下，屁股只沾了椅面三分之一”；"
+    "后一处：同一戴眼镜男人再次“站起来，椅子腿刮过地砖”要下楼给王磊递烟，"
+    "沈决再次劝阻“您坐下”。两次均为该男人起身欲离席、沈决出言阻止、男人被劝住。"
+)
+
+
+@pytest.mark.p1
+def test_event_candidate_single_on_page_occurrence_filtered():
+    """现场只发生 1 次 + 另一处是收束 → 不构成事件重复候选（治 v6 误判）。"""
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    on_page, recall = count_on_page(_V6_LIKE_TEXT, "站起来，椅子腿刮过地砖")
+    assert (on_page, recall) == (1, 0)
+    kept, filtered = review_event_duplicates([issue], _V6_LIKE_TEXT)
+    assert not kept
+    assert len(filtered) == 1
+    assert "single_on_page_occurrence" in filtered[0]["review_signals"]
+
+
+@pytest.mark.p1
+def test_event_candidate_real_duplicate_still_kept():
+    """同一动作现场两次（换行各一次）→ 仍判事件重复候选，不被新信号误剔。"""
+    text = (
+        "陆沉把刀插回鞘里。\n"
+        "陆沉再次冲下去，把苏妄言从赤尉手里拽出来。\n"
+        "苏妄言喘着气。\n"
+        "陆沉再次冲下去，把苏妄言从赤尉手里拽出来。\n"
+    )
+    issue = {
+        "type": "自相矛盾-事件重复", "level": "大改",
+        "detail": "前一处：“陆沉再次冲下去，把苏妄言从赤尉手里拽出来。”；"
+                  "后一处：“陆沉再次冲下去，把苏妄言从赤尉手里拽出来。”",
+    }
+    kept, filtered = review_event_duplicates([issue], text)
+    assert len(kept) == 1 and not filtered
+
+
+@pytest.mark.p1
+def test_event_duplicate_hard_block_and_resolved():
+    """硬约束文本必须点名被重复动作且要求删除；判据：现场次数未下降即失败。"""
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    block = event_duplicate_hard_block(issue, _V6_LIKE_TEXT, (0, 10))
+    assert "硬约束" in block and "必须删除" in block
+    assert "站起来，椅子腿刮过地砖" in block
+
+    dup_before = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+                  "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    ok, note = event_duplicate_resolved(dup_before, _V6_LIKE_TEXT, issue)
+    assert ok, note
+    ok2, note2 = event_duplicate_resolved(dup_before, dup_before, issue)
+    assert not ok2 and "未删除" in note2
+
+
+@pytest.mark.p1
+def test_event_duplicate_span_targets_later_paragraph():
+    """定点删除目标是「后一处」段落：同一动作出现两次时取最后一次。"""
+    text = ("第一段。戴眼镜男人站起来，椅子腿刮过地砖。\n"
+            "中间段，劝他坐下。\n"
+            "第三段。戴眼镜男人站起来，椅子腿刮过地砖，要下楼。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    span = event_duplicate_span(text, issue)
+    assert span is not None
+    assert "第三段" in text[span[0]:span[1]]
+
+
+@pytest.mark.p1
+def test_reviser_applies_event_duplicate_as_hard_constraint(store):
+    """改稿器：事件重复（大改）进入执行批次，硬约束通过才采用改写稿。"""
+    dup = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+           "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        json.dumps({"issues": [issue]}),          # 步骤1 定位
+        _V6_LIKE_TEXT,                            # 步骤3 改写（已去掉第二次现场）
+        json.dumps({"ok": True, "new_issues": []}),  # 步骤4 回读校验
+    ]
+    out = ChapterReviser(store.load_config(), llm, store).revise(1, "第一章", "目标", dup)
+    assert out.strip() == _V6_LIKE_TEXT.strip()
+    # 改写 prompt 里确实带上了硬约束
+    assert "硬约束" in llm.chat.call_args_list[1][0][1]
+
+
+@pytest.mark.p1
+def test_reviser_keeps_original_when_hard_constraint_not_executed(store, caplog):
+    """改写稿没删掉重复段 → 不采用，保留原版并留痕（不等步骤4）。"""
+    dup = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+           "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    llm = MagicMock()
+    llm.chat.side_effect = [json.dumps({"issues": [issue]}), dup]
+    with caplog.at_level("WARNING"):
+        out = ChapterReviser(store.load_config(), llm, store).revise(1, "第一章", "目标", dup)
+    assert out == dup
+    assert any("硬约束未执行" in r.message for r in caplog.records)
+    assert len(llm.chat.call_args_list) == 2  # 未进入步骤4
 
 

@@ -1251,13 +1251,25 @@ def revise_locate_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
     return system, user
 
 
-def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
-    """步骤3：分层修改，只改小改 issues。中温 0.7。"""
+def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues,
+                        hard_block: str = ""):
+    """步骤3：分层修改，只改小改 issues（+ 2026-11-10 修复④①：事件重复硬约束）。
+
+    `hard_block` 非空时，允许为执行硬约束而删除重复段，字数下限放宽到原文 60%，
+    避免模型为了满足「±10%」而把重复段留下。
+    """
     system = (
         "你是一位网文润色编辑。用户给你一章正文和一份小改问题清单。"
         "你的任务是只改清单里列出的问题，不改剧情走向、不改人物对话含义。"
-        "保持原文字数基本不变（±10%）。只输出润色后的完整正文。"
     )
+    if hard_block:
+        system += (
+            "清单中标记【硬约束】的问题必须实际改掉（可整段删除重复内容），"
+            "不得只做措辞润色；执行硬约束后字数不得低于原文 60%，其余内容字数基本不变（±10%）。"
+        )
+    else:
+        system += "保持原文字数基本不变（±10%）。"
+    system += "只输出润色后的完整正文。"
     system += "\n\n" + _output_discipline()
     issues_text = chr(10).join(
         f"- [{it.get('type','')}] {it.get('pos','')}：{it.get('detail','')}"
@@ -1269,6 +1281,8 @@ def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
         f"【原文】\n{content}\n\n"
         "请只改上述问题，保留剧情和人物，输出修改后的完整正文。"
     )
+    if hard_block:
+        user += "\n\n" + hard_block
     return system, user
 
 

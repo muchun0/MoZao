@@ -75,11 +75,11 @@ def review_event_duplicates(
             verdict, signals = _classify_candidate(it, content)
             if verdict == _VERDICT_CONTINUE:
                 it["review_filtered"] = True
-                it["review_note"] = "对话打断后的动作递进承接，非事件重演"
+                it["review_note"] = _filter_note(signals)
                 it["review_signals"] = signals
                 filtered.append(it)
                 logger.warning(
-                    "[quality] 事件重复候选识别为承接形态已剔除（signals=%s）：%s",
+                    "[quality] 事件重复候选识别为承接/回引形态已剔除（signals=%s）：%s",
                     signals, str(it.get("detail", ""))[:120])
             else:
                 kept.append(it)
@@ -96,8 +96,14 @@ def _normalize(text: str) -> str:
     return re.sub(r'[\s，。！？、；：“”"‘’「」『』（）()…—\-·,.!?;:]', "", str(text or ""))
 
 
-def _extract_citations(detail: str, evidence: str) -> tuple[str, str] | None:
-    """从 detail / evidence 抽取「前一处 / 后一处」两段引文；抽不出两段独立引文返回 None。"""
+def _extract_citations(detail: str, evidence: str,
+                       norm_content: str = "") -> tuple[str, str] | None:
+    """从 detail / evidence 抽取「前一处 / 后一处」两段引文；抽不出两段独立引文返回 None。
+
+    2026-11-10 修复④②：每段不再只取第一个引号（评委常把短台词写在前面，
+    「您坐下。」只有 3 字，会直接判证据不足），改为「在正文里可定位的最长引文」优先，
+    这样「重新坐下，屁股只沾了椅面三分之一」这类动作引文才能被选中。
+    """
     for source in (detail, evidence):
         text = str(source or "").strip()
         if not text:
@@ -105,13 +111,26 @@ def _extract_citations(detail: str, evidence: str) -> tuple[str, str] | None:
         parts = [p.strip() for p in _CITE_SPLIT.split(text) if p and p.strip()]
         # split 会丢掉标记本身；两段以上才视为「前一处 + 后一处」结构
         if len(parts) >= 2:
-            first, second = parts[0], parts[1]
-            q1 = _first_quote(first)
-            q2 = _first_quote(second)
+            q1 = _pick_quote(parts[0], norm_content)
+            q2 = _pick_quote(parts[1], norm_content)
             if q1 and q2 and len(_normalize(q1)) >= C._REVIEW_CITE_MIN_CHARS \
                     and len(_normalize(q2)) >= C._REVIEW_CITE_MIN_CHARS:
                 return q1, q2
     return None
+
+
+def _pick_quote(segment: str, norm_content: str = "") -> str:
+    """取该段代表性引文：可定位的最长引号引文优先，其次首个引文，最后叙述片段。"""
+    quotes = [m.group(1).strip() for m in _QUOTED.finditer(segment)]
+    if norm_content:
+        located = [q for q in quotes
+                   if len(_normalize(q)) >= C._REVIEW_CITE_MIN_CHARS
+                   and _normalize(q) in norm_content]
+        if located:
+            return max(located, key=lambda q: len(_normalize(q)))
+    if quotes:
+        return quotes[0]
+    return _first_quote(segment)
 
 
 def _first_quote(segment: str) -> str:
@@ -171,23 +190,86 @@ def _char_bigrams(text: str) -> set[str]:
     return {han[i:i + 2] for i in range(max(0, len(han) - 1))}
 
 
+# ---------- 2026-11-10 修复④②：现场搬演 vs 对话回引 ----------
+
+def _narration_only(content: str) -> str:
+    """剔除对话引号内容后的叙述文本（现场搬演只可能出现在叙述里）。"""
+    return _QUOTED.sub("", str(content or ""))
+
+
+def count_on_page(content: str, phrase: str) -> tuple[int, int]:
+    """返回 (现场搬演次数, 对话内出现次数)。
+
+    现场搬演 = 该短语在**引号外**叙述中的出现次数；引号内出现视为人物回引。
+    """
+    q = _normalize(phrase)
+    if len(q) < C._REVIEW_CITE_MIN_CHARS:
+        return 0, 0
+    total = _normalize(content).count(q)
+    on_page = _normalize(_narration_only(content)).count(q)
+    return on_page, max(0, total - on_page)
+
+
+def _dialogue_recall(content: str, phrase: str) -> bool:
+    """后一处引文落在对话引号内，且附近含回引标记（刚才/先前…）→ 是回引不是搬演。"""
+    raw = str(content or "")
+    idx = raw.find(phrase)
+    if idx < 0:
+        return False
+    if not any(m.start() <= idx < m.end() for m in _QUOTED.finditer(raw)):
+        return False
+    window = raw[max(0, idx - 30): idx + len(phrase) + 20]
+    return any(w in window for w in C._RECALL_MARKERS)
+
+
+def _single_on_page_closed(content: str, q1: str, q2: str) -> bool:
+    """后一处动作现场只发生 1 次，且另一处引文是它的收束（重新坐下/坐回…）。
+
+    《契裂之眼》v6 第1章：起身 @1882 现场一次 → 劝阻 →「重新坐下」@2129 收束，
+    @2719 只是对话回引；评委把「一次发生 + 收束」当成了两次现场发生。
+    """
+    if _normalize(q1) == _normalize(q2):
+        return False
+    on_page, _recall = count_on_page(content, q2)
+    if on_page > 1:
+        return False
+    return any(w in (_normalize(q1) + _normalize(q2)) for w in C._EPISODE_CLOSE_WORDS)
+
+
+def _filter_note(signals: list[str]) -> str:
+    if "recall_in_dialogue" in signals:
+        return "后一处为对话内回引前文动作，非第二次现场发生"
+    if "single_on_page_occurrence" in signals:
+        return "该动作现场仅发生一次（另一处为收束/回引），非事件重演"
+    return "对话打断后的动作递进承接，非事件重演"
+
+
 # ---------- 候选分类 ----------
 
 def _classify_candidate(issue: dict, content: str) -> tuple[str, list[str]]:
     """判定单条事件重复候选；返回 (verdict, hit_signals)。证据不足/信号不足 → keep。"""
     detail = str(issue.get("detail", "") or "")
     evidence = str(issue.get("evidence", "") or "")
-    citations = _extract_citations(detail, evidence)
+    norm_content = _normalize(content)
+    citations = _extract_citations(detail, evidence, norm_content)
     if citations is None:
         return _VERDICT_KEEP, ["citation_unavailable"]
 
-    norm_content = _normalize(content)
     q1, q2 = citations
     loc1 = _locate(norm_content, q1)
     loc2 = _locate(norm_content, q2)
     if loc1 is None or loc2 is None:
         # 引文在正文定位不到：fail-open 保留（与离线 mock 负例契约兼容）
         return _VERDICT_KEEP, ["locate_failed"]
+
+    # 2026-11-10 修复④②：先区分「现场搬演」与「对话回引」，再走原有承接三信号。
+    # 评委只有把同一动作写成两次独立现场才构成事件重复；一处是对话引述、
+    # 另一处是这次动作的收束，属于「一次发生」，不构成候选。
+    if not _repeat_conflict(_normalize(q2)):
+        if _dialogue_recall(content, q2):
+            return _VERDICT_CONTINUE, ["recall_in_dialogue"]
+        if _single_on_page_closed(content, q1, q2):
+            return _VERDICT_CONTINUE, ["single_on_page_occurrence"]
 
     (s1, e1), (s2, e2) = loc1, loc2
     if e1 > s2:  # 窗口重叠或顺序颠倒，不构成前后两段
@@ -212,3 +294,96 @@ def _classify_candidate(issue: dict, content: str) -> tuple[str, list[str]]:
     if signals == ["interruption_dialogue", "progression_new_detail", "no_closed_loop"]:
         return _VERDICT_CONTINUE, signals
     return _VERDICT_KEEP, signals
+
+
+# ---------- 2026-11-10 修复④①：事件重复转「硬约束」+ 可验证判据 ----------
+
+def _quoted_actions(issue: dict) -> list[str]:
+    """detail / evidence 中全部引号引文（按出现顺序）。"""
+    out: list[str] = []
+    for key in ("detail", "evidence"):
+        out.extend(m.group(1).strip()
+                   for m in _QUOTED.finditer(str(issue.get(key, "") or "")))
+    return out
+
+
+def event_duplicate_action(issue: dict, content: str) -> str:
+    """取出该事件重复项里「被重复的动作」原文（优先后一处引文），取不到返回 ""。
+
+    2026-11-10 修复④①：不再依赖 `_extract_citations` 的"前一处必须可定位"。
+    评委的「前一处」常写短台词（如“您坐下。”），在正文里定位不到就会让整条证据作废，
+    导致硬约束取不到动作、判据形同虚设。改为：先取后一处分段的可定位引文；再回退到
+    「正文可定位的引文里出现次数最多（并列取更长）」的一条。
+    """
+    norm = _normalize(content)
+    for key in ("detail", "evidence"):
+        text = str(issue.get(key, "") or "").strip()
+        if not text:
+            continue
+        parts = [p.strip() for p in _CITE_SPLIT.split(text) if p and p.strip()]
+        if len(parts) < 2:
+            continue
+        quote = _pick_quote(parts[1], norm)
+        qn = _normalize(quote)
+        if len(qn) >= C._REVIEW_CITE_MIN_CHARS and qn in norm:
+            return quote
+        break
+    located = [q for q in _quoted_actions(issue)
+               if len(_normalize(q)) >= C._REVIEW_CITE_MIN_CHARS
+               and _normalize(q) in norm]
+    if not located:
+        return ""
+    return max(located, key=lambda q: (norm.count(_normalize(q)),
+                                       len(_normalize(q))))
+
+
+def event_duplicate_hard_block(issue: dict, content: str,
+                               span: tuple[int, int] | None = None) -> str:
+    """生成给改写模型的【硬约束】文本：明确要求删掉后一版对应段落/合并为一次发生。"""
+    action = event_duplicate_action(issue, content)
+    if not action:
+        return ""
+    where = ""
+    if span:
+        para = str(content[:span[0]]).count("\n") + 1
+        where = f"（本段为后一版，约第 {para} 段）"
+    return (
+        "【硬约束·事件重复（必须执行，不得只做润色）】\n"
+        f"- 被重复现场搬演的动作：{action}\n"
+        f"- {where or '本段是它的后一版'}：必须删除本段中对该动作的完整重演。\n"
+        "- 若本段含不可替代的新信息，只允许压成一句转述，不得再写完整动作序列。\n"
+        "- 自检：改后该动作在本章引号外的现场叙述只允许出现 1 次；对话里回引不算。\n"
+    )
+
+
+def event_duplicate_span(content: str, issue: dict) -> tuple[int, int] | None:
+    """「后一处重复」所在段落区间（行首, 行尾），供「按此改」定点删除。
+
+    同一动作在正文出现 ≥2 次时取最后一次（要保留前一版、删后一版）；
+    取不到精确字面位置时返回 None，由调用方回退到常规定位。
+    """
+    action = event_duplicate_action(issue, content)
+    if not action:
+        return None
+    raw = str(content or "")
+    on_page, _recall = count_on_page(raw, action)
+    i = raw.rfind(action) if on_page >= 2 else raw.find(action)
+    if i < 0:
+        return None
+    ps = raw.rfind("\n", 0, i) + 1
+    pe = raw.find("\n", i + len(action))
+    return ps, (len(raw) if pe == -1 else pe)
+
+
+def event_duplicate_resolved(before: str, after: str, issue: dict) -> tuple[bool, str]:
+    """可验证判据：改前现场 ≥2 次时，改后必须下降；且字数不得塌缩到 60% 以下。"""
+    action = event_duplicate_action(issue, before)
+    if not action:
+        return True, "action_unavailable（取不到动作原文，不阻断）"
+    b_on, _ = count_on_page(before, action)
+    a_on, _ = count_on_page(after, action)
+    if len(after) < int(len(before) * 0.6):
+        return False, f"字数塌缩 {len(before)}→{len(after)}（<60%）"
+    if b_on >= 2 and a_on >= b_on:
+        return False, f"现场叙述仍 {a_on} 次（改前 {b_on} 次，重复段未删除）"
+    return True, f"现场叙述 {b_on}→{a_on}"

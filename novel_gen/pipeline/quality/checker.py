@@ -53,7 +53,10 @@ from .text_tools import (
     _locate_problem_spans, _merge_spans, _align_to_paras,
 )
 from . import aggregate as _aggregate
-from .consistency_review import review_event_duplicates, EXCLUSION_CLAUSE_D
+from .consistency_review import (
+    review_event_duplicates, EXCLUSION_CLAUSE_D,
+    downgrade_self_negated, is_event_duplicate,
+)
 from .reviewers import (
     ReviewContext, DimensionResult, ReviewerResult, ReviewerIssue,
     PlotReviewer,
@@ -486,6 +489,34 @@ class QualityChecker:
                 versions.clear()
                 _push(content, summary, result, 0, True)
 
+        # 2026-11-10 修复⑤①：质检已判定的「事件重复（大改）」必须无条件执行。
+        # 改稿器（reviser）步骤1 是自己独立 LLM 定位，v7 就没把这条识别出来（日志无硬约束行）；
+        # 这里直接拿质检条目驱动定点改写（硬约束 + 确定性验收），不再依赖二次自主定位。
+        dup_hard = [it for it in issues
+                    if is_event_duplicate(it) and it.get("level") == "大改"]
+        if dup_hard:
+            fixed, done = self._fix_event_duplicates(
+                chapter_no, plan_title, plan_goal, content, dup_hard, silent=silent)
+            if done and fixed != content:
+                content = fixed
+                nc, ns = _split_summary(content)
+                if nc:
+                    content = nc
+                if ns:
+                    summary = ns
+                rewritten_occurred = True
+                result = self.check(chapter_no, plan_title, plan_goal, content, summary,
+                                    baseline=baseline, core_event=core_event)
+                issues = result["issues"]
+                self._record_pitfalls(chapter_no, issues)
+                # 定点修复是"执行质检判定"而非"新增版本"：清空初稿、只留修复稿，
+                # 与上方确定性抢救同一口径（一次操作只产 1 个版本）。
+                versions.clear()
+                _push(content, summary, result, 0, True)
+                if not silent:
+                    logger.info(f"  [自校验] 第{chapter_no}章事件重复已执行删除/合并"
+                                f"（复检 {len(issues)} 个问题，score={result.get('score')}）")
+
         # P0-5 最优版本账本：初始稿作为基准，重写轮内择优（问题数升序、分数降序）
         best_content, best_summary, best_issues, best_result = content, summary, issues, result
         best_rewritten = rewritten_occurred
@@ -774,6 +805,9 @@ class QualityChecker:
             "llm_failures": llm_failures,
             "llm_skipped": llm_skipped,
             "llm_timings_ms": {o.key: int(o.elapsed_s * 1000) for o in judge_outcomes},
+            # 2026-11-10 修复⑤④：评委失败 ≠ 正文有问题。失败时不补偿性扣分（不因基础设施
+            # 故障误伤正文），但标记「证据不足」，避免「少一个评委 = 该维度默认通过」。
+            "evidence_insufficient": any(f["critical"] for f in llm_failures),
         }
         if llm_failures:
             logger.warning("[quality] ch=%s 评委调用失败 %d/%d：%s",
@@ -1156,9 +1190,12 @@ class QualityChecker:
             return [], 0, False, ""
         issues, score = [], 0
         rows, err = self._consistency_llm_check(chapter_no, content)
+        # 2026-11-10 修复⑤②：评委 detail 自述「不构成矛盾/属递进承接」却按大改计分的，
+        # 降为中改（-10），不再阻断 passed。v7 的方位指代/身体状态/比喻三条即此形态。
+        rows = downgrade_self_negated(rows)
         for it in rows:
             issues.append(it)
-            score -= 25
+            score -= 25 if it.get("level") == "大改" else 10
         return issues, score, True, err
 
     #: 规则一致性 code → (问题级别, 扣分)；rule_conflict 与章内矛盾同级大改
@@ -1859,6 +1896,38 @@ class QualityChecker:
             logger.warning("[quality] 章内一致性评委调用失败（ch=%s）：%s", chapter_no, exc)
             return [], str(exc)
 
+    # ---------- 2026-11-10 修复⑤①：质检判定的「事件重复」强制定点执行 ----------
+    def _fix_event_duplicates(self, chapter_no: int, plan_title: str, plan_goal: str,
+                              content: str, dup_issues: list[dict],
+                              silent: bool = False) -> tuple[str, list[dict]]:
+        """逐条执行质检判定的事件重复：定点改写 + 确定性验收，失败保留原文并留痕。
+
+        与「按此改」（source=rewrite）共用 `issue_rewrite.rewrite_issue`：
+        优先用质检条目携带的引文定位后一版段落（`event_duplicate_span`），
+        定位不到再回退到 issue 自带的 pos/detail 常规定位。
+        """
+        from .issue_rewrite import rewrite_issue
+        fixed, done = content, []
+        for it in dup_issues:
+            try:
+                res = rewrite_issue(self.cfg, self.llm, self.store, chapter_no, fixed, it,
+                                    plan_title=plan_title, plan_goal=plan_goal,
+                                    trace=self.trace, guard=self.guard, memory=self.memory)
+            except Exception as exc:  # 降级必留痕，不裸吞
+                logger.warning("  [自校验] 第%d章事件重复定点改写异常（保留原文）：%s",
+                               chapter_no, exc, exc_info=True)
+                continue
+            if res.get("ok") and res.get("content") and res["content"] != fixed:
+                fixed = res["content"]
+                done.append(it)
+                if not silent:
+                    logger.info("  [自校验] 第%d章事件重复已改写（%d→%d 字，%s）",
+                                chapter_no, len(content), len(fixed), res.get("reason", ""))
+            else:
+                logger.warning("  [自校验] 第%d章事件重复未执行（%s），保留原文",
+                               chapter_no, res.get("reason", "") or "改写无变化")
+        return fixed, done
+
     # ---------- 自动重写（1 次；REQ-token优化 P1-4：定点化，不整章重出） ----------
     def _rewrite_once(self, chapter_no: int, plan_title: str, plan_goal: str,
                       content: str, issues: list[dict],
@@ -2415,6 +2484,8 @@ class QualityChecker:
                     "passed": bool(result.get("passed")),
                     "score": int(result.get("score", 0)),
                     "hook_score": result.get("hook_score"),   # P0-5 追更欲（进度盘绿色分支）
+                    # 2026-11-10 修复⑤④：关键评委失败时标记证据不足（不影响分数口径）
+                    "evidence_insufficient": bool(result.get("evidence_insufficient")),
                     "checked_at": time.time(),
                 },
             })

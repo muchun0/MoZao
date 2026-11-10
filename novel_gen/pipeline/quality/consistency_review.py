@@ -113,8 +113,17 @@ def _extract_citations(detail: str, evidence: str,
         if len(parts) >= 2:
             q1 = _pick_quote(parts[0], norm_content)
             q2 = _pick_quote(parts[1], norm_content)
-            if q1 and q2 and len(_normalize(q1)) >= C._REVIEW_CITE_MIN_CHARS \
-                    and len(_normalize(q2)) >= C._REVIEW_CITE_MIN_CHARS:
+            if not (q1 and q2):
+                continue
+            n1, n2 = _normalize(q1), _normalize(q2)
+            # 2026-11-10 修复⑤③：两段都达标，或「两段都能在正文里逐字定位」也放行。
+            # v7 评委把前一处写成 3 字动作『退回来』（<6 阈值），此前整条证据作废、
+            # 闸门 fail-open 保留，导致「未完成→完成」的递进被当成事件重复计大改。
+            if (len(n1) >= C._REVIEW_CITE_MIN_CHARS
+                    and len(n2) >= C._REVIEW_CITE_MIN_CHARS):
+                return q1, q2
+            if norm_content and n1 in norm_content and n2 in norm_content \
+                    and len(n1) + len(n2) >= C._REVIEW_CITE_MIN_CHARS:
                 return q1, q2
     return None
 
@@ -145,7 +154,9 @@ def _first_quote(segment: str) -> str:
 def _locate(norm_content: str, quote: str) -> tuple[int, int] | None:
     """归一化子串定位；找不到返回 None（fail-open）。"""
     q = _normalize(quote)
-    if len(q) < C._REVIEW_CITE_MIN_CHARS:
+    # 2026-11-10 修复⑤③：3 字以上的动作短语也允许定位。此前 <6 字一律 None，
+    # v7 的『退回来』(3 字) 让整条证据 locate_failed、闸门 fail-open 保留。
+    if len(q) < 3:
         return None
     idx = norm_content.find(q)
     if idx < 0:
@@ -236,11 +247,39 @@ def _single_on_page_closed(content: str, q1: str, q2: str) -> bool:
     return any(w in (_normalize(q1) + _normalize(q2)) for w in C._EPISODE_CLOSE_WORDS)
 
 
+def _progression_completion(content: str, q1: str, q2: str) -> bool:
+    """同一动作现场出现两次，但第一次「未完成」、第二次「完成」→ 阶段递进，不是重演。
+
+    《契裂之眼》v7：@2492「走到门边，手搭上门把，没拧」→ @4856「走到门边，手搭在把手上」
+    → @4923「拧下把手」开门。两次都是现场动作，但第二次是推进完成，不是完整重复一遍。
+    判据：取后一处动作的首个分句作「动作骨干」，它在正文叙述中恰好出现 2 次，
+    第一次之后 100 字内含未完成标记、第二次之后 100 字内含完成动作。
+    """
+    raw = str(content or "")
+    core = ""
+    for part in re.split(r"[，。；,;！？!?]", str(q2 or "")):
+        seg = part.strip()
+        if len(_normalize(seg)) >= 3:
+            core = seg
+            break
+    if len(_normalize(core)) < 3:
+        return False
+    hits = [m.start() for m in re.finditer(re.escape(core), raw)]
+    if len(hits) != 2:
+        return False
+    win1 = raw[hits[0]: hits[0] + len(core) + 100]
+    win2 = raw[hits[1]: hits[1] + len(core) + 100]
+    return (any(w in win1 for w in C._UNFINISHED_WORDS)
+            and any(w in win2 for w in C._COMPLETION_WORDS))
+
+
 def _filter_note(signals: list[str]) -> str:
     if "recall_in_dialogue" in signals:
         return "后一处为对话内回引前文动作，非第二次现场发生"
     if "single_on_page_occurrence" in signals:
         return "该动作现场仅发生一次（另一处为收束/回引），非事件重演"
+    if "unfinished_then_complete" in signals:
+        return "同一动作「未完成 → 完成」属阶段递进，非事件重演"
     return "对话打断后的动作递进承接，非事件重演"
 
 
@@ -270,6 +309,9 @@ def _classify_candidate(issue: dict, content: str) -> tuple[str, list[str]]:
             return _VERDICT_CONTINUE, ["recall_in_dialogue"]
         if _single_on_page_closed(content, q1, q2):
             return _VERDICT_CONTINUE, ["single_on_page_occurrence"]
+        # 2026-11-10 修复⑤③：同一动作「第一次未完成 → 第二次完成」是递进，不是重演。
+        if _progression_completion(content, q1, q2):
+            return _VERDICT_CONTINUE, ["unfinished_then_complete"]
 
     (s1, e1), (s2, e2) = loc1, loc2
     if e1 > s2:  # 窗口重叠或顺序颠倒，不构成前后两段
@@ -387,3 +429,32 @@ def event_duplicate_resolved(before: str, after: str, issue: dict) -> tuple[bool
     if b_on >= 2 and a_on >= b_on:
         return False, f"现场叙述仍 {a_on} 次（改前 {b_on} 次，重复段未删除）"
     return True, f"现场叙述 {b_on}→{a_on}"
+
+
+# ---------- 2026-11-10 修复⑤②：detail 自述「不构成矛盾」的降级 ----------
+
+def detail_self_negates(detail: str) -> bool:
+    """评委 detail 自己写明「不构成矛盾/属递进承接/按排除条款」→ 该条不成立。
+
+    反向保护：detail 里若同时出现正向矛盾断言（不能同时为真/前后不一…），
+    视为混合表述，仍按大改保留，防止把真问题降掉。
+    """
+    text = str(detail or "")
+    if not text:
+        return False
+    if any(w in text for w in C._POSITIVE_CONTRADICTION_MARKERS):
+        return False
+    return any(w in text for w in C._SELF_NEGATE_MARKERS)
+
+
+def downgrade_self_negated(issues: list[dict]) -> list[dict]:
+    """把「自述不构成矛盾却按大改计分」的条目降为中改，并留痕。
+
+    只降级、不删除：问题仍展示、仍可被改稿器处理，但不再阻断 `passed`。
+    """
+    for it in issues:
+        if it.get("level") == "大改" and detail_self_negates(it.get("detail", "")):
+            it["level"] = "中改"
+            it["level_note"] = "评委 detail 自述非矛盾，按中改计分（不计入 passed 阻断）"
+            logger.info("[quality] 自述非矛盾的条目降级为中改：%s", str(it.get("detail", ""))[:80])
+    return issues

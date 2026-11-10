@@ -30,6 +30,10 @@ from novel_gen.pipeline.beats import (
 )
 from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
+from novel_gen.pipeline.scene_event_utils import (
+    _split_moves_beats, _derive_events_from_moves,
+    _event_summary, _event_anchor, _remaining_events,
+)
 
 
 @pytest.fixture
@@ -356,5 +360,169 @@ def test_scene_prompt_done_beats_absent_when_empty():
     assert "本章已发生节拍序列" not in user
 
 
-# ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------
+# ---------- 事件派生：引号/单字对内的箭头不得作为 beat 分隔符（L2 ch3 实证） ----------
+
+#: L2 ch3 大纲原文：『死→活』里的箭头是语义，不是 beat 分隔符
+_L2_CH3_MOVES = (
+    "陆沉：推林半夏时喊『跑啊！』——这是他全书第一次主动为别人冒死。"
+    "林半夏：跑出五十步后停住，本能地用共情去『看』陆沉的状态，感知到『死→活』的断层，"
+    "她脸色变了，但没跑回去。赤尉蚀：追林半夏到第四层边界被碎晶屏障弹回。"
+)
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_cn_quotes():
+    """中文引号内的 → 不切分，整段保留一个 beat。"""
+    beats = _split_moves_beats(_L2_CH3_MOVES)
+    assert len(beats) == 1
+    assert "死→活" in beats[0]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_ascii_and_title_marks():
+    """英文引号 / 书名号内的 → 同样不切分。"""
+    for text in (
+        '他问"死→活是什么意思"，她没答。',
+        "他反复念《死→活》三个字。",
+        "她只说了句「生→灭」就走了。",
+    ):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_keeps_unquoted_short_cjk_pair():
+    """未加引号的单字/短词对 → 视为词义箭头，不切。"""
+    for text in ("死→活", "失败→成功", "死→活。然后离开"):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_latin_placeholder_beats():
+    """A→B 作为两个 beat，仍需切分（与单字对区分）。"""
+    assert _split_moves_beats("A→B") == ["A", "B"]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_clause_arrows():
+    """完整分句之间的 → 仍是 beat 分隔符。"""
+    beats = _split_moves_beats("陆沉进铁匠铺→苏妄言盘问→陆沉装傻")
+    assert len(beats) == 3
+
+
+@pytest.mark.p1
+def test_derive_events_no_residual_fragment():
+    """修复前 str.split('→') 会产生 '活』…' 残句；修复后事件不再残句开头。"""
+    legacy = [b.strip() for b in _L2_CH3_MOVES.split("→")]
+    assert legacy[1].startswith("活』")  # 旧行为可复现
+    events = _derive_events_from_moves(_L2_CH3_MOVES, chapter_words=2200, use_llm=False)
+    assert events
+    assert any("死→活" in ev["desc"] for ev in events)
+    for ev in events:
+        assert not ev["desc"].startswith("活』")  # 旧实现残句
+        assert not ev["desc"].startswith("』")
+
+
+@pytest.mark.p1
+def test_derive_events_top_level_arrow_still_splits():
+    """顶层 → 仍按 beat 派生事件。"""
+    events = _derive_events_from_moves(
+        "陆沉进铁匠铺→苏妄言盘问→陆沉装傻", chapter_words=10000, use_llm=False,
+    )
+    assert len(events) == 3
+
+
+# ---------- 事件锚点账本（2026-11-08）：id + 摘要 + 原文锚点；剩余未消费事件清单 ----------
+
+@pytest.mark.p1
+def test_event_summary_truncates_and_collapses():
+    """摘要压空白并截断到 40 字，超长以省略号收尾；短描述原样返回。"""
+    assert _event_summary("短事件") == "短事件"
+    assert _event_summary("陆沉  推林半夏") == "陆沉 推林半夏"
+    long = "陆沉" * 30
+    assert len(_event_summary(long)) == 41  # 40 字 + 省略号
+    assert _event_summary(long).endswith("…")
+
+
+@pytest.mark.p1
+def test_event_anchor_picks_original_sentence():
+    """原文锚点取与事件描述字面重合最高的整句，零 LLM。"""
+    piece = ("林半夏站在巷口，布包带子勒着肩。她跑出五十步，停住。"
+             "三息后，陆沉从酸液坑里爬出来，半边脸还是烂的。他哑着嗓子问墟苔采到没有。")
+    desc = "陆沉：从酸液坑里爬出，问林半夏墟苔采到了吗"
+    anchor = _event_anchor(piece, desc)
+    assert "陆沉从酸液坑里爬出来" in anchor
+    assert "林半夏站在巷口" not in anchor
+
+
+@pytest.mark.p1
+def test_event_anchor_empty_piece():
+    assert _event_anchor("", "事件描述") == ""
+
+
+@pytest.mark.p1
+def test_remaining_events_excludes_consumed_and_current():
+    """剩余事件只含当前场景之后、且账本未消费的条目（当前场景自身不出现）。"""
+    plan = [("事件1", "推人冒死"), ("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 1) == [("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    # 事件2 已被前序场景越权消费 → 不再作为「剩余未消费」列出
+    assert _remaining_events(plan, {"事件1", "事件2"}, 1) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 3) == []
+
+
+@pytest.mark.p1
+def test_scene1_overwrite_future_event_triggers_retry(store, monkeypatch):
+    """Q1 ch3 病根回归：场景1写出后续事件 → 比对集合含「剩余未消费事件」并触发重试。
+
+    此前比对集合只有 done_events（场景1为空），越权消费全程无人拦截；修复后场景1
+    的比对清单必须包含事件2，命中即重试，重试稿干净则采用。
+    """
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+    seen: list[list[str]] = []
+
+    def _fake_check(text, descs, names=(), llm=None, use_llm=True):
+        seen.append(list(descs))
+        # 只有越权稿带「硬接」；命中时返回最后一个清单项（= 剩余未消费事件2）
+        return descs[-1] if "硬接" in (text or "") else ""
+
+    monkeypatch.setattr(_stages, "_scene_text_rewrites_event", _fake_check)
+    offending = "陆沉硬接失控术法碎片，挡在苏妄言身前，死了一次。"
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生事件语义去重评审
+        _SPLIT_JSON,                 # 拆场景
+        offending,                   # 场景1（越权写完事件2）
+        _NORMAL_SCENE,               # 场景1重试（干净）
+        _NORMAL_SCENE,               # 场景2
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    # 场景1 的比对清单必须含后续事件（原实现只含 done_events=空 → 不调用检测）
+    assert seen and seen[0], "场景1未把剩余未消费事件纳入比对"
+    assert any("挡" in d for d in seen[0])
+    retry_user = llm.chat.call_args_list[3][0][1]
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in retry_user
+    assert "重试强制规则" in retry_user
+
+
+@pytest.mark.p1
+def test_scene_prompt_unconsumed_events_hard_constraint():
+    """upcoming_events 注入【本章剩余未消费事件（硬约束·禁越权消费）】及编号事件。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500)
+    sc = {"location": "裂隙口", "event": "推人冒死", "emotion": "紧张",
+          "anchors": [], "target_words": 1100, "time_marker": "午后"}
+    _, user = scene_prompt(
+        cfg, 1, "第三章", 1, sc, "前情", "上一场景结尾", "",
+        upcoming_events="- 事件2（尚未发生）：复活问墟苔\n- 事件3（尚未发生）：赤尉追击",
+    )
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in user
+    assert "禁止写出它们的完整流程" in user
+    assert "事件2（尚未发生）：复活问墟苔" in user
+    assert "本章后续事件预览" not in user
+
 

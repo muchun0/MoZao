@@ -847,6 +847,41 @@ class ProjectStore:
         except Exception:
             logger.exception("book_facts 派生快照失效失败（下次同章仍可能复用旧快照）")
 
+    # ---------- 状态层源文件（REQ-R21 / TECH-R21，M1） ----------
+    def events_path(self) -> Path:
+        return self.dir / "events.jsonl"
+
+    def consumption_path(self) -> Path:
+        return self.dir / "consumption.json"
+
+    def load_consumption(self) -> dict:
+        d = self._read_json(self.consumption_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_consumption(self, data: dict) -> None:
+        """整文件原子覆盖（消费水位随时间变化，但不回写事件行）。"""
+        self._write_json(self.consumption_path(), data)
+        self.invalidate_book_facts()
+
+    def foreshadowing_path(self) -> Path:
+        return self.dir / "foreshadowing.json"
+
+    def load_foreshadowing(self) -> Optional[dict]:
+        d = self._read_json(self.foreshadowing_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_foreshadowing(self, data: dict) -> None:
+        """伏笔唯一写入源（原子写）；每次写入使派生快照失效。"""
+        self._write_json(self.foreshadowing_path(), data)
+        self.invalidate_book_facts()
+
+    def reconcile_report_path(self) -> Path:
+        return self.dir / "reconcile_report.json"
+
+    def save_reconcile_report(self, data: dict) -> None:
+        self._write_json(self.reconcile_report_path(), data)
+
+
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
     def user_memory_path(self) -> Path:
         return self.dir / "user_memory_snapshot.json"

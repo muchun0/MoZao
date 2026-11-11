@@ -298,7 +298,30 @@ class BookFacts:
         return out, dropped
 
     def _build_open_threads(self, world, persisted_fs: dict, at_ch: int) -> tuple:
-        """未回收伏笔：world.foreshadowing 为准，revealed_ch 来自承诺账本。"""
+        """未回收伏笔：foreshadow_unified 开后由 `foreshadowing.json` 唯一供数，
+        否则沿用 world.foreshadowing + 承诺账本（M0 行为）。"""
+        if self._flag("foreshadow_unified"):
+            try:
+                from .state.foreshadow import ForeshadowLedger
+                lead = _int(getattr(self.cfg, "foreshadow_lead", 3), 3)
+                rows = ForeshadowLedger(self.store, self.cfg).view(at_ch, lead=lead)
+                out = []
+                for r in rows:
+                    status = {"due": "due_soon", "resolved": "revealed"}.get(
+                        r["status"], r["status"])
+                    out.append({
+                        "key": r["key"],
+                        "name": r["name"],
+                        "desc": r["desc"],
+                        "planted_ch": r["planted_ch"],
+                        "due_ch": r["due_ch"],
+                        "status": status,
+                        "level": r.get("level") or "main",
+                        "evidence_ch": _int((r.get("evidence") or {}).get("ch"), 0) or None,
+                    })
+                return out, 0
+            except Exception:
+                logger.exception("foreshadowing.json 读取失败（退回 world 伏笔项）")
         dropped = 0
         persisted = {}
         for it in (persisted_fs.get("items") or []):
@@ -351,6 +374,18 @@ class BookFacts:
         return out, dropped
 
     def _build_events(self, mem: dict, at_ch: int) -> list:
+        if self._flag("event_stream"):
+            try:
+                from .state.events import EventStream
+                rows = EventStream(self.store).query_with_consumption(to_ch=at_ch)
+                out = [{"ch": r["ch"], "desc": r["desc"],
+                        "participants": r.get("participants") or [],
+                        "kind": r.get("kind") or "state",
+                        "consumed_ch": r.get("consumed_ch")}
+                       for r in rows if r.get("desc")]
+                return out[-EVENT_RECENT:]
+            except Exception:
+                logger.exception("events.jsonl 读取失败（退回 book_memory 事件）")
         consumed = ((mem.get("events") or {}).get("consumed") or [])
         rows = []
         for e in consumed:
@@ -383,6 +418,74 @@ class BookFacts:
                 if s and s not in forbidden:
                     forbidden.append(s)
         return {"terms": terms[:20], "forbidden": forbidden[:20]}
+
+    # ---------- 开关/派生查询 ----------
+    def _flag(self, name: str) -> bool:
+        """M1 子开关（无 cfg 时按关闭处理：接口层另有显式判断）。"""
+        if self.cfg is None:
+            return False
+        return bool(getattr(self.cfg, name, False))
+
+    def violation_list(self, at_ch: int = 0, limit: int = 0) -> list:
+        """确定性冲突清单（conflict_guard 关闭时返回空列表）。"""
+        if not self._flag("conflict_guard"):
+            return []
+        try:
+            from .state.conflict_rules import chapters_from_scenes, detect
+            at_ch = self.resolve_at_ch(at_ch)
+            scenes = {}
+            try:
+                scenes = self.store.load_scenes() or {}
+            except Exception:
+                logger.exception("scenes.json 读取失败（冲突检测跳过）")
+            chapters = [c for c in chapters_from_scenes(scenes)
+                        if not at_ch or c["no"] <= at_ch]
+            try:
+                latest = self.store.load_chapter_state() or {}
+            except Exception:
+                latest = {}
+            if isinstance(latest, dict) and latest.get("chapter"):
+                no = _int(latest.get("chapter"))
+                if not any(c["no"] == no for c in chapters):
+                    from .state.conflict_rules import parse_numbers
+                    chapters.append({
+                        "no": no,
+                        "numbers": parse_numbers(latest.get("numbers")),
+                        "characters": latest.get("characters") or {},
+                        "items": latest.get("items") or {},
+                        "time": str(latest.get("time") or ""),
+                        "facts": latest.get("facts") or [],
+                        "body": latest.get("body") or [],
+                    })
+            canonical_map = {}
+            try:
+                mem = self.store.load_book_memory() or {}
+                canonical_map = (mem.get("canon") or {}).get("terms") or {}
+            except Exception:
+                logger.exception("canon 读取失败（称谓规则跳过）")
+            events = []
+            try:
+                from .state.events import EventStream
+                events = EventStream(self.store).all()
+            except Exception:
+                logger.exception("events.jsonl 读取失败（生死/物品规则降级为不判定）")
+            rows = detect(chapters, events, canonical_map)
+            return rows[:limit] if limit else rows
+        except Exception:
+            logger.exception("冲突规则汇总失败（不注入提醒）")
+            return []
+
+    def render_violation_block(self, at_ch: int = 0, limit: int = 5) -> str:
+        """写前冲突提醒（补偿块之后、硬区之前注入）；无命中返回空串。"""
+        rows = self.violation_list(at_ch, limit=limit)
+        if not rows:
+            return ""
+        try:
+            from .state.conflict_rules import render_block
+            return render_block(rows, limit=limit)
+        except Exception:
+            logger.exception("冲突提醒渲染失败（跳过）")
+            return ""
 
     # ---------- 未回收伏笔查询 ----------
     def open_threads(self, at_ch: int = 0, overdue_only: bool = False) -> list:

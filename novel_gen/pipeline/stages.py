@@ -577,6 +577,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("分卷卡注入失败（降级跳过）")
 
+        # REQ-R21 M1：确定性冲突提醒（位置：补偿块之后、硬区之前；不命中不产生文本）
+        if getattr(self.cfg, "conflict_guard", False):
+            try:
+                from .book_facts import BookFacts
+                _cg_block = BookFacts(self.store, self.cfg).render_violation_block(
+                    at_ch=chapter_no, limit=5)
+                if _cg_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _cg_block
+            except Exception:
+                logger.exception("冲突提醒注入失败（降级为不注入，不阻塞写章）")
+
         # REQ-R20 M0：单一只读状态视图（book_facts）——替换 L1.5/L1.6/读者账本/canon 四处账本块
         _bf_on = bool(getattr(self.cfg, "book_facts", False))
         if _bf_on:

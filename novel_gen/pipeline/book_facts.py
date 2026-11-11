@@ -445,7 +445,7 @@ class BookFacts:
                 mem = self.store.load_book_memory() or {}
                 canon = mem.get("canon") or {}
                 canon_terms = canon.get("terms") or {}
-                from ..chapter_state import mechanism_field_registry
+                from .chapter_state import mechanism_field_registry
                 registry = mechanism_field_registry(canon.get("mechanism_baseline") or {})
             except Exception:
                 logger.exception("canon / 机制基线读取失败（字段归一降级为不启用）")

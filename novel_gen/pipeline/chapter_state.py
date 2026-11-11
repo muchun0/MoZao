@@ -661,8 +661,15 @@ def unknown_mechanism_fields(text: str, registry: dict[str, str]) -> list[str]:
                   "寸", "尺", "丈", "米", "步", "级", "层", "格", "段", "点", "块")
     for m in _PANEL_RE.finditer(text):
         label = m.group(1).strip()
+        raw = label
+        if raw in registry:
+            continue           # 面板行原样就是注册字段（如「剩余次数」）
         core = _field_core(label)
-        if not core or core in registry:
+        if not core:
+            continue
+        # 面板行写法可能带前缀/异写（「今日剩余」「累积进度」），先归一再比白名单，
+        # 否则白名单里的「剩余次数」会被去前缀成「次数」而误报。
+        if canonical_field_name(label, registry) in registry:
             continue
         if any(kw in core for kw in _MECH_TAIL):
             out.append(

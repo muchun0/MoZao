@@ -229,3 +229,38 @@ def test_violation_list_reads_registry_without_import_failure(tmp_path, caplog):
     with caplog.at_level("ERROR", logger="novel_gen.pipeline.book_facts"):
         BookFacts(store, cfg).violation_list()
     assert "机制基线读取失败" not in caplog.text
+
+
+# ---------- 真实样本回归（2026-11-12）：状态层必须真的写 events.jsonl ----------
+def test_update_state_layer_writes_events(tmp_path):
+    """章后入账曾漏掉 EventStream 实例化（NameError 被吞），真实生成 14 章 0 事件。"""
+    from novel_gen.config import NovelConfig
+    from novel_gen.pipeline.manager import NovelPipeline
+    from novel_gen.pipeline.state.events import EventStream
+    from novel_gen.store.project import ProjectStore
+
+    cfg = NovelConfig(title="t")
+    cfg.event_stream = True
+    cfg.foreshadow_unified = False
+    store = ProjectStore(tmp_path / "b")
+    store.dir.mkdir(parents=True, exist_ok=True)
+    store.save_config(cfg)
+    store.save_chapter_state({
+        "chapter": 2,
+        "facts": ["陆沉把锁钥碎片交给苏妄言", "苏妄言答应拖三天"],
+        "characters": {"陆沉": "存活", "苏妄言": "存活"},
+        "items": {"锁钥碎片": "苏妄言收进袖里"},
+        "numbers": [],
+    })
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.cfg = cfg
+    stub.store = store
+    assert NovelPipeline._update_state_layer(stub, 2) is True
+    rows = EventStream(store).all()
+    assert rows, "状态层没有写入任何事件"
+    assert any(r.get("participants") for r in rows)
+    assert any(r.get("kind") == "object" for r in rows)

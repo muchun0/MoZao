@@ -574,6 +574,7 @@ class NovelPipeline:
         if event_stream:
             try:
                 from .state.events import EventStream, derive_fact_events
+                stream = EventStream(self.store)
                 names = [str(k) for k in ((state or {}).get("characters") or {}) if str(k).strip()]
                 items = [str(k) for k in ((state or {}).get("items") or {}) if str(k).strip()]
                 if not names or not items:

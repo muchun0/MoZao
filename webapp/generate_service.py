@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from novel_gen.store.project import ProjectStore
 from novel_gen.pipeline.reader_ledger import commit_chapter_account
+from novel_gen.pipeline import stale_guard
 from novel_gen.store.run_context import RunContext
 from novel_gen.store import run_context as run_files
 from novel_gen.store.wordcount import count_words
@@ -76,6 +77,8 @@ class AgentRunReq(BaseModel):
     params: dict = Field(default_factory=dict)
     user_prompt: str = ""
     skill_ids: list[int] = Field(default_factory=list)
+    # 档3：已知前文不一致仍要继续（门禁 409 后的「仍然继续」出口）
+    allow_inconsistent: bool = False
 
 
 # ---------- 全局紧急回退开关（评审 I-12：sys_config 全站生效，不做单项目灰度） ----------
@@ -400,6 +403,16 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     params = guard_params(req.agent, req.params)
     guard_locked(store, req.agent, params)
     guard_user_chapter(store, req.agent, params)
+    # 档3：章节一致性门禁——必须在计费/占槽之前（被拦截的请求不占槽、不产生任何扣费）
+    verdict = stale_guard.guard_staleness(
+        store, params, cfg=store.load_config(), agent=req.agent,
+        allow_inconsistent=bool(req.allow_inconsistent))
+    if verdict.get("blocked"):
+        raise HTTPException(status_code=409, detail=verdict.get("detail") or {})
+    if verdict.get("unstable_chapters"):
+        # 已知不一致继续：标记本次 run，供记忆标注与 upstream.unstable 落痕
+        params["_allow_inconsistent"] = True
+        params["_stale_chapters"] = list(verdict["unstable_chapters"])
     guard_skill_limits(req.skill_ids)
     _check_daily_run_limit(store)  # P2-F2：单项目每日上限（0=不限）
 
@@ -913,17 +926,22 @@ def _resolve_chapter_numbers(outline, params: dict, done: set) -> list[int]:
 
 
 def _generate_one_chapter(store, pipeline, outline, research, no: int, total: int,
-                          billing: dict, project_id: str, outputs: list, entries: list) -> None:
+                          billing: dict, project_id: str, outputs: list, entries: list,
+                          unstable: list | None = None) -> None:
     """单章生成：快照版本 → 写章 → 结算新增版本 → 回读反馈。"""
     plan = outline.chapters[no - 1]
     prev = settle_ledger.snapshot_chapter_versions(store, no)
     pipeline.chapter_writer.write(no, plan.title, plan.goal, research,
-                                  is_final=(no == total))
+                                  is_final=(no == total),
+                                  unstable_chapters=unstable or None)
     # REQ-R10 D1：章后确定性入账（伏笔状态推进），失败降级不阻断写章/结算
     commit_chapter_account(store, store.load_config(), no)
     results = settle_ledger.settle_chapter_versions(store, no, prev,
                                                     mode=billing["mode"],
                                                     project_id=project_id)
+    # 章后账本统一提交（人物状态/章末状态/揭示跟踪/读者账本）：
+    # 与 CLI resume 同源同口径；结算之后独立执行，失败降级不阻断写章与扣费
+    pipeline.commit_chapter_ledgers(no, source="web_generation")
     _record_chapter_feedback(store, no, results, outputs, entries)
 
 
@@ -946,6 +964,9 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
     done = {c.no for c in existing}
     baseline_done = len(done)  # 运行前已完成章数（书级）
     numbers = _resolve_chapter_numbers(outline, params, done)
+    # 档3：已知不一致继续时，过期章号随 run 透传（记忆标注 + upstream.unstable）
+    unstable = (list(params.get("_stale_chapters") or [])
+                if params.get("_allow_inconsistent") else [])
     research = store.load_research()
     _update_task_progress(store, phase="chapter", chapters_total=total,
                           chapters_done=baseline_done, current_chapter=0,
@@ -967,7 +988,8 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
                               chapters_done=len(done | written), current_chapter=no,
                               task_total=len(numbers), task_done=len(written))
         _generate_one_chapter(store, pipeline, outline, research, no, total,
-                              billing, project_id, outputs, entries)
+                              billing, project_id, outputs, entries,
+                              unstable=unstable)
         written.add(no)
         _update_task_progress(store, chapters_total=total,
                               chapters_done=len(done | written), current_chapter=no,

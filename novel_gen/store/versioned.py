@@ -471,15 +471,28 @@ class VersionedProduct:
         return str(getattr(ctx, "run_id", "") or "") if ctx is not None else ""
 
     def _resolve_upstream(self, upstream: Optional[dict]) -> dict:
-        """upstream=None → 自动读取依赖产物的 selected 版本号（评审 I-2）；显式传入则透传。"""
+        """upstream=None → 自动读取依赖产物的 selected 版本号（评审 I-2）；显式传入则透传。
+
+        档2：章节额外支持 `prev_chapters`（章节级依赖）。仅当显式 dict 携带该键时，
+        才自动补齐 outline/world（否则按调用方传入的逻辑透传），避免丢失上游维度。
+        档3：`unstable` 与 `prev_chapters` 同属章节版本元数据，携带时同样补齐上游维度。
+        """
         if upstream is not None:
-            return dict(upstream)
+            if self.kind != "chapter" or not ({"prev_chapters", "unstable"} & set(upstream)):
+                return dict(upstream)
         out: dict[str, int] = {}
+        explicit = dict(upstream or {})
         for dep in _UPSTREAM_DEPS[self.kind]:
+            key = f"{dep}_v"
+            if key in explicit:
+                out[key] = explicit[key]
+                continue
             try:
                 sel = VersionedProduct(self.store, dep).selected_version("all")
             except Exception:
                 sel = None
             if sel is not None:
-                out[f"{dep}_v"] = sel
+                out[key] = sel
+        # 章节级依赖等附加键原样保留（与 outline_v/world_v 同存于 upstream）
+        out.update({k: v for k, v in explicit.items() if k not in out})
         return out

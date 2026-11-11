@@ -130,6 +130,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
+    FeatureFlag("guard", "stale_gate", True, "生成前章节一致性门禁（档3）：目标章之前存在 stale 章且不在本次范围内时 409 提示（可确认继续）；unknown 只提示不拦截；关闭后守卫直接放行"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
     FeatureFlag("guard", "max_tokens", 2_000_000, "单任务累计 Token 上限"),
     FeatureFlag("guard", "input_check", True, "输入注入检测"),
@@ -349,6 +350,7 @@ class NovelConfig:
     confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
     # ---- memory：记忆与长文一致性（P0-1/P0-2，默认值见 FEATURE_FLAGS）----
     memory_window: int = feature_default("memory_window")        # 生成当前章时回填最近 N 章摘要，控制上下文成本
+    stale_gate: bool = feature_default("stale_gate")             # 生成前章节一致性门禁（档3）：False=守卫直接放行
     memory_direct_read_chapters: int = feature_default("memory_direct_read_chapters")  # 前文直读：直读最近 N 章正文（0=关闭，保持纯摘要）
     memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
     character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照

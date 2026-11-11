@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,6 +31,18 @@ from novel_gen.pipeline.beats import (
 )
 from novel_gen.pipeline.templates import scene_prompt
 from novel_gen.pipeline.stages import ChapterWriter
+from novel_gen.pipeline.reviser import ChapterReviser
+from novel_gen.pipeline.quality.consistency_review import (
+    review_event_duplicates, event_duplicate_hard_block, event_duplicate_resolved,
+    event_duplicate_span, count_on_page,
+)
+from novel_gen.pipeline.scene_event_utils import (
+    _split_moves_beats, _derive_events_from_moves,
+    _event_summary, _event_anchor, _remaining_events,
+    _scene_check_descs, _scene_text_repeats_generated,
+    _anchor_cover, _scene_text_rewrites_event,
+    _rule_clause_conflicts, chapter_flow_repeat,
+)
 
 
 @pytest.fixture
@@ -356,5 +369,463 @@ def test_scene_prompt_done_beats_absent_when_empty():
     assert "本章已发生节拍序列" not in user
 
 
-# ---------- 集成：场景1内部两遍 → 重试（堵 done_beat_seqs 为空时的盲区） ----------
+# ---------- 事件派生：引号/单字对内的箭头不得作为 beat 分隔符（L2 ch3 实证） ----------
+
+#: L2 ch3 大纲原文：『死→活』里的箭头是语义，不是 beat 分隔符
+_L2_CH3_MOVES = (
+    "陆沉：推林半夏时喊『跑啊！』——这是他全书第一次主动为别人冒死。"
+    "林半夏：跑出五十步后停住，本能地用共情去『看』陆沉的状态，感知到『死→活』的断层，"
+    "她脸色变了，但没跑回去。赤尉蚀：追林半夏到第四层边界被碎晶屏障弹回。"
+)
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_cn_quotes():
+    """中文引号内的 → 不切分，整段保留一个 beat。"""
+    beats = _split_moves_beats(_L2_CH3_MOVES)
+    assert len(beats) == 1
+    assert "死→活" in beats[0]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_ignores_arrow_inside_ascii_and_title_marks():
+    """英文引号 / 书名号内的 → 同样不切分。"""
+    for text in (
+        '他问"死→活是什么意思"，她没答。',
+        "他反复念《死→活》三个字。",
+        "她只说了句「生→灭」就走了。",
+    ):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_keeps_unquoted_short_cjk_pair():
+    """未加引号的单字/短词对 → 视为词义箭头，不切。"""
+    for text in ("死→活", "失败→成功", "死→活。然后离开"):
+        assert len(_split_moves_beats(text)) == 1
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_latin_placeholder_beats():
+    """A→B 作为两个 beat，仍需切分（与单字对区分）。"""
+    assert _split_moves_beats("A→B") == ["A", "B"]
+
+
+@pytest.mark.p1
+def test_split_moves_beats_splits_clause_arrows():
+    """完整分句之间的 → 仍是 beat 分隔符。"""
+    beats = _split_moves_beats("陆沉进铁匠铺→苏妄言盘问→陆沉装傻")
+    assert len(beats) == 3
+
+
+@pytest.mark.p1
+def test_derive_events_no_residual_fragment():
+    """修复前 str.split('→') 会产生 '活』…' 残句；修复后事件不再残句开头。"""
+    legacy = [b.strip() for b in _L2_CH3_MOVES.split("→")]
+    assert legacy[1].startswith("活』")  # 旧行为可复现
+    events = _derive_events_from_moves(_L2_CH3_MOVES, chapter_words=2200, use_llm=False)
+    assert events
+    assert any("死→活" in ev["desc"] for ev in events)
+    for ev in events:
+        assert not ev["desc"].startswith("活』")  # 旧实现残句
+        assert not ev["desc"].startswith("』")
+
+
+@pytest.mark.p1
+def test_derive_events_top_level_arrow_still_splits():
+    """顶层 → 仍按 beat 派生事件。"""
+    events = _derive_events_from_moves(
+        "陆沉进铁匠铺→苏妄言盘问→陆沉装傻", chapter_words=10000, use_llm=False,
+    )
+    assert len(events) == 3
+
+
+# ---------- 事件锚点账本（2026-11-08）：id + 摘要 + 原文锚点；剩余未消费事件清单 ----------
+
+@pytest.mark.p1
+def test_event_summary_truncates_and_collapses():
+    """摘要压空白并截断到 40 字，超长以省略号收尾；短描述原样返回。"""
+    assert _event_summary("短事件") == "短事件"
+    assert _event_summary("陆沉  推林半夏") == "陆沉 推林半夏"
+    long = "陆沉" * 30
+    assert len(_event_summary(long)) == 41  # 40 字 + 省略号
+    assert _event_summary(long).endswith("…")
+
+
+@pytest.mark.p1
+def test_event_anchor_picks_original_sentence():
+    """原文锚点取与事件描述字面重合最高的整句，零 LLM。"""
+    piece = ("林半夏站在巷口，布包带子勒着肩。她跑出五十步，停住。"
+             "三息后，陆沉从酸液坑里爬出来，半边脸还是烂的。他哑着嗓子问墟苔采到没有。")
+    desc = "陆沉：从酸液坑里爬出，问林半夏墟苔采到了吗"
+    anchor = _event_anchor(piece, desc)
+    assert "陆沉从酸液坑里爬出来" in anchor
+    assert "林半夏站在巷口" not in anchor
+
+
+@pytest.mark.p1
+def test_event_anchor_empty_piece():
+    assert _event_anchor("", "事件描述") == ""
+
+
+@pytest.mark.p1
+def test_anchor_cover_detects_non_rescue_repeat():
+    """修复②：兜底判据换成锚点 bigram 命中，不再只认救援动词。
+
+    「破门」不含 救/引开/砸/挡 等救援词，旧词表必然漏检；锚点判据能命中。
+    """
+    anchor = "他冲向包间门，肩膀撞上去，门板纹丝不动"
+    text = "卫衣男骂了一声。他冲向包间门，肩膀撞上去，门板纹丝不动，发出一声闷响。"
+    ratio, hit = _anchor_cover(text, anchor)
+    assert ratio >= 0.5 and hit >= 5
+    out = _scene_text_rewrites_event(
+        text, ["相亲对象B强行破门失败"],
+        anchors=[["他冲向包间门，肩膀撞上去，门板纹丝不动"]])
+    assert out == "相亲对象B强行破门失败"
+
+
+@pytest.mark.p1
+def test_anchor_cover_not_triggered_by_normal_progression():
+    """误伤评估：正常推进只会沿用人物/物件名，不会把锚点句照写一半以上。"""
+    anchor = "他冲向包间门，肩膀撞上去，门板纹丝不动"
+    text = "沈决走到门边，侧耳贴上门板听了两秒。门外很静，走廊灯亮着。"
+    ratio, hit = _anchor_cover(text, anchor)
+    assert not (ratio >= 0.5 and hit >= 5)
+    assert _scene_text_rewrites_event(
+        text, ["相亲对象B强行破门失败"],
+        anchors=[["他冲向包间门，肩膀撞上去，门板纹丝不动"]]) == ""
+
+
+@pytest.mark.p1
+def test_remaining_events_uses_zero_based_current_index():
+    """current_idx 是当前场景 0 基下标：只返回其后未消费事件；末场景切空才是对的。
+
+    旧实现调用方传 1 基 idx，切片靠"错位刚好"才对上前一场景之后的清单，
+    最后一场景必然得到空清单，掩盖了"末场景没有比对对象"的缺陷。
+    """
+    plan = [("事件1", "推人冒死"), ("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 0) == [("事件2", "复活问墟苔"), ("事件3", "赤尉追击")]
+    # 事件2 已被前序场景越权消费 → 不再作为「剩余未消费」列出
+    assert _remaining_events(plan, {"事件1", "事件2"}, 0) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 1) == [("事件3", "赤尉追击")]
+    assert _remaining_events(plan, set(), 2) == []
+
+
+@pytest.mark.p1
+def test_scene_check_descs_includes_own_event_only_when_consumed():
+    """自身事件仅在已被前序场景越权消费时纳入比对，正常推进不误判复写。"""
+    assert _scene_check_descs(["事件1"], "事件2", False, []) == ["事件1"]
+    assert _scene_check_descs(["事件1"], "事件2", True, []) == ["事件1", "事件2"]
+    # 保序去重：自身事件与后续清单重复时只留一条
+    assert _scene_check_descs(["事件1"], "事件2", True, ["事件2", "事件3"]) == [
+        "事件1", "事件2", "事件3"]
+
+
+@pytest.mark.p1
+def test_scene_text_repeats_generated_detects_restart_opening():
+    """拼接缝"同一段落重新起头"：开头句照抄即判重复（ch1「包间门合上」形态）。"""
+    scene1 = "包间门合上的那一声，很轻。陈婉把茶盏推回来，指腹在杯沿停了一停。"
+    scene2 = ("包间门合上的那一声，很轻。陈婉把茶盏推回来，指腹在杯沿停了一停。"
+              "她抬头看向窗外，雨声压住了后半句话。")
+    assert _scene_text_repeats_generated(scene2, [scene1])
+    # 正常承接（开场不同）不误判
+    scene3 = "雨在檐口连成线。陈婉没有回头，只把账本翻到最后一页，指尖压在墨迹上。"
+    assert _scene_text_repeats_generated(scene3, [scene1]) == ""
+
+
+@pytest.mark.p1
+def test_scene1_overwrite_future_event_triggers_retry(store, monkeypatch):
+    """Q1 ch3 病根回归：场景1写出后续事件 → 比对集合含「剩余未消费事件」并触发重试。
+
+    此前比对集合只有 done_events（场景1为空），越权消费全程无人拦截；修复后场景1
+    的比对清单必须包含事件2，命中即重试，重试稿干净则采用。
+    """
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+    seen: list[list[str]] = []
+
+    def _fake_check(text, descs, names=(), llm=None, use_llm=True, anchors=None):
+        seen.append(list(descs))
+        # 只有越权稿带「硬接」；命中时返回最后一个清单项（= 剩余未消费事件2）
+        return descs[-1] if "硬接" in (text or "") else ""
+
+    monkeypatch.setattr(_stages, "_scene_text_rewrites_event", _fake_check)
+    offending = "陆沉硬接失控术法碎片，挡在苏妄言身前，死了一次。"
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生事件语义去重评审
+        _SPLIT_JSON,                 # 拆场景
+        offending,                   # 场景1（越权写完事件2）
+        _NORMAL_SCENE,               # 场景1重试（干净）
+        _NORMAL_SCENE,               # 场景2
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    # 场景1 的比对清单必须含后续事件（原实现只含 done_events=空 → 不调用检测）
+    assert seen and seen[0], "场景1未把剩余未消费事件纳入比对"
+    assert any("挡" in d for d in seen[0])
+    retry_user = llm.chat.call_args_list[3][0][1]
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in retry_user
+    assert "重试强制规则" in retry_user
+
+
+@pytest.mark.p1
+def test_scene_prompt_unconsumed_events_hard_constraint():
+    """upcoming_events 注入【本章剩余未消费事件（硬约束·禁越权消费）】及编号事件。"""
+    cfg = NovelConfig(title="测试书", chapter_words=2500)
+    sc = {"location": "裂隙口", "event": "推人冒死", "emotion": "紧张",
+          "anchors": [], "target_words": 1100, "time_marker": "午后"}
+    _, user = scene_prompt(
+        cfg, 1, "第三章", 1, sc, "前情", "上一场景结尾", "",
+        upcoming_events="- 事件2（尚未发生）：复活问墟苔\n- 事件3（尚未发生）：赤尉追击",
+    )
+    assert "本章剩余未消费事件（硬约束·禁越权消费" in user
+    assert "禁止写出它们的完整流程" in user
+    assert "事件2（尚未发生）：复活问墟苔" in user
+    assert "本章后续事件预览" not in user
+
+
+# ---------- 2026-11-10 修复③：章级终检（流程复述 + 守则兜底条款口径） ----------
+
+@pytest.mark.p1
+def test_rule_clause_conflicts_detects_second_fallback_clause():
+    """v5 第1章实证：末场景出现第二套守则兜底口径 → 判冲突并返回该条文。"""
+    prev = "他翻到第七条：本守则未写明之事，视为允许。看完便把册子合上。"
+    cur = "她顿了顿：'本守则未尽事宜，以包间内实际发生为准。'说完抬眼看他。"
+    conflicts = _rule_clause_conflicts(prev, cur)
+    assert len(conflicts) == 1
+    assert "未尽事宜" in conflicts[0]
+
+
+@pytest.mark.p1
+def test_rule_clause_conflicts_ignores_same_wording_and_plain_reference():
+    """同措辞重复 / 单纯引用守则条目 / 前文没有兜底条款 → 不判冲突（防误伤）。"""
+    prev = "本守则未写明之事，视为允许。"
+    assert _rule_clause_conflicts(prev, "他重复了一遍：本守则未写明之事，视为允许。") == []
+    # 前文只有普通引用、无兜底语义 → 不构成"两套口径"
+    assert _rule_clause_conflicts("本守则第三条约定押金。", "本守则未尽事宜，以现场为准。") == []
+    assert _rule_clause_conflicts("", "本守则未尽事宜，以现场为准。") == []
+
+
+@pytest.mark.p1
+def test_chapter_flow_repeat_semantic_hit_and_degrade():
+    """LLM 判定命中返回证据；未启用/异常/非结构化一律降级为空串（保稿不重跑）。"""
+    prev = "沈决走到走廊尽头，拐过弯，看见餐厅大堂的旋转门。"
+    cur = "拐过弯，大堂的暖光铺过来。沈决靠在大堂一根包柱上。"
+
+    llm = MagicMock()
+    llm.chat.return_value = '{"repeat": true, "evidence": "走廊→拐弯→大堂→推门"}'
+    assert chapter_flow_repeat(llm, prev, cur) == "走廊→拐弯→大堂→推门"
+
+    llm.chat.return_value = '{"repeat": false, "evidence": ""}'
+    assert chapter_flow_repeat(llm, prev, cur) == ""
+
+    # 降级：无 llm / 关闭开关 / 调用异常
+    assert chapter_flow_repeat(None, prev, cur) == ""
+    assert chapter_flow_repeat(llm, prev, cur, use_llm=False) == ""
+    boom = MagicMock()
+    boom.chat.side_effect = RuntimeError("provider down")
+    assert chapter_flow_repeat(boom, prev, cur) == ""
+
+
+#: 章级终检集成用：后一场景换措辞重走前一场景的离场动线（v5 形态）
+_FLOW_LAST = (
+    "拐过弯，大堂的暖光铺过来，沈决靠在大堂一根包柱上，看着门外的人流。"
+    "过了一会儿，他把旋转门推开一条缝，让身后的姑娘先出去。"
+) * 2
+#: 合格重跑稿（长度接近原稿，不复述离场流程）
+_FLOW_RETRY_OK = (
+    "沈决把账本翻到最后一页，指着那行新墨问了两句。姑娘摇头，他便不再追问，"
+    "只把账本合上收进袖里。"
+) * 3
+
+
+@pytest.mark.p1
+def test_final_scene_flow_repeat_reruns_last_scene_once(store, monkeypatch):
+    """章级终检命中 → 只重跑末场景一次（不整章回退），复检通过即采用重跑稿。"""
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+
+    calls: list[str] = []
+
+    def _fake_flow(llm, prev_text, cur_text, use_llm=True):
+        calls.append(cur_text)
+        # 首次（原稿）判复述；复检（重跑稿）判不重复
+        return "离场流程：走廊→拐弯→大堂→包柱→推门" if len(calls) == 1 else ""
+
+    monkeypatch.setattr(_stages, "chapter_flow_repeat", _fake_flow)
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',   # 派生事件语义去重评审
+        _SPLIT_JSON,                 # 拆场景
+        _NORMAL_SCENE,               # 场景1
+        _FLOW_LAST,                  # 场景2（复述离场流程）
+        _FLOW_RETRY_OK,              # 场景2 章级终检重跑
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+
+    # 只跑「首次判定 + 复检」两次，没有第二次重跑
+    assert len(calls) == 2
+    # 第 5 次调用（下标 4）是末场景重跑，prompt 带重试强制规则与被禁流程
+    retry_user = llm.chat.call_args_list[4][0][1]
+    assert "重试强制规则" in retry_user
+    assert "走廊→拐弯→大堂→包柱→推门" in retry_user
+
+
+@pytest.mark.p1
+def test_final_scene_flow_repeat_keeps_original_when_retry_too_short(store, monkeypatch, caplog):
+    """重跑稿过短（<原稿 60%）→ 不采纳、保原稿、留日志，且不再重跑第二次。"""
+    _save_outline(store, _CH2_MOVES)
+    import novel_gen.pipeline.stages as _stages
+
+    calls: list[str] = []
+
+    def _fake_flow(llm, prev_text, cur_text, use_llm=True):
+        calls.append(cur_text)
+        return "离场流程：走廊→拐弯→大堂→包柱→推门" if len(calls) == 1 else ""
+
+    monkeypatch.setattr(_stages, "chapter_flow_repeat", _fake_flow)
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        '{"duplicate_pairs": []}',
+        _SPLIT_JSON,
+        _NORMAL_SCENE,
+        _FLOW_LAST,
+        _NORMAL_SCENE,               # 重跑稿过短 → 拒收
+        "场景链路摘要",
+        "扩写正文。" * 300,
+    ]
+    cfg = store.load_config()
+    cfg.llm_semantic_beats = False
+    cfg.llm_semantic_scene_events = False
+    cfg.llm_semantic_beat_gate = False
+    with caplog.at_level("WARNING"):
+        _writer(cfg, llm, store).write(1, "第一章", "目标", None, silent=True)
+    assert any("保留原稿" in r.message for r in caplog.records)
+    assert len(calls) == 1  # 拒收后不进入复检、不二次重跑
+
+
+# ---------- 2026-11-10 修复④：事件重复误判治理 + 硬约束执行 ----------
+
+#: v6 第1章真实形态：起身只现场发生一次（@1882），@2129 收束，@2719 对话回引
+_V6_LIKE_TEXT = (
+    "沈决把茶杯推回桌面。\n"
+    "戴眼镜男人站起来，椅子腿刮过地砖。\n"
+    "“您坐下。”\n"
+    "“我坐不住。”\n"
+    "沈决伸手按住他的胳膊，把他按回去，男人重新坐下，屁股只沾了椅面三分之一。\n"
+    "沈决低头看表。\n"
+    "“您刚才站起来要下去，算不算离席？”李姐问。\n"
+)
+_V6_LIKE_DETAIL = (
+    "前一处：沈决说“您坐下。”戴眼镜男人回“我坐不住。”并“往门口走”，"
+    "沈决劝阻后他“重新坐下，屁股只沾了椅面三分之一”；"
+    "后一处：同一戴眼镜男人再次“站起来，椅子腿刮过地砖”要下楼给王磊递烟，"
+    "沈决再次劝阻“您坐下”。两次均为该男人起身欲离席、沈决出言阻止、男人被劝住。"
+)
+
+
+@pytest.mark.p1
+def test_event_candidate_single_on_page_occurrence_filtered():
+    """现场只发生 1 次 + 另一处是收束 → 不构成事件重复候选（治 v6 误判）。"""
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    on_page, recall = count_on_page(_V6_LIKE_TEXT, "站起来，椅子腿刮过地砖")
+    assert (on_page, recall) == (1, 0)
+    kept, filtered = review_event_duplicates([issue], _V6_LIKE_TEXT)
+    assert not kept
+    assert len(filtered) == 1
+    assert "single_on_page_occurrence" in filtered[0]["review_signals"]
+
+
+@pytest.mark.p1
+def test_event_candidate_real_duplicate_still_kept():
+    """同一动作现场两次（换行各一次）→ 仍判事件重复候选，不被新信号误剔。"""
+    text = (
+        "陆沉把刀插回鞘里。\n"
+        "陆沉再次冲下去，把苏妄言从赤尉手里拽出来。\n"
+        "苏妄言喘着气。\n"
+        "陆沉再次冲下去，把苏妄言从赤尉手里拽出来。\n"
+    )
+    issue = {
+        "type": "自相矛盾-事件重复", "level": "大改",
+        "detail": "前一处：“陆沉再次冲下去，把苏妄言从赤尉手里拽出来。”；"
+                  "后一处：“陆沉再次冲下去，把苏妄言从赤尉手里拽出来。”",
+    }
+    kept, filtered = review_event_duplicates([issue], text)
+    assert len(kept) == 1 and not filtered
+
+
+@pytest.mark.p1
+def test_event_duplicate_hard_block_and_resolved():
+    """硬约束文本必须点名被重复动作且要求删除；判据：现场次数未下降即失败。"""
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    block = event_duplicate_hard_block(issue, _V6_LIKE_TEXT, (0, 10))
+    assert "硬约束" in block and "必须删除" in block
+    assert "站起来，椅子腿刮过地砖" in block
+
+    dup_before = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+                  "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    ok, note = event_duplicate_resolved(dup_before, _V6_LIKE_TEXT, issue)
+    assert ok, note
+    ok2, note2 = event_duplicate_resolved(dup_before, dup_before, issue)
+    assert not ok2 and "未删除" in note2
+
+
+@pytest.mark.p1
+def test_event_duplicate_span_targets_later_paragraph():
+    """定点删除目标是「后一处」段落：同一动作出现两次时取最后一次。"""
+    text = ("第一段。戴眼镜男人站起来，椅子腿刮过地砖。\n"
+            "中间段，劝他坐下。\n"
+            "第三段。戴眼镜男人站起来，椅子腿刮过地砖，要下楼。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    span = event_duplicate_span(text, issue)
+    assert span is not None
+    assert "第三段" in text[span[0]:span[1]]
+
+
+@pytest.mark.p1
+def test_reviser_applies_event_duplicate_as_hard_constraint(store):
+    """改稿器：事件重复（大改）进入执行批次，硬约束通过才采用改写稿。"""
+    dup = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+           "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        json.dumps({"issues": [issue]}),          # 步骤1 定位
+        _V6_LIKE_TEXT,                            # 步骤3 改写（已去掉第二次现场）
+        json.dumps({"ok": True, "new_issues": []}),  # 步骤4 回读校验
+    ]
+    out = ChapterReviser(store.load_config(), llm, store).revise(1, "第一章", "目标", dup)
+    assert out.strip() == _V6_LIKE_TEXT.strip()
+    # 改写 prompt 里确实带上了硬约束
+    assert "硬约束" in llm.chat.call_args_list[1][0][1]
+
+
+@pytest.mark.p1
+def test_reviser_keeps_original_when_hard_constraint_not_executed(store, caplog):
+    """改写稿没删掉重复段 → 不采用，保留原版并留痕（不等步骤4）。"""
+    dup = ("戴眼镜男人站起来，椅子腿刮过地砖。\n他坐了回去。\n"
+           "过了一会儿，戴眼镜男人再次站起来，椅子腿刮过地砖。\n")
+    issue = {"type": "自相矛盾-事件重复", "level": "大改", "detail": _V6_LIKE_DETAIL}
+    llm = MagicMock()
+    llm.chat.side_effect = [json.dumps({"issues": [issue]}), dup]
+    with caplog.at_level("WARNING"):
+        out = ChapterReviser(store.load_config(), llm, store).revise(1, "第一章", "目标", dup)
+    assert out == dup
+    assert any("硬约束未执行" in r.message for r in caplog.records)
+    assert len(llm.chat.call_args_list) == 2  # 未进入步骤4
+
 

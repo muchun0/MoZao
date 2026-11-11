@@ -73,7 +73,7 @@ class _MockWriter:
         self.stop_at = stop_at
         self.written: list[int] = []
 
-    def write(self, no, title, goal, research, is_final=False):
+    def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
         self.store.save_chapter(Chapter(no=no, title=title, content="正文片段" * 300))
         self.written.append(no)
         if no == self.stop_at:
@@ -82,7 +82,8 @@ class _MockWriter:
 
 def _mock_pipeline(store, writer=None):
     return SimpleNamespace(cfg=store.load_config(), llm=None,
-                           chapter_writer=writer or _MockWriter(store, SimpleNamespace()))
+                           chapter_writer=writer or _MockWriter(store, SimpleNamespace()),
+                           commit_chapter_ledgers=lambda *a, **k: None)
 
 
 # ---------- 202 返回体 + task.json 落盘 ----------

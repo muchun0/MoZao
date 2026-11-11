@@ -1744,6 +1744,13 @@ class ChapterWriter:
             (sid, str(sc.get("event") or "").strip())
             for sid, sc in zip(_scene_event_ids, scenes)
         ]
+        # 2026-11-10 修复②：事件计划锚点（拆场景产出 anchors），按事件 id 归档，
+        # 与账本里的原文锚点一起作为「复写/越权」兜底比对的通用判据（零词表）。
+        _plan_anchors: dict[str, list[str]] = {
+            sid: [str(a).strip() for a in (sc.get("anchors") or []) if str(a).strip()]
+            for sid, sc in zip(_scene_event_ids, scenes)
+        }
+        _desc_to_id: dict[str, str] = {d: sid for sid, d in _event_plan if d}
         # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
         # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
@@ -1798,7 +1805,7 @@ class ChapterWriter:
             )
             upcoming_events_text = "\n".join(
                 f"- {sid}（尚未发生）：{_event_summary(desc)}"
-                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx)
+                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx - 1)
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
             # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
@@ -1927,15 +1934,39 @@ class ChapterWriter:
                 # 场景1 的 done_events 为空、场景2 重复内容又恰是"本场景自己的事件"被排除，
                 # 于是"场景1提前写完事件2、场景2再演一遍"全程无人比对。把「剩余未消费
                 # 事件」并入比对集合，给越权消费补上事后拦截；重试仍越权则登记账本兜底。
-                _future_events = _remaining_events(_event_plan, _consumed_ids, idx)
+                # 2026-11-10 修复①（末场景纳入比对）：比对集合此前只有 done_events +
+                # 「剩余未消费事件」，而剩余事件用 1 基下标切最后一场景恒为空、
+                # 本场景自身事件又不在集合里——「场景1越权写完事件2、场景2 整章重写」
+                # 时末场景没有任何可比对对象。改为显式 0 基取后续事件 + 自身事件在
+                # 已被前序越权消费时纳入（正常推进不算复写）。
+                # 另一维度：已生成场景**正文**也参与比对（`_scene_text_repeats_generated`），
+                # 治"同一段落重新起头"——整章重写时事件措辞可能全变，但开头句照抄。
+                _own_ev = str(sc.get("event") or "").strip()
+                _own_consumed = any(
+                    e.get("id") == _scene_event_ids[idx - 1] for e in event_ledger)
+                _future_events = _remaining_events(_event_plan, _consumed_ids, idx - 1)
                 _future_descs = [d for _, d in _future_events]
-                _check_descs = list(dict.fromkeys([*done_events, *_future_descs]))
+                _check_descs = _scene_check_descs(
+                    done_events, _own_ev, _own_consumed, _future_descs)
+                # 2026-11-10 修复②：与 descs 同序的锚点清单——已发生事件优先用账本里的
+                # 原文锚点（那句实际写成的话），后续未消费事件用拆场景 anchors 关键短语。
+                # 兜底判据由「救援动词表」改为「锚点 bigram 命中」，离席/破门/签约同样可比。
+                _anchor_by_id = {str(e.get("id")): str(e.get("anchor") or "")
+                                 for e in event_ledger}
+                _check_anchors = []
+                for _d in _check_descs:
+                    _aid = _desc_to_id.get(_d, "")
+                    _refs = [r for r in (_anchor_by_id.get(_aid),) if r]
+                    _refs.extend(_plan_anchors.get(_aid, []))
+                    _check_anchors.append(_refs)
                 _future_over = ""
-                if piece and _check_descs:
-                    dup_ev = _scene_text_rewrites_event(
+                _rep_src = _scene_text_repeats_generated(piece, scene_texts) if piece else ""
+                if piece and (_check_descs or scene_texts):
+                    dup_ev = _rep_src or _scene_text_rewrites_event(
                         piece, _check_descs, conflict_names,
                         llm=self.llm,
                         use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                        anchors=_check_anchors,
                     )
                     if dup_ev:
                         _future_over = dup_ev if dup_ev in _future_descs else ""
@@ -1970,7 +2001,9 @@ class ChapterWriter:
                         if retry3 and not _scene_text_rewrites_event(
                                 retry3, _check_descs, conflict_names,
                                 llm=self.llm,
-                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                                anchors=_check_anchors) \
+                                and not _scene_text_repeats_generated(retry3, scene_texts):
                             piece = retry3
                             _future_over = ""
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
@@ -2143,6 +2176,60 @@ class ChapterWriter:
                         if not _panel_ok and not silent:
                             logger.warning(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
                                   f"采用最后稿（质检层二次拦截）")
+                # 2026-11-10 修复③（章级终检）：末场景写完后，把「已生成场景正文 + 末场景」
+                # 拼成章文本做最后一道流程复述检测。补场景级判据的盲区：同一段离场/位移
+                # 流程被前一场景走过、末场景换措辞再走一遍时，事件账本（规划事件已消费）、
+                # `_SCENE_ANCHOR_RATIO`（要求同一句原文被照写）都不命中，字面 Jaccard 也
+                # 无法区分（实测 v4 0.07-0.13 / v5 0.06-0.09）——故走语义判定。
+                # 命中只重跑末场景 1 次（不整章回退）；重跑稿不合格则保原稿并留日志。
+                if piece and idx == len(scenes) and scene_texts:
+                    _prev_joined = "\n\n".join(t for t in scene_texts if t)
+                    _sem_on = bool(getattr(self.cfg, "llm_semantic_scene_events", True))
+                    _flow_dup = chapter_flow_repeat(
+                        self.llm, _prev_joined, piece, use_llm=_sem_on)
+                    _clause_dups = _rule_clause_conflicts(_prev_joined, piece)
+                    if _flow_dup or _clause_dups:
+                        if not silent:
+                            _why = ("复述前一场景已写流程" if _flow_dup
+                                    else "守则兜底条款出现第二套口径")
+                            logger.warning(f"  [场景] 章级终检命中（{_why}），"
+                                  f"只重跑末场景一次（不整章回退）")
+                        sys_c6, user_c6 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=_flow_dup or _clause_dups[0],
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
+                            state_anchor=state_anchor_text,
+                        )
+                        _reconcile_scene(idx, 6, sys_c6, user_c6)
+                        retry6 = self.llm.chat(
+                            self._with_persona(sys_c6), user_c6,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.35,
+                            presence_penalty=0.2,
+                        )
+                        retry6 = _strip_html_tags(retry6)
+                        # 采纳门槛：非空 + 不短于原稿 60%（防"删段逃逸"式糊弄）+ 复检通过
+                        _ok6 = bool(retry6) and len(retry6) >= int(len(piece) * 0.6)
+                        if _ok6:
+                            _ok6 = not chapter_flow_repeat(
+                                self.llm, _prev_joined, retry6, use_llm=_sem_on)
+                        if _ok6:
+                            _ok6 = not _rule_clause_conflicts(_prev_joined, retry6)
+                        if _ok6:
+                            piece = retry6
+                        else:
+                            logger.warning("  [场景] 章级终检重跑稿未通过复检"
+                                  "（空稿/过短/仍复述或条文仍冲突），保留原稿（不整章回退）")
                 # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
                 # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
                 # 数字、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留
@@ -2538,6 +2625,8 @@ from .scene_event_utils import (
     _validate_scene_plan, _scene_events_overlap, _split_summary,
     _is_repetitive_text, _summary_invented_words,
     _event_summary, _event_anchor, _remaining_events,
+    _scene_check_descs, _scene_text_repeats_generated,
+    _rule_clause_conflicts, chapter_flow_repeat,
     _strip_html_tags, _strip_json_block, _extract_json_field,
     _SCENE_EVENT_OVERLAP_RATIO, _SCENE_ADJACENT_REPEAT_RATIO,
     _SCENE_ADJACENT_SPAN_RATIO,

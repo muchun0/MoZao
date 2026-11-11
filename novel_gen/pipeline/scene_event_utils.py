@@ -11,12 +11,15 @@
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 
 from ..llm.json_parse import parse_json_obj
 from ..utils.text import longest_common_substr_len as _lcs_len
-from .templates import scene_event_derive_prompt, scene_rewrite_prompt
+from .templates import (
+    chapter_flow_repeat_prompt, scene_event_derive_prompt, scene_rewrite_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +38,12 @@ _SCENE_ACTION_NORM = {
     "挡": "抵挡", "抵挡": "抵挡", "防守": "抵挡", "阻挡": "抵挡",
     "偷袭": "偷袭", "刺杀": "刺杀", "对峙": "对峙", "埋伏": "埋伏", "侦查": "侦查", "探索": "探索",
 }
-#: 救援专属动词
+#: 救援专属动词（仅作无锚点时的旧兜底，2026-11-10 起锚点判据为主）
 _SCENE_RESCUE_VERBS = ("救", "引开", "砸", "挡", "扑", "迎")
+#: 锚点命中判据：覆盖率阈值 / 最少 2-gram 命中数 / 锚点最短归一化长度
+_SCENE_ANCHOR_RATIO = 0.50
+_SCENE_ANCHOR_MIN_HIT = 5
+_SCENE_ANCHOR_MIN_LEN = 8
 #: 拆场景结构校验：场景数上限（2-4 个）
 _SCENE_COUNT_MIN, _SCENE_COUNT_MAX = 2, 4
 #: target_words 之和允许偏离 chapter_words 的幅度（±10%）
@@ -137,22 +144,104 @@ def _event_anchor(piece: str, desc: str, limit: int = _EVENT_ANCHOR_LIMIT) -> st
 
 
 def _remaining_events(event_plan: list[tuple[str, str]], consumed_ids: set[str],
-                      start_idx: int) -> list[tuple[str, str]]:
-    """取 start_idx（0 基，指向当前场景之后）起、账本尚未消费的 (事件id, 描述)。"""
+                      current_idx: int) -> list[tuple[str, str]]:
+    """取当前场景**之后**、账本尚未消费的 (事件id, 描述)。
+
+    current_idx 为当前场景的 0 基下标（即 ``enumerate(scenes, start=1)`` 的 idx - 1）。
+    旧实现让调用方传 1 基 idx，切片虽恰好落在「当前场景之后」，但契约含糊、
+    最后一场景必然切空，**且本场景自身事件不在比对集合**——于是「末场景整章重写」
+    全程无人比对（《契裂之眼》第 1 章两场景版实证）。这里改为显式 0 基；
+    自身事件是否纳入比对由 `_scene_check_descs` 单独决定。
+    """
     return [
-        (sid, desc) for sid, desc in event_plan[start_idx:]
+        (sid, desc) for sid, desc in event_plan[current_idx + 1:]
         if desc and sid not in consumed_ids
     ]
 
 
+def _scene_check_descs(done_events: list[str], own_event: str,
+                       own_consumed: bool, future_descs: list[str]) -> list[str]:
+    """场景正文复写比对的候选事件清单（保序去重）。
+
+    - done_events：前序场景的规划事件（已发生）；
+    - own_event：本场景自身事件，**仅当已被前序场景越权消费**（own_consumed）才纳入。
+      正常人写下自己的事件不算复写，无条件纳入会把「本场景正常推进」误判成复写、
+      陷入反复重试；
+    - future_descs：后续未消费事件（越权消费检测）。
+    """
+    descs = list(done_events)
+    if own_consumed and own_event:
+        descs.append(own_event)
+    descs.extend(future_descs)
+    return list(dict.fromkeys(d for d in descs if d))
+
+
+#: 场景"同一段落重新起头"判定：归一化后取开头字符数 / 相似度阈值 / 最短可比长度
+_REPEAT_OPEN_CHARS = 60
+_REPEAT_OPEN_RATIO = 0.8
+_REPEAT_OPEN_MIN_LEN = 20
+
+
+def _scene_text_repeats_generated(text: str, done_texts: list[str]) -> str:
+    """当前场景是否把某个已生成场景的正文重新起头（返回该场景开头摘录，否则 ""）。
+
+    确定性、零 LLM：只比「开头 60 字（去标点空白）」的字面相似度。整章重写 /
+    拼接缝重启的典型形态就是新场景用上一场景的开头句重新讲一遍
+    （《契裂之眼》第 1 章：「包间门合上的那一声，很轻。」在 0 / 1929 两次出现）；
+    正常推进的场景不会与前序场景开头重合到 80%。事件描述比对
+    （`_scene_text_rewrites_event`）对"措辞全换、结构照抄"会漏，本判据补这一维度。
+    """
+    if not text or not done_texts:
+        return ""
+    head = _norm_scene_event(text)[:_REPEAT_OPEN_CHARS]
+    if len(head) < _REPEAT_OPEN_MIN_LEN:
+        return ""
+    for dt in done_texts:
+        dhead = _norm_scene_event(dt)[:_REPEAT_OPEN_CHARS]
+        if len(dhead) < _REPEAT_OPEN_MIN_LEN:
+            continue
+        # 只比两段开头的最小公共长度：短场景（<60 字）不能被长场景的长度优势拉低相似度
+        n = min(len(head), len(dhead))
+        if difflib.SequenceMatcher(None, head[:n], dhead[:n]).ratio() >= _REPEAT_OPEN_RATIO:
+            return re.sub(r"\s+", " ", str(dt)).strip()[:_EVENT_SUMMARY_LIMIT]
+    return ""
+
+
+def _anchor_cover(text: str, anchor: str) -> tuple[float, int]:
+    """锚点（原句/关键短语）在正文最佳句中的字符 bigram 覆盖率与命中数。
+
+    复用 `_event_anchor` 的 bigram 打分取「最能佐证该锚点的正文句子」，再算该句
+    覆盖了锚点多少 2-gram。零 LLM，供场景复写兜底判据使用（2026-11-10 修复②）：
+    不再依赖 `_SCENE_RESCUE_VERBS` 救援动词表，离席/破门/签约等非救援事件一样可比。
+    """
+    ref = _norm_scene_event(anchor)
+    if len(ref) < _SCENE_ANCHOR_MIN_LEN:
+        return 0.0, 0
+    best = _event_anchor(text, anchor, limit=10 ** 6)
+    if not best:
+        return 0.0, 0
+    ref_grams = {ref[i:i + 2] for i in range(len(ref) - 1)}
+    sent = _norm_scene_event(best)
+    sent_grams = {sent[i:i + 2] for i in range(len(sent) - 1)}
+    hit = len(ref_grams & sent_grams)
+    return (hit / len(ref_grams) if ref_grams else 0.0), hit
+
+
 def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
                                names: tuple[str, ...] = (),
-                               llm=None, use_llm: bool = True) -> str:
+                               llm=None, use_llm: bool = True,
+                               anchors: list[list[str]] | None = None) -> str:
     """场景正文事件级复写检测。
 
     优先走 LLM 语义判定（`scene_rewrite_prompt`，识别换措辞复写）；无 llm /
-    use_llm=False / 调用异常 / 无已发生事件时，回退确定性词表逻辑
-    （`_event_conflict` + `_SCENE_RESCUE_VERBS`）。命中则返回复写的事件原文，否则 ""。
+    use_llm=False / 调用异常 / 无已发生事件时走确定性兜底，两段判据：
+
+    - 兜底 A（2026-11-10 修复②）锚点命中：`anchors` 与 descs 同序，每项是该事件的
+      原文锚点（账本已写原句）+ 计划关键短语。任一锚点在正文中基本被照写
+      （覆盖率 ≥0.50 且命中 ≥5 个 2-gram）即判复写——通用判据，不含动作词表；
+    - 兜底 B 兼容旧行为：冲突对象 + 救援动词表（无 anchors 时的最后保险）。
+
+    命中则返回复写的事件原文，否则 ""。
     """
     if not done_event_descs:
         return ""
@@ -169,8 +258,17 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
                     return done_event_descs[idx]
                 return ""  # LLM 明确判定不复写（如 -1），不回退词表
         except Exception as e:
-            logger.warning("scene_rewrite LLM 判定失败，回退词表逻辑: %s", e)
-    # 词表兜底（确定性）
+            logger.warning("scene_rewrite LLM 判定失败，回退锚点/词表逻辑: %s", e)
+    # 兜底 A：锚点命中（阈值依据：锚点是一句已写原文/一条 8-30 字关键短语，
+    # 正常推进最多沿用其中人物与物件名（2-4 个 2-gram），不会重写其一半以上）
+    if anchors:
+        for desc, refs in zip(done_event_descs, anchors):
+            for ref in (refs or []):
+                ratio, hit = _anchor_cover(text, ref)
+                if ratio >= _SCENE_ANCHOR_RATIO and hit >= _SCENE_ANCHOR_MIN_HIT:
+                    logger.warning(f"  锚点命中复写：覆盖率={ratio:.2f} 命中={hit} 锚点={ref[:30]}")
+                    return desc
+    # 兜底 B：词表（冲突对象 + 救援动词），无锚点或锚点未命中时保留的旧保险
     c = _event_conflict(text, names)
     if not c or not any(v in text for v in _SCENE_RESCUE_VERBS):
         return ""
@@ -181,6 +279,74 @@ def _scene_text_rewrites_event(text: str, done_event_descs: list[str],
         if c == ec or c in ec or ec in c:
             return ev
     return ""
+
+
+#: 守则兜底条款：「本守则」起 60 字内出现兜底语义才算条款（普通引用不算，降误伤）
+_RULE_FALLBACK_RE = re.compile(
+    r"本守则[^。；;\n]{0,60}?(?:视为允许|视为禁止|不予追究|未尽事宜|未写明|最终解释权)")
+#: 同一守则两条条款归一化相似度低于该值 → 判「两套口径」
+_RULE_CLAUSE_SAME_RATIO = 0.80
+
+
+def _rule_clause_conflicts(prev_text: str, cur_text: str) -> list[str]:
+    """后一场景是否给出与已写正文不同口径的「本守则…」兜底条款（返回冲突条文）。
+
+    确定性、零 LLM：只比对「前文已有条款 vs 后文条款」的归一化相似度，同一措辞
+    重复（≥0.80）不算冲突，因此正常复述守则不会误伤。背景：《契裂之眼》v5 第 1 章
+    同时存在「本守则未写明之事，视为允许」(约 @404) 与「本守则未尽事宜，以包间内
+    实际发生为准」(约 @2525)，两套兜底口径互相打架。
+    """
+    def _clauses(text: str) -> list[str]:
+        out: list[str] = []
+        for m in _RULE_FALLBACK_RE.finditer(text or ""):
+            c = re.sub(r"\s+", "", m.group())
+            if c not in out:
+                out.append(c)
+        return out
+
+    prev = _clauses(prev_text)
+    if not prev:
+        return []
+    conflicts: list[str] = []
+    for cur in _clauses(cur_text):
+        best = max((difflib.SequenceMatcher(None, cur, p).ratio() for p in prev), default=0.0)
+        if best < _RULE_CLAUSE_SAME_RATIO:
+            conflicts.append(cur)
+    return conflicts
+
+
+def chapter_flow_repeat(llm, prev_text: str, cur_text: str, use_llm: bool = True) -> str:
+    """章级终检：后一场景是否把前一场景已写过的流程换措辞又走一遍（返回摘录，否则 ""）。
+
+    为什么必须走语义判定：字面判据实测打不着——v4 各接缝 700 字窗口 Jaccard
+    0.073-0.134、v5 仅 0.056-0.094，与正常承接无法区分；`_SCENE_ANCHOR_RATIO`
+    要求同一句原文被照写，对「走廊尽头→拐弯→大堂→包柱→推门」这种换词重排的
+    位移链同样失效。语义判据比的是「动作序列是否可一一对应 + 是否回到流程上游
+    重走」，与措辞无关，因此能覆盖第 2 轮漏掉的形态。
+
+    成本：每章 1 次调用（前场景尾 1500 字 + 后场景头 2000 字，输出 ≤256 tokens）。
+    失败降级：无 llm / 关闭 / 异常 / 输出不可解析 → logger 留痕后返回 ""，
+    不重跑、保当前稿——判定失败绝不阻断生成。
+    """
+    if not prev_text or not cur_text:
+        return ""
+    if llm is None or not use_llm:
+        logger.info("章级终检跳过流程复述判定（未启用 LLM 语义判据，保稿不重跑）")
+        return ""
+    try:
+        system, user = chapter_flow_repeat_prompt(prev_text, cur_text)
+        raw = llm.chat(system, user, temperature=0.1, max_tokens=256)
+        data = parse_json_obj(raw)
+        if not isinstance(data, dict) or "repeat" not in data:
+            logger.warning("章级终检 LLM 输出非结构化，本轮跳过流程复述判定（保稿不重跑）")
+            return ""
+        if not data.get("repeat"):
+            return ""
+        return str(data.get("evidence") or "").strip() or "上一场景已写过的同一段流程"
+    except Exception as e:
+        logger.warning("章级终检流程复述判定失败（保稿不重跑）: %s", e)
+        return ""
+
 
 
 def _long_sentence_overlap_ratio(prev: str, cur: str) -> float:

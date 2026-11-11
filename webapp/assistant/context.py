@@ -111,6 +111,22 @@ def _bible_text(store) -> str:
     return "\n".join(lines)
 
 
+def _book_facts_text(store, chapter_no: int) -> str:
+    """REQ-R20 M0：复用单一只读状态视图，与写章用同一份口径（US-5）。
+
+    开关关闭、快照构造失败或空书一律返回空串：助手行为与改造前一致。
+    """
+    try:
+        cfg = store.load_config()
+        if not bool(getattr(cfg, "book_facts", False)):
+            return ""
+        from novel_gen.pipeline.book_facts import BookFacts
+        return BookFacts(store, cfg).block_for("writer", at_ch=chapter_no)
+    except Exception:
+        logger.warning("book_facts 读取失败（助手上下文降级为不带事实块）: chapter=%s", chapter_no)
+        return ""
+
+
 def _prev_summaries(store, chapter_no: int, n: int = 2) -> list[str]:
     """前 n 章摘要（按章号倒序取最近的）。"""
     out: list[str] = []
@@ -148,6 +164,7 @@ def snapshot(store, chapter_no: int, target_words: int = 0) -> dict:
         "inspector": inspector,
         "design": _load_design(store, chapter_no),
         "bible": _bible_text(store),
+        "facts": _book_facts_text(store, chapter_no),
         "prev_summaries": _prev_summaries(store, chapter_no),
     }
 
@@ -332,6 +349,8 @@ def _render(persona: str, snap: dict, positive: dict, dialogue: list[dict],
         _design_block(snap.get("design"), lv["design"]),
         "</design_card>",
     ]
+    if snap.get("facts"):
+        ctx += ["<story_facts>", _clip(snap["facts"], 1500), "</story_facts>"]
     if lv["prev"] and snap.get("prev_summaries"):
         ctx += ["<prev_summaries>", "\n".join(snap["prev_summaries"]), "</prev_summaries>"]
     parts = ["<chapter_context>", *ctx, "</chapter_context>"]

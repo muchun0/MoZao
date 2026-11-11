@@ -92,14 +92,22 @@ class OutlineGenerator:
         persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
         return f"{persona}\n\n{system}" if persona else system
 
-    def run(self, research: ResearchReport | None, silent: bool = False) -> Outline:
+    def _with_state(self, user: str, state_block: str) -> str:
+        """REQ-R20 M0：把 book_facts 视图块接到 user 提示词尾部（空串原样返回）。"""
+        if not state_block:
+            return user
+        return (f"{user}\n\n【本书已发生的事实·重生成必须遵守，不得推翻】\n{state_block}")
+
+    def run(self, research: ResearchReport | None, silent: bool = False,
+            state_block: str = "") -> Outline:
         target = self.cfg.num_chapters
         research_block = research.to_prompt_block() if research else ""
         if target > self._BATCH_SIZE:
-            outline = self._run_batched(research, target, silent=silent)
+            outline = self._run_batched(research, target, silent=silent, state_block=state_block)
         else:
             system, user = outline_prompt(self.cfg, research_block)
             system = self._sys(system)
+            user = self._with_state(user, state_block)
             data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
             outline = Outline.from_dict(data)
         outline.title = outline.title or self.cfg.effective_title()
@@ -111,7 +119,8 @@ class OutlineGenerator:
         return outline
 
     def _run_batched(
-        self, research: ResearchReport, target: int, silent: bool = False
+        self, research: ResearchReport, target: int, silent: bool = False,
+        state_block: str = "",
     ) -> Outline:
         """分批生成完整大纲：先规划全书 title/intro，再逐批生成章节区间。"""
         sys0, usr0 = outline_prompt(self.cfg, research.to_prompt_block())
@@ -159,6 +168,7 @@ class OutlineGenerator:
                 batch=(start, end, prev_summary),
             )
             system = self._sys(system)
+            user = self._with_state(user, state_block)
             data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
             batch_chapters = [ChapterPlan.from_dict(c) for c in data.get("chapters", [])]
             for i, c in enumerate(batch_chapters):
@@ -230,9 +240,12 @@ class WorldGenerator:
         persona = (getattr(self.cfg, "persona_override", "") or "").strip() or self.role_prompt
         return f"{persona}\n\n{system}" if persona else system
 
-    def run(self, outline: Outline, research: ResearchReport | None, silent: bool = False) -> World:
+    def run(self, outline: Outline, research: ResearchReport | None, silent: bool = False,
+            state_block: str = "") -> World:
         system, user = world_prompt(self.cfg, outline, research.to_prompt_block() if research else "")
         system = self._sys(system)
+        if state_block:
+            user = (f"{user}\n\n【本书已发生的事实·设定必须与之相容，不得推翻】\n{state_block}")
         data = self.llm.chat_json(system, user, temperature=0.7, max_tokens=8192)
         world = World.from_dict(data)
         if not world.world_view:

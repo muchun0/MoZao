@@ -635,3 +635,43 @@ def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)
     return {"saved": True, "chapter_no": chapter_no, "preview": preview,
             "msg": "续写草稿已记录（预览模式，未自动写入章节正文，请复制到编辑器使用）"}
 
+
+@app.get("/api/projects/{project_id}/book-facts")
+def get_book_facts(project_id: str, at_ch: int = 0, agent: str = "",
+                   budget: int | None = None, user: dict = Depends(_require_user)):
+    """REQ-R20 M0：单一只读状态视图。
+
+    at_ch=0 表示到已写最大章；agent 为空返回完整快照，非空（writer/architect/world）
+    额外返回按预算裁剪后的注入块；budget 收敛到 300–3000 字符。
+    只读：不写任何源账本；快照落盘由 BookFacts 经 store.save_book_facts 原子完成。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    try:
+        cfg = store.load_config()
+    except Exception:
+        cfg = None
+    from novel_gen.pipeline.book_facts import BUDGET_MAX, BUDGET_MIN, BookFacts, empty_snapshot
+
+    facts = BookFacts(store, cfg)
+    snapshot = facts.snapshot(at_ch=at_ch)
+    agent = (agent or "").strip()
+    block = ""
+    if agent:
+        if agent not in ("writer", "architect", "world"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"未知 agent 视图: {agent}（可选 writer/architect/world）")
+        if budget is not None:
+            budget = max(BUDGET_MIN, min(BUDGET_MAX, int(budget)))
+        block = facts.block_for(agent, at_ch=at_ch, budget=budget)
+    if snapshot is None:
+        snapshot = empty_snapshot(at_ch)
+    return {
+        "snapshot": snapshot,
+        "block": block,
+        "degraded": bool(facts.degraded),
+        "stale": bool(snapshot.get("stale")),
+        "dropped": int(facts.last_dropped or 0),
+    }
+

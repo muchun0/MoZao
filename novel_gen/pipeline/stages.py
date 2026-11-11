@@ -109,7 +109,13 @@ class ChapterWriter:
         return self._reader_ledger or None
 
     def _book_canon(self, max_chars: int = 800) -> str:
-        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
+        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。
+
+        REQ-R20 M0：book_facts 开启时设定账本由单一只读视图的硬区提供，
+        此处返回空串以「替换而非叠加」（关闭时行为不变）。
+        """
+        if bool(getattr(self.cfg, "book_facts", False)):
+            return ""
         mem = self._memory()
         if mem is None:
             return ""
@@ -571,10 +577,22 @@ class ChapterWriter:
         except Exception:
             logger.exception("分卷卡注入失败（降级跳过）")
 
-        # 读者认知账本
+        # REQ-R20 M0：单一只读状态视图（book_facts）——替换 L1.5/L1.6/读者账本/canon 四处账本块
+        _bf_on = bool(getattr(self.cfg, "book_facts", False))
+        if _bf_on:
+            try:
+                from .book_facts import BookFacts
+                _bf_block = BookFacts(self.store, self.cfg).block_for(
+                    "writer", at_ch=chapter_no)
+                if _bf_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _bf_block
+            except Exception:
+                logger.exception("book_facts 注入块构造失败（降级为不注入，不阻塞写章）")
+
+        # 读者认知账本（book_facts 开启时已被上面的统一视图替换，不重复注入）
         try:
             _rl = self._reader_ledger_obj()
-            if _rl is not None:
+            if _rl is not None and not _bf_on:
                 _rl_block = _rl.inject_block(chapter_no)
                 if _rl_block:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
@@ -692,6 +710,8 @@ class ChapterWriter:
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
             unstable_chapters=unstable_chapters,
+            # REQ-R20 M0：开关开启时 L1.5/L1.6 由 book_facts 单一只读视图统一提供
+            skip_state_blocks=bool(getattr(self.cfg, "book_facts", False)),
         )
         prev_tail = self._prev_tail(chapter_no)
         # 档2：记录本章上下文实际消费的前文章节及版本（记忆装配后取，不臆测）

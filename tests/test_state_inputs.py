@@ -191,3 +191,41 @@ def test_detect_no_longer_crashes_on_list_numbers():
     chs = [{"no": 1, "numbers": ["剩余次数：2"]}, {"no": 2, "numbers": ["剩余次数：4"]}]
     rows = detect(chs, [], {})
     assert rows == []
+
+
+# ---------- 真实样本回归（2026-11-12）：白名单误报 + 注册表导入路径 ----------
+def test_unknown_mechanism_fields_accepts_registered_label():
+    """「剩余次数」在注册表内，去前缀后变「次数」不得误报为未声明字段。"""
+    from novel_gen.pipeline.chapter_state import unknown_mechanism_fields
+    reg = {"剩余次数": "decrease", "寸": "increase"}
+    assert unknown_mechanism_fields("今日剩余次数：3；蚀痕：7寸", reg) == []
+    assert unknown_mechanism_fields("剩余次数：3", reg) == []
+
+
+def test_unknown_mechanism_fields_still_flags_undeclared():
+    from novel_gen.pipeline.chapter_state import unknown_mechanism_fields
+    reg = {"剩余次数": "decrease"}
+    rows = unknown_mechanism_fields("累计死亡次数：39/37", reg)
+    assert rows and "未声明机制字段" in rows[0]
+
+
+def test_violation_list_reads_registry_without_import_failure(tmp_path, caplog):
+    """book_facts 的注册表导入曾写成 `..chapter_state`（=novel_gen.chapter_state），
+    导致每章静默降级；真实样本第 1 章即暴露。"""
+    from novel_gen.config import NovelConfig
+    from novel_gen.pipeline.book_facts import BookFacts
+    from novel_gen.pipeline.book_memory import BookMemory
+    from novel_gen.store.project import ProjectStore
+
+    cfg = NovelConfig(title="t")
+    cfg.conflict_guard = True
+    store = ProjectStore(tmp_path / "b")
+    store.dir.mkdir(parents=True, exist_ok=True)
+    store.save_config(cfg)
+    mem = BookMemory(store, cfg)
+    data = mem.load()
+    data["canon"]["mechanism_baseline"] = {"panel_format": "今日剩余：N；蚀痕：N寸"}
+    mem.save()
+    with caplog.at_level("ERROR", logger="novel_gen.pipeline.book_facts"):
+        BookFacts(store, cfg).violation_list()
+    assert "机制基线读取失败" not in caplog.text

@@ -48,6 +48,20 @@ class ArchitectAgent(BaseAgent):
         self._outline_gen = OutlineGenerator(cfg, llm, store, role_prompt=outline_persona)
         self._world_gen = WorldGenerator(cfg, llm, store, role_prompt=world_persona)
 
+    def _facts_block(self, agent: str) -> str:
+        """REQ-R20 M0：architect / world 视图注入块。
+
+        开关关闭、无已写章节或构造失败一律返回空串 —— 首次生成行为与改造前一致。
+        """
+        if not bool(getattr(self.cfg, "book_facts", False)):
+            return ""
+        try:
+            from ..book_facts import BookFacts
+            return BookFacts(self.store, self.cfg).block_for(agent)
+        except Exception:
+            self.logger.exception("book_facts 注入块构造失败（降级为不注入，不阻塞生成）")
+            return ""
+
     def run_outline(self, research: ResearchReport | None, silent: bool = False) -> Outline:
         outline = self.store.load_outline()
         if outline is not None and outline.chapters:
@@ -58,7 +72,8 @@ class ArchitectAgent(BaseAgent):
             self.store.save_outline(outline)
             return outline
         self.logger.info("大纲生成开始（架构师）")
-        outline = self._outline_gen.run(research, silent=silent)
+        outline = self._outline_gen.run(
+            research, silent=silent, state_block=self._facts_block("architect"))
         # 节奏与伏笔 Agent：推导关键节点时间线 + 分卷节奏梯次（只补缺失）
         outline, _ = self.pacing.plan_outline(outline)
         # P1-1 开篇 Agent：前三章强开篇设计（黄金三章决定生死）
@@ -84,7 +99,8 @@ class ArchitectAgent(BaseAgent):
         self.logger.info("人物世界观设计开始（架构师）")
         outline = self.store.load_outline()
         research = self.store.load_research()
-        world = self._world_gen.run(outline, research, silent=silent)
+        world = self._world_gen.run(
+            outline, research, silent=silent, state_block=self._facts_block("world"))
         # 主题与人物 Agent：认领主题命题/三层冲突/弧光/配角动机
         world, _ = self.theme.apply_anchor(world)
         # 世界观与规则 Agent：认领世界观/金手指五要素/设定禁忌

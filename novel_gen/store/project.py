@@ -791,6 +791,7 @@ class ProjectStore:
     def save_character_states(self, states: dict) -> None:
         """整体覆盖保存（每章更新后写入最新快照）。"""
         self._write_json(self.character_states_path(), states)
+        self.invalidate_book_facts()
 
     # ---------- 章内/章间状态账本（REQ-章内自洽与机制账本） ----------
     def chapter_state_path(self) -> Path:
@@ -804,6 +805,7 @@ class ProjectStore:
     def save_chapter_state(self, state: dict) -> None:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
+        self.invalidate_book_facts()
 
     # ---------- 小说级记忆（P0-7，book_memory） ----------
     def book_memory_path(self) -> Path:
@@ -817,6 +819,33 @@ class ProjectStore:
     def save_book_memory(self, data: dict) -> None:
         """整体覆盖保存（每次账本更新后写入最新快照）。"""
         self._write_json(self.book_memory_path(), data)
+        self.invalidate_book_facts()
+
+    # ---------- 单一只读状态视图（REQ-R20 / TECH-R20，M0） ----------
+    def book_facts_path(self) -> Path:
+        return self.dir / "book_facts.json"
+
+    def load_book_facts(self) -> Optional[dict]:
+        """返回派生的 book_facts 快照；无文件/损坏/缺 version 返回 None（由调用方重建）。"""
+        d = self._read_json(self.book_facts_path(), None)
+        return d if isinstance(d, dict) and d.get("version") else None
+
+    def save_book_facts(self, data: dict) -> None:
+        """整体覆盖保存派生快照（原子写；不写任何源账本，单向只读投影）。
+
+        派生文件：项目重置/删除流程需一并清理（REQ-R20 已知限制 7）。
+        """
+        self._write_json(self.book_facts_path(), data)
+
+    def invalidate_book_facts(self) -> None:
+        """源账本变更后使派生快照失效（只删 book_facts.json，不动任何源文件）。
+
+        重写同一章时 at_ch 不变，若无此失效会把改写前的旧状态当成事实继续注入。
+        """
+        try:
+            self.book_facts_path().unlink(missing_ok=True)
+        except Exception:
+            logger.exception("book_facts 派生快照失效失败（下次同章仍可能复用旧快照）")
 
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
     def user_memory_path(self) -> Path:

@@ -177,6 +177,11 @@
           <ToolsPanel :pid="pid" />
         </section>
 
+        <!-- 时间线：REQ-R21 M1 只读视图（事件 / 伏笔 / 人物 / 冲突提醒） -->
+        <section v-if="visited.facts" v-show="tab === 'facts'">
+          <FactsTimelinePanel :pid="pid" />
+        </section>
+
         <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
         <section v-if="visited.health" v-show="tab === 'health'">
           <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
@@ -259,6 +264,7 @@ import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
+import FactsTimelinePanel from '../components/facts/FactsTimelinePanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'

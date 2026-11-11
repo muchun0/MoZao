@@ -271,3 +271,126 @@ def test_book_facts_flag_off_keeps_m0_behavior(store):
     snap = BookFacts(store, cfg).snapshot(at_ch=2)
     assert [e["desc"] for e in snap["events"]] == ["旧事件"]
     assert snap["open_threads"] == []
+
+
+# ---------- 30 章规模下的迁移幂等（合成数据回归，真实书稿验收仍阻塞） ----------
+def _thirty_chapter_book(store):
+    """造一本 30 章的书：30 条伏笔、承诺状态机里 12 条已回收、设定卡打散在各章。"""
+    names = [f"伏笔{i:02d}" for i in range(1, 31)]
+    store.save_world(World(
+        world_view="九域大陆",
+        characters=[Character(name="陆沉", role="主角")],
+        foreshadowing=[
+            ForeshadowItem(name=n, buried_ch=i, reveal_ch=i + 8 if i % 2 else None,
+                           content=f"{n} 的正文线索")
+            for i, n in enumerate(names, start=1)
+        ],
+    ))
+    store.save_foreshadow_commitment({"items": [
+        {"name": n, "revealed_ch": i + 8, "due_ch": i + 8, "status": "revealed"}
+        for i, n in enumerate(names[:12], start=1)
+    ], "updated_ch": 30})
+    cards = {}
+    for i, n in enumerate(names[20:], start=21):
+        cards[str(i)] = {"cards": [{"name": n, "level": "sub"}]}
+    store.save_setting_cards({"version": 1, "chapters": cards})
+    return names
+
+
+@pytest.mark.p1
+def test_migrate_idempotent_at_thirty_chapters(store):
+    names = _thirty_chapter_book(store)
+    first = migrate(store)
+    assert first["total"] == len(names)            # 30 条全部落进单一源，无重复 key
+    assert first["created"] == len(names)
+    assert first["sources"] == {"world": 30, "commitment": 12, "cards": 10}
+
+    # 人工在两次迁移之间收敛一条（补证据），第二次不得覆盖它
+    led = ForeshadowLedger(store)
+    key = key_for(names[0])
+    led.resolve(key, {"ch": 9, "offset": 0, "snippet": "人工补齐的原文片段"})
+    before = {it["key"]: dict(it) for it in led.items()}
+
+    second = migrate(store)
+    assert second["created"] == 0 and second["total"] == first["total"]
+    assert second["filled"] == 0 and second["inferred"] == 0
+    after = {it["key"]: dict(it) for it in led.items()}
+    assert after[key]["evidence"] == {"ch": 9, "offset": 0, "snippet": "人工补齐的原文片段"}
+    # 其余条目逐字段不变（幂等 = 不产生新条目、不改已有状态）
+    for k, it in before.items():
+        assert after[k]["status"] == it.get("status")
+        assert after[k].get("evidence") == it.get("evidence")
+
+
+@pytest.mark.p1
+def test_migrate_marks_historical_evidence_as_inferred(store):
+    """历史承诺机里 revealed 但没证据：补 inferred 证据占位，不伪造 snippet。"""
+    store.save_world(World(world_view="九域", characters=[], foreshadowing=[
+        ForeshadowItem(name="旧账伏笔", buried_ch=2, reveal_ch=6, content="原文")]))
+    store.save_foreshadow_commitment({"items": [
+        {"name": "旧账伏笔", "revealed_ch": 6, "due_ch": 6}], "updated_ch": 6})
+    rep = migrate(store)
+    item = ForeshadowLedger(store).by_name("旧账伏笔")
+    assert item["status"] == "resolved"
+    assert item["evidence"]["ch"] == 6 and item["evidence"]["offset"] == 0
+    assert "原文片段未存" in item["evidence"]["snippet"]
+    assert item.get("inferred") is True and rep["inferred"] >= 1
+
+
+# ---------- 20 章误报率样本（干净样本要求 0 命中） ----------
+def _clean_twenty_chapters():
+    """20 章"正常写作"样本：数字单向、死者不再出场、物品有转移事件、称谓统一、时间递增。"""
+    events = []
+    chapters = []
+    for no in range(1, 21):
+        state = {
+            "numbers": {"累计进度": (no - 1) * 10, "剩余次数": 20 - no},
+            "characters": {"陆沉": "轻伤" if no < 5 else "存活"},
+            "items": {"铜匣": "陆沉"},
+            "time": f"第{no * 3}天，清晨",
+            "facts": ["陆沉在墟门附近探查"],
+            "body": [],
+        }
+        if no == 5:
+            state["characters"]["疤脸"] = "已死（死在墟内二层）"   # 死后不再出场
+        # 铜匣在第 9 章转移给独眼刘，且有对应 object 转移事件
+        if no >= 9:
+            state["items"] = {"铜匣": "独眼刘"}
+        chapters.append({"no": no, **state})
+        events.append({"ch": no, "desc": f"第{no}章主线推进", "participants": ["陆沉"]})
+    events.append({"ch": 9, "desc": "独眼刘夺走铜匣", "participants": ["独眼刘"],
+                   "kind": "object"})
+    return chapters, events
+
+
+@pytest.mark.p1
+def test_clean_twenty_chapters_produce_zero_violations():
+    chapters, events = _clean_twenty_chapters()
+    v = detect(chapters, events, {"陆先生": {"canonical": "陆沉"}})
+    assert v == []
+    assert render_block(v) == ""
+
+
+@pytest.mark.p1
+def test_seeded_twenty_chapters_recall_and_no_noise():
+    """在干净样本里埋 5 处真实冲突，规则须全部命中且不多报。"""
+    chapters, events = _clean_twenty_chapters()
+    # 1) 机制数字反方向（第 12 章累计进度掉回 70）
+    chapters[11]["numbers"]["累计进度"] = 70
+    # 2) 死亡后仍有主动行为（疤脸 第 5 章死，第 14 章还在动作）
+    events.append({"ch": 14, "desc": "疤脸带人堵门", "participants": ["疤脸"]})
+    # 3) 物品归属变化但抽掉转移事件
+    idx = [i for i, e in enumerate(events) if e.get("kind") == "object"]
+    for i in reversed(idx):
+        events.pop(i)
+    # 4) 称谓漂移：第 16 章用了登记的非标准写法
+    chapters[15]["facts"].append("陆先生独自进了二层")
+    # 5) 时间倒退：第 18 章写成第 50 天（前章为第 51 天）
+    chapters[17]["time"] = "第50天，夜里"
+    v = detect(chapters, events, {"陆先生": {"canonical": "陆沉"}})
+    rules = sorted(x["rule"] for x in v)
+    assert rules == sorted(["mechanism_delta", "death_state", "item_owner",
+                            "address_drift", "time_reverse"])
+    assert all(x["ch"] <= 20 for x in v)
+
+

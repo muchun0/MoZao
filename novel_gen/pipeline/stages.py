@@ -1507,6 +1507,7 @@ class ChapterWriter:
         action_plan_block = ""
         fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
         derived_events: list = []
+        events_list: list = []       # try 内可能未赋值：异常回退整章时不得引用未定义变量
         skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
             derived_events = _derive_events_from_moves(
@@ -1669,6 +1670,7 @@ class ChapterWriter:
                               f"（refs={sorted(refs)} vs derived={sorted(derived_ids)}），回退整章生成")
                     scenes = []
         except Exception:
+            logger.exception("拆场景异常，回退整章生成（不阻塞本章）")
             scenes = []
 
         if scenes:

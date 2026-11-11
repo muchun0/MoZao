@@ -48,23 +48,34 @@ def _violation(rule: str, ch: int, expected: str, actual: str,
             "evidence_ch": int(evidence_ch), "severity": severity}
 
 
-def parse_numbers(raw) -> dict:
-    """把 `["可死次数：3", "累计进度：7/10"]` 解析成 `{"可死次数": 3, "累计进度": 7}`。"""
+def parse_numbers(raw, registry: dict | None = None) -> dict:
+    """把 `["可死次数：3", "累计进度：7/10"]` 解析成 `{"可死次数": 3, "累计进度": 7}`。
+
+    registry 非空时把字段名归一到注册表字段（跨章同键才可比）：逐章 LLM 抽取会把
+    同一机制写成「剩余次数 / 可死次数」等变体，不归一则 `check_mechanism_delta`
+    的相邻章比对恒为空。
+    """
     out: dict[str, int] = {}
     if isinstance(raw, dict):
         for k, v in raw.items():
             n = _int(v, -1)
             if n >= 0:
                 out[str(k).strip()] = n
-        return out
-    for line in (raw or []):
-        s = str(line or "").strip()
-        m = _NUM_RE.search(s)
-        if not m:
-            continue
-        key = s[:m.start()].strip(" ：:")
-        if key:
-            out[key] = _int(m.group(1), 0)
+    else:
+        for line in (raw or []):
+            s = str(line or "").strip()
+            m = _NUM_RE.search(s)
+            if not m:
+                continue
+            key = s[:m.start()].strip(" ：:")
+            if key:
+                out[key] = _int(m.group(1), 0)
+    if registry and out:
+        from ..chapter_state import canonical_field_name
+        canon: dict[str, int] = {}
+        for key, val in out.items():
+            canon[canonical_field_name(key, registry)] = val
+        return canon
     return out
 
 
@@ -135,9 +146,62 @@ def check_death_state(chapters: Iterable[dict], events: Iterable[dict]) -> list:
 
 
 # ---------- 规则 3：物品归属 ----------
+_OWNER_VERB_RE = re.compile(
+    r"持有|拿着|握着|收进|收起|收着|扔给|递给|还给|交给|给了|塞给|抢走|夺下|夺走|"
+    r"丢|落在|放在|放回|藏|取出|挂在|挂在|绑在|叼在|揣")
+_OWNER_CLAUSE_RE = re.compile(r"[，,；;。／/]")
+#: 明确的「持有」方位句式：在X手中 / 落在X怀里 / 被X收着 → 取 X 为主语
+_HOLD_PHRASE_RE = re.compile(
+    r"(?:在|落在|掉在|塞在|被)?([^\s，,；;。]{1,6}?)"
+    r"(?:手中|怀里|怀|袖中|袖里|领口|身旁|身上|手边|手上|手里)")
+
+
+def owner_subject(owner: str, names: Iterable[str] = ()) -> str:
+    """把归属描述归一到「持有者主体」。
+
+    `「苏妄言扔给陆沉，陆沉未开封，收进抽屉」→ 陆沉`、
+    `「在陆沉怀中/领口」→ 陆沉`、`「砧板上」→ ""`。
+    做法：①描述里最后出现的已知人物名（末位持有者）；②无已知名时按「持有」句式
+    （在X手中/落在X怀里）取 X；③再退化为「第一个分句里转移动词前的主体」；
+    都取不到返回空串（该条不参与比对，宁漏不误报）。
+    """
+    text = str(owner or "").strip()
+    if not text:
+        return ""
+    known = [str(n).strip() for n in (names or []) if str(n).strip()]
+    hits = [(text.rfind(n), n) for n in known if n in text]
+    if hits:
+        return max(hits)[1]
+    first = _OWNER_CLAUSE_RE.split(text)[0].strip()
+    m = _HOLD_PHRASE_RE.search(first)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    m = _OWNER_VERB_RE.search(first)
+    if not m:
+        # 没有持有/转移动词：整段就是一个主体名（「独眼刘」「陆沉」）→ 视为持有者；
+        # 带方位后缀的纯位置（「砧板上」「灶台边」）不是持有者。
+        if first and len(first) <= 6 and not re.search(r"(?:上|中|里|下|旁|边|内|外|前|后)$", first):
+            return first
+        return ""
+    head = re.sub(r"^(?:在|被|由|归|到)", "", first[:m.start()]).strip(" 的")
+    if not head or len(head) > 8:
+        return ""
+    return head
+
+
 def check_item_owner(chapters: Iterable[dict], events: Iterable[dict]) -> list:
-    """同一物品归属描述变化，且两次出现之间没有 item 类转移事件。"""
+    """同一物品归属变化，且两次出现之间没有 item 类转移事件。
+
+    比对对象是**持有者主体**而非整段描述：真实样本里「在陆沉怀中」对
+    「在陆沉怀中/领口」曾被判成归属变化，属描述性差异误报。
+    """
     out = []
+    known_names = sorted({
+        str(n).strip()
+        for ch in (chapters or [])
+        for n in (ch.get("characters") or {})
+        if str(n).strip()
+    })
     prev: dict[str, tuple] = {}
     item_events: list[int] = [
         _int(ev.get("ch")) for ev in (events or [])
@@ -150,18 +214,22 @@ def check_item_owner(chapters: Iterable[dict], events: Iterable[dict]) -> list:
             continue
         for item, owner in items.items():
             item = str(item or "").strip()
-            owner_now = str(owner or "").strip()
-            if not item or not owner_now:
+            owner_raw = str(owner or "").strip()
+            if not item:
+                continue
+            owner_now = owner_subject(owner_raw, known_names)
+            if not owner_now:
                 continue
             if item in prev:
-                prev_ch, prev_owner = prev[item]
+                prev_ch, prev_owner, prev_raw = prev[item]
                 if prev_owner != owner_now:
                     moved = any(prev_ch < ec <= no for ec in item_events)
                     if not moved:
                         out.append(_violation(
                             "item_owner", no, f"「{item}」仍应在{prev_owner}手中（或无转移事件）",
-                            f"第{no}章记为{owner_now}（上次第{prev_ch}章为{prev_owner}）", prev_ch))
-            prev[item] = (no, owner_now)
+                            f"第{no}章记为{owner_now}（{owner_raw}；上次第{prev_ch}章为"
+                            f"{prev_owner}（{prev_raw}））", prev_ch))
+            prev[item] = (no, owner_now, owner_raw)
     return out
 
 
@@ -233,8 +301,11 @@ def detect(chapters: Iterable[dict], events: Iterable[dict] = None,
     return violations
 
 
-def chapters_from_scenes(scenes: dict) -> list:
-    """把 `scenes.json` 的 {章号: {scenes, state}} 摊平成规则输入。"""
+def chapters_from_scenes(scenes: dict, registry: dict | None = None) -> list:
+    """把 `scenes.json` 的 {章号: {scenes, state}} 摊平成规则输入。
+
+    registry 非空时把面板数字字段名归一到机制注册表（兼容归一前落盘的历史样本）。
+    """
     out = []
     for no, rec in (scenes or {}).items():
         try:
@@ -246,7 +317,7 @@ def chapters_from_scenes(scenes: dict) -> list:
             continue
         out.append({
             "no": no,
-            "numbers": parse_numbers(state.get("numbers")),
+            "numbers": parse_numbers(state.get("numbers"), registry),
             "characters": state.get("characters") or {},
             "items": state.get("items") or {},
             "time": str(state.get("time") or ""),

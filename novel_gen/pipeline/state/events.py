@@ -254,5 +254,57 @@ def build_event_block(rows: list, limit: int = 8) -> str:
         f"- 第{r['ch']}章：{r['desc']}" for r in rows)
 
 
+#: 物品转移/处置动词（判定 `kind="object"` 的确定性线索，零 LLM）
+_OBJECT_VERBS = (
+    "交给", "递给", "还给", "扔给", "塞给", "交给", "送给", "卖给", "押给",
+    "抢", "夺", "偷", "顺走", "失窃", "丢了", "丢失", "收进", "收起", "藏进",
+    "取出", "掏出", "典当", "典了", "购得", "买到", "捡到", "拾起", "吞下", "吃光",
+)
+
+
+def name_hits(text: str, names: Iterable[str]) -> list:
+    """正文里出现的已知人物名（按首次出现位置排序，去重）。"""
+    src = str(text or "")
+    hits = [(src.find(str(n).strip()), str(n).strip())
+            for n in (names or []) if str(n).strip()]
+    hits = [(pos, name) for pos, name in hits if pos >= 0]
+    hits.sort()
+    return list(dict.fromkeys(name for _pos, name in hits))
+
+
+def classify_fact(text: str, names: Iterable[str] = (),
+                  items: Iterable[str] = ()) -> tuple:
+    """一条章节事实 → (participants, kind)。
+
+    零 LLM 确定性判定：出现的人物名做参与人；出现物品名且带转移/处置动词 →
+    `object`（物品规则的事件豁免），否则 `state`。命名/措辞不匹配时退化为空参与人
+    与 `state`（宁缺不臆造），但变量本身必须存在——否则事件流永远没有参与人与
+    物品事件，生死/物品规则拿不到豁免证据。
+    """
+    participants = name_hits(text, names)
+    kind = "state"
+    item_names = [str(i).strip() for i in (items or []) if str(i).strip()]
+    if item_names and any(v in str(text) for v in _OBJECT_VERBS):
+        hit_items = [i for i in item_names if i in str(text)]
+        if hit_items:
+            kind = "object"
+    return participants, kind
+
+
+def derive_fact_events(facts: Iterable[str], ch: int, names: Iterable[str] = (),
+                       items: Iterable[str] = (), scene: int = 0) -> list:
+    """把章末 facts 转成事件行（参与人/类型/因果位按确定性规则补齐）。"""
+    rows = []
+    for desc in (facts or []):
+        desc = str(desc or "").strip()
+        if not desc:
+            continue
+        participants, kind = classify_fact(desc, names, items)
+        rows.append({"ch": int(ch), "scene": scene, "desc": desc,
+                     "participants": participants, "cause": "", "effect": [],
+                     "kind": kind, "inferred": True})
+    return rows
+
+
 def resolve_at_ch_from_rows(rows: list, default: int = 0) -> int:
     return max((int(r.get("ch") or 0) for r in (rows or [])), default=default)

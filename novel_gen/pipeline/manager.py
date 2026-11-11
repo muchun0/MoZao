@@ -573,11 +573,23 @@ class NovelPipeline:
         facts = [str(x).strip() for x in ((state or {}).get("facts") or []) if str(x).strip()]
         if event_stream:
             try:
-                from .state.events import EventStream
-                stream = EventStream(self.store)
-                rows = [{"ch": chapter, "scene": 0, "desc": f,
-                         "participants": [], "cause": "", "effect": [],
-                         "kind": "state", "inferred": True} for f in facts]
+                from .state.events import EventStream, derive_fact_events
+                names = [str(k) for k in ((state or {}).get("characters") or {}) if str(k).strip()]
+                items = [str(k) for k in ((state or {}).get("items") or {}) if str(k).strip()]
+                if not names or not items:
+                    # 非抽取章只有确定性面板数字：用世界观人物/物品补齐参与人与物品名，
+                    # 否则事件流永远没有 participants、永远没有 kind=object。
+                    try:
+                        world = self.store.load_world()
+                        if not names:
+                            names = [getattr(c, "name", "") for c in
+                                     (getattr(world, "characters", None) or [])]
+                        if not items:
+                            items = [getattr(i, "name", "") for i in
+                                     (getattr(world, "items", None) or [])]
+                    except Exception:
+                        logger.warning("世界观读取失败（事件参与人降级为空）: no=%d", no)
+                rows = derive_fact_events(facts, chapter, names, items)
                 res = stream.append(rows, ch=chapter, allow_inferred=True) if rows else {}
                 if res.get("rejected") and not silent:
                     logger.warning("事件流拒绝 %d 条（已留痕，不阻塞）", res["rejected"])

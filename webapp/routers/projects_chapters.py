@@ -675,3 +675,112 @@ def get_book_facts(project_id: str, at_ch: int = 0, agent: str = "",
         "dropped": int(facts.last_dropped or 0),
     }
 
+
+
+@app.get("/api/projects/{project_id}/book-facts/events")
+def get_book_facts_events(project_id: str, from_ch: int = 0, to_ch: int = 0,
+                          thread: str = "", participant: str = "", limit: int = 100,
+                          user: dict = Depends(_require_user)):
+    """REQ-R21 M1：事件流查询（按章区间/线索/参与者），含 cause/effect 与消费水位。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.state.events import EventStream
+    stream = EventStream(store)
+    rows = stream.query_with_consumption(from_ch=from_ch, to_ch=to_ch, participant=participant,
+                                        thread=thread, limit=max(1, min(int(limit or 100), 1000)))
+    return {"events": [{
+        "id": r.get("id"), "ch": r.get("ch"), "scene": r.get("scene"),
+        "participants": r.get("participants") or [], "cause": r.get("cause"),
+        "effect": r.get("effect") or [], "desc": r.get("desc"),
+        "kind": r.get("kind"), "consumed_ch": r.get("consumed_ch"),
+    } for r in rows], "count": len(rows)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/threads")
+def get_book_facts_threads(project_id: str, status: str = "", level: str = "",
+                           limit: int = 100, user: dict = Depends(_require_user)):
+    """REQ-R21 M1：伏笔清单（唯一源 foreshadowing.json），按 due_ch 升序。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    rows = BookFacts(store, cfg).open_threads(overdue_only=False)
+    if status:
+        want = {s.strip() for s in str(status).split(",") if s.strip()}
+        rows = [r for r in rows if str(r.get("status")) in want]
+    if level:
+        rows = [r for r in rows if str(r.get("level") or "main") == level]
+    rows = rows[:max(1, min(int(limit or 100), 1000))]
+    return {"threads": rows, "count": len(rows)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/timeline")
+def get_book_facts_timeline(project_id: str, view: str = "chapter", at_ch: int = 0,
+                            user: dict = Depends(_require_user)):
+    """REQ-R21 M1：时间线三切面（chapter/thread/character），每条带章号与摘要。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    facts = BookFacts(store, cfg)
+    snap = facts.snapshot(at_ch=at_ch)
+    view = (view or "chapter").strip()
+    if view == "thread":
+        items = [{
+            "key": t.get("key"), "name": t.get("name"), "summary": t.get("desc") or "",
+            "ch": int(t.get("due_ch") or 0), "planted_ch": t.get("planted_ch"),
+            "status": t.get("status"), "evidence_ch": t.get("evidence_ch"),
+        } for t in facts.open_threads(at_ch=at_ch)]
+    elif view == "character":
+        items = [{
+            "key": c.get("name"), "name": c.get("name"),
+            "summary": "；".join(x for x in (c.get("state"), c.get("location"), c.get("goal")) if x),
+            "ch": int(c.get("last_ch") or 0), "source": c.get("source"),
+        } for c in (snap.get("characters") or [])]
+    elif view == "chapter":
+        items = [{"ch": int(e.get("ch") or 0), "summary": e.get("desc") or "",
+                  "kind": e.get("kind") or "state"} for e in (snap.get("events") or [])]
+    else:
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 chapter/thread/character）")
+    items.sort(key=lambda r: (int(r.get("ch") or 0), str(r.get("key") or "")))
+    return {"view": view, "items": items, "count": len(items),
+            "stale": bool(snap.get("stale")), "degraded": bool(facts.degraded)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/violations")
+def get_book_facts_violations(project_id: str, severity: str = "", rule: str = "",
+                              limit: int = 50, at_ch: int = 0,
+                              user: dict = Depends(_require_user)):
+    """REQ-R21 M1：确定性冲突清单（只报不修），每条含两侧原文与章号。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    rows = BookFacts(store, cfg).violation_list(at_ch=at_ch)
+    if severity:
+        want = {s.strip() for s in str(severity).split(",") if s.strip()}
+        rows = [r for r in rows if str(r.get("severity")) in want]
+    if rule:
+        rows = [r for r in rows if str(r.get("rule")) == rule]
+    rows = rows[:max(1, min(int(limit or 50), 500))]
+    return {"violations": rows, "count": len(rows)}
+
+
+def _facts_cfg(store):
+    """读取项目配置（读不到按未开启处理：查询接口一律 404，不返回半真数据）。"""
+    try:
+        return store.load_config()
+    except Exception:
+        logger.exception("项目配置读取失败（M1 查询接口按未开启处理）")
+        return None
+
+
+def _require_flag(cfg, name: str) -> None:
+    if not bool(getattr(cfg, name, False)):
+        raise HTTPException(status_code=404, detail=f"开关 {name} 未开启（M1 能力未启用）")

@@ -1230,7 +1230,7 @@ class ChapterWriter:
                                         unknown_mechanism_fields as _unk_h,
                                         ledger_check as _lchk_h,
                                         _registry_initial as _rin_h,
-                                        _EROSION_SEQ_RE as _eseq_h)
+                                        cumulative_value as _cumv_h)
             _mem_h = self._memory()
             if _mem_h is None:
                 return True  # 无记忆体系（未启用记忆）不判病，维持旧路径行为
@@ -1247,8 +1247,7 @@ class ChapterWriter:
             if _reg_h:
                 _st_h = (_mem_h.load().get("state") or {})
                 _prev_h = _mem_h.chapter_ledger(chapter_no - 1)
-                _eros_h = max((int(_m.group(1)) for _m in _eseq_h.finditer(content or "")),
-                              default=0)
+                _eros_h = _cumv_h(content or "", _reg_h) or 0
                 _base_h = 0
                 try:
                     _pc = [c for c in _st_h.get("chapters", [])

@@ -67,18 +67,20 @@ def write_chapter_state_guarded(store, state: dict,
 def record_mechanism_state(memory, chapter_no: int, content: str) -> bool:
     """本章末机制状态确定性入账（零 LLM，同章覆盖）。
 
-    与 `stages._write_post_gates` 原内联逻辑逐行等价：蚀化取正文面板最大值，
-    deaths 用「本章末蚀化 - 上一章末蚀化」反推（P0-14 口径），注册字段末值由
+    与 `stages._write_post_gates` 原内联逻辑等价：累积型字段（升向）取正文面板最大值，
+    deaths 用「本章末累积值 - 上一章末累积值」反推（P0-14 口径），注册字段末值由
     `ledger_extract_numbers` 抽取。memory 为空或关闭时直接跳过。
     """
     if memory is None:
         return False
     try:
-        from .chapter_state import _EROSION_SEQ_RE as _eseq
-        _eros = None
-        _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
-        if _mv:
-            _eros = max(_mv)
+        from .chapter_state import (cumulative_value,
+                                    ledger_extract_numbers,
+                                    mechanism_field_registry)
+        _canon = (memory.load().get("canon") or {})
+        _reg = mechanism_field_registry(_canon.get("mechanism_baseline") or {})
+        # 累积型字段（蚀化/进度等，方向 increase）取正文最大值；注册表为空/未出现 → None
+        _eros = cumulative_value(content or "", _reg)
         _prev_eros = None
         try:
             _st0 = memory.load().get("state") or {}
@@ -94,16 +96,7 @@ def record_mechanism_state(memory, chapter_no: int, content: str) -> bool:
         _deaths = 0
         if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
             _deaths = _eros - int(_prev_eros or 0)
-        _nums = {}
-        try:
-            from .chapter_state import (ledger_extract_numbers,
-                                        mechanism_field_registry)
-            _canon = (memory.load().get("canon") or {})
-            _reg = mechanism_field_registry(_canon.get("mechanism_baseline") or {})
-            if _reg:
-                _nums = ledger_extract_numbers(content or "", _reg)
-        except Exception:
-            _nums = {}
+        _nums = ledger_extract_numbers(content or "", _reg) if _reg else {}
         memory.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros,
                                     numbers=_nums)
         return True

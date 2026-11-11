@@ -701,6 +701,25 @@ def ledger_extract_numbers(text: str, registry: dict[str, str]) -> dict[str, int
     return out
 
 
+def cumulative_value(text: str, registry: dict[str, str]) -> int | None:
+    """正文中累积型（increase）注册字段的最大值；无注册字段或未出现返回 None。
+
+    替代已被「机制数字软提示与通用化」删除的单书正则（旧 `_EROSION_SEQ_RE`）：
+    书级累积字段（如《万墟之上》的「蚀化」）由设定账本声明，代码只按方向取
+    increase 字段的正文最大值，作为链式账本锚（死亡数=本章末累积值-上一章末）。
+    """
+    if not text or not registry:
+        return None
+    vals: list[int] = []
+    for label, rule in registry.items():
+        if rule != "increase":
+            continue
+        got = ledger_extract_numbers(text, {label: rule})
+        if got:
+            vals.append(max(got.values()))
+    return max(vals) if vals else None
+
+
 def _registry_initial(baseline: dict | None, registry: dict[str, str]) -> dict[str, int]:
     """注册字段的初始基线值（prev 缺失时用）：panel_format/reset_rule 中的数字
     + 累积型单位字段（基线文本「数字+单位」，如「已伸三十七寸」→ 寸=37）。"""

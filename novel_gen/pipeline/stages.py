@@ -711,6 +711,8 @@ class ChapterWriter:
             _mem = self._memory()
             if _mem is not None:
                 _mem.sync_baseline(world)
+                # P2 术语卡接线：别名登记进 canon.terms，供称谓漂移规则比对
+                _mem.sync_terms(world)
         except Exception:
             pass
         try:
@@ -1124,7 +1126,17 @@ class ChapterWriter:
         #（P0-8 已暴露给 write() 的章节累计机制数字）。
         try:
             if scenes:
-                self.store.save_scenes(chapter_no, scenes, self._scene_state_acc or {})
+                # 字段名归一：场景累计数字按机制注册表归一，否则逐章写法变体导致
+                # 冲突规则的「同键跨章比对」恒为空（真实样本实测 0 对可比）。
+                try:
+                    from .chapter_state import (canonicalize_number_list,
+                                                registry_for_world)
+                    _acc = dict(self._scene_state_acc or {})
+                    _acc["numbers"] = canonicalize_number_list(
+                        _acc.get("numbers"), registry_for_world(self.store.load_world()))
+                except Exception:
+                    _acc = self._scene_state_acc or {}
+                self.store.save_scenes(chapter_no, scenes, _acc)
         except Exception:
             pass
         if summary:

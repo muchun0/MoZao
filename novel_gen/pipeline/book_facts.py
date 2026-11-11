@@ -438,7 +438,18 @@ class BookFacts:
                 scenes = self.store.load_scenes() or {}
             except Exception:
                 logger.exception("scenes.json 读取失败（冲突检测跳过）")
-            chapters = [c for c in chapters_from_scenes(scenes)
+            # 机制字段注册表：把逐章变体写法归一，跨章同键才可比
+            registry = {}
+            canon_terms = {}
+            try:
+                mem = self.store.load_book_memory() or {}
+                canon = mem.get("canon") or {}
+                canon_terms = canon.get("terms") or {}
+                from ..chapter_state import mechanism_field_registry
+                registry = mechanism_field_registry(canon.get("mechanism_baseline") or {})
+            except Exception:
+                logger.exception("canon / 机制基线读取失败（字段归一降级为不启用）")
+            chapters = [c for c in chapters_from_scenes(scenes, registry)
                         if not at_ch or c["no"] <= at_ch]
             try:
                 latest = self.store.load_chapter_state() or {}
@@ -450,19 +461,14 @@ class BookFacts:
                     from .state.conflict_rules import parse_numbers
                     chapters.append({
                         "no": no,
-                        "numbers": parse_numbers(latest.get("numbers")),
+                        "numbers": parse_numbers(latest.get("numbers"), registry),
                         "characters": latest.get("characters") or {},
                         "items": latest.get("items") or {},
                         "time": str(latest.get("time") or ""),
                         "facts": latest.get("facts") or [],
                         "body": latest.get("body") or [],
                     })
-            canonical_map = {}
-            try:
-                mem = self.store.load_book_memory() or {}
-                canonical_map = (mem.get("canon") or {}).get("terms") or {}
-            except Exception:
-                logger.exception("canon 读取失败（称谓规则跳过）")
+            canonical_map = canon_terms
             events = []
             try:
                 from .state.events import EventStream

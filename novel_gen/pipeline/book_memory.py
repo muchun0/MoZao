@@ -291,6 +291,34 @@ class BookMemory:
         if changed:
             self.save()
 
+    def sync_terms(self, world) -> int:
+        """P2 术语卡接线：把 `world.terminology` 的别名登记进 canon.terms。
+
+        `canon.terms` 只有被登记过才会出现在冲突规则的称谓漂移比对里；此前
+        `ensure_term` 全仓无调用点，`address_drift` 永久空转（真实样本 canon.terms=0）。
+        登记口径：每个别名为一个条目的 term，`canonical` = 术语卡标准写法；
+        标准写法自身不登记（term==canonical 不构成漂移）；**别名里含标准写法的跳过**
+        （「蚀气/蚀群」含「蚀」是另一个名词、不是同一词的异写，登记后只会让称谓
+        规则每章空转）。返回新增条数。
+        """
+        if not self.enabled:
+            return 0
+        n = 0
+        try:
+            for item in (getattr(world, "terminology", None) or []):
+                name = str(getattr(item, "name", "") or "").strip()
+                if not name:
+                    continue
+                for alias in (getattr(item, "aliases", None) or []):
+                    alias = str(alias or "").strip()
+                    if not alias or alias == name or name in alias:
+                        continue
+                    if self.ensure_term(alias, name, category="terminology"):
+                        n += 1
+        except Exception:
+            logger.warning("术语登记失败（称谓规则降级为空输入）", exc_info=True)
+        return n
+
     def canon_block(self, max_chars: int = 800) -> str:
         """设定账本注入块：新名词规范 + 永久纪律 + 机制基线（空则返回空串）。"""
         if not self.enabled:

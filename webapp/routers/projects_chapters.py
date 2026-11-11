@@ -752,6 +752,36 @@ def get_book_facts_timeline(project_id: str, view: str = "chapter", at_ch: int =
             "stale": bool(snap.get("stale")), "degraded": bool(facts.degraded)}
 
 
+@app.get("/api/projects/{project_id}/book-facts/graph")
+def get_book_facts_graph(project_id: str, view: str = "all", at_ch: int = 0,
+                         kind: str = "", participant: str = "", status: str = "",
+                         limit: int = 2000,
+                         user: dict = Depends(_require_user)):
+    """REQ-R22 M2：状态图谱只读视图（canon/characters/timeline/threads 或 all）。
+
+    与 M1 的分散查询接口并存：本接口一次给「版本 + 来源 + 四视图」，是消费方的稳定
+    契约；单视图查询仍走 `/book-facts/events|threads|timeline`。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph")
+    from novel_gen.pipeline.state.views import VIEWS, StateGraph
+    graph = StateGraph(store, cfg)
+    view = (view or "all").strip()
+    if view == "all":
+        return graph.snapshot(at_ch=at_ch)
+    if view not in VIEWS:
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 all/{'/'.join(VIEWS)}）")
+    data = graph.view(view, at_ch=at_ch, **({"kind": kind, "participant": participant,
+                                             "limit": limit} if view == "timeline"
+                                            else {"status": status} if view == "threads"
+                                            else {}))
+    return {"view": view, "version": graph.version([view]),
+            "sources": graph.sources(), "data": data}
+
+
 @app.get("/api/projects/{project_id}/book-facts/violations")
 def get_book_facts_violations(project_id: str, severity: str = "", rule: str = "",
                               limit: int = 50, at_ch: int = 0,

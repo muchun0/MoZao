@@ -84,6 +84,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "foreshadow_unified", False, "伏笔唯一写入源（REQ-R21 M1）：foreshadowing.json 为唯一写入口，回收必须带 evidence，世界观点与设定卡降级为派生视图；False=沿用三处各自更新（M0 行为）"),
     FeatureFlag("memory", "conflict_guard", False, "确定性冲突前置（REQ-R21 M1）：五类规则写前判定，命中时在补偿块之后、硬区之前注入「冲突提醒」；False=不注入（M0 行为）"),
     FeatureFlag("memory", "timeline_view", False, "时间线只读视图（REQ-R21 M1）：/book-facts 的事件/线索/时间线/冲突查询接口；False=查询接口 404（M0 行为）"),
+    FeatureFlag("memory", "state_graph", False, "状态图谱只读服务（REQ-R22 M2）：/book-facts/graph 一次返回「版本+来源+四视图（世界事实/角色认知/发展线/可能分支）」，生成链路与外部消费者共用同一契约；False=接口 404，消费方走 M1 分散查询（完全回退）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
@@ -389,6 +390,7 @@ class NovelConfig:
     foreshadow_unified: bool = feature_default("foreshadow_unified")                   # 伏笔唯一写入源（REQ-R21 M1）：foreshadowing.json + 回收证据
     conflict_guard: bool = feature_default("conflict_guard")                           # 确定性冲突前置（REQ-R21 M1）：五规则写前提醒
     timeline_view: bool = feature_default("timeline_view")                             # 时间线只读接口（REQ-R21 M1）
+    state_graph: bool = feature_default("state_graph")                                 # 状态图谱只读服务（REQ-R22 M2）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）

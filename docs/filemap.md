@@ -200,9 +200,10 @@
 | `components/world/mechanism.js` | **机制类型元数据与展示判定（REQ-通用机制类型适配）**：`MECHANISM_TYPES`/`TYPE_LABELS`/`TYPE_TITLES`/`POLICY_LABELS`/`STATUS_LABELS` + `resolveTypes`/`dataTypes`/`showBlock`/`hasMechanism`。**类型判定不自算**：以后端下发的 `mechanism_types_resolved`（= `resolve_types`）为权威，本地 `inferTypes` 仅作"响应无该字段"的兜底且字段子集与后端一致；`dataTypes` 提供"有数据就看得见改得动"的展示兜底 |
 | `components/project/ProjectSideNav.vue` | **项目详情左侧栏导航（2026-10-26）**：「内容（章节/大纲/世界观）/ 智能（小墨AI/Agent/全书体检/工具）」两组，选中金线标记，窄屏降级横向滚动 |
 | `components/consistency/ConsistencyPanel.vue` | **全书体检面板（R2，2026-11-04）**：概览卡（已写章/账本落后/逾期伏笔/冲突数）+ 4 个子页（账本覆盖表格 / 伏笔台账按状态筛选+原文摘录+跳章 / 一致性冲突按严重度排序+证据+建议+跳章 / 人物·设定索引（搜索/类型/出现章chips，行点击抽屉看章节内片段与字符偏移））；只承载「检查结论」，账本动态视图归时间线与世界事实面板。分页走 `加载更多`，无数据展示空状态与「如何产生数据」指引，不伪造示例；跳章 emit `locate` |
-| `components/facts/FactsTimelinePanel.vue` | **时间线面板（REQ-R21 M1，2026-11-12 重建）**：只读事件流——「已经发生的事件」（状态/物品/关系类，按章升序、类型标签、参与人筛选）与「发展方向的事件」（伏笔类，指向后文），共用页头与计数；`timeline_view` 关闭时接口 404 → 面板转「未启用」空态，不渲染半真数据 |
+| `components/facts/FactsTimelinePanel.vue` | **时间线面板（REQ-R22 L1/L2/L3，2026-11-12 重构）**：两页签（已发生 / 发展方向）+ 两种形态（卡片流 / 泳道）。卡片流按章挂事件卡；泳道按人物或事件类型分行、标最长断档、计划事件单独一行；发展方向展示未收伏笔与伏笔类事件，可一键「排一张收束卡」。L3 计划事件：新建/编辑/删除、拖到章格改排期，全量提交 `planned-events` 接口，虚线卡与已发生事实区分；`timeline_view` 关闭时接口 404 → 面板转「未启用」空态 |
 | `components/facts/StateGraphPanel.vue` | **世界事实面板（REQ-R22 M2，2026-11-12 视图扩充）**：五个页签——人物（世界观角色档案：定位/性格/想要/外貌/关系）、状态（账本 characters 快照：状态·所在地·目标·最近章）、地点（世界观 locations：地形/光线/通路/危险）、事件（账本登记的事件条目，按章倒序）、设定规则（术语 / 按 rule 去重的永久纪律 + 命中示例浮层 / 机制口径 + 派生注册表 / 不变量与禁用词折叠）。人物/地点条目由 `canon` 视图新增字段 `world_characters`、`locations` 提供 |
-| `components/facts/FactsPanelHead.vue` | **账本视图通用页头（2026-11-12）**：标题 + 「只读」徽标 + 说明 + 右侧刷新 + 计数条（label/value/tone），世界事实面板使用 |
+| `components/facts/FactsPanelHead.vue` | **账本视图通用页头（2026-11-12）**：标题 + 只读/可编排徽标（`readonly` 默认 true）+ 说明 + 右侧刷新 + 计数条（label/value/tone）；世界事实只读，时间线可编排 |
+| `novel_gen/pipeline/planned_events.py` | **作者计划事件（REQ-R22 L3）**：`normalize` 归一校验（最多 500 条、标题 80 字、目标章 1–9999、参与人 8 位、id 约束）、`from_store` 读 `planned_events.json`、`render_block` 只渲染目标章的计划事件（无事件返回空串，零 token）；存于独立文件，不混入 events.jsonl |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |
 | `style.css` | 全局样式（深夜书房视觉语言） |
 | `vite.config.js` / `package.json` | 构建配置/依赖 |

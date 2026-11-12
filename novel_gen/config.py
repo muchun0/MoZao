@@ -134,6 +134,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "scene_inspector", True, "场景体检开关（三期 F2）：对已生成章节做字数/事件推进/重演/承接/钩子确定性体检并给修复建议"),
     FeatureFlag("review", "chain_of_thought", True, "思维链可视化开关（三期 F4）：聚合计划-产出-校验三段产物为只读视图"),
     FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
+    FeatureFlag("writing", "planned_events", True, "作者计划事件（REQ-R22 L3）：时间线可新增/拖拽「计划事件」落章并写 planned_events.json；写对应章时注入计划事件约束块，False=不读不注入（只读视图仍可展示已有计划卡）"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
     FeatureFlag("guard", "stale_gate", True, "生成前章节一致性门禁（档3）：目标章之前存在 stale 章且不在本次范围内时 409 提示（可确认继续）；unknown 只提示不拦截；关闭后守卫直接放行"),
@@ -470,6 +471,7 @@ class NovelConfig:
     scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
     chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
+    planned_events: bool = feature_default("planned_events")       # 作者计划事件：时间线可编辑卡片 + 写章注入
     high_quality_mode: bool = True                                # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字（固化开启）
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     persona_override: str = ""        # 当前 agent 的完整人设（运行时内存态，由 webapp 从 agent_prompts 注入到 role_prompt；不落盘）

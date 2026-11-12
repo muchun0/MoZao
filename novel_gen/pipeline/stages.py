@@ -531,6 +531,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("上章承诺补偿块注入失败（降级跳过）")
 
+        # REQ-R22 L3：作者在时间线上排的计划事件（目标章=本章时注入，不改已发生事件流）
+        try:
+            if getattr(self.cfg, "planned_events", True):
+                from .planned_events import from_store, render_block
+                _planned_block = render_block(from_store(self.store), chapter_no)
+                if _planned_block:
+                    memory_context = (memory_context + "\n\n" + _planned_block
+                                      if memory_context else _planned_block)
+        except Exception:
+            logger.exception("计划事件注入失败（降级跳过）")
+
         # 注入时间线提示 + 章末钩子 + 副本上下文
         plan_core_event = ""
         plan_moves = ""

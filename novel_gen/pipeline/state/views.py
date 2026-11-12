@@ -140,6 +140,35 @@ class StateGraph:
                 s = str(x or "").strip()
                 if s and s not in forbidden:
                     forbidden.append(s)
+
+        def _rows(label: str, fields: tuple) -> list:
+            """世界设定里的结构化条目（人物档案 / 地点设定）按白名单字段摊平。"""
+            def _as_dict(it):
+                if isinstance(it, dict):
+                    return it
+                for meth in ("to_dict", "model_dump", "dict"):
+                    fn = getattr(it, meth, None)
+                    if callable(fn):
+                        try:
+                            r = fn()
+                        except Exception:
+                            continue
+                        if isinstance(r, dict):
+                            return r
+                return {}
+
+            out = []
+            for it in (getattr(world, label, None) or []):
+                d = _as_dict(it)
+                name = str(d.get("name") or getattr(it, "name", "") or "").strip()
+                if not name:
+                    continue
+                row = {"name": name}
+                for f in fields:
+                    row[f] = str(d.get(f) or getattr(it, f, "") or "").strip()
+                out.append(row)
+            return out
+
         return {
             "at_ch": _int(snap.get("at_ch")) or _int(at_ch),
             "terms": terms,
@@ -150,6 +179,9 @@ class StateGraph:
             "registry": registry,
             "invariants": snap.get("invariants") or {},
             "forbidden": forbidden,
+            # 世界事实的静态条目：人物档案与地点设定（REQ-R22 视图扩充，2026-11-12）
+            "world_characters": _rows("characters", ("role", "personality", "desire", "appearance", "relations")),
+            "locations": _rows("locations", ("terrain", "light", "exits", "danger")),
         }
 
     def characters(self, at_ch: int = 0) -> dict:

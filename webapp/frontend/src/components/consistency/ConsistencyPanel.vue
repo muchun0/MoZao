@@ -3,7 +3,7 @@
     <header class="cp-head">
       <div>
         <h3 class="cp-title">全书体检</h3>
-        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），以及账本的只读视图（事件流 / 伏笔 / 人物状态）。不跑新检查、不改正文、不扣费。要发起检查、看原始记录，去「工具 → 全书质检」。</p>
+        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），不跑新检查、不改正文、不扣费。要发起检查、看原始记录，去「工具 → 全书质检」。</p>
       </div>
       <el-button size="small" :loading="loading" @click="loadOverview">重新体检</el-button>
     </header>
@@ -160,14 +160,6 @@
               </el-select>
               <span class="cp-count">{{ confLoaded ? `${confTotal} 条` : '读取中…' }}</span>
             </template>
-            <template v-else-if="sub === 'events'">
-              <el-select v-model="evParticipant" size="small" clearable placeholder="按参与人筛选" class="cp-select"
-                @change="reloadEvents">
-                <el-option v-for="(n, name) in evParticipants" :key="name" :value="name"
-                           :label="`${name}（${n}）`" />
-              </el-select>
-              <span class="cp-count">{{ evLoaded ? `${evItems.length} 条` : '读取中…' }}</span>
-            </template>
             <template v-else-if="sub === 'entities'">
               <el-input v-model="entityQuery" size="small" clearable placeholder="搜名字或别名，例如「林舟」"
                 class="cp-input" @keyup.enter="reloadEntities" @clear="reloadEntities" />
@@ -319,51 +311,7 @@
               @click="loadMore('conflicts')">再看一些</el-button>
           </div>
 
-          <!-- 4. 人物当前状态（原状态图谱「角色认知」，统一收到这里） -->
-          <div v-show="sub === 'characters'" class="cp-pane">
-            <p v-if="chOff" class="cp-group-empty">状态图谱未启用（后台开关 state_graph 关闭），打开后回到这里刷新。</p>
-            <template v-else-if="chLoaded && !chItems.length">
-              <p class="cp-group-empty">还没有人物状态记录。写章时会把人物状态、所在地、当前目标记进账本，这里按最近一次记录汇总。</p>
-            </template>
-            <el-table v-else-if="chItems.length" :data="chItems" size="small" class="cp-table">
-              <el-table-column label="人物" width="120">
-                <template #default="{ row }"><strong>{{ row.name }}</strong></template>
-              </el-table-column>
-              <el-table-column label="当前状态" min-width="200" prop="state" />
-              <el-table-column label="所在地" min-width="140">
-                <template #default="{ row }"><span class="cp-meta">{{ row.location || '—' }}</span></template>
-              </el-table-column>
-              <el-table-column label="当前目标" min-width="220" prop="goal" />
-              <el-table-column label="最近章" width="90">
-                <template #default="{ row }">
-                  <button v-if="row.last_ch" type="button" class="cp-chap-link" @click="emitLocate(row.last_ch)">
-                    第 {{ row.last_ch }} 章
-                  </button>
-                  <span v-else class="cp-meta">—</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- 5. 事件流（原时间线章节事件 + 状态图谱发展线，合并为一个视图） -->
-          <div v-show="sub === 'events'" class="cp-pane">
-            <p v-if="evOff" class="cp-group-empty">事件流未启用（后台开关 state_graph / timeline_view 关闭），打开后回到这里刷新。</p>
-            <p v-else-if="evLoaded && !evItems.length" class="cp-group-empty">
-              还没有事件记录。事件在写完一章后自动追加；早期章节如果是在事件流修复前生成的，就不会有记录——从下一章开始才会出现。
-            </p>
-            <div v-for="g in evGroups" :key="g.ch" class="cp-tl-group">
-              <div class="cp-tl-ch">第 {{ g.ch }} 章 <span class="cp-meta">{{ g.items.length }} 条</span></div>
-              <ul class="cp-tl-list">
-                <li v-for="(e, i) in g.items" :key="i">
-                  <el-tag size="small" effect="plain" :type="kindTag(e.kind)">{{ kindText(e.kind) }}</el-tag>
-                  <span class="cp-tl-desc">{{ e.desc }}</span>
-                  <span v-if="e.participants?.length" class="cp-meta">{{ e.participants.join('、') }}</span>
-                </li>
-              </ul>
-            </div>
-          </div>
-
-          <!-- 6. 人物 / 设定索引 -->
+          <!-- 4. 人物 / 设定索引 -->
           <div v-show="sub === 'entities'" class="cp-pane">
             <p v-if="entityLoaded && !entityItems.length" class="cp-group-empty">{{ entityEmptyText }}</p>
             <article v-for="row in entityItems" :key="row.name" class="cp-row-card"
@@ -423,7 +371,6 @@ import {
   getConsistencyOverview, getForeshadowLedger, getConsistencyConflicts,
   getEntityIndex, getEntityMentions,
 } from '../../api/consistency'
-import { getFactsGraph } from '../../api/facts'
 import {
   FORESHADOW_STATES, ENTITY_KIND_OPTIONS, SEVERITY_ORDER,
   severityMeta, severityGroup, projectionViewLabel, coverageStateLabel,
@@ -468,34 +415,6 @@ const entityLoaded = ref(false)
 const drawerOpen = ref(false)
 const drawer = ref(null)
 const drawerLoading = ref(false)
-// 人物当前状态（账本 characters 视图）
-const chItems = ref([])
-const chLoading = ref(false)
-const chLoaded = ref(false)
-const chOff = ref(false)
-// 事件流（账本 timeline 视图，按章分组 + 参与人筛选）
-const evItems = ref([])
-const evParticipants = ref({})
-const evParticipant = ref('')
-const evLoading = ref(false)
-const evLoaded = ref(false)
-const evOff = ref(false)
-
-const KIND_TEXT = { state: '状态', object: '物品', relationship: '关系', foreshadow: '伏笔' }
-const KIND_TAG = { state: '', object: 'success', relationship: 'info', foreshadow: 'warning' }
-const kindText = (k) => KIND_TEXT[k] || '状态'
-const kindTag = (k) => KIND_TAG[k] || ''
-
-const evGroups = computed(() => {
-  const groups = new Map()
-  for (const e of evItems.value) {
-    const ch = Number(e.ch) || 0
-    if (!groups.has(ch)) groups.set(ch, [])
-    groups.get(ch).push(e)
-  }
-  return [...groups.entries()].sort((a, b) => a[0] - b[0])
-    .map(([ch, items]) => ({ ch, items }))
-})
 
 // 分组默认只展开最需要处理的一组
 const openGroups = reactive({ must: true, suggest: false, later: false })
@@ -527,9 +446,7 @@ const PURPOSE = {
   coverage: '这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
   foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。',
   conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；要发起检查或看原始记录，去「工具 → 全书质检」。',
-  characters: '这块看：账本里记下的人物当前状态、所在地、当前目标，以及最后一次被写到的章。这是「此刻」的快照，不是人物出场索引。',
   entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
-  events: '这块看：每章发生了什么（事件流），可按参与人筛。事件在写完一章后自动追加；早期章若在事件流修复前生成，不会有记录。',
 }
 
 // 一级分类与筛选合并成一行，标签用短词避免换行拥挤
@@ -537,9 +454,7 @@ const SUB_TABS = computed(() => [
   { name: 'coverage', label: '设定跟上了吗' },
   { name: 'foreshadow', label: '伏笔回收', count: overview.value?.foreshadow?.total ?? 0 },
   { name: 'conflicts', label: '前后对不上', count: overview.value?.conflicts?.total ?? 0 },
-  { name: 'characters', label: '人物状态', count: chLoaded.value ? chItems.value.length : undefined },
   { name: 'entities', label: '人物·设定索引' },
-  { name: 'events', label: '事件流', count: evLoaded.value ? evItems.value.length : undefined },
 ])
 
 // 长原文默认两行截断，按条展开
@@ -795,39 +710,7 @@ async function loadOverview() {
 async function loadCurrentSub() {
   if (sub.value === 'foreshadow') await reloadForeshadow()
   else if (sub.value === 'conflicts') await reloadConflicts()
-  else if (sub.value === 'characters') await reloadCharacters()
   else if (sub.value === 'entities') await reloadEntities()
-  else if (sub.value === 'events') await reloadEvents()
-}
-
-// 人物状态 / 事件流：账本只读视图，与检查记录分开取数
-async function reloadCharacters() {
-  chLoading.value = true
-  try {
-    const data = await getFactsGraph(props.pid, { view: 'characters' })
-    chItems.value = data?.data?.characters || []
-    chLoaded.value = true
-  } catch (e) {
-    if (e?.response?.status === 404) chOff.value = true
-    else ElMessage.error(e?.response?.data?.detail || '人物状态没取到，稍后再试一次')
-  } finally {
-    chLoading.value = false
-  }
-}
-
-async function reloadEvents() {
-  evLoading.value = true
-  try {
-    const data = await getFactsGraph(props.pid, { view: 'timeline', participant: evParticipant.value })
-    evItems.value = data?.data?.events || []
-    evParticipants.value = data?.data?.participants || {}
-    evLoaded.value = true
-  } catch (e) {
-    if (e?.response?.status === 404) evOff.value = true
-    else ElMessage.error(e?.response?.data?.detail || '事件流没取到，稍后再试一次')
-  } finally {
-    evLoading.value = false
-  }
 }
 
 // 伏笔：服务端筛选 + 分页，避免一次取全书
@@ -1118,13 +1001,4 @@ watch(sub, async () => {
   .cp-select { width: 120px; }
   .cp-input { width: 180px; }
   .cp-detail { padding: 10px 12px; }
-}
-
-/* 账本只读视图：人物状态表 + 事件流 */
-.cp-table { width: 100%; }
-.cp-tl-group { border-left: 2px solid var(--indigo-soft); padding-left: 12px; margin-bottom: 14px; }
-.cp-tl-ch { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-.cp-tl-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
-.cp-tl-list li { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.7; color: var(--ink-soft); }
-.cp-tl-desc { flex: 1; }
-</style>
+}</style>

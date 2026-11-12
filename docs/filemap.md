@@ -200,7 +200,7 @@
 | `components/world/mechanism.js` | **机制类型元数据与展示判定（REQ-通用机制类型适配）**：`MECHANISM_TYPES`/`TYPE_LABELS`/`TYPE_TITLES`/`POLICY_LABELS`/`STATUS_LABELS` + `resolveTypes`/`dataTypes`/`showBlock`/`hasMechanism`。**类型判定不自算**：以后端下发的 `mechanism_types_resolved`（= `resolve_types`）为权威，本地 `inferTypes` 仅作"响应无该字段"的兜底且字段子集与后端一致；`dataTypes` 提供"有数据就看得见改得动"的展示兜底 |
 | `components/project/ProjectSideNav.vue` | **项目详情左侧栏导航（2026-10-26）**：「内容（章节/大纲/世界观）/ 智能（小墨AI/Agent/全书体检/工具）」两组，选中金线标记，窄屏降级横向滚动 |
 | `components/consistency/ConsistencyPanel.vue` | **全书体检面板（R2，2026-11-04）**：概览卡（已写章/账本落后/逾期伏笔/冲突数）+ 4 个子页（账本覆盖表格 / 伏笔台账按状态筛选+原文摘录+跳章 / 一致性冲突按严重度排序+证据+建议+跳章 / 人物·设定索引（搜索/类型/出现章chips，行点击抽屉看章节内片段与字符偏移））；分页走 `加载更多`，无数据展示空状态与「如何产生数据」三步指引，不伪造示例；跳章 emit `locate` |
-| `components/facts/FactsTimelinePanel.vue` | **时间线面板（REQ-R21 M1，2026-11-11）**：只读视图——章节时间线（事件 desc/kind）/ 人物脉络（state+location+goal 摘要 + 最近章）/ 冲突提醒（按严重度过滤，显示 规则/应为/本章/依据章）。`api/facts.js` 的时间线/冲突两个 GET；`timeline_view` 关闭时接口 404 → 面板转「时间线未启用」空态，不渲染半真数据。2026-11-12 界面优化：统一页头 + 顶部计数、Tab 计数、事件 kind 转中文、冲突加轻重标签、筛选改本地、逾期行高亮。**伏笔页签已移除**：与状态图谱「可能分支」同源重复，入口统一到后者 |
+| `components/facts/FactsTimelinePanel.vue` | **时间线面板（REQ-R21 M1，2026-11-11）**：只读视图——章节时间线（事件 desc/kind）/ 冲突提醒（按严重度过滤，显示 规则/应为/本章/依据章）。`api/facts.js` 的时间线/冲突两个 GET；`timeline_view` 关闭时接口 404 → 面板转「时间线未启用」空态，不渲染半真数据。2026-11-12：统一页头 + 计数、kind 转中文、冲突轻重标签、筛选改本地。**伏笔与人物两页签已移除**：分别与状态图谱「可能分支」「角色认知」同源重复，入口统一到后者，页头下保留一行指向说明 |
 | `components/facts/FactsPanelHead.vue` | **账本视图通用页头（2026-11-12）**：标题 + 「只读」徽标 + 说明 + 右侧刷新 + 计数条（label/value/tone），供时间线与状态图谱共用，保证两面板视觉一致 |
 | `layouts/MainLayout.vue` | 主布局（顶栏/侧栏） |
 | `style.css` | 全局样式（深夜书房视觉语言） |

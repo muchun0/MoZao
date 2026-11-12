@@ -115,6 +115,11 @@
 
       <!-- 设定规则：术语 / 永久纪律 / 机制口径 / 不变量与禁用词 -->
       <section v-show="view === 'rules'" class="sg-rules">
+        <!-- REQ-R23 P0-5：这里是只读投影，写作约束的唯一维护入口在工具中心「写作铁律」 -->
+        <div class="sg-rule-link">
+          <span>规则由世界观与正文沉淀而成，这里只读；要改写作约束，去「{{ TOOL_TAB_NAME }} → {{ RULE_TERM }}」。</span>
+          <el-button size="small" link type="primary" @click="emit('open-rules')">去维护{{ RULE_TERM }} →</el-button>
+        </div>
         <div class="sg-card">
           <header class="sg-card-head">
             <h4 class="sg-h4">术语</h4>
@@ -215,9 +220,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { getFactsGraph } from '../../api/facts'
+import { TOOL_TAB_NAME, RULE_TERM } from '../../utils/toolTerms'
 import FactsPanelHead from './FactsPanelHead.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
+// REQ-R23：设定规则页只读，维护写作铁律跳转到工具中心
+const emit = defineEmits(['open-rules'])
 
 const loading = ref(false)
 const off = ref(false)
@@ -458,6 +466,9 @@ watch(() => props.pid, reload)
   padding: 12px 14px;
 }
 .sg-rules { display: flex; flex-direction: column; gap: 12px; }
+.sg-rule-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px;
+  background: var(--indigo-soft, #f5f7fa); border-left: 3px solid var(--indigo, #409eff);
+  border-radius: 4px; font-size: 13px; color: var(--ink-soft, #606266); }
 .sg-card-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin-bottom: 8px;

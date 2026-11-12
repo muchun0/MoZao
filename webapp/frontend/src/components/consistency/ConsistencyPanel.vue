@@ -3,7 +3,7 @@
     <header class="cp-head">
       <div>
         <h3 class="cp-title">全书体检</h3>
-        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），不跑新检查、不改正文、不扣费。要发起检查、看原始记录，去「工具 → 全书质检」。</p>
+        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），不跑新检查、不改正文、不扣费。全书检查结论只在本页呈现，工具中心只做单章诊断，不再维护第二个检查记录入口。</p>
       </div>
       <el-button size="small" :loading="loading" @click="loadOverview">重新体检</el-button>
     </header>
@@ -52,7 +52,6 @@
       <!-- 口径：体检与工具的数字来源不同，这里把拆分摊开，作者能自己核对 -->
       <p v-if="overview.conflicts?.total" class="cp-source-line">
         「前后对不上」{{ overview.conflicts.total }} 条，来源：{{ conflictSourceLine }}
-        <el-button size="small" text type="primary" @click="emit('open-tools')">去工具看原始记录</el-button>
       </p>
       <!-- 按轻重分组，默认只展开最需要处理的那一组 -->
       <section v-for="g in groupList" :key="g.key" class="cp-group">
@@ -264,11 +263,8 @@
 
           <!-- 3. 前后不一致 -->
           <div v-show="sub === 'conflicts'" class="cp-pane">
-            <p class="cp-source-line">
-              {{ conflictSourceLine }}
-              <el-button size="small" text type="primary" @click="emit('open-tools')">去工具看原始记录</el-button>
-            </p>
-            <p class="cp-source-hint">全书校验来自「工具 → 全书质检」跑出的通读记录，单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对；逐条证据与改法统一在对应章的「版本」弹窗里看。</p>
+            <p class="cp-source-line">{{ conflictSourceLine }}</p>
+            <p class="cp-source-hint">全书校验记录由本页直接列出（工具中心只做诊断，不再重复承载检查记录），单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对；逐条证据与改法统一在对应章的「版本」弹窗里看。</p>
             <p v-if="confLoaded && !confItems.length" class="cp-group-empty">{{ confEmptyText }}</p>
             <article v-for="(it, i) in confItems" :key="i" class="cp-card">
               <div class="cp-card-top">
@@ -385,7 +381,7 @@ import { staleNoticeOf, isItemStale, staleChaptersOf } from '../../utils/stalene
 import StaleNotice from '../common/StaleNotice.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
-const emit = defineEmits(['locate', 'open-tools', 'open-versions'])
+const emit = defineEmits(['locate', 'open-versions'])
 
 const loading = ref(false)
 const overview = ref(null)
@@ -445,7 +441,7 @@ const NO_DESC = '只有编号，没有描述'
 const PURPOSE = {
   coverage: '这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
   foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。',
-  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；要发起检查或看原始记录，去「工具 → 全书质检」。',
+  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；逐条证据与改法在对应章的「版本」弹窗。',
   entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
 }
 

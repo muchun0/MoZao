@@ -107,8 +107,8 @@
                   <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
                   <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
                   <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
-                    :aria-label="isChLocked(c.no) ? `解锁第${c.no}章` : `锁定第${c.no}章（锁定后重生成不覆盖）`"
-                    :title="isChLocked(c.no) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
+                    :aria-label="isChLocked(c.no) ? `取消第${c.no}章的${LOCK_TERM}` : `给第${c.no}章加${LOCK_TERM}（重生成时不覆盖）`"
+                    :title="isChLocked(c.no) ? `已加${LOCK_TERM}，点击取消` : `${LOCK_TERM}：重生成时不覆盖本章`"
                     @click="toggleLock('chapter', c.no)">
                     {{ isChLocked(c.no) ? '🔒' : '🔓' }}
                   </el-button>
@@ -174,7 +174,7 @@
 
         <!-- 工具 -->
         <section v-if="visited.tools" v-show="tab === 'tools'">
-          <ToolsPanel :pid="pid" />
+          <ToolsPanel :pid="pid" @open-health="tab = 'health'" />
         </section>
 
         <!-- 时间线：账本事件流只读视图（已发生的事件 / 发展方向的事件） -->
@@ -184,13 +184,12 @@
 
         <!-- 世界事实：账本事实侧只读视图（人物 / 状态 / 地点 / 事件 / 设定规则） -->
         <section v-if="visited.graph" v-show="tab === 'graph'">
-          <StateGraphPanel :pid="pid" />
+          <StateGraphPanel :pid="pid" @open-rules="openRulesPanel" />
         </section>
 
         <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
-                            @open-versions="openVersionsByNo" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo" />
         </section>
       </main>
     </div>
@@ -255,12 +254,16 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun, getAgentRun } from '../api/project'
+import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun } from '../api/project'
 import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
   qualityMeta, sortRowsByQuality, filterRows, qualityIndexTitle,
   qualityWorstText, qualityGapText,
 } from '../utils/chapterQuality'
+// REQ-R23 P0-4：所有就近生成入口统一走 utils/agentRun（预估 → 余额校验 → /agent-runs 单轨）
+import { runAgent, errorDetail } from '../utils/agentRunClient'
+// REQ-R23 P0-5：术语统一（防覆盖锁定 / 写作铁律）
+import { LOCK_TERM } from '../utils/toolTerms'
 import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
@@ -305,7 +308,7 @@ async function toggleLock(kind, key = '', forced) {
     const locked = forced !== undefined ? forced : !((lock.value[kind] || {})[key])
     await setLock(pid, { kind, key: String(key), locked })
     lock.value = await getLock(pid)
-    ElMessage.success(locked ? '已锁定，重生成时不会覆盖' : '已解锁')
+    ElMessage.success(locked ? `已加${LOCK_TERM}，重生成时不会覆盖` : `已取消${LOCK_TERM}`)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '操作失败')
   }
@@ -502,7 +505,7 @@ async function regenChapter(c) {
   regenNo.value = c.no
   const payload = { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } }
   try {
-    const body = await startAgentRun(pid, payload)
+    const { body } = await runAgent(pid, payload)
     ElMessage.success(`已开始重新生成第${c.no}章`)
     // 单章重写走 getAgentRun 轮询（running 态带 progress；done 态 outputs 带质检/候选反馈，F1）
     const s = await new Promise((resolve) => {
@@ -525,7 +528,7 @@ async function regenChapter(c) {
   } catch (e) {
     // 档3：目标章之前存在未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
     if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
-      ElMessage.error(e?.response?.data?.detail || '重生成失败')
+      ElMessage.error(errorDetail(e, '重生成失败'))
     }
   } finally { regenNo.value = 0 }
 }
@@ -698,9 +701,8 @@ function locateChapter(no) {
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
 }
-
-// 体检页「去工具看原始记录」：只切页，不触发任何检查（体检零 LLM、零扣费）
-function openToolsPanel() {
+// 世界事实「设定规则」只读投影 → 跳工具中心维护写作铁律（只切页，不触发任何检查/生成）
+function openRulesPanel() {
   navTouched.value = true
   tab.value = 'tools'
 }
@@ -791,7 +793,7 @@ async function saveEdit() {
 
 async function runOutline() {
   try {
-    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    await runAgent(pid, { agent: 'architect.outline', params: {} })
     ElMessage.success('已开始生成大纲，完成后将自动生成世界观（自动生成的世界观同样按字数计费）')
     beginGenUI('正在生成大纲…')
     // 大纲完成后若无世界观则自动链式生成世界观
@@ -799,47 +801,47 @@ async function runOutline() {
       try {
         const w = await getWorld(pid)
         if (!w || !w.world_view) {
-          await startAgentRun(pid, { agent: 'architect.world', params: {} })
+          await runAgent(pid, { agent: 'architect.world', params: {} })
           ElMessage.success('大纲已完成，正在自动生成世界观（按字数计费）…')
           beginGenUI('正在生成世界观…')
           startPolling() // 世界观完成后走默认刷新
           return true // 已接管后续，跳过本次默认刷新
         }
-      } catch (e) { ElMessage.error(e?.response?.data?.detail || '世界观启动失败') }
+      } catch (e) { ElMessage.error(errorDetail(e, '世界观启动失败')) }
       return false
     })
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '启动失败')) }
 }
 async function doRegenOutline() {
-  try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
+  try { await ElMessageBox.confirm(`重生成大纲会覆盖现有总纲/分卷，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成大纲', { type: 'warning' }) } catch { return }
   try {
-    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    await runAgent(pid, { agent: 'architect.outline', params: {} })
     ElMessage.success('已开始重生成大纲')
     beginGenUI('正在重生成大纲…')
     startPolling()
     loadSnapshots()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function doRegenWorld() {
-  try { await ElMessageBox.confirm('重生成世界观会覆盖现有世界设定，已锁定内容不受影响。继续？', '重生成世界观', { type: 'warning' }) } catch { return }
+  try { await ElMessageBox.confirm(`重生成世界观会覆盖现有世界设定，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成世界观', { type: 'warning' }) } catch { return }
   try {
-    await startAgentRun(pid, { agent: 'architect.world', params: {} })
+    await runAgent(pid, { agent: 'architect.world', params: {} })
     ElMessage.success('已开始重生成世界观')
     beginGenUI('正在重生成世界观…')
     startPolling()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function startGen() {
   const payload = { agent: 'writer.chapter', params: { scope: 'all' } }
   try {
-    await startAgentRun(pid, payload)
+    await runAgent(pid, payload)
     ElMessage.success('已开始生成')
     beginGenUI('正在启动写作…')
     startPolling()
   } catch (e) {
     // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
     if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
-      ElMessage.error(e.response?.data?.detail || '启动失败')
+      ElMessage.error(errorDetail(e, '启动失败'))
     }
   }
 }

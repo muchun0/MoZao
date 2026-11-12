@@ -2,7 +2,7 @@
   <div class="ft">
     <FactsPanelHead
       title="时间线"
-      sub="只读视图：事件按章追加、伏笔按唯一源取数、冲突由确定性规则算出。这里只看不改——修正动作回到「章节」或「世界观」。"
+      sub="只读视图：事件按章追加、冲突由确定性规则算出。人物状态与伏笔统一在「状态图谱」查看，本页不重复。修正动作回到「章节」或「世界观」。"
       :stats="stats"
       :loading="loading"
       @refresh="reload"
@@ -14,7 +14,7 @@
     </el-empty>
 
     <template v-else>
-      <p class="ft-note">伏笔回收计划统一在「状态图谱 → 可能分支」查看，本页不再重复。</p>
+      <p class="ft-note">人物状态见「状态图谱 → 角色认知」，伏笔见「状态图谱 → 可能分支」；本页只保留时间线与冲突，不重复列同一份账本。</p>
       <el-tabs v-model="tab" class="ft-tabs">
         <el-tab-pane name="chapter">
           <template #label>章节时间线 <span class="ft-tab-count">{{ chapterRows.length }}</span></template>
@@ -35,27 +35,6 @@
             <p class="ft-empty-hint">
               事件在写完一章后自动追加。早期章节如果是在事件流修复前生成的，就不会有记录——从下一章开始才会出现。
             </p>
-          </el-empty>
-        </el-tab-pane>
-
-        <el-tab-pane name="character">
-          <template #label>人物脉络 <span class="ft-tab-count">{{ characterRows.length }}</span></template>
-          <el-table v-if="characterRows.length" :data="characterRows" size="small" class="ft-table">
-            <el-table-column label="人物" width="140">
-              <template #default="{ row }">
-                <span class="ft-avatar">{{ (row.name || '?').slice(0, 1) }}</span>
-                <strong class="ft-name">{{ row.name }}</strong>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态 / 所在地 / 目标" min-width="380">
-              <template #default="{ row }">{{ row.summary || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="最近章" width="96">
-              <template #default="{ row }"><span class="ft-ch-sm">第 {{ row.ch }} 章</span></template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-else description="还没有人物状态记录">
-            <p class="ft-empty-hint">写章时会把人物状态、所在地、当前目标记进账本，这里按最近一次记录汇总。</p>
           </el-empty>
         </el-tab-pane>
 
@@ -121,7 +100,6 @@ const tab = ref('chapter')
 const loading = ref(false)
 const off = ref(false)
 const chapterRows = ref([])
-const characterRows = ref([])
 const allViolations = ref([])
 const severity = ref('')
 
@@ -150,7 +128,6 @@ const violationRows = computed(() => (severity.value
 
 const stats = computed(() => [
   { label: '有记录的事件章', value: chapterRows.value.length },
-  { label: '人物', value: characterRows.value.length },
   { label: '冲突提醒', value: allViolations.value.length, tone: allViolations.value.some((v) => v.severity === 'high') ? 'danger' : '' },
 ])
 
@@ -160,8 +137,6 @@ const isOff = (e) => e?.response?.status === 404
 async function loadTimeline() {
   const chapter = await getFactsTimeline(props.pid, { view: 'chapter' })
   chapterRows.value = (chapter?.items || []).filter((r) => r.summary)
-  const chars = await getFactsTimeline(props.pid, { view: 'character' })
-  characterRows.value = chars?.items || []
 }
 
 async function loadViolations() {
@@ -202,12 +177,6 @@ watch(() => props.pid, reload)
 .ft-empty-hint { max-width: 560px; margin: 6px auto 0; font-size: 12px; color: var(--muted); line-height: 1.8; text-align: left; }
 .ft-ch { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ft-ch-sm { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ft-avatar {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; margin-right: 6px; border-radius: 50%;
-  background: var(--indigo-soft); color: var(--indigo); font-size: 12px;
-}
-.ft-name { font-size: 13px; }
 .ft-expect { color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
 .ft-actual { color: var(--gold-deep); font-size: 12px; line-height: 1.6; }
 </style>

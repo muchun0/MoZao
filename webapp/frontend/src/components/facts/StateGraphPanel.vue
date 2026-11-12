@@ -71,7 +71,9 @@
             </p>
             <div v-if="baselineRows.length" class="sg-kv">
               <div v-for="row in baselineRows" :key="row.k" class="sg-kv-row">
-                <span class="sg-k">{{ row.label }}</span>
+                <span class="sg-k">
+                  {{ row.label }}<span v-if="row.showRaw" class="sg-dim">（{{ row.k }}）</span>
+                </span>
                 <span class="sg-v">{{ row.v }}</span>
               </div>
             </div>
@@ -187,13 +189,30 @@ const REGISTRY_DIRECTION = {
 const directionText = (d) => REGISTRY_DIRECTION[String(d || '').toLowerCase()] || (d ? String(d) : '—')
 
 // 机制字段是生成时登记的内部名；已知的给中文口语名，未知的原样显示（不猜错语义）
-const MECH_LABELS = {
-  scar_start: '蚀痕起点',
-  scar_per_death: '每次复活的蚀痕长度',
-  scar_current: '当前蚀痕长度',
-  scar_end: '蚀痕终点',
-  panel_format: '面板数字格式',
-  reset_rule: '每日重置规则',
+// 机制字段的中文名只从字段名的结构推断（起始值/当前值/终点值…），不绑定任何一本书的设定，
+// 换书也能读；推断不出语义时原样显示字段名，绝不替作者猜错含义。
+const MECH_PATTERNS = [
+  [/^per_|_per_/, '每次变化量'],
+  [/_start$|^start$/, '起始值'],
+  [/_end$|^end$/, '终点值'],
+  [/_current$|^current$/, '当前值'],
+  [/_init(ial)?$|^init(ial)?$/, '初始值'],
+  [/_max$|^max$/, '上限'],
+  [/_min$|^min$/, '下限'],
+  [/_step$|^step$/, '步长'],
+  [/_format$|^format$/, '数字格式'],
+  [/_rule$|^rule$/, '规则'],
+  [/_unit$|^unit$/, '单位'],
+  [/_count$|_times$|^count$|^times$/, '次数'],
+]
+const hasCJK = (s) => /[\u4e00-\u9fff]/.test(s)
+function mechLabel(key) {
+  if (hasCJK(key)) return key
+  const lower = String(key || '').toLowerCase()
+  for (const [re, text] of MECH_PATTERNS) {
+    if (re.test(lower)) return text
+  }
+  return key
 }
 
 const meta = computed(() => graph.value)
@@ -218,7 +237,8 @@ const disciplineGroups = computed(() => {
 const baselineRows = computed(() =>
   Object.entries(canon.value.mechanism_baseline || {}).map(([k, v]) => ({
     k,
-    label: MECH_LABELS[k] ? `${MECH_LABELS[k]}（${k}）` : k,
+    label: mechLabel(k),
+    showRaw: mechLabel(k) !== k,
     v: v && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—'),
   })))
 const registryRows = computed(() =>

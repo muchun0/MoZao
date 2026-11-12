@@ -182,6 +182,11 @@
           <FactsTimelinePanel :pid="pid" />
         </section>
 
+        <!-- 状态图谱：REQ-R22 M2 四视图（世界事实 / 角色认知 / 发展线 / 可能分支） -->
+        <section v-if="visited.graph" v-show="tab === 'graph'">
+          <StateGraphPanel :pid="pid" />
+        </section>
+
         <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
         <section v-if="visited.health" v-show="tab === 'health'">
           <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
@@ -265,6 +270,7 @@ import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
 import FactsTimelinePanel from '../components/facts/FactsTimelinePanel.vue'
+import StateGraphPanel from '../components/facts/StateGraphPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'

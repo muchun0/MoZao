@@ -12,3 +12,7 @@ export const getFactsTimeline = (pid, params = {}) =>
 
 export const getFactsViolations = (pid, params = {}) =>
   request.get(`/projects/${pid}/book-facts/violations`, { params })
+
+// REQ-R22 M2：状态图谱四视图（一次取 版本 + 来源 + canon/characters/timeline/threads）
+export const getFactsGraph = (pid, params = {}) =>
+  request.get(`/projects/${pid}/book-facts/graph`, { params })

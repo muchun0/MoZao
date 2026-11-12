@@ -174,6 +174,8 @@ def test_api_graph_returns_all_views(store, cfg, monkeypatch):
     _seed(store, cfg)
     monkeypatch.setattr(router, "_check_project_access", lambda *a, **k: None)
     monkeypatch.setattr(router, "_find_project", lambda project_id: store)
+    # 单测不读真实 sys_config（全局覆盖另有用例 test_api_graph_honors_global_flag_override）
+    monkeypatch.setattr(router, "apply_global_overrides", lambda c: None)
     res = router.get_book_facts_graph(project_id="p1", user={"open_id": "test"})
     assert set(res) == {"version", "generated_at", "sources", "views"}
     assert set(res["views"]) == set(VIEWS)
@@ -194,9 +196,37 @@ def test_api_graph_404_when_flag_off(store, cfg, monkeypatch):
     store.save_config(cfg2)
     monkeypatch.setattr(router, "_check_project_access", lambda *a, **k: None)
     monkeypatch.setattr(router, "_find_project", lambda project_id: store)
+    # 隔离真实 sys_config：本用例验证「项目快照 + 无全局覆盖」时的关闭行为
+    monkeypatch.setattr(router, "apply_global_overrides", lambda c: None)
     with pytest.raises(HTTPException) as exc:
         router.get_book_facts_graph(project_id="p1", user={"open_id": "test"})
     assert exc.value.status_code == 404
+
+
+@pytest.mark.p1
+def test_api_graph_honors_global_flag_override(store, monkeypatch):
+    """后台开关是唯一权威源：项目快照没有该字段时，sys_config 打开即应可读。
+
+    真实故障场景：老项目 config.json 里没有 timeline_view/state_graph，
+    后台把开关打开后，前端面板仍显示「未启用」——读接口必须合并全局覆盖。
+    """
+    import webapp.routers.projects_chapters as router
+
+    cfg2 = NovelConfig(title="老项目快照")  # 字段默认关，模拟老项目
+    store.save_config(cfg2)
+    monkeypatch.setattr(router, "_check_project_access", lambda *a, **k: None)
+    monkeypatch.setattr(router, "_find_project", lambda project_id: store)
+
+    def fake_overrides(c):
+        c.state_graph = True
+        c.timeline_view = True
+
+    monkeypatch.setattr(router, "apply_global_overrides", fake_overrides)
+    res = router.get_book_facts_graph(project_id="p1", user={"open_id": "test"})
+    assert set(res["views"]) == set(VIEWS)
+
+    timeline = router.get_book_facts_timeline(project_id="p1", user={"open_id": "test"})
+    assert timeline["view"] == "chapter"
 
 
 @pytest.mark.p1

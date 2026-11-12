@@ -8,6 +8,7 @@ from novel_gen.pipeline.style_anchor import (
 from novel_gen.pipeline import artifact_staleness  # R13 派生记录标脏（只读）
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
+from ..config_overrides import apply_global_overrides  # 后台开关为唯一权威源（读接口同样生效）
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
 from novel_gen.pipeline.chapter_ledger import sync_after_rewrite  # 档2 版本切换后账本同步
 from ..chapter_quality_service import recheck_chapter_quality as _recheck_chapter_quality  # R14 单章重检
@@ -803,12 +804,23 @@ def get_book_facts_violations(project_id: str, severity: str = "", rule: str = "
 
 
 def _facts_cfg(store):
-    """读取项目配置（读不到按未开启处理：查询接口一律 404，不返回半真数据）。"""
+    """读取项目配置并合并后台全局开关（读不到按未开启处理：查询接口一律 404）。
+
+    REQ-R21/R22 的四个查询接口与生成链路共用同一份开关口径：后台 `sys_config` 是
+    唯一权威源。此前这里只读项目快照，导致后台把 `timeline_view` 打开后，老项目
+    （快照里没有新字段）的面板仍被判为「未启用」。
+    """
     try:
-        return store.load_config()
+        cfg = store.load_config()
     except Exception:
         logger.exception("项目配置读取失败（M1 查询接口按未开启处理）")
         return None
+    try:
+        apply_global_overrides(cfg)
+    except Exception:
+        # 覆盖注入失败不放大成 404：按项目快照判定，留痕可查（§11.6）
+        logger.exception("全局开关覆盖注入失败（按项目快照判定）")
+    return cfg
 
 
 def _require_flag(cfg, name: str) -> None:

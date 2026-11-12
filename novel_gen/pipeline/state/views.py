@@ -227,13 +227,22 @@ class StateGraph:
                    "kind": str(r.get("kind") or "state"),
                    "cause": str(r.get("cause") or ""),
                    "effect": list(r.get("effect") or []),
-                   "consumed_ch": _int(r.get("consumed_ch"))}
+                   "consumed_ch": _int(r.get("consumed_ch")),
+                   "planned": False}
             out_rows.append(row)
             by_ch.setdefault(ch, []).append(row["desc"])
             kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
             for p in row["participants"]:
                 people[p] = people.get(p, 0) + 1
+        # 作者计划事件（不是已发生事实，单列返回，前端画成虚线卡）
+        planned = []
+        try:
+            from ..planned_events import from_store
+            planned = [dict(p, planned=True) for p in from_store(self.store)]
+        except Exception:
+            logger.exception("计划事件读取失败（时间线不返回计划卡）")
         return {"at_ch": _int(at_ch), "events": out_rows, "count": len(out_rows),
+                "planned": planned, "planned_count": len(planned),
                 "by_ch": [{"ch": ch, "count": len(v), "descs": v[:6]}
                           for ch, v in sorted(by_ch.items())],
                 "kinds": kinds, "participants": people}

@@ -986,6 +986,19 @@ class ProjectStore:
         data = self.load_pending_commitments()
         return data.get(str(chapter_no - 1))
 
+    # ---------- 作者计划事件（时间线可编辑卡片，REQ-R22 L3） ----------
+    def planned_events_path(self) -> Path:
+        return self.dir / "planned_events.json"
+
+    def load_planned_events(self) -> list[dict]:
+        """返回作者在时间线上排好的计划事件（按目标章升序）；无文件返回空列表。"""
+        d = self._read_json(self.planned_events_path(), [])
+        return d if isinstance(d, list) else []
+
+    def save_planned_events(self, items: list[dict]) -> None:
+        """整体覆盖保存（前端一次提交全量，写前由调用方归一与校验）。"""
+        self._write_json(self.planned_events_path(), list(items or []))
+
     # ---------- 场景体检建议（P1-5 读时体检 → 生成反馈闭环） ----------
     def inspector_suggestions_path(self) -> Path:
         return self.dir / "inspector_suggestions.json"

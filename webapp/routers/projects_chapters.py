@@ -783,6 +783,27 @@ def get_book_facts_graph(project_id: str, view: str = "all", at_ch: int = 0,
             "sources": graph.sources(), "data": data}
 
 
+@app.put("/api/projects/{project_id}/book-facts/planned-events")
+def put_book_facts_planned_events(project_id: str, payload: dict = Body(...),
+                                  user: dict = Depends(_require_user)):
+    """REQ-R22 L3：保存作者在时间线上排的计划事件（全量覆盖，写前归一校验）。
+
+    计划事件只影响「写对应章时的注入」，不改已发生事件流、不触发重生成；
+    非法输入一律 400 并说明是哪一条，绝不静默丢弃。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph")
+    from novel_gen.pipeline.planned_events import normalize
+    try:
+        items = normalize((payload or {}).get("items"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store.save_planned_events(items)
+    return {"items": items, "count": len(items)}
+
+
 @app.get("/api/projects/{project_id}/book-facts/violations")
 def get_book_facts_violations(project_id: str, severity: str = "", rule: str = "",
                               limit: int = 50, at_ch: int = 0,

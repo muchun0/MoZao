@@ -3,7 +3,7 @@
     <div class="fph-main">
       <div class="fph-title-row">
         <h3 class="fph-title">{{ title }}</h3>
-        <span class="fph-readonly">只读</span>
+        <span class="fph-readonly">{{ readonly ? '只读' : '可编排' }}</span>
       </div>
       <p class="fph-sub">{{ sub }}</p>
     </div>
@@ -23,6 +23,7 @@ defineProps({
   sub: { type: String, default: '' },
   stats: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
+  readonly: { type: Boolean, default: true },
 })
 defineEmits(['refresh'])
 </script>

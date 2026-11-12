@@ -181,7 +181,16 @@
         <!-- 可能分支 -->
         <el-tab-pane name="threads">
           <template #label>可能分支 <span class="sg-tab-count">{{ threads.length }}</span></template>
-          <el-table v-if="threads.length" :data="threads" size="small" class="sg-table"
+          <div class="sg-filter">
+            <el-radio-group v-model="threadStatus" size="small">
+              <el-radio-button value="">全部未回收</el-radio-button>
+              <el-radio-button value="overdue">已逾期</el-radio-button>
+              <el-radio-button value="due_soon">临期</el-radio-button>
+              <el-radio-button value="stalled">长期未推进</el-radio-button>
+            </el-radio-group>
+            <span class="sg-hint">伏笔的唯一入口在这里；当前筛选 {{ threadRows.length }} 条</span>
+          </div>
+          <el-table v-if="threadRows.length" :data="threadRows" size="small" class="sg-table"
                    :row-class-name="threadRowClass">
             <el-table-column label="伏笔" min-width="210">
               <template #default="{ row }">
@@ -205,7 +214,7 @@
               <template #default="{ row }">{{ levelText(row.level) }}</template>
             </el-table-column>
           </el-table>
-          <el-empty v-else description="没有未回收伏笔">
+          <el-empty v-else :description="threadStatus ? '这个状态下暂时没有伏笔' : '没有未回收伏笔'">
             <p class="sg-empty-hint">伏笔来自世界观：给线索写上埋在第几章、打算第几章收，这里就会显示进度和逾期情况。</p>
           </el-empty>
         </el-tab-pane>
@@ -286,6 +295,11 @@ const canon = computed(() => graph.value?.views?.canon || {})
 const characters = computed(() => graph.value?.views?.characters?.characters || [])
 const timeline = computed(() => graph.value?.views?.timeline || {})
 const threads = computed(() => graph.value?.views?.threads?.threads || [])
+// 伏笔只在这一处展示（时间线页不再重复），状态筛选在本地做
+const threadStatus = ref('')
+const threadRows = computed(() => (threadStatus.value
+  ? threads.value.filter((t) => t.status === threadStatus.value)
+  : threads.value))
 
 const stats = computed(() => [
   { label: '写到第几章', value: meta.value?.sources?.at_ch || 0 },

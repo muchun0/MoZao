@@ -14,6 +14,7 @@
     </el-empty>
 
     <template v-else>
+      <p class="ft-note">伏笔回收计划统一在「状态图谱 → 可能分支」查看，本页不再重复。</p>
       <el-tabs v-model="tab" class="ft-tabs">
         <el-tab-pane name="chapter">
           <template #label>章节时间线 <span class="ft-tab-count">{{ chapterRows.length }}</span></template>
@@ -33,48 +34,6 @@
           <el-empty v-else description="还没有事件记录">
             <p class="ft-empty-hint">
               事件在写完一章后自动追加。早期章节如果是在事件流修复前生成的，就不会有记录——从下一章开始才会出现。
-            </p>
-          </el-empty>
-        </el-tab-pane>
-
-        <el-tab-pane name="thread">
-          <template #label>伏笔线索 <span class="ft-tab-count">{{ threadRows.length }}</span></template>
-          <div class="ft-filter">
-            <el-radio-group v-model="threadStatus" size="small">
-              <el-radio-button value="">全部未回收</el-radio-button>
-              <el-radio-button value="overdue">已逾期</el-radio-button>
-              <el-radio-button value="due_soon">临期</el-radio-button>
-              <el-radio-button value="stalled">长期未推进</el-radio-button>
-            </el-radio-group>
-            <span class="ft-count-note">当前筛选 {{ threadRows.length }} 条</span>
-          </div>
-          <el-table v-if="threadRows.length" :data="threadRows" size="small" class="ft-table"
-                   :row-class-name="threadRowClass">
-            <el-table-column label="伏笔" min-width="200">
-              <template #default="{ row }">
-                <div class="ft-main">{{ row.name }}</div>
-                <div class="ft-sub">{{ row.desc || '—' }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="埋设 / 应收" width="150">
-              <template #default="{ row }">
-                <span class="ft-ch-sm">第 {{ row.planted_ch }} 章</span>
-                <span class="ft-arrow">→</span>
-                <span class="ft-ch-sm" :class="{ 'ft-overdue': row.status === 'overdue' }">第 {{ row.due_ch }} 章</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="层级" width="80">
-              <template #default="{ row }">{{ levelText(row.level) }}</template>
-            </el-table-column>
-            <el-table-column label="状态" width="110">
-              <template #default="{ row }">
-                <el-tag :type="statusTag(row.status)" size="small" effect="plain">{{ statusText(row.status) }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-else :description="threadStatus ? '这个状态下暂时没有伏笔' : '没有未回收的伏笔'">
-            <p class="ft-empty-hint">
-              伏笔来自世界观：给线索写上埋在第几章、打算第几章收，这里就会显示进度和逾期情况。
             </p>
           </el-empty>
         </el-tab-pane>
@@ -151,7 +110,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { getFactsThreads, getFactsTimeline, getFactsViolations } from '../../api/facts'
+import { getFactsTimeline, getFactsViolations } from '../../api/facts'
 import FactsPanelHead from './FactsPanelHead.vue'
 
 const props = defineProps({
@@ -163,12 +122,9 @@ const loading = ref(false)
 const off = ref(false)
 const chapterRows = ref([])
 const characterRows = ref([])
-const allThreads = ref([])
 const allViolations = ref([])
-const threadStatus = ref('')
 const severity = ref('')
 
-const STATUS_TEXT = { overdue: '已逾期', due: '临期', due_soon: '临期', stalled: '长期未推进', buried: '未回收', resolved: '已回收' }
 const RULE_TEXT = {
   mechanism_delta: '机制数字方向',
   death_state: '死亡后仍行动',
@@ -178,31 +134,22 @@ const RULE_TEXT = {
 }
 const KIND_TEXT = { state: '状态', object: '物品', relationship: '关系', foreshadow: '伏笔' }
 const KIND_TAG = { state: '', object: 'success', relationship: 'info', foreshadow: 'warning' }
-const LEVEL_TEXT = { main: '主线', sub: '支线', minor: '次线' }
 const SEVERITY_TEXT = { high: '必须处理', medium: '建议处理', low: '了解一下', info: '了解一下' }
 const SEVERITY_TAG = { high: 'danger', medium: 'warning', low: 'info', info: 'info' }
 
-const statusText = (s) => STATUS_TEXT[s] || s || '—'
-const statusTag = (s) => (s === 'overdue' ? 'danger' : s === 'due_soon' ? 'warning' : s === 'stalled' ? 'info' : '')
 const ruleText = (r) => RULE_TEXT[r] || r || '—'
 const kindText = (k) => KIND_TEXT[k] || '状态'
 const kindTag = (k) => KIND_TAG[k] || ''
-const levelText = (l) => LEVEL_TEXT[l] || l || '主线'
 const severityText = (s) => SEVERITY_TEXT[s] || s || '—'
 const severityTag = (s) => SEVERITY_TAG[s] || 'info'
-const threadRowClass = ({ row }) => (row.status === 'overdue' ? 'ft-row-overdue' : '')
 
 // 筛选在本地做：切换不用再打接口，计数也稳定
-const threadRows = computed(() => (threadStatus.value
-  ? allThreads.value.filter((t) => t.status === threadStatus.value)
-  : allThreads.value))
 const violationRows = computed(() => (severity.value
   ? allViolations.value.filter((v) => v.severity === severity.value)
   : allViolations.value))
 
 const stats = computed(() => [
   { label: '有记录的事件章', value: chapterRows.value.length },
-  { label: '未回收伏笔', value: allThreads.value.length, tone: allThreads.value.some((t) => t.status === 'overdue') ? 'warn' : '' },
   { label: '人物', value: characterRows.value.length },
   { label: '冲突提醒', value: allViolations.value.length, tone: allViolations.value.some((v) => v.severity === 'high') ? 'danger' : '' },
 ])
@@ -217,11 +164,6 @@ async function loadTimeline() {
   characterRows.value = chars?.items || []
 }
 
-async function loadThreads() {
-  const data = await getFactsThreads(props.pid, { limit: 200 })
-  allThreads.value = data?.threads || []
-}
-
 async function loadViolations() {
   const data = await getFactsViolations(props.pid, { limit: 100 })
   allViolations.value = data?.violations || []
@@ -231,7 +173,7 @@ async function reload() {
   loading.value = true
   off.value = false
   try {
-    await Promise.all([loadTimeline(), loadThreads(), loadViolations()])
+    await Promise.all([loadTimeline(), loadViolations()])
   } catch (e) {
     if (isOff(e)) off.value = true
     // 其它错误保持静默：页面已展示「无数据」态，避免和体检页重复弹提示
@@ -247,6 +189,7 @@ watch(() => props.pid, reload)
 <style scoped>
 .ft { display: flex; flex-direction: column; gap: 12px; }
 .ft-tip { font-size: 13px; color: var(--muted); }
+.ft-note { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0; }
 .ft-filter { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .ft-count-note { font-size: 12px; color: var(--muted); }
 .ft-alert { margin-bottom: 10px; }
@@ -256,14 +199,9 @@ watch(() => props.pid, reload)
   font-variant-numeric: tabular-nums;
 }
 .ft-table { width: 100%; }
-.ft-table :deep(.el-table__row.ft-row-overdue) { background: #fdf3e3; }
 .ft-empty-hint { max-width: 560px; margin: 6px auto 0; font-size: 12px; color: var(--muted); line-height: 1.8; text-align: left; }
 .ft-ch { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ft-ch-sm { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ft-overdue { color: var(--danger); font-weight: 600; }
-.ft-arrow { margin: 0 6px; color: var(--muted); }
-.ft-main { font-size: 13px; color: var(--ink); }
-.ft-sub { margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.6; }
 .ft-avatar {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; margin-right: 6px; border-radius: 50%;

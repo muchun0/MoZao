@@ -177,12 +177,17 @@
           <ToolsPanel :pid="pid" />
         </section>
 
-        <!-- 世界事实：账本设定侧只读视图（术语 / 纪律 / 机制口径 / 不变量与禁用词） -->
+        <!-- 时间线：账本事件流只读视图（已发生的事件 / 发展方向的事件） -->
+        <section v-if="visited.facts" v-show="tab === 'facts'">
+          <FactsTimelinePanel :pid="pid" />
+        </section>
+
+        <!-- 世界事实：账本事实侧只读视图（人物 / 状态 / 地点 / 事件 / 设定规则） -->
         <section v-if="visited.graph" v-show="tab === 'graph'">
           <StateGraphPanel :pid="pid" />
         </section>
 
-        <!-- 全书体检：检查记录 + 账本只读视图（覆盖 / 伏笔 / 冲突 / 人物状态 / 索引 / 事件流） -->
+        <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
           <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
                             @open-versions="openVersionsByNo" />
@@ -264,6 +269,7 @@ import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
+import FactsTimelinePanel from '../components/facts/FactsTimelinePanel.vue'
 import StateGraphPanel from '../components/facts/StateGraphPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'

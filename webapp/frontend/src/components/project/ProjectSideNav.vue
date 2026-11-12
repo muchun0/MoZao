@@ -41,6 +41,7 @@ const ICONS = {
   agent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><circle cx="12" cy="14" r="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/></svg>`,
   tools: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`,
   health: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-5 4 10 2-5h8"/><circle cx="12" cy="12" r="0" /><path d="M9 3h6"/></svg>`,
+  facts: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>`,
   graph: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 7.2 10.8 16M15.8 7.2 13.2 16M8.5 6h7"/></svg>`,
 }
 
@@ -51,6 +52,7 @@ const groups = computed(() => [
       { key: 'chapters', name: '章节', icon: ICONS.chapters, badge: props.chapterCount || '' },
       { key: 'outline', name: '大纲', icon: ICONS.outline },
       { key: 'world', name: '世界观', icon: ICONS.world },
+      { key: 'facts', name: '时间线', icon: ICONS.facts },
       { key: 'graph', name: '世界事实', icon: ICONS.graph },
     ],
   },

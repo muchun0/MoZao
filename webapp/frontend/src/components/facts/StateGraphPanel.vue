@@ -22,7 +22,7 @@
         <span class="sg-tag">事件 {{ meta.sources?.events ?? 0 }}</span>
         <span class="sg-tag">伏笔 {{ meta.sources?.threads ?? 0 }}</span>
         <span class="sg-tag">术语 {{ meta.sources?.terms ?? 0 }}</span>
-        <span class="sg-tag">纪律 {{ meta.sources?.disciplines ?? 0 }}</span>
+        <span class="sg-tag">纪律 {{ disciplineGroups.length }}</span>
         <el-tag v-if="meta.sources?.stale" type="warning" size="small" effect="plain">上游已更新</el-tag>
       </div>
 
@@ -34,36 +34,53 @@
             <el-table v-if="canon.terms?.length" :data="canon.terms" size="small" border>
               <el-table-column prop="term" label="词条" width="180" />
               <el-table-column prop="canonical" label="规范写法" width="180" />
-              <el-table-column prop="category" label="分类" width="120" />
+              <el-table-column label="分类" width="120">
+                <template #default="{ row }">{{ categoryText(row.category) }}</template>
+              </el-table-column>
             </el-table>
             <el-empty v-else description="还没有术语（世界观生成或同步后出现）" :image-size="56" />
           </div>
 
           <div class="sg-block">
-            <h4 class="sg-h4">永久纪律 <span class="sg-count">{{ canon.disciplines?.length || 0 }}</span></h4>
-            <ul v-if="canon.disciplines?.length" class="sg-list">
-              <li v-for="(d, i) in canon.disciplines" :key="i">
-                <span>{{ d.rule }}</span>
-                <span v-if="d.example" class="sg-dim">（示例：{{ d.example }}）</span>
-              </li>
-            </ul>
+            <h4 class="sg-h4">永久纪律 <span class="sg-count">{{ disciplineGroups.length }} 条</span></h4>
+            <p v-if="disciplineGroups.length" class="sg-hint">
+              同一条纪律只显示一次，右侧是它被逐章重复登记的命中次数，点「看示例」查看具体章节原句。
+            </p>
+            <div v-if="disciplineGroups.length" class="sg-disc">
+              <div v-for="(g, i) in disciplineGroups" :key="i" class="sg-disc-row">
+                <span class="sg-disc-rule">{{ g.rule }}</span>
+                <span v-if="g.examples.length" class="sg-dim">命中 {{ g.examples.length }} 次</span>
+                <el-popover v-if="g.examples.length" placement="top" width="560" trigger="click">
+                  <template #reference>
+                    <el-button link type="primary" size="small">看示例</el-button>
+                  </template>
+                  <ul class="sg-pop-list">
+                    <li v-for="(ex, j) in g.examples.slice(0, 5)" :key="j">{{ ex }}</li>
+                  </ul>
+                  <p v-if="g.examples.length > 5" class="sg-dim">仅显示前 5 条，共 {{ g.examples.length }} 条。</p>
+                </el-popover>
+              </div>
+            </div>
             <el-empty v-else description="还没有登记永久纪律" :image-size="56" />
           </div>
 
           <div class="sg-block">
-            <h4 class="sg-h4">机制基线</h4>
+            <h4 class="sg-h4">机制口径</h4>
+            <p class="sg-hint">
+              左边是生成时登记的机制字段（内部名，作者可忽略），右边才是正文要遵守的口径。
+            </p>
             <div v-if="baselineRows.length" class="sg-kv">
               <div v-for="row in baselineRows" :key="row.k" class="sg-kv-row">
-                <span class="sg-k">{{ row.k }}</span>
+                <span class="sg-k">{{ row.label }}</span>
                 <span class="sg-v">{{ row.v }}</span>
               </div>
             </div>
             <el-empty v-else description="还没有机制基线（面板数字类字段会从这里取口径）" :image-size="56" />
             <template v-if="registryRows.length">
-              <p class="sg-hint">派生注册表（正文里出现的机制字段必须在这里登记，否则按违规回退整章）：</p>
+              <p class="sg-hint">派生注册表：正文出现下列字段才算合法，未登记的数字字段会被判违规并回退整章。</p>
               <el-table :data="registryRows" size="small" border>
-                <el-table-column prop="field" label="字段" width="180" />
-                <el-table-column prop="type" label="类型" width="110" />
+                <el-table-column prop="field" label="字段" width="200" />
+                <el-table-column prop="direction" label="方向" width="140" />
               </el-table>
             </template>
           </div>
@@ -76,7 +93,7 @@
                 <span class="sg-v">{{ row.v }}</span>
               </div>
             </div>
-            <p v-else class="sg-hint">还没有不变量记录。</p>
+            <p v-else class="sg-hint">没有额外的不变量记录（机制口径见上方）。</p>
             <div v-if="canon.forbidden?.length" class="sg-tags">
               <el-tag v-for="w in canon.forbidden" :key="w" type="danger" size="small" effect="plain">{{ w }}</el-tag>
             </div>
@@ -155,10 +172,81 @@ const STATUS_TEXT = { overdue: '已逾期', due: '临期', due_soon: '临期', s
 const statusText = (s) => STATUS_TEXT[s] || s || '—'
 const statusTag = (s) => (s === 'overdue' ? 'danger' : s === 'due_soon' ? 'warning' : s === 'stalled' ? 'info' : '')
 
+// 账本里的分类/方向是生成侧的英文枚举，直接给作者看没有意义，这里统一转中文
+const CATEGORY_TEXT = {
+  terminology: '术语', term: '术语', discipline: '纪律', mechanism: '机制',
+  person: '人物', character: '人物', place: '地名', location: '地名',
+  item: '器物', org: '组织', organization: '组织', event: '事件',
+}
+const categoryText = (c) => CATEGORY_TEXT[String(c || '').toLowerCase()] || (c ? String(c) : '—')
+
+const REGISTRY_DIRECTION = {
+  decrease: '只减不增', increase: '只增不减', fixed: '固定不变', constant: '固定不变',
+  reset: '按章重置', any: '不限方向',
+}
+const directionText = (d) => REGISTRY_DIRECTION[String(d || '').toLowerCase()] || (d ? String(d) : '—')
+
+// 机制字段是生成时登记的内部名；已知的给中文口语名，未知的原样显示（不猜错语义）
+const MECH_LABELS = {
+  scar_start: '蚀痕起点',
+  scar_per_death: '每次复活的蚀痕长度',
+  scar_current: '当前蚀痕长度',
+  scar_end: '蚀痕终点',
+  panel_format: '面板数字格式',
+  reset_rule: '每日重置规则',
+}
+
 const meta = computed(() => graph.value)
 const canon = computed(() => graph.value?.views?.canon || {})
 const characters = computed(() => graph.value?.views?.characters?.characters || [])
 const timeline = computed(() => graph.value?.views?.timeline || {})
+const threads = computed(() => graph.value?.views?.threads?.threads || [])
+
+// 永久纪律：同一句 rule 会被逐章重复登记，按 rule 去重后展示（示例按内容去重）
+const disciplineGroups = computed(() => {
+  const map = new Map()
+  for (const d of (canon.value.disciplines || [])) {
+    const rule = String(d?.rule || '').trim()
+    if (!rule) continue
+    if (!map.has(rule)) map.set(rule, new Set())
+    const ex = String(d?.example || '').trim()
+    if (ex) map.get(rule).add(ex)
+  }
+  return [...map.entries()].map(([rule, ex]) => ({ rule, examples: [...ex] }))
+})
+
+const baselineRows = computed(() =>
+  Object.entries(canon.value.mechanism_baseline || {}).map(([k, v]) => ({
+    k,
+    label: MECH_LABELS[k] ? `${MECH_LABELS[k]}（${k}）` : k,
+    v: v && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—'),
+  })))
+const registryRows = computed(() =>
+  Object.entries(canon.value.registry || {}).map(([field, meta]) => {
+    const raw = typeof meta === 'string' ? meta : (meta?.type || '')
+    return { field, direction: directionText(raw) }
+  }))
+
+// 不变量：mechanism/disciplines 已在上面两块展示，避免同一信息重复三遍
+const INVARIANT_LABELS = { mechanism: '机制', disciplines: '纪律', locked: '锁定' }
+function shortValue(v) {
+  if (Array.isArray(v)) return `${v.length} 项`
+  if (v && typeof v === 'object') return JSON.stringify(v)
+  return String(v ?? '—')
+}
+const invariantRows = computed(() => {
+  const inv = canon.value.invariants || {}
+  const skip = new Set(['mechanism', 'disciplines', 'locked'])
+  const rows = []
+  for (const [k, v] of Object.entries(inv)) {
+    if (skip.has(k)) continue
+    rows.push({ k: INVARIANT_LABELS[k] || k, v: shortValue(v) })
+  }
+  const locked = Array.isArray(inv.locked) ? inv.locked.length : (inv.locked ? 1 : 0)
+  if (locked) rows.push({ k: '锁定项', v: `${locked} 项` })
+  return rows
+})
+
 const filteredEvents = computed(() => {
   const rows = timeline.value.events || []
   if (!participant.value) return rows
@@ -175,24 +263,12 @@ const byCh = computed(() => {
     .sort((a, b) => a[0] - b[0])
     .map(([ch, descs]) => ({ ch, count: descs.length, descs }))
 })
-const threads = computed(() => graph.value?.views?.threads?.threads || [])
-
-const baselineRows = computed(() =>
-  Object.entries(canon.value.mechanism_baseline || {}).map(([k, v]) => (
-    { k, v: typeof v === 'object' ? JSON.stringify(v) : String(v) })))
-const registryRows = computed(() =>
-  Object.entries(canon.value.registry || {}).map(([field, meta]) => (
-    { field, type: typeof meta === 'string' ? meta : (meta?.type || '—') })))
-const invariantRows = computed(() =>
-  Object.entries(canon.value.invariants || {}).map(([k, v]) => (
-    { k, v: typeof v === 'object' ? JSON.stringify(v) : String(v) })))
 
 async function reload() {
   loading.value = true
   off.value = false
   try {
-    const params = { view: 'all' }
-    graph.value = await getFactsGraph(props.pid, params)
+    graph.value = await getFactsGraph(props.pid, { view: 'all' })
   } catch (e) {
     if (e?.response?.status === 404) off.value = true
     graph.value = null
@@ -219,14 +295,18 @@ watch(() => props.pid, reload)
 .sg-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sg-list { margin: 0; padding-left: 18px; line-height: 1.8; font-size: 13px; color: var(--ink-soft); }
 .sg-dim { color: var(--muted); font-size: 12px; }
-.sg-hint { font-size: 12px; color: var(--muted); margin: 8px 0; }
+.sg-hint { font-size: 12px; color: var(--muted); margin: 8px 0; line-height: 1.6; }
 .sg-kv { display: flex; flex-direction: column; gap: 4px; }
 .sg-kv-row { display: flex; gap: 12px; font-size: 13px; }
-.sg-k { width: 180px; color: var(--muted); flex-shrink: 0; }
+.sg-k { width: 240px; color: var(--muted); flex-shrink: 0; }
 .sg-v { color: var(--ink-soft); word-break: break-all; }
 .sg-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .sg-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .sg-tl { display: flex; flex-direction: column; gap: 12px; }
 .sg-tl-group { border-left: 2px solid var(--indigo-soft); padding-left: 12px; }
 .sg-tl-ch { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.sg-disc { display: flex; flex-direction: column; gap: 8px; }
+.sg-disc-row { display: flex; align-items: center; gap: 10px; font-size: 13px; line-height: 1.7; }
+.sg-disc-rule { flex: 1; }
+.sg-pop-list { margin: 0; padding-left: 18px; line-height: 1.8; font-size: 12px; }
 </style>

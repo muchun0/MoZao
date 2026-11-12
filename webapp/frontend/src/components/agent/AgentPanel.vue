@@ -186,6 +186,9 @@ const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
 
 const props = defineProps({
   pid: { type: String, required: true },
+  // REQ-R23：外部入口（409 一致性门禁）不再自己二次提交重写，而是把人送到这里，
+  // 用 presetRange 预填「章节写手 · 区间」，重写只在这里发生一次。
+  presetRange: { type: Object, default: null },
 })
 const emit = defineEmits(['changed', 'recharge', 'started'])
 
@@ -229,6 +232,21 @@ const toChOpen = ref(false)
 const volNo = ref(1)
 const userPrompts = reactive({})
 const estimates = reactive({})
+
+// 外部送来「从第X章起重写」时，切到章节写手 + 区间，并预填起止章（默认到末尾）
+watch(() => props.presetRange, (r) => {
+  if (!r || !r.from_ch) return
+  selectedAgent.value = 'writer.chapter'
+  chapterScope.value = 'range'
+  fromCh.value = Math.max(1, Number(r.from_ch) || 1)
+  if (r.to_ch) {
+    toChOpen.value = false
+    toCh.value = Math.max(fromCh.value, Number(r.to_ch) || fromCh.value)
+  } else {
+    toChOpen.value = true
+    toCh.value = 0
+  }
+}, { immediate: true })
 
 // ---------- 运行状态（单任务轮询） ----------
 const running = ref(false)

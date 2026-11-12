@@ -47,8 +47,10 @@
             <el-option v-for="(n, name) in participants" :key="name" :value="name" :label="`${name}（${n}）`" />
           </el-select>
           <el-input v-model="keyword" size="small" clearable placeholder="搜事件内容" class="tl-input" />
-          <el-button size="small" type="primary" plain @click="openPlanned()">＋ 计划事件</el-button>
+          <el-button size="small" type="primary" plain @click="openPlanned()" :title="PLAN_EVENT_HINT">＋ 计划事件</el-button>
         </div>
+        <!-- REQ-R23 P0-9：计划事件只是排期，不是已发生事实 -->
+        <p class="tl-plan-hint">{{ PLAN_EVENT_HINT }}</p>
       </div>
 
       <!-- ============ 已经发生的事件 ============ -->
@@ -190,6 +192,7 @@
 
     <!-- 计划事件编辑 -->
     <el-dialog v-model="editOpen" :title="editing.id ? '编辑计划事件' : '新建计划事件'" width="560px">
+      <p class="tl-plan-hint">{{ PLAN_EVENT_HINT }}</p>
       <div class="tl-form">
         <label>标题</label>
         <el-input v-model="editing.title" maxlength="80" show-word-limit placeholder="这章要发生什么，一句话" />
@@ -224,6 +227,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getFactsGraph, saveFactsPlannedEvents } from '../../api/facts'
 import FactsPanelHead from './FactsPanelHead.vue'
+import { PLAN_EVENT_HINT } from '../../utils/toolTerms'
 
 const props = defineProps({ pid: { type: String, required: true } })
 
@@ -516,6 +520,8 @@ watch(() => props.pid, reload)
 .tl-count { font-size: 12px; color: var(--muted); }
 .tl-dim { color: var(--muted); font-size: 12px; }
 .tl-hint { font-size: 12px; color: var(--muted); line-height: 1.8; margin: 6px 0 0; }
+/* REQ-R23 P0-9：计划事件的「计划≠已发生」口径提示 */
+.tl-plan-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 6px 0 4px; }
 
 /* L1 卡片流 */
 .tl-flow-inner { display: flex; flex-direction: column; gap: 14px; }

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """projects_world路由（第四批拆分，从 server.py 迁移，逻辑未改动）。"""
+import datetime
+import json
+
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from novel_gen.pipeline.mechanism_types import (  # noqa: F401  机制类型清洗/判定（唯一事实源）
@@ -308,6 +311,83 @@ def _fs_distance(state: str, item: dict, baseline_ch: int):
     return gap, f"距到期还有 {gap} 章"
 
 
+# REQ-R23 P1-3：伏笔数据彻底合并。
+# 唯一账本是 world.foreshadowing（结构化 ForeshadowItem）→ ReaderLedger 派生进度 →
+# 工具页 / 全书体检 / 时间线都读这一份。以下三个函数把「旧字符串、重复名、只读不写」
+# 三类历史问题就地收敛，写入路径统一走这里。
+_FS_LEVELS = ("small", "medium", "large")
+_FS_MERGE_MARKER = "world_backup_premerge"
+
+
+def _fs_better(a, b):
+    """同名两条伏笔合并：以「信息更完整」的为准，另一条的缺失字段补进来。
+
+    冲突处理原则（REQ-R23 §5.5）：章号/等级以结构化为准，不因为后写入的旧字符串而回退；
+    content / original_excerpt 只补空，不覆盖已有原文摘录。
+    """
+    keep, extra = (a, b) if (a.buried_ch, a.reveal_ch or 0, a.level) >= (b.buried_ch, b.reveal_ch or 0, b.level) else (b, a)
+    if not keep.reveal_ch and extra.reveal_ch:
+        keep.reveal_ch = extra.reveal_ch
+    if keep.buried_ch <= 0 and extra.buried_ch > 0:
+        keep.buried_ch = extra.buried_ch
+    if (not keep.level or keep.level == "medium") and extra.level in ("small", "large"):
+        keep.level = extra.level
+    if not keep.content and extra.content:
+        keep.content = extra.content
+    if not keep.original_excerpt and extra.original_excerpt:
+        keep.original_excerpt = extra.original_excerpt
+    return keep
+
+
+def _normalize_foreshadowing(world) -> tuple[list, bool]:
+    """把 world.foreshadowing 规范成「去重 + 全结构化」列表；返回 (列表, 是否发生变化)。
+
+    幂等：已经是结构化且无重名时返回 changed=False，调用方据此决定是否落盘。
+    """
+    raw = list(getattr(world, "foreshadowing", None) or [])
+    out: list = []
+    by_name: dict[str, int] = {}
+    changed = False
+    for x in raw:
+        item = x if isinstance(x, ForeshadowItem) else ForeshadowItem.from_dict(x)
+        if not isinstance(x, ForeshadowItem):
+            changed = True   # 旧字符串/旧 dict → 结构化
+        # 过滤口径用字段原文，不用 foreshadow_name：后者会给空条目补「未命名伏笔」，
+        # 那会把历史遗留的空串洗成一条假伏笔。
+        name = (item.name or "").strip() or (item.content or "").strip()
+        if not name:
+            changed = True   # 空条目直接丢弃（没名字就无法跟踪，也无从引用）
+            continue
+        if name in by_name:
+            pos = by_name[name]
+            out[pos] = _fs_better(out[pos], item)
+            changed = True   # 同名去重
+            continue
+        by_name[name] = len(out)
+        out.append(item)
+    if len(out) != len(raw):
+        changed = True
+    return out, changed
+
+
+def _migrate_foreshadowing(store, world) -> list:
+    """读取时顺手迁移：规范化 + 变更前备份 + 原子落盘。返回规范化后的列表。"""
+    items, changed = _normalize_foreshadowing(world)
+    if not changed:
+        return items
+    try:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = store.dir / f"{_FS_MERGE_MARKER}_{stamp}.json"
+        backup.write_text(json.dumps(world.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("伏笔迁移备份失败（继续迁移，备份缺失需人工确认）: project=%s", store.dir.name)
+    world.foreshadowing = items
+    # 迁移本身也是一次内容变更：走 commit 建版本，用户可以「采用此版本」回退到迁移前
+    store.save_world(world, commit=True, source="user")
+    logger.info("伏笔数据合并完成: project=%s items=%d", store.dir.name, len(items))
+    return items
+
+
 @app.get("/api/projects/{project_id}/foreshadowing")
 def list_foreshadowing(project_id: str, user: dict = Depends(_require_user)):
     """伏笔进度：总览 + 逐条状态 + 老格式兜底（REQ-R10 A）。
@@ -318,7 +398,8 @@ def list_foreshadowing(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     world = store.load_world()
-    raw = list(getattr(world, "foreshadowing", None) or []) if world else []
+    # REQ-R23 P1-3：读时顺手迁移（旧字符串转结构化、同名去重），保证三个视图看到同一份数据
+    raw = _migrate_foreshadowing(store, world) if world is not None else []
     names = [foreshadow_name(x) for x in raw]
     counts = {k: 0 for k in ("revealed", "overdue", "due_soon", "stalled",
                              "planted", "not_buried")}
@@ -377,28 +458,83 @@ def list_foreshadowing(project_id: str, user: dict = Depends(_require_user)):
 
 @app.post("/api/projects/{project_id}/foreshadowing")
 def add_foreshadowing(project_id: str, req: dict, user: dict = Depends(_require_user)):
-    """添加一条伏笔。"""
+    """新增/更新一条伏笔（REQ-R23 P1-3：直写结构化账本，同名即更新）。
+
+    入参：{name|item, buried_ch?, reveal_ch?, level?, content?, original_excerpt?}
+    - 只写 world.foreshadowing（唯一账本），全书体检与时间线读同一份；
+    - 同名条目按字段合并（不产生第二条同名伏笔），章号/等级以新提交为准；
+    - reveal_ch < buried_ch 直接 400，避免账本里出现「先收后埋」。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     world = store.load_world()
     if world is None:
         raise HTTPException(status_code=400, detail="尚无世界观设定")
-    item = (req.get("item") or "").strip()
-    if not item:
+    name = str(req.get("name") or req.get("item") or "").strip()
+    if not name:
         raise HTTPException(status_code=400, detail="伏笔内容为空")
-    world.foreshadowing.append(item)
+    buried = int(req.get("buried_ch") or 0)
+    reveal_raw = req.get("reveal_ch")
+    reveal = int(reveal_raw) if reveal_raw not in (None, "", 0, "0") else None
+    if reveal is not None and buried > 0 and reveal < buried:
+        raise HTTPException(status_code=400,
+                            detail=f"回收章（第{reveal}章）不能早于埋点章（第{buried}章）")
+    level = str(req.get("level") or "medium")
+    if level not in _FS_LEVELS:
+        level = "medium"
+    items = _migrate_foreshadowing(store, world)
+    hit = next((x for x in items if foreshadow_name(x).strip() == name), None)
+    if hit is None:
+        hit = ForeshadowItem(name=name, buried_ch=buried, reveal_ch=reveal,
+                             level=level, content=str(req.get("content") or name),
+                             original_excerpt=str(req.get("original_excerpt") or ""))
+        items.append(hit)
+        updated = False
+    else:
+        if buried:
+            hit.buried_ch = buried
+        hit.reveal_ch = reveal
+        hit.level = level
+        if req.get("content"):
+            hit.content = str(req.get("content"))
+        if req.get("original_excerpt"):
+            hit.original_excerpt = str(req.get("original_excerpt"))
+        updated = True
+    world.foreshadowing = items
     store.save_world(world, commit=True, source="user")
-    return {"foreshadowing": [str(x) for x in world.foreshadowing]}
+    return {"ok": True, "updated": updated, "name": name, "total": len(items)}
+
+
+@app.delete("/api/projects/{project_id}/foreshadowing/name/{name}")
+def delete_foreshadowing_by_name(project_id: str, name: str, user: dict = Depends(_require_user)):
+    """按名称删除伏笔（推荐入口：索引会随增删漂移，名称才是稳定标识）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    world = store.load_world()
+    if world is None:
+        raise HTTPException(status_code=400, detail="尚无世界观设定")
+    items = _migrate_foreshadowing(store, world)
+    kept = [x for x in items if foreshadow_name(x).strip() != name]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="伏笔不存在")
+    world.foreshadowing = kept
+    store.save_world(world, commit=True, source="user")
+    return {"ok": True, "name": name, "total": len(kept)}
 
 
 @app.delete("/api/projects/{project_id}/foreshadowing/{index}")
 def delete_foreshadowing(project_id: str, index: int, user: dict = Depends(_require_user)):
-    """删除一条伏笔。"""
+    """删除一条伏笔（按索引，兼容旧调用；界面统一走 name 版本）。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     world = store.load_world()
     if world is None or index < 0 or index >= len(world.foreshadowing):
         raise HTTPException(status_code=404, detail="伏笔不存在")
-    world.foreshadowing.pop(index)
+    items = _migrate_foreshadowing(store, world)
+    if index >= len(items):
+        raise HTTPException(status_code=404, detail="伏笔不存在")
+    name = foreshadow_name(items[index]).strip()
+    items.pop(index)
+    world.foreshadowing = items
     store.save_world(world, commit=True, source="user")
-    return {"foreshadowing": [str(x) for x in world.foreshadowing]}
+    return {"ok": True, "name": name, "total": len(items)}

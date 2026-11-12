@@ -63,8 +63,8 @@
           </div>
           <div class="detail-actions">
             <el-button size="small" :type="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? 'success' : 'default'" link
-              :aria-label="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? `解锁角色「${worldDraft.characters[selectedCharIndex].name}」` : `锁定角色「${worldDraft.characters[selectedCharIndex].name}」（锁定后重生成不覆盖）`"
-              :title="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
+              :aria-label="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? `取消角色「${worldDraft.characters[selectedCharIndex].name}」的${LOCK_TERM}` : `给角色「${worldDraft.characters[selectedCharIndex].name}」加${LOCK_TERM}（重生成时不覆盖）`"
+              :title="isCharLocked(worldDraft.characters[selectedCharIndex].name) ? `已加${LOCK_TERM}，点击取消` : `${LOCK_TERM}：重生成时不覆盖该角色`"
               @click="$emit('toggle-lock', 'character', worldDraft.characters[selectedCharIndex].name, !isCharLocked(worldDraft.characters[selectedCharIndex].name))">
               {{ isCharLocked(worldDraft.characters[selectedCharIndex].name) ? '🔒' : '🔓' }}
             </el-button>
@@ -219,6 +219,7 @@ import { getWorld, saveWorld } from '../../api/novel'
 import CharacterGraph from './CharacterGraph.vue'
 import MechanismEditor from './MechanismEditor.vue'
 import { TYPE_TITLES, hasMechanism, resolveTypes } from './mechanism'
+import { LOCK_TERM } from '../../utils/toolTerms'
 
 const props = defineProps({
   pid: { type: String, required: true },

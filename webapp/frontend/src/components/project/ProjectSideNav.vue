@@ -25,6 +25,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { TOOL_TAB_NAME } from '../../utils/toolTerms'
 
 const props = defineProps({
   modelValue: { type: String, required: true },
@@ -62,7 +63,7 @@ const groups = computed(() => [
       { key: 'assistant', name: '小墨AI', icon: ICONS.assistant },
       { key: 'agent', name: 'Agent', icon: ICONS.agent },
       { key: 'health', name: '全书体检', icon: ICONS.health },
-      { key: 'tools', name: '工具', icon: ICONS.tools },
+      { key: 'tools', name: TOOL_TAB_NAME, icon: ICONS.tools },
     ],
   },
 ])

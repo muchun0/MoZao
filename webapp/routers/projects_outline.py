@@ -121,61 +121,130 @@ def _snap_display(name: str) -> str:
             return name
     return name
 
+
+# REQ-R23 P1-1：大纲快照并入版本库。
+# 快照目录（outline_snapshots/*.json）是版本化门面之前的旧产物，关闭开关时才会继续写；
+# 这里做一次性只读导入：把存量快照写进 outline 版本库并打标签，之后界面只在版本弹窗里看。
+_SNAP_MARKER = ".r23_merged.json"
+
+
+def _import_legacy_snapshots(store) -> int:
+    """把 outline_snapshots/ 存量快照导入 outline 版本库（幂等）。
+
+    - 按 mtime 升序导入，版本时间沿用文件时间，保证版本弹窗里的先后顺序与真实历史一致；
+    - source='user'、promote=False（只存档，不改当前生效大纲）；
+    - 已导入过的文件名记在 `.r23_merged.json`，重跑零差异；内容重复时 commit 自身幂等；
+    - 原始文件**不删除**（用户数据，保留可回溯），只是不再作为独立入口展示。
+    """
+    from novel_gen.store.versioned import VersionedProduct
+    snap_dir = store.dir / "outline_snapshots"
+    if not snap_dir.is_dir() or not store.versioned_enabled():
+        return 0
+    import json
+    marker = snap_dir / _SNAP_MARKER
+    merged: set[str] = set()
+    if marker.exists():
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            merged = {str(x) for x in (data.get("merged") or [])}
+        except Exception:
+            merged = set()
+    files = [p for p in snap_dir.glob("*.json") if p.name != _SNAP_MARKER]
+    files.sort(key=lambda p: p.stat().st_mtime)
+    vp = VersionedProduct(store, "outline")
+    imported = 0
+    for p in files:
+        if p.stem in merged:
+            continue
+        try:
+            content = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("快照读取失败，跳过: project=%s file=%s", store.dir.name, p.name)
+            continue
+        label = "快照 " + _snap_display(p.stem)
+        try:
+            vp.commit("all", content, source="user", promote=False,
+                      auto_select_best=False, label=label, ts=int(p.stat().st_mtime))
+        except Exception:
+            logger.exception("快照并入版本失败: project=%s file=%s", store.dir.name, p.name)
+            continue
+        merged.add(p.stem)
+        imported += 1
+    if imported:
+        store._write_json(marker, {"merged": sorted(merged)})
+    return imported
+
+
 @app.get("/api/projects/{project_id}/outline/snapshots")
 def list_outline_snapshots(project_id: str, user: dict = Depends(_require_user)):
-    """列出大纲快照。"""
+    """列出大纲历史保存点（REQ-R23 P1-1：已并入版本库，这里是只读兼容视图）。
+
+    返回带「快照 / 备份」标签的 outline 版本，name 用版本标签；
+    界面唯一入口是版本弹窗（products/outline/versions），本接口不再驱动新的 UI 入口。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
-    snap_dir = store.dir / "outline_snapshots"
-    if not snap_dir.exists():
-        return {"snapshots": []}
+    _import_legacy_snapshots(store)
+    from novel_gen.store.versioned import VersionedProduct
     snaps = []
-    for f in sorted(snap_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-        import json
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+    if store.versioned_enabled():
+        for item in VersionedProduct(store, "outline").list("all"):
+            label = item.get("label") or ""
+            if not label:
+                continue
+            data = VersionedProduct(store, "outline").load_version("all", item["v"]) or {}
             snaps.append({
-                "name": f.stem,
-                "display": _snap_display(f.stem),
-                "created": f.stat().st_mtime,
-                "chapters": len(data.get("chapters", [])),
-                "title": data.get("title", ""),
+                "name": label, "display": label, "v": item["v"],
+                "created": item.get("ts") or 0,
+                "chapters": len(data.get("chapters", []) or []),
+                "title": data.get("title", "") or "",
             })
-        except Exception:
-            continue
+    snaps.sort(key=lambda x: x["created"], reverse=True)
     return {"snapshots": snaps}
 
 
 @app.post("/api/projects/{project_id}/outline/snapshots")
 def save_outline_snapshot(project_id: str, name: str = "", user: dict = Depends(_require_user)):
-    """保存当前大纲为快照。"""
+    """保存当前大纲为一个历史保存点（REQ-R23 P1-1：写成 outline 版本，不再落独立快照文件）。"""
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     outline = store.load_outline()
     if not outline:
         raise HTTPException(status_code=400, detail="还没有大纲可保存")
-    import json, datetime
-    snap_dir = store.dir / "outline_snapshots"
-    snap_dir.mkdir(exist_ok=True)
-    if not name:
-        name = datetime.datetime.now().strftime("%m%d_%H%M")
-    fname = f"{name}.json"
-    (snap_dir / fname).write_text(json.dumps(outline.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": True, "name": name}
+    if not store.versioned_enabled():
+        raise HTTPException(status_code=409, detail="版本库未启用，暂不能保存历史版本")
+    import datetime
+    from novel_gen.store.versioned import VersionedProduct
+    label = f"快照 {' '.join(filter(None, [name.strip(), datetime.datetime.now().strftime('%m-%d %H:%M')]))}"
+    v = VersionedProduct(store, "outline").commit(
+        "all", outline.to_dict(), source="user", promote=False,
+        auto_select_best=False, label=label)
+    if v is None:
+        return {"ok": True, "v": None, "unchanged": True, "name": label}
+    return {"ok": True, "v": v, "name": label}
 
 
 @app.post("/api/projects/{project_id}/outline/snapshots/{snap_name}/restore")
 def restore_outline_snapshot(project_id: str, snap_name: str, user: dict = Depends(_require_user)):
-    """从快照恢复大纲。"""
-    import json
+    """还原到某个大纲版本（REQ-R23 P1-1：按版本标签找回并切换为当前生效大纲）。
+
+    与版本弹窗的「采用此版本」同一语义：只切 HEAD，不改写已生成正文。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
-    snap_file = store.dir / "outline_snapshots" / f"{snap_name}.json"
-    if not snap_file.exists():
-        raise HTTPException(status_code=404, detail="快照不存在")
-    data = json.loads(snap_file.read_text(encoding="utf-8"))
-    from novel_gen.store.schemas import Outline
-    outline = Outline.from_dict(data)
-    # 快照恢复同样是用户主动选择，记为用户提交版本
-    store.save_outline(outline, commit=True, source="user")
-    return {"ok": True, "chapters": len(outline.chapters)}
+    if not store.versioned_enabled():
+        raise HTTPException(status_code=409, detail="版本库未启用，请用版本弹窗的旧快照文件还原")
+    _import_legacy_snapshots(store)
+    from novel_gen.store.versioned import VersionedProduct
+    vp = VersionedProduct(store, "outline")
+    target = None
+    for item in vp.list("all"):
+        if item.get("v") == snap_name or (item.get("label") or "") == snap_name:
+            target = item["v"]
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="该版本不存在（可能已被版本上限淘汰）")
+    data = vp.select("all", target)
+    if data is None:
+        raise HTTPException(status_code=404, detail="该版本内容已丢失")
+    return {"ok": True, "v": target, "chapters": len(data.get("chapters", []) or [])}

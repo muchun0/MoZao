@@ -130,20 +130,9 @@
           <div v-if="outlineReady || hadOutline" class="panel-toolbar">
             <div class="panel-toolbar-left">
               <el-button size="small" @click="doRegenOutline" :disabled="genRunning" title="重生成总纲/分卷">重生成大纲</el-button>
-              <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动备份）">导入大纲</el-button>
-              <el-dropdown trigger="click" @command="onSnapCmd">
-                <el-button size="small" :disabled="genRunning">大纲快照 ▾</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
-                    <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
-                      还原「{{ sn.display || sn.name }}」（{{ sn.chapters }} 章）
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动存一版，可在版本弹窗还原）">导入大纲</el-button>
             </div>
-            <el-button size="small" type="primary" link @click="openProductVersions('outline')">历史版本</el-button>
+            <el-button size="small" type="primary" link title="每一版大纲都在这里：AI 重生成、你手动保存、导入前自动备份" @click="openProductVersions('outline')">版本</el-button>
           </div>
           <el-empty v-if="!outlineReady && !hadOutline" description="还没有大纲。AI 生成或导入你写的都可以">
             <div class="outline-empty-actions">
@@ -169,7 +158,7 @@
 
         <!-- Agent：生成操作统一入口 -->
         <section v-if="visited.agent" v-show="tab === 'agent'">
-          <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" @started="onAgentStarted" />
+          <AgentPanel :pid="pid" :preset-range="agentPreset" @changed="loadAll" @recharge="rechargeRef?.open()" @started="onAgentStarted" />
         </section>
 
         <!-- 工具 -->
@@ -201,7 +190,7 @@
     <RechargeDialog ref="rechargeRef" />
 
     <!-- 档3：生成前一致性门禁（可确认继续，不硬拒绝） -->
-    <StaleGateDialog ref="staleGateRef" @started="onGateStarted" />
+    <StaleGateDialog ref="staleGateRef" @started="onGateStarted" @open-agent="goAgentRewrite" />
 
     <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh" @closed="hideSelFloat">
       <template #header>
@@ -236,7 +225,7 @@
     </teleport>
 
     <el-dialog v-model="importVisible" title="导入大纲" width="560px">
-      <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「大纲快照」中一键还原）。AI 不会改写你的内容。</p>
+      <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「版本」弹窗里还原）。AI 不会改写你的内容。</p>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <input type="file" ref="importFileInput" accept=".txt,.md,.docx" @change="onImportFilePick" />
         <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
@@ -264,7 +253,7 @@ import {
 import { runAgent, errorDetail } from '../utils/agentRunClient'
 // REQ-R23 P0-5：术语统一（防覆盖锁定 / 写作铁律）
 import { LOCK_TERM } from '../utils/toolTerms'
-import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
+import { parseContent } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import WorldEditor from '../components/world/WorldEditor.vue'
@@ -846,11 +835,18 @@ async function startGen() {
   }
 }
 
-// 门禁弹窗确认放行后的统一后续：单章重写与「从第X章起重写」都用全局进度跟踪
+// 门禁弹窗确认放行后的统一后续
 function onGateStarted() {
   ElMessage.success('已开始处理')
-  beginGenUI('正在重写过期章节…')
+  beginGenUI('正在续写…')
   startPolling()
+}
+
+// REQ-R23：409 弹窗不再自己二次提交重写，统一送到 Agent 页（章节写手 · 区间）发起
+const agentPreset = ref(null)
+function goAgentRewrite({ from_ch }) {
+  agentPreset.value = { from_ch, stamp: Date.now() }
+  tab.value = 'agent'
 }
 
 async function cancelGen() {
@@ -908,7 +904,6 @@ const importText = ref('')
 const importFileMsg = ref('')
 const importFileInput = ref(null)
 const reimporting = ref(false)
-const snapshots = ref([])
 
 function openImport() {
   importText.value = ''
@@ -944,30 +939,13 @@ async function doImport() {
     await importOutline(pid, { text })
     ElMessage.success('已导入（以你的内容为准）')
     importVisible.value = false
-    loadSnapshots()
     loadAll()
   } catch (e) {
     ElMessage.warning(e.response?.data?.detail || '导入失败')
   } finally { reimporting.value = false }
 }
 
-async function loadSnapshots() {
-  try { snapshots.value = (await listSnapshots(pid))?.snapshots || [] } catch (e) { snapshots.value = [] }
-}
-
-async function onSnapCmd(cmd) {
-  if (!cmd || !cmd.startsWith('restore:')) return
-  const name = cmd.slice(8)
-  try { await ElMessageBox.confirm(`从快照「${name}」恢复大纲？当前大纲将被该快照覆盖。`, '恢复大纲', { type: 'warning' }) } catch { return }
-  try {
-    await restoreSnapshot(pid, name)
-    ElMessage.success('已恢复')
-    loadSnapshots()
-    loadAll()
-  } catch (e) { ElMessage.error(e.response?.data?.detail || '恢复失败') }
-}
-
-onMounted(() => { document.addEventListener('mousedown', onDocMouseDown); loadAll(); loadSnapshots() })
+onMounted(() => { document.addEventListener('mousedown', onDocMouseDown); loadAll() })
 onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); if (pollTimer) clearInterval(pollTimer) })
 </script>
 

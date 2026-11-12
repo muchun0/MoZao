@@ -7,14 +7,13 @@
     <ul v-if="causeLines.length" class="sg-causes">
       <li v-for="(line, i) in causeLines" :key="i">{{ line }}</li>
     </ul>
-    <!-- 批量重写默认不勾选：避免用户顺手确认造成非预期批量扣费 -->
-    <el-checkbox v-model="rewriteAck" class="sg-ack">{{ ackText }}</el-checkbox>
-    <p v-if="estimateError" class="sg-err">{{ estimateError }}</p>
+    <!-- REQ-R23：重写不再在本弹窗二次提交，统一到 Agent 页（章节写手 · 区间）发起 -->
+    <p class="sg-note">重写前文请到 Agent 页用「章节写手 · 区间」发起，这里只决定是否继续往下写。</p>
     <template #footer>
       <el-button @click="close">取消</el-button>
-      <el-button :disabled="starting" @click="continueRun">仍然继续</el-button>
-      <el-button type="warning" :disabled="!rewriteAck || starting" :loading="starting" @click="rewriteFrom">
-        从第 {{ detail.regenerate_from }} 章起重写
+      <el-button :disabled="starting" :loading="starting" @click="continueRun">仍然继续</el-button>
+      <el-button type="warning" @click="goAgent">
+        去 Agent 页从第 {{ detail.regenerate_from }} 章起重写
       </el-button>
     </template>
   </el-dialog>
@@ -24,16 +23,13 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import StaleNotice from './StaleNotice.vue'
-import { startAgentRun, estimateAgentRun } from '../../api/project'
+import { runAgent, errorDetail } from '../../utils/agentRunClient'
 
-const emit = defineEmits(['started'])
+const emit = defineEmits(['started', 'open-agent'])
 
 const visible = ref(false)
 const detail = ref({})
-const rewriteAck = ref(false)
 const starting = ref(false)
-const estimate = ref(null)
-const estimateError = ref('')
 let pid = ''
 let pending = null  // { payload, after }
 
@@ -56,7 +52,7 @@ const notice = computed(() => ({
   level: 'warning',
   title: '目标章之前已有过期章节',
   text: `${fmtNos(detail.value.stale_chapters) || '部分章节'}可能已过期：这些章基于旧版上游生成，直接续写会和最新设定对不上。`,
-  advice: `可以从第 ${detail.value.regenerate_from} 章起向后重写，或已知不一致继续（新章会标注"基于旧版"）。`,
+  advice: `可以到 Agent 页从第 ${detail.value.regenerate_from} 章起向后重写，或已知不一致继续（新章会标注"基于旧版"）。`,
 }))
 
 // 两种成因分开说：上游大纲/世界观升版 + 前文被重写
@@ -72,43 +68,14 @@ const causeLines = computed(() => {
   return lines
 })
 
-const rewriteCount = computed(() => {
-  const from = Number(detail.value.regenerate_from) || 0
-  const total = Number(detail.value.total_chapters) || 0
-  if (from > 0 && total >= from) return total - from + 1
-  return (detail.value.stale_chapters || []).length
-})
-
-const ackText = computed(() => {
-  const from = detail.value.regenerate_from
-  const total = Number(detail.value.total_chapters) || 0
-  const to = total ? `第 ${from}–${total} 章` : '其后全部章节'
-  const words = Number(detail.value.est_words) || 0
-  const price = estimate.value && estimate.value.estimated_price
-  const money = price != null ? `，预估 ¥${Number(price).toFixed(2)}` : ''
-  const w = words ? `约 ${words} 字` : ''
-  return `我已知晓：将从${to}起重写，共 ${rewriteCount.value} 章${w ? `（${w}）` : ''}${money}，按实际生成字数结算`
-})
-
 async function open(pidValue, d, payload, after) {
   // 非门禁错误返回 false，让调用方走原有的错误提示
   if (!d || typeof d !== 'object' || d.code !== 'stale_gate') return false
   pid = pidValue
   detail.value = d
   pending = { payload: payload || {}, after }
-  rewriteAck.value = false
-  estimate.value = null
-  estimateError.value = ''
+  starting.value = false
   visible.value = true
-  try {
-    estimate.value = await estimateAgentRun(pid, {
-      agent: 'writer.chapter',
-      params: { scope: 'range', from_ch: d.regenerate_from },
-    })
-  } catch {
-    // 预估失败不阻断决策：按钮文案退化为「按实际生成字数结算」
-    estimateError.value = '金额预估失败，重写仍会按实际生成字数结算'
-  }
   return true
 }
 
@@ -120,7 +87,7 @@ async function start(payload) {
   if (!pending) return
   starting.value = true
   try {
-    const body = await startAgentRun(pid, payload)
+    const { body } = await runAgent(pid, payload)
     const after = pending.after
     close()
     if (typeof after === 'function') after(body)
@@ -128,11 +95,11 @@ async function start(payload) {
   } catch (e) {
     const d = e?.response?.data?.detail
     if (d && typeof d === 'object' && d.code === 'stale_gate') {
-      // 「从第X章起重写」仍被拦：刷新提示，让用户重新决策
+      // 仍然被门禁拦：刷新提示，让用户重新决策（重写一律去 Agent 页）
       detail.value = d
       return
     }
-    ElMessage.error(typeof d === 'string' ? d : (d?.message || '启动失败'))
+    ElMessage.error(errorDetail(e, '启动失败'))
   } finally {
     starting.value = false
   }
@@ -140,17 +107,14 @@ async function start(payload) {
 
 function continueRun() {
   // 已知不一致继续：放行并由后端给新章打 unstable 标注
-  start({ ...(pending?.payload || {}), allow_inconsistent: true })
+  const payload = { ...(pending?.payload || {}), allow_inconsistent: true }
+  start(payload)
 }
 
-function rewriteFrom() {
-  const base = { ...(pending?.payload || {}) }
-  delete base.allow_inconsistent
-  start({
-    ...base,
-    agent: 'writer.chapter',
-    params: { scope: 'range', from_ch: detail.value.regenerate_from },
-  })
+function goAgent() {
+  const from = Number(detail.value.regenerate_from) || 1
+  close()
+  emit('open-agent', { from_ch: from })
 }
 
 defineExpose({ open })
@@ -164,17 +128,10 @@ defineExpose({ open })
   line-height: 1.8;
   color: #6b4a12;
 }
-.sg-ack {
-  display: block;
-  margin-top: 6px;
-  height: auto;
-  white-space: normal; /* 长文案自动换行，避免被 el-checkbox 单行截断 */
-  font-size: 13px;
-  line-height: 1.7;
-}
-.sg-err {
-  margin: 6px 0 0;
+.sg-note {
+  margin: 8px 0 0;
   font-size: 12px;
-  color: #c45656;
+  line-height: 1.7;
+  color: #8a6d3b;
 }
 </style>

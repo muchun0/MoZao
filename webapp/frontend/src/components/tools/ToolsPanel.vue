@@ -182,12 +182,12 @@
           <span v-if="coverRemaining !== null" class="muted" style="margin-left:8px">剩余 {{ coverRemaining }} 次</span>
         </el-card>
 
-        <!-- 伏笔管理（REQ-R10 A：进度视图；P1 将并入结构化账本，这里暂保留为增补入口） -->
+        <!-- 伏笔（REQ-R23 P1-3）：唯一账本是结构化伏笔账本，全书体检与时间线同源 -->
         <el-card class="tool-card">
           <template #header>
             <div class="fs-head">
-              <b>伏笔管理</b>
-              <span class="muted">埋点 · 计划回收 · 当前进度</span>
+              <b>伏笔</b>
+              <span class="muted">埋点 · 计划回收 · 当前进度（与全书体检、时间线同一份账本）</span>
             </div>
           </template>
           <div v-if="!fsSummary.total" class="muted">
@@ -211,7 +211,8 @@
                 <div class="fs-item-top">
                   <span class="fs-name">{{ item.name }}</span>
                   <el-tag size="small" :type="stateTag(item.state)">{{ item.state_label }}</el-tag>
-                  <el-button size="small" link type="danger" @click="delFs(item.index)">删</el-button>
+                  <el-button size="small" link type="primary" @click="editFs(item)">改</el-button>
+                  <el-button size="small" link type="danger" @click="delFs(item.name)">删</el-button>
                 </div>
                 <div class="fs-meta">
                   埋在第 {{ item.buried_ch }} 章 · 原计划第 {{ item.reveal_ch }} 章收 · {{ foreshadowProgressText(item) }}
@@ -233,14 +234,26 @@
               <div v-for="u in fsUnstructured" :key="u.index" class="fs-row">
                 <span class="fs-name">{{ u.name }}</span>
                 <span class="muted fs-note">{{ unstructuredNote(u) }}</span>
-                <el-button size="small" link type="danger" @click="delFs(u.index)">删</el-button>
+                <el-button size="small" link type="primary" @click="editFs(u)">补章号</el-button>
+                <el-button size="small" link type="danger" @click="delFs(u.name)">删</el-button>
               </div>
             </div>
           </template>
-          <el-space style="margin-top:8px;width:100%">
-            <el-input v-model="fsInput" placeholder="添加伏笔（补全章号后才会纳入进度跟踪）" style="flex:1" />
-            <el-button size="small" @click="addFs">添加</el-button>
-          </el-space>
+          <div class="fs-form">
+            <el-input v-model="fsName" placeholder="伏笔内容（同名再提交即更新，不会重复登记）" style="flex:1" />
+            <el-input-number v-model="fsBuried" :min="0" size="small" controls-position="right"
+              placeholder="埋点章" title="埋点章：这条线索第一次出现在第几章" />
+            <el-input-number v-model="fsReveal" :min="0" size="small" controls-position="right"
+              placeholder="回收章" title="计划回收章：打算在第几章交代" />
+            <el-select v-model="fsLevel" size="small" style="width:96px" title="跨度：章内/卷内/全篇">
+              <el-option value="small" label="章内" />
+              <el-option value="medium" label="卷内" />
+              <el-option value="large" label="全篇" />
+            </el-select>
+            <el-button size="small" type="primary" @click="addFs">{{ fsEditing ? '更新' : '添加' }}</el-button>
+            <el-button v-if="fsEditing" size="small" @click="resetFsForm">取消</el-button>
+          </div>
+          <p class="muted fs-hint">不填章号也能登记，但只有补全「埋点章」后才会纳入进度跟踪。</p>
         </el-card>
 
         <!-- 写作铁律（原「核心设定锁定」）：这是写作约束，不是防覆盖锁 -->
@@ -422,7 +435,12 @@ const altGoal = ref('')
 const altLoading = ref(false)
 const alts = ref([])
 
-const fsInput = ref('')
+// 伏笔（REQ-R23 P1-3）：表单直接写结构化账本；同名提交＝更新，删改按名称定位
+const fsName = ref('')
+const fsBuried = ref(0)
+const fsReveal = ref(0)
+const fsLevel = ref('medium')
+const fsEditing = ref('')
 const fsData = ref({ items: [], unstructured: [], summary: null })
 const fsFilter = ref('all')
 const fsExpanded = ref({})
@@ -477,14 +495,50 @@ async function loadFs() {
   } catch { fsData.value = { items: [], unstructured: [], summary: null } }
 }
 async function addFs() {
-  if (!fsInput.value) return
-  await toolsApi.addForeshadowing(props.pid, { item: fsInput.value })
-  fsInput.value = ''
-  loadFs()
+  const name = fsName.value.trim()
+  if (!name) { ElMessage.warning('请填写伏笔内容'); return }
+  const body = {
+    name,
+    buried_ch: Number(fsBuried.value) || 0,
+    reveal_ch: Number(fsReveal.value) ? Number(fsReveal.value) : null,
+    level: fsLevel.value,
+  }
+  try {
+    const r = await toolsApi.addForeshadowing(props.pid, body)
+    ElMessage.success(r.updated ? `已更新「${name}」` : `已添加「${name}」`)
+    resetFsForm()
+    loadFs()
+  } catch (e) {
+    ElMessage.warning(e?.response?.data?.detail || '保存失败')
+  }
 }
-async function delFs(i) {
-  await toolsApi.delForeshadowing(props.pid, i)
-  loadFs()
+
+function editFs(item) {
+  fsEditing.value = item.name
+  fsName.value = item.name
+  fsBuried.value = Number(item.buried_ch) || 0
+  fsReveal.value = Number(item.reveal_ch) || 0
+  fsLevel.value = item.level || 'medium'
+}
+
+function resetFsForm() {
+  fsEditing.value = ''
+  fsName.value = ''
+  fsBuried.value = 0
+  fsReveal.value = 0
+  fsLevel.value = 'medium'
+}
+
+async function delFs(name) {
+  if (!name) return
+  try {
+    await toolsApi.delForeshadowingByName(props.pid, name)
+    ElMessage.success(`已删除「${name}」`)
+    if (fsEditing.value === name) resetFsForm()
+    loadFs()
+  } catch (e) {
+    ElMessage.warning(e?.response?.data?.detail || '删除失败')
+  }
 }
 
 async function loadLk() {
@@ -542,6 +596,9 @@ onMounted(() => {
 .fs-unstructured { margin-top: 8px; border-top: 1px dashed #ebeef5; padding-top: 6px; }
 .fs-unstructured .fs-row { gap: 8px; justify-content: flex-start; }
 .fs-note { font-size: 12px; }
+.fs-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.fs-form :deep(.el-input-number) { width: 96px; }
+.fs-hint { margin: 6px 0 0; font-size: 12px; }
 .rhythm-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
 .rhythm-label { width: 50px; color: #909399; }
 .rhythm-bar { height: 12px; background: #c6e2ff; border-radius: 3px; }

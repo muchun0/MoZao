@@ -131,8 +131,8 @@
             <div class="panel-toolbar-left">
               <el-button size="small" @click="doRegenOutline" :disabled="genRunning" title="重生成总纲/分卷">重生成大纲</el-button>
               <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动存一版，可在版本弹窗还原）">导入大纲</el-button>
+              <el-button size="small" @click="openProductVersions('outline')" title="每一版大纲都在这里：AI 重生成、你手动保存、导入前自动备份">历史版本</el-button>
             </div>
-            <el-button size="small" type="primary" link title="每一版大纲都在这里：AI 重生成、你手动保存、导入前自动备份" @click="openProductVersions('outline')">版本</el-button>
           </div>
           <el-empty v-if="!outlineReady && !hadOutline" description="还没有大纲。AI 生成或导入你写的都可以">
             <div class="outline-empty-actions">

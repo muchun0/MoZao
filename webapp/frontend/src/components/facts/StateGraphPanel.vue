@@ -3,7 +3,6 @@
     <FactsPanelHead
       title="世界事实"
       sub="只读投影：人物、当前状态、地点、事件，以及设定规则（术语 / 纪律 / 机制口径 / 不变量与禁用词）。伏笔与冲突的检查结论在「全书体检」，按章事件流在「时间线」。"
-      :stats="stats"
       :loading="loading"
       @refresh="reload"
     />
@@ -13,9 +12,9 @@
     </el-empty>
 
     <template v-else>
-      <div v-if="meta" class="sg-meta">
-        <span class="sg-tag mono">版本 {{ meta.version }}</span>
-        <span v-if="meta.sources?.stale" class="sg-tag warn">上游设定已更新，视图可能落后</span>
+      <!-- 内部账本版本号不再对作者展示；只在上游改动后视图可能落后时提示一次 -->
+      <div v-if="meta && meta.sources?.stale" class="sg-meta">
+        <span class="sg-tag warn">上游设定已更新，视图可能落后</span>
       </div>
 
       <nav class="sg-tabs">
@@ -381,13 +380,6 @@ function tabCount(key) {
   if (key === 'rules') return (canon.value.terms?.length || 0) + disciplineGroups.value.length
   return ''
 }
-
-const stats = computed(() => [
-  { label: '写到第几章', value: meta.value?.sources?.at_ch || 0 },
-  { label: '人物', value: worldCharacters.value.length },
-  { label: '地点', value: locations.value.length },
-  { label: '事件', value: loadedEv.value ? events.value.length : '—' },
-])
 
 function switchView(key) {
   view.value = key

@@ -581,9 +581,9 @@ onMounted(() => {
 .tool-section-head .muted { margin: 0; font-size: 12px; }
 .tool-health-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 10px;
   background: #fbf6ea; border-left: 3px solid var(--gold, #c8a24a); border-radius: 4px; font-size: 12.5px; color: #5c6470; }
-/* REQ-R23 原型对齐：三列紧凑卡（视口≥1400 三列，≥1000 两列，窄屏一列），卡片高度不再被拉成两行空白 */
+/* REQ-R23 原型对齐：紧凑栅格（视口≥1400 三列，≥900 两列，更窄一列），卡片高度不再被拉成两行空白 */
 .tools-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
-@media (min-width: 1000px) { .tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 900px) { .tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1400px) { .tools-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .tool-card :deep(.el-card__header) { padding: 8px 12px; }
 .tool-card :deep(.el-card__body) { padding: 10px 12px; }

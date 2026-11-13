@@ -95,3 +95,12 @@ test('时间线不再单独列一份伏笔事件清单', () => {
   assert.equal(/tl-foreshadow/.test(tl), false, '伏笔类事件清单应已移除')
   assert.ok(tl.includes('不再单独列一份'))
 })
+
+// ---------- 体检页展示压平：一层导航 + 统一条目，不再叠分组卡片 ----------
+test('体检页只留一层导航，分组卡片与重复的按类别区已移除', () => {
+  const cp = read('src/components/consistency/ConsistencyPanel.vue')
+  assert.ok(cp.includes("name: 'todo'"), '应有待处理页签')
+  assert.deepEqual(cp.includes('groupList'), false, '旧的按轻重分组卡片应移除')
+  assert.deepEqual(cp.includes('cp-detail-head'), false, '不再叠「按类别细看」第二层')
+  assert.ok(cp.includes('cp-item'), '条目统一为可展开的紧凑行')
+})

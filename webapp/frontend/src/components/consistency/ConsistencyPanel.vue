@@ -3,7 +3,7 @@
     <header class="cp-head">
       <div>
         <h3 class="cp-title">全书体检</h3>
-        <p class="cp-sub">这里只读汇总已有的检查结果（全书通读检查 + 每章质检记录），不跑新检查、不改正文、不扣费。全书检查结论只在本页呈现，工具中心只做单章诊断，不再维护第二个检查记录入口。</p>
+        <p class="cp-sub">汇总已有的通读检查与单章质检记录；不跑新检查、不改正文、不扣费。</p>
       </div>
       <el-button size="small" :loading="loading" @click="loadOverview">重新体检</el-button>
     </header>
@@ -21,188 +21,126 @@
     </el-empty>
 
     <template v-else-if="overview">
-      <!-- 先给结论：一句话说清整体状态 -->
-      <div class="cp-verdict" :class="verdict.level">
-        <span class="cp-verdict-tag">{{ verdict.tag }}</span>
-        <p class="cp-verdict-text">{{ verdict.text }}</p>
+      <!-- 结论与关键数字压成一条：先看整体，再往下翻明细 -->
+      <div class="cp-hero" :class="verdict.level">
+        <span class="cp-hero-tag">{{ verdict.tag }}</span>
+        <p class="cp-hero-text">{{ verdict.text }}</p>
+        <div class="cp-hero-kpis">
+          <span class="cp-kpi">{{ overview.chapters_written }} 章</span>
+          <span v-if="counts.urgent" class="cp-kpi danger">{{ counts.urgent }} 必须处理</span>
+          <span v-if="counts.suggest" class="cp-kpi warn">{{ counts.suggest }} 建议处理</span>
+        </div>
       </div>
 
       <!-- R13：正文改过后派生记录没重算，先提醒结论可能过期（文案来自后端，两处共用） -->
       <StaleNotice v-if="staleNotice" :notice="staleNotice" />
-
-      <div class="cp-stats">
-        <div class="cp-stat">
-          <span class="cp-stat-num">{{ overview.chapters_written }}</span>
-          <span class="cp-stat-label">已经写完的章数</span>
+      <!-- 一条导航到底：待处理汇总 + 四个分类明细，筛选跟着分类走 -->
+      <div class="cp-nav">
+        <div class="cp-nav-tabs">
+          <button v-for="t in SUB_TABS" :key="t.name" type="button" class="cp-tab"
+            :class="{ active: sub === t.name }" @mousedown="rememberScroll" @click="switchSub(t.name)">
+            {{ t.label }}<span v-if="t.count !== undefined" class="cp-tab-count">{{ t.count }}</span>
+          </button>
         </div>
-        <div class="cp-stat" :class="{ danger: counts.urgent }">
-          <span class="cp-stat-num">{{ counts.urgent }}</span>
-          <span class="cp-stat-label">必须先处理</span>
-        </div>
-        <div class="cp-stat" :class="{ warn: counts.suggest }">
-          <span class="cp-stat-num">{{ counts.suggest }}</span>
-          <span class="cp-stat-label">建议处理</span>
-        </div>
-        <div class="cp-stat">
-          <span class="cp-stat-num">{{ counts.minor }}</span>
-          <span class="cp-stat-label">可以先了解</span>
+        <div class="cp-nav-filter">
+          <template v-if="sub === 'foreshadow'">
+            <el-select v-model="fsState" size="small" clearable placeholder="全部状态" class="cp-select"
+              @change="reloadForeshadow">
+              <el-option v-for="s in FORESHADOW_STATES" :key="s.value" :value="s.value" :label="s.label" />
+            </el-select>
+            <span class="cp-count">{{ fsLoaded ? `${fsTotal} 条` : '读取中…' }}</span>
+          </template>
+          <template v-else-if="sub === 'conflicts'">
+            <el-select v-model="confSeverity" size="small" clearable placeholder="全部轻重" class="cp-select"
+              @change="reloadConflicts">
+              <el-option value="high" label="必须处理" />
+              <el-option value="medium" label="建议处理" />
+              <el-option value="low" label="了解一下" />
+            </el-select>
+            <span class="cp-count">{{ confLoaded ? `${confTotal} 条` : '读取中…' }}</span>
+          </template>
+          <template v-else-if="sub === 'entities'">
+            <el-input v-model="entityQuery" size="small" clearable placeholder="搜名字或别名，例如「林舟」"
+              class="cp-input" @keyup.enter="reloadEntities" @clear="reloadEntities" />
+            <el-select v-model="entityKind" size="small" clearable placeholder="全部类型" class="cp-select"
+              @change="reloadEntities">
+              <el-option v-for="k in ENTITY_KIND_OPTIONS" :key="k.value" :value="k.value" :label="k.label" />
+            </el-select>
+            <span class="cp-count">{{ entityLoaded ? `${entityTotal} 个` : '读取中…' }}</span>
+          </template>
         </div>
       </div>
 
-      <!-- 口径：体检与工具的数字来源不同，这里把拆分摊开，作者能自己核对 -->
-      <p v-if="overview.conflicts?.total" class="cp-source-line">
-        「前后对不上」{{ overview.conflicts.total }} 条，来源：{{ conflictSourceLine }}
-      </p>
-      <!-- 按轻重分组，默认只展开最需要处理的那一组 -->
-      <section v-for="g in groupList" :key="g.key" class="cp-group">
-        <button class="cp-group-head" type="button" @click="toggleGroup(g.key)">
-          <span class="cp-caret" :class="{ open: openGroups[g.key] }">▸</span>
-          <span class="cp-group-name">{{ g.title }}</span>
-          <el-tag size="small" :type="g.tagType" effect="plain">{{ g.total }} 条</el-tag>
-          <span class="cp-group-hint">{{ g.hint }}</span>
-        </button>
+      <p class="cp-purpose">{{ PURPOSE[sub] }}</p>
 
-        <div v-show="openGroups[g.key]" class="cp-group-body">
-          <p v-if="!g.items.length" class="cp-group-empty">{{ g.empty }}</p>
-          <article v-for="(it, i) in g.items" :key="`${g.key}-${i}`" class="cp-card">
-            <div class="cp-card-top">
-              <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
-              <span v-if="it.categoryLabel" class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
-              <strong class="cp-card-title">{{ it.title }}</strong>
-              <!-- R13：这一条依据的记录落后于当前正文，结论可能不准 -->
-              <span v-if="it.recordStale" class="cp-stale-tag">记录可能过期</span>
-            </div>
-            <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
-            <p v-if="it.what" class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ it.what }}</p>
-            <p class="cp-card-where">{{ it.where }}</p>
-            <div v-if="it.missingChapters && it.missingChapters.length" class="cp-chips">
-              <span class="cp-chip-label">缺记录</span>
-              <button v-for="no in it.missingChapters" :key="no" type="button" class="cp-chap-chip"
-                @click="emitLocate(no)">第 {{ no }} 章</button>
-              <span v-if="it.missingCount > it.missingChapters.length" class="cp-meta">
-                等共 {{ it.missingCount }} 章
-              </span>
-            </div>
-            <div v-if="it.recordedChapters && it.recordedChapters.length" class="cp-records">
-              <div class="cp-records-head">
-                <span class="cp-chip-label">清单里已有的</span>
-                <span class="cp-meta">
-                  {{ it.recordedChapterCount }} 章 · {{ it.recordedItemCount }} 条
-                  <template v-if="it.recordedTruncated">（先列前 {{ it.recordedChapters.length }} 章）</template>
-                </span>
-              </div>
-              <div v-for="c in it.recordedChapters" :key="c.ch" class="cp-record-row">
-                <button type="button" class="cp-chap-link" @click="emitLocate(c.ch)">第 {{ c.ch }} 章</button>
-                <div class="cp-record-items">
-                  <p v-for="(t, ti) in c.items" :key="ti" :class="{ 'cp-muted-item': t === NO_DESC }">{{ t }}</p>
-                  <p v-if="c.count > c.items.length" class="cp-meta">还有 {{ c.count - c.items.length }} 条</p>
-                </div>
-              </div>
-            </div>
-            <div v-if="it.sides" class="cp-sides">
-              <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`${g.key}-${i}`) }">
-                <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
-              </p>
-              <p v-if="it.sides.actual" :class="{ 'clamp-text': !isExpanded(`${g.key}-${i}`) }">
-                <span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}
-              </p>
-            </div>
-            <p v-for="(d, di) in it.details || []" :key="di" class="cp-card-detail">
+      <!-- 0. 待处理：把「必须先处理 / 建议处理」合成一条清单，默认只看这里 -->
+      <div v-show="sub === 'todo'" class="cp-pane">
+        <p v-if="!todoItems.length" class="cp-group-empty">没有需要马上处理的问题。想逐条翻记录，切上面的分类。</p>
+        <article v-for="(it, i) in todoItems" :key="`t-${i}`" class="cp-item">
+          <div class="cp-item-top">
+            <span class="cp-dot" :class="`sev-${it.severity}`"></span>
+            <strong class="cp-item-title">{{ it.title }}</strong>
+            <span v-if="it.categoryLabel" class="cp-item-cat">{{ it.categoryLabel }}</span>
+            <span v-if="it.recordStale" class="cp-stale-tag">记录可能过期</span>
+          </div>
+          <p class="cp-item-where">{{ it.where }}</p>
+          <div v-if="it.missingChapters && it.missingChapters.length" class="cp-chips">
+            <span class="cp-chip-label">缺记录</span>
+            <button v-for="no in it.missingChapters" :key="no" type="button" class="cp-chap-chip"
+              @click="emitLocate(no)">第 {{ no }} 章</button>
+            <span v-if="it.missingCount > it.missingChapters.length" class="cp-meta">等共 {{ it.missingCount }} 章</span>
+          </div>
+          <p class="cp-item-advice"><span class="cp-advice-label">建议</span>{{ it.advice }}</p>
+          <div v-if="it.details?.length || it.sides" v-show="isExpanded(`t-${i}`)" class="cp-item-detail">
+            <p v-if="it.sides?.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
+            <p v-if="it.sides?.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+            <p v-for="(d, di) in it.details || []" :key="di">
               <span class="cp-detail-label">{{ d.label }}</span>{{ d.text }}
             </p>
-            <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ it.advice }}</p>
-            <div class="cp-card-actions">
-              <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`${g.key}-${i}`)">
-                {{ isExpanded(`${g.key}-${i}`) ? '收起原文' : '展开原文' }}
-              </el-button>
-              <el-button v-if="it.jump && it.source !== 'chapter_quality'" size="small" text type="primary"
-                         @click="emitLocate(it.jump)">打开第 {{ it.jump }} 章</el-button>
-              <!-- 单章质检来源：详情与操作统一在版本弹窗（证据 / 改法 / 按此改） -->
-              <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
-                         @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
-            </div>
-          </article>
-          <p v-if="g.total > g.items.length" class="cp-group-more">
-            这一类共有 {{ g.total }} 条，上面先列出 {{ g.items.length }} 条，完整清单见下方「按类别细看」。
-          </p>
-        </div>
-      </section>
-
-      <div class="cp-detail">
-        <div class="cp-detail-head">
-          <strong>按类别细看</strong>
-          <span class="cp-meta">要逐条核对、筛选或搜索时用这里</span>
-        </div>
-
-        <!-- 一级分类与该类筛选合成一行，不再叠两层横条 -->
-        <div class="cp-nav">
-          <div class="cp-nav-tabs">
-            <button v-for="t in SUB_TABS" :key="t.name" type="button" class="cp-tab"
-              :class="{ active: sub === t.name }" @mousedown="rememberScroll" @click="switchSub(t.name)">
-              {{ t.label }}<span v-if="t.count !== undefined" class="cp-tab-count">{{ t.count }}</span>
-            </button>
           </div>
-          <div class="cp-nav-filter">
-            <template v-if="sub === 'foreshadow'">
-              <el-select v-model="fsState" size="small" clearable placeholder="全部状态" class="cp-select"
-                @change="reloadForeshadow">
-                <el-option v-for="s in FORESHADOW_STATES" :key="s.value" :value="s.value" :label="s.label" />
-              </el-select>
-              <span class="cp-count">{{ fsLoaded ? `${fsTotal} 条` : '读取中…' }}</span>
-            </template>
-            <template v-else-if="sub === 'conflicts'">
-              <el-select v-model="confSeverity" size="small" clearable placeholder="全部轻重" class="cp-select"
-                @change="reloadConflicts">
-                <el-option value="high" label="必须处理" />
-                <el-option value="medium" label="建议处理" />
-                <el-option value="low" label="了解一下" />
-              </el-select>
-              <span class="cp-count">{{ confLoaded ? `${confTotal} 条` : '读取中…' }}</span>
-            </template>
-            <template v-else-if="sub === 'entities'">
-              <el-input v-model="entityQuery" size="small" clearable placeholder="搜名字或别名，例如「林舟」"
-                class="cp-input" @keyup.enter="reloadEntities" @clear="reloadEntities" />
-              <el-select v-model="entityKind" size="small" clearable placeholder="全部类型" class="cp-select"
-                @change="reloadEntities">
-                <el-option v-for="k in ENTITY_KIND_OPTIONS" :key="k.value" :value="k.value" :label="k.label" />
-              </el-select>
-              <span class="cp-count">{{ entityLoaded ? `${entityTotal} 个` : '读取中…' }}</span>
-            </template>
+          <div class="cp-item-foot">
+            <el-button v-if="it.details?.length || it.sides" size="small" text @click="toggleExpand(`t-${i}`)">
+              {{ isExpanded(`t-${i}`) ? '收起依据' : '看依据' }}
+            </el-button>
+            <el-button v-if="it.jump" size="small" text type="primary" @click="emitLocate(it.jump)">
+              打开第 {{ it.jump }} 章
+            </el-button>
+            <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
+              @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
           </div>
-        </div>
+        </article>
+        <p v-if="todoMore" class="cp-footnote">还有 {{ todoMore }} 条没列，完整的在「前后对不上」「伏笔回收」里按分类看。</p>
+      </div>
 
-        <p class="cp-purpose">{{ PURPOSE[sub] }}</p>
-
-        <!-- 1. 设定小抄是否跟上正文 -->
+        <!-- 1. 设定进度：只列作者看得到的记录，明细按需展开 -->
         <div v-show="sub === 'coverage'" class="cp-pane">
-            <p v-if="!authorViews.length" class="cp-group-empty">
-              暂时还没有可对照的记录。等生成过正文后，这里会显示每项「小抄」跟到了第几章。
-            </p>
-            <div v-for="row in authorViews" :key="row.view" class="cp-coverage-card">
-              <div class="cp-row-title">
-                <strong>{{ viewName(row.view) }}</strong>
-                <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
-              </div>
-              <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
-              <p class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ row.whatText }}</p>
-              <p class="cp-coverage-fact">{{ row.gapText }}</p>
-              <!-- R13：这份记录里有章已被改过，条目可能还是旧正文的 -->
-              <div v-if="row.staleChapters.length" class="cp-chips cp-stale-row">
-                <span class="cp-chip-label">记录可能过期</span>
-                <button v-for="no in row.staleChapters" :key="no" type="button" class="cp-chap-chip"
-                  @click="emitLocate(no)">第 {{ no }} 章</button>
-              </div>
-              <!-- 缺记录的章号首屏直出，点一下直接跳章（仅作者看得到内容的记录） -->
-              <div v-if="row.showInMust && row.missingChapters.length" class="cp-chips">
-                <span class="cp-chip-label">缺记录</span>
-                <button v-for="no in row.missingChapters" :key="no" type="button" class="cp-chap-chip"
-                  @click="emitLocate(no)">第 {{ no }} 章</button>
-                <span v-if="row.missingCount > row.missingChapters.length" class="cp-meta">
-                  等共 {{ row.missingCount }} 章
-                </span>
-              </div>
-              <!-- 清单里已经记了哪些，按章列出条目 -->
-              <div v-if="row.showInMust && row.recordedChapters.length" class="cp-records">
+          <p v-if="!authorViews.length" class="cp-group-empty">
+            暂时还没有可对照的记录。等生成过正文后，这里会显示每项记录跟到了第几章。
+          </p>
+          <article v-for="(row, ri) in authorViews" :key="row.view" class="cp-item">
+            <div class="cp-item-top">
+              <strong class="cp-item-title">{{ viewName(row.view) }}</strong>
+              <el-tag size="small" :type="coverageDisplayTag(row)" effect="plain">{{ coverageDisplayState(row) }}</el-tag>
+              <span v-if="row.staleChapters.length" class="cp-stale-tag">记录可能过期</span>
+            </div>
+            <p class="cp-item-where">{{ row.gapText }}</p>
+            <div v-if="row.missingChapters.length" class="cp-chips">
+              <span class="cp-chip-label">缺记录</span>
+              <button v-for="no in row.missingChapters.slice(0, 8)" :key="no" type="button" class="cp-chap-chip"
+                @click="emitLocate(no)">第 {{ no }} 章</button>
+              <span v-if="row.missingCount > row.missingChapters.slice(0, 8).length" class="cp-meta">
+                等共 {{ row.missingCount }} 章
+              </span>
+            </div>
+            <div v-if="row.staleChapters.length" class="cp-chips">
+              <span class="cp-chip-label">过期章</span>
+              <button v-for="no in row.staleChapters.slice(0, 8)" :key="no" type="button" class="cp-chap-chip"
+                @click="emitLocate(no)">第 {{ no }} 章</button>
+            </div>
+            <div v-show="isExpanded(`cv-${ri}`)" class="cp-item-detail">
+              <p><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
+              <p><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
+              <div v-if="row.recordedChapters.length" class="cp-records">
                 <div class="cp-records-head">
                   <span class="cp-chip-label">清单里已有的</span>
                   <span class="cp-meta">
@@ -210,106 +148,104 @@
                     <template v-if="row.recordedTruncated">（先列前 {{ row.recordedChapters.length }} 章）</template>
                   </span>
                 </div>
-                <div v-for="c in row.recordedChapters" :key="c.ch" class="cp-record-row">
+                <div v-for="c in row.recordedChapters.slice(0, 6)" :key="c.ch" class="cp-record-row">
                   <button type="button" class="cp-chap-link" @click="emitLocate(c.ch)">第 {{ c.ch }} 章</button>
                   <div class="cp-record-items">
                     <p v-for="(t, ti) in c.items" :key="ti" :class="{ 'cp-muted-item': t === NO_DESC }">{{ t }}</p>
                     <p v-if="c.count > c.items.length" class="cp-meta">还有 {{ c.count - c.items.length }} 条</p>
                   </div>
                 </div>
+                <p v-if="row.recordedChapters.length > 6" class="cp-meta">还有 {{ row.recordedChapters.length - 6 }} 章没展开。</p>
               </div>
-              <p v-else-if="row.showInMust && row.locatable" class="cp-meta">这份清单里还没有记录可以列。</p>
-              <!-- 影响与建议拆成两行，和「事实」拉开视觉权重 -->
-              <template v-if="row.showInMust && row.status !== 'synced' && row.status !== 'ahead'">
-                <p class="cp-card-detail"><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
-                <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
-              </template>
-              <div v-if="row.firstMissingCh" class="cp-card-actions">
-                <el-button size="small" text type="primary" @click="emitLocate(row.firstMissingCh)">
-                  打开第 {{ row.firstMissingCh }} 章
-                </el-button>
-              </div>
+              <p v-else-if="row.locatable" class="cp-meta">这份清单里还没有记录可以列。</p>
             </div>
-            <p class="cp-footnote">
-              <template v-if="hiddenViews.length">
-                另有 {{ hiddenViews.length }} 项系统内部账本（{{ hiddenViewNames }}）只做系统自检，界面上不展开、也不用你维护；它们落后不影响上面的结论。
-              </template>
-              <template v-else>上面只列你能看到内容的记录；系统内部账本不在界面上展开。</template>
-            </p>
-          </div>
+            <div class="cp-item-foot">
+              <el-button size="small" text @click="toggleExpand(`cv-${ri}`)">
+                {{ isExpanded(`cv-${ri}`) ? '收起明细' : '看影响与已有记录' }}
+              </el-button>
+              <el-button v-if="row.firstMissingCh" size="small" text type="primary"
+                @click="emitLocate(row.firstMissingCh)">打开第 {{ row.firstMissingCh }} 章</el-button>
+            </div>
+          </article>
+          <p class="cp-footnote">
+            <template v-if="hiddenViews.length">
+              另有 {{ hiddenViews.length }} 项系统内部账本只做自检，界面上不展开，也不用你维护。
+            </template>
+            <template v-else>上面只列你能看到内容的记录。</template>
+          </p>
+        </div>
 
-          <!-- 2. 伏笔：这里只给结论，台账在工具中心「伏笔」 -->
+          <!-- 2. 伏笔：只给结论，台账在工具中心「伏笔」 -->
           <div v-show="sub === 'foreshadow'" class="cp-pane">
-            <p class="cp-source-line">
-              台账（改名、埋点章、计划回收章、等级）在「工具中心 · 伏笔」；这里只列需要你处理的几条，已埋下/已收掉的不重复列。
-            </p>
             <p v-if="fsLoaded && !fsActionable.length" class="cp-group-empty">{{ fsEmptyText }}</p>
-            <article v-for="it in fsActionable" :key="it.name" class="cp-card">
-              <div class="cp-card-top">
-                <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ fsLabel(it.state) }}</span>
-                <strong class="cp-card-title">{{ fsProblem(it) }}</strong>
+            <article v-for="(it, i) in fsActionable" :key="it.name" class="cp-item">
+              <div class="cp-item-top">
+                <span class="cp-dot" :class="`sev-${it.severity}`"></span>
+                <strong class="cp-item-title">{{ fsProblem(it) }}</strong>
+                <span class="cp-item-cat">{{ fsLabel(it.state) }}</span>
+                <span v-if="it.record_stale" class="cp-stale-tag">记录可能过期</span>
               </div>
-              <p class="cp-card-where">{{ fsWhere(it) }}</p>
-              <span v-if="it.record_stale" class="cp-stale-tag">记录可能过期</span>
-              <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ fsAdvice(it) }}</p>
-              <p v-if="it.excerpt" class="cp-card-evidence">原文：「{{ it.excerpt }}」</p>
-              <div class="cp-card-actions">
-                <el-button size="small" text type="primary" @click="emitLocate(it.buried_ch)">
+              <p class="cp-item-where">{{ fsWhere(it) }}</p>
+              <p class="cp-item-advice"><span class="cp-advice-label">建议</span>{{ fsAdvice(it) }}</p>
+              <div v-show="isExpanded(`fs-${i}`)" class="cp-item-detail">
+                <p v-if="it.excerpt"><span class="cp-detail-label">原文</span>「{{ it.excerpt }}」</p>
+              </div>
+              <div class="cp-item-foot">
+                <el-button v-if="it.excerpt" size="small" text @click="toggleExpand(`fs-${i}`)">
+                  {{ isExpanded(`fs-${i}`) ? '收起原文' : '看原文' }}
+                </el-button>
+                <el-button v-if="it.buried_ch" size="small" text type="primary" @click="emitLocate(it.buried_ch)">
                   打开第 {{ it.buried_ch }} 章
                 </el-button>
               </div>
             </article>
             <el-button v-if="fsItems.length < fsTotal" size="small" text type="primary" :loading="fsLoading"
               @click="loadMore('foreshadow')">再看一些</el-button>
-            <p v-if="fsLoaded && fsItems.length > fsActionable.length" class="cp-footnote">
-              其余按计划正常推进的伏笔不在本页重复列，去「工具中心 · 伏笔」看全量台账。
+            <p class="cp-footnote">
+              台账（改名、埋点章、计划回收章、等级）在「工具中心 · 伏笔」；这里只列需要处理的，
+              <template v-if="fsLoaded && fsItems.length > fsActionable.length">其余正常推进的不重复列。</template>
             </p>
           </div>
 
           <!-- 3. 前后不一致 -->
           <div v-show="sub === 'conflicts'" class="cp-pane">
-            <p class="cp-source-line">{{ conflictSourceLine }}</p>
-            <p class="cp-source-hint">全书校验记录由本页直接列出（工具中心只做诊断，不再重复承载检查记录），单章质检来自每章版本里的质检记录。两处数字不同是因为来源不同，相加即可核对；逐条证据与改法统一在对应章的「版本」弹窗里看。</p>
             <p v-if="confLoaded && !confItems.length" class="cp-group-empty">{{ confEmptyText }}</p>
-            <article v-for="(it, i) in confItems" :key="i" class="cp-card">
-              <div class="cp-card-top">
-                <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ severityLabel(it.severity) }}</span>
-                <span class="cp-card-cat" :class="{ repeat: it.category === 'repetition' || it.category === 'duplicate_event' }">{{ it.categoryLabel }}</span>
-                <strong class="cp-card-title">{{ it.headline }}</strong>
+            <article v-for="(it, i) in confItems" :key="i" class="cp-item">
+              <div class="cp-item-top">
+                <span class="cp-dot" :class="`sev-${it.severity}`"></span>
+                <strong class="cp-item-title">{{ it.headline }}</strong>
+                <span v-if="it.categoryLabel" class="cp-item-cat">{{ it.categoryLabel }}</span>
                 <span v-if="it.record_stale" class="cp-stale-tag">记录可能过期</span>
               </div>
-              <p class="cp-card-where">涉及：{{ it.scopeText }}</p>
-              <p class="cp-card-detail"><span class="cp-detail-label">依据</span>{{ it.basisText }}</p>
-              <p v-for="b in it.basisExcerpts" :key="b.name" class="cp-card-detail">
-                <span class="cp-detail-label">对照设定</span>「{{ b.name }}」：{{ b.excerpt }}
-              </p>
-              <p v-if="it.actualText" class="cp-card-detail" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
-                <span class="cp-detail-label">记录原文</span>{{ it.actualText }}
-              </p>
-              <p v-if="it.checkType" class="cp-card-detail"><span class="cp-detail-label">检查项</span>{{ it.checkType }}</p>
-              <p v-if="it.note" class="cp-card-detail"><span class="cp-detail-label">说明</span>{{ it.note }}</p>
-              <div v-if="it.sides" class="cp-sides">
-                <p v-if="it.sides.expected" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
-                  <span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}
+              <p class="cp-item-where">涉及：{{ it.scopeText }}</p>
+              <p class="cp-item-advice"><span class="cp-advice-label">建议</span>{{ adviceOf(it) }}</p>
+              <div v-show="isExpanded(`c-${i}`)" class="cp-item-detail">
+                <div v-if="it.sides">
+                  <p v-if="it.sides.expected"><span class="cp-side-label">{{ it.sides.expectedLabel }}</span>{{ it.sides.expected }}</p>
+                  <p v-if="it.sides.actual"><span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}</p>
+                </div>
+                <p v-if="!it.sides && it.actualText"><span class="cp-detail-label">记录原文</span>{{ it.actualText }}</p>
+                <p><span class="cp-detail-label">依据</span>{{ it.basisText }}</p>
+                <p v-for="b in it.basisExcerpts" :key="b.name">
+                  <span class="cp-detail-label">对照设定</span>「{{ b.name }}」：{{ b.excerpt }}
                 </p>
-                <p v-if="it.sides.actual" :class="{ 'clamp-text': !isExpanded(`c-${i}`) }">
-                  <span class="cp-side-label">{{ it.sides.actualLabel }}</span>{{ it.sides.actual }}
-                </p>
+                <p v-if="it.checkType"><span class="cp-detail-label">检查项</span>{{ it.checkType }}</p>
+                <p v-if="it.note"><span class="cp-detail-label">说明</span>{{ it.note }}</p>
+                <p><span class="cp-detail-label">为什么这样判</span>{{ it.reasonText }}</p>
               </div>
-              <p class="cp-card-detail"><span class="cp-detail-label">为什么这样判</span>{{ it.reasonText }}</p>
-              <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ adviceOf(it) }}</p>
-              <div class="cp-card-actions">
-                <el-button v-if="it.longContent" size="small" text @click="toggleExpand(`c-${i}`)">
-                  {{ isExpanded(`c-${i}`) ? '收起原文' : '展开原文' }}
+              <div class="cp-item-foot">
+                <el-button size="small" text @click="toggleExpand(`c-${i}`)">
+                  {{ isExpanded(`c-${i}`) ? '收起依据' : '看依据' }}
                 </el-button>
                 <el-button v-if="it.chapter && it.source !== 'chapter_quality'" size="small" text type="primary"
-                           @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
+                  @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
                 <el-button v-if="it.chapter && it.source === 'chapter_quality'" size="small" text type="primary"
-                           @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+                  @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
               @click="loadMore('conflicts')">再看一些</el-button>
+            <p class="cp-footnote">{{ conflictSourceLine }}；逐条证据与改法在对应章的「版本」弹窗里。</p>
           </div>
 
           <!-- 4. 人物 / 设定索引 -->
@@ -333,12 +269,16 @@
               设定条目太多，这次只体检了前 400 个。搜具体名字仍然能查到。
             </p>
           </div>
-      </div>
 
-      <!-- 数据边界：把「哪里查不到」翻成人话 -->
+      <!-- 数据边界：默认收起，需要时再展开 -->
       <div v-if="gapNotes.length" class="cp-boundary">
-        <strong>这份体检的边界</strong>
-        <p v-for="(note, i) in gapNotes" :key="i">· {{ note }}</p>
+        <button type="button" class="cp-boundary-head" @click="showBoundary = !showBoundary">
+          <span class="cp-caret" :class="{ open: showBoundary }">▸</span>
+          这份体检的边界（{{ gapNotes.length }} 条查不到的地方）
+        </button>
+        <div v-show="showBoundary" class="cp-boundary-body">
+          <p v-for="(note, i) in gapNotes" :key="i">· {{ note }}</p>
+        </div>
       </div>
     </template>
 
@@ -366,7 +306,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getConsistencyOverview, getForeshadowLedger, getConsistencyConflicts,
@@ -390,7 +330,8 @@ const emit = defineEmits(['locate', 'open-versions'])
 
 const loading = ref(false)
 const overview = ref(null)
-const sub = ref('coverage')
+const sub = ref('todo')
+const showBoundary = ref(false)
 const PAGE_SIZE = 100
 
 // 伏笔
@@ -417,9 +358,6 @@ const drawerOpen = ref(false)
 const drawer = ref(null)
 const drawerLoading = ref(false)
 
-// 分组默认只展开最需要处理的一组
-const openGroups = reactive({ must: true, suggest: false, later: false })
-
 const severityLabel = (sev) => severityMeta(sev).label
 const fsLabel = (state) => foreshadowStateLabel(state)
 const fsProblem = (it) => foreshadowProblem(it)
@@ -431,6 +369,9 @@ const viewName = (view) => projectionViewLabel(view)
 // 内部记录不暴露「落后」红标，统一叫「后台记录」，避免作者误以为要去补
 const coverageState = (row) => (row.showInMust ? coverageStateLabel(row.status) : '后台记录')
 const coverageTag = (row) => (row.showInMust ? coverageStateType(row.status) : 'info')
+// 状态说「跟上了」却仍列出缺记录章时，按事实给标签，避免自相矛盾
+const coverageDisplayState = (row) => (row.missingCount ? `缺 ${row.missingCount} 章` : coverageState(row))
+const coverageDisplayTag = (row) => (row.missingCount && row.status !== 'lagging' ? 'warning' : coverageTag(row))
 
 const baselineCh = computed(() => overview.value?.baseline_ch || 0)
 
@@ -442,20 +383,22 @@ const staleNotice = computed(() => staleNoticeOf(overview.value))
 // 覆盖清单里「没有可读描述」的条目统一标注，与后端常量保持一致
 const NO_DESC = '只有编号，没有描述'
 
-// 四个分类的用途说明（切页时跟着换，不再各占一层横条）
+// 用途说明：切页时跟着换，一句话说清这块回答什么问题
 const PURPOSE = {
-  coverage: '这块看：AI 写新章节时会参考的「章节摘要 / 场景清单」有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
-  foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索，只列需要你处理的。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划；台账在「工具中心 · 伏笔」。',
-  conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；逐条证据与改法在对应章的「版本」弹窗。',
-  entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
+  todo: '把需要动的地方按轻重排在一起，先看这一页；想按来源逐条翻，再切后面的分类。',
+  coverage: '这块看：AI 写新章节时会参考的「章节摘要 / 场景清单」有没有跟到最新章节。',
+  foreshadow: '这块看：埋下还没收的线索里，需要你处理的那几条；台账在「工具中心 · 伏笔」。',
+  conflicts: '这块看：通读检查和单章质检说「和前面设定或情节对不上」的地方，只读汇总、不重跑检查。',
+  entities: '这块看：人物、地点、势力、物件各出现在哪些章，点一行能看原文句子。',
 }
 
-// 一级分类与筛选合并成一行，标签用短词避免换行拥挤
+// 一条导航贯穿到底：待处理 → 四类明细；标签用短词，避免换行拥挤
 const SUB_TABS = computed(() => [
-  { name: 'coverage', label: '设定跟上了吗' },
+  { name: 'todo', label: '待处理', count: (counts.value.urgent || 0) + (counts.value.suggest || 0) },
+  { name: 'coverage', label: '设定进度', count: authorLagging.value || 0 },
   { name: 'foreshadow', label: '伏笔回收', count: overview.value?.foreshadow?.total ?? 0 },
   { name: 'conflicts', label: '前后对不上', count: overview.value?.conflicts?.total ?? 0 },
-  { name: 'entities', label: '人物·设定索引' },
+  { name: 'entities', label: '人物索引' },
 ])
 
 // 长原文默认两行截断，按条展开
@@ -530,7 +473,6 @@ const coverageViews = computed(() => (overview.value?.coverage?.views || []).map
 // 它们各自的事实页面已经在别处，这里只留一句数量说明。
 const authorViews = computed(() => coverageViews.value.filter((row) => row.showInMust))
 const hiddenViews = computed(() => coverageViews.value.filter((row) => !row.showInMust))
-const hiddenViewNames = computed(() => hiddenViews.value.map((row) => viewName(row.view)).join('、'))
 
 // 冲突项预先把「依据 / 预期实际 / 判定理由」算好，模板只负责展示
 function decorateConflict(it) {
@@ -579,7 +521,7 @@ const verdict = computed(() => {
     return { level: 'ok', tag: '还没结论', text: '目前还没有可判断的记录（还没有通读检查或质检记录）。多写几章、跑一次全书检查后，这里才会给出结论。' }
   }
   if (c.urgent) {
-    return { level: 'danger', tag: '要处理', text: `全书有 ${c.urgent} 处建议马上处理，先在下面「必须先处理」里挑最要紧的看。` }
+    return { level: 'danger', tag: '要处理', text: `全书有 ${c.urgent} 处建议马上处理，先看下面的待处理清单，已按轻重排好。` }
   }
   if (c.suggest) {
     return { level: 'warning', tag: '还行', text: `没有必须马上处理的问题，有 ${c.suggest} 处建议抽空看看。` }
@@ -659,24 +601,11 @@ function buildGroupedItems(ov) {
 
 const groupedItems = computed(() => buildGroupedItems(overview.value))
 
-const GROUP_DEFS = [
-  { key: 'must', title: '必须先处理', hint: '不处理，读者容易觉得前后对不上', tagType: 'danger', empty: '没有必须马上处理的问题。' },
-  { key: 'suggest', title: '建议处理', hint: '抽空看看，别拖太久', tagType: 'warning', empty: '没有建议处理的问题。' },
-  { key: 'later', title: '了解一下', hint: '不影响阅读，知道就好', tagType: 'info', empty: '没有需要留意的记录。' },
-]
-
-// 分组总数：与 counts 的命名对应（must→urgent / suggest→suggest / later→minor）
-const groupTotals = computed(() => ({
-  must: counts.value.urgent,
-  suggest: counts.value.suggest,
-  later: counts.value.minor,
-}))
-
-const groupList = computed(() => GROUP_DEFS.map((g) => ({
-  ...g,
-  items: groupedItems.value.filter((it) => it.group === g.key),
-  total: groupTotals.value[g.key],
-})))
+// 待处理页：只放「必须 / 建议」两档，首屏最多 6 条，避免一屏堆满
+const TODO_CAP = 6
+const todoAll = computed(() => groupedItems.value.filter((it) => it.group === 'must' || it.group === 'suggest'))
+const todoItems = computed(() => todoAll.value.slice(0, TODO_CAP))
+const todoMore = computed(() => Math.max(0, todoAll.value.length - todoItems.value.length))
 
 const fsEmptyText = computed(() => (fsState.value
   ? '这个状态下暂时没有需要处理的伏笔，换个状态看看。'
@@ -695,15 +624,6 @@ const entityEmptyText = computed(() => (entityQuery.value
   ? `没有找到叫「${entityQuery.value}」的人物或设定，换个名字或别名再搜。`
   : '还没有可查的人物或设定。先在大纲或世界观里生成人物与设定，这里就能查到它们出现在哪几章。'))
 
-function toggleGroup(key) {
-  openGroups[key] = !openGroups[key]
-}
-
-function resetOpenGroups() {
-  const first = counts.value.urgent ? 'must' : counts.value.suggest ? 'suggest' : 'later'
-  for (const key of Object.keys(openGroups)) openGroups[key] = key === first
-}
-
 // 章节跳转：只在有真实章号时发事件
 function emitLocate(no) {
   if (no) emit('locate', no)
@@ -713,7 +633,6 @@ async function loadOverview() {
   loading.value = true
   try {
     overview.value = await getConsistencyOverview(props.pid)
-    resetOpenGroups()
     // 首屏按当前子页同步一次，避免切页后展示旧空表
     await loadCurrentSub()
   } catch (e) {
@@ -836,6 +755,42 @@ watch(sub, async () => {
 .cp-guide ol { padding-left: 18px; margin-top: 6px; }
 
 /* 结论条 */
+/* 结论 + 关键数字：一条横条，不再占四张大卡 */
+.cp-hero {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; border: 1px solid var(--card-line); border-left: 3px solid var(--ok);
+  border-radius: var(--radius); background: var(--card);
+}
+.cp-hero.danger { border-left-color: var(--danger); }
+.cp-hero.warning { border-left-color: var(--gold-deep); }
+.cp-hero-tag { flex: none; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--chip, rgba(0, 0, 0, .05)); color: var(--ink-soft); }
+.cp-hero.danger .cp-hero-tag { color: var(--danger); }
+.cp-hero.warning .cp-hero-tag { color: var(--gold-deep); }
+.cp-hero-text { flex: 1 1 240px; font-size: 13px; line-height: 1.6; color: var(--ink-soft); }
+.cp-hero-kpis { display: flex; align-items: center; gap: 8px; flex: none; }
+.cp-kpi { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cp-kpi.danger { color: var(--danger); }
+.cp-kpi.warn { color: var(--gold-deep); }
+
+/* 统一条目：默认两行，明细按需展开 */
+.cp-item { padding: 10px 0; border-top: 1px dashed var(--card-line); }
+.cp-item:first-of-type { border-top: none; }
+.cp-item-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cp-item-title {
+  flex: 1 1 220px; font-size: 13px; line-height: 1.6; min-width: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cp-item-cat, .cp-item-where, .cp-item-advice { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.cp-item-cat { flex: none; }
+.cp-item-where { margin-top: 2px; }
+.cp-item-advice { margin-top: 3px; color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cp-item-detail { margin-top: 6px; padding: 8px 10px; background: var(--soft, rgba(0, 0, 0, .02)); border-radius: 6px; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
+.cp-item-detail p + p { margin-top: 4px; }
+.cp-item-foot { margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; }
+.cp-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.cp-dot.sev-high { background: var(--danger); }
+.cp-dot.sev-medium { background: var(--gold-deep); }
+.cp-dot.sev-low, .cp-dot.sev-info { background: var(--card-line); }
 .cp-verdict {
   display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px;
   border: 1px solid var(--card-line); border-left: 3px solid var(--ok);
@@ -919,13 +874,10 @@ watch(sub, async () => {
 .cp-coverage-card { padding: 10px 0; border-top: 1px dashed var(--card-line); min-width: 0; }
 .cp-coverage-fact { margin-top: 4px; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
 
-/* 细看区 */
-.cp-detail { background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius); padding: 10px 14px 12px; }
-.cp-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-/* 一级分类 + 筛选：一行放完，不堆两层横条 */
+/* 明细区：一条导航 + 一类条目，不再套第二层卡片 */
 .cp-nav {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  flex-wrap: wrap; margin-top: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--card-line);
+  flex-wrap: wrap; margin-top: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--card-line);
 }
 .cp-nav-tabs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
 .cp-tab {
@@ -991,13 +943,18 @@ watch(sub, async () => {
 .cp-meta { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .cp-link { color: var(--indigo); cursor: pointer; font-weight: 600; font-size: 12px; white-space: nowrap; }
 
-/* 数据边界 */
+/* 数据边界：默认收起的一行 */
 .cp-boundary {
   font-size: 12px; color: var(--muted); line-height: 1.7;
-  padding: 10px 14px; border: 1px dashed var(--card-line); border-radius: var(--radius);
+  padding: 8px 14px; border: 1px dashed var(--card-line); border-radius: var(--radius);
 }
-.cp-boundary strong { color: var(--ink-soft); font-weight: 600; }
-.cp-boundary p { margin-top: 2px; }
+.cp-boundary-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 12px; color: var(--muted); text-align: left;
+}
+.cp-boundary-body { margin-top: 6px; }
+.cp-boundary-body p { margin-top: 2px; }
 
 /* 抽屉内定位 */
 .cp-mention { padding: 8px 0; border-bottom: 1px dashed var(--card-line); }

@@ -187,7 +187,7 @@
           <template #header>
             <div class="fs-head">
               <b>伏笔</b>
-              <span class="muted">埋点 · 计划回收 · 当前进度（与全书体检、时间线同一份账本）</span>
+              <span class="muted">唯一台账：埋点 · 计划回收 · 进度；改这里，全书体检与时间线自动跟着变</span>
             </div>
           </template>
           <div v-if="!fsSummary.total" class="muted">

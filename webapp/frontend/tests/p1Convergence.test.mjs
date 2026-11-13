@@ -75,3 +75,23 @@ test('Agent 页接收区间预设，重写只在「章节写手 · 区间」发�
   assert.ok(detail.includes('preset-range="agentPreset"'))
   assert.ok(detail.includes('goAgentRewrite'))
 })
+
+// ---------- 体检页二次收敛：内部账本不再罗列、伏笔只留结论 ----------
+test('体检页只展开作者可见记录，系统内部账本收敛为一行数量说明', () => {
+  const cp = read('src/components/consistency/ConsistencyPanel.vue')
+  assert.ok(cp.includes('authorViews'), '覆盖页应按可见性分流')
+  assert.ok(cp.includes('hiddenViews'), '内部账本应折叠，不再逐条渲染')
+  assert.equal(cp.includes('系统内部记录 · 仅供参考'), false, '不再给内部账本发卡片')
+})
+
+test('体检伏笔页只列需要处理的条目，台账指向工具中心', () => {
+  const cp = read('src/components/consistency/ConsistencyPanel.vue')
+  assert.ok(cp.includes('fsActionable'), '伏笔页应过滤掉正常推进的条目')
+  assert.ok(cp.includes('工具中心 · 伏笔'), '应指回唯一台账')
+})
+
+test('时间线不再单独列一份伏笔事件清单', () => {
+  const tl = read('src/components/facts/FactsTimelinePanel.vue')
+  assert.equal(/tl-foreshadow/.test(tl), false, '伏笔类事件清单应已移除')
+  assert.ok(tl.includes('不再单独列一份'))
+})

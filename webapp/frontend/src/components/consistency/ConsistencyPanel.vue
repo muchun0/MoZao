@@ -175,14 +175,13 @@
 
         <!-- 1. 设定小抄是否跟上正文 -->
         <div v-show="sub === 'coverage'" class="cp-pane">
-            <p v-if="!coverageViews.length" class="cp-group-empty">
+            <p v-if="!authorViews.length" class="cp-group-empty">
               暂时还没有可对照的记录。等生成过正文后，这里会显示每项「小抄」跟到了第几章。
             </p>
-            <div v-for="row in coverageViews" :key="row.view" class="cp-coverage-card">
+            <div v-for="row in authorViews" :key="row.view" class="cp-coverage-card">
               <div class="cp-row-title">
                 <strong>{{ viewName(row.view) }}</strong>
                 <el-tag size="small" :type="coverageTag(row)" effect="plain">{{ coverageState(row) }}</el-tag>
-                <span v-if="!row.showInMust" class="cp-meta">系统内部记录 · 仅供参考</span>
               </div>
               <!-- 信息顺序：这是什么（来源）→ 现在的问题 → 影响 → 你能做什么 -->
               <p class="cp-card-detail"><span class="cp-detail-label">这是什么</span>{{ row.whatText }}</p>
@@ -225,24 +224,27 @@
                 <p class="cp-card-detail"><span class="cp-detail-label">会影响</span>{{ row.effectText }}</p>
                 <p class="cp-card-advice"><span class="cp-advice-label">建议</span>{{ row.adviceText }}</p>
               </template>
-              <p v-else-if="!row.showInMust && row.status === 'lagging'" class="cp-card-advice">
-                <span class="cp-advice-label">说明</span>这一项的内容你看不到，也不用管；这里的缺口只作系统内部参考。
-              </p>
-              <div v-if="row.showInMust && row.firstMissingCh" class="cp-card-actions">
+              <div v-if="row.firstMissingCh" class="cp-card-actions">
                 <el-button size="small" text type="primary" @click="emitLocate(row.firstMissingCh)">
                   打开第 {{ row.firstMissingCh }} 章
                 </el-button>
               </div>
             </div>
             <p class="cp-footnote">
-              只有「你看得到内容」的记录才会进上面的「必须先处理」；系统内部账本只在这里列出来做个参考。
+              <template v-if="hiddenViews.length">
+                另有 {{ hiddenViews.length }} 项系统内部账本（{{ hiddenViewNames }}）只做系统自检，界面上不展开、也不用你维护；它们落后不影响上面的结论。
+              </template>
+              <template v-else>上面只列你能看到内容的记录；系统内部账本不在界面上展开。</template>
             </p>
           </div>
 
-          <!-- 2. 伏笔 -->
+          <!-- 2. 伏笔：这里只给结论，台账在工具中心「伏笔」 -->
           <div v-show="sub === 'foreshadow'" class="cp-pane">
-            <p v-if="fsLoaded && !fsItems.length" class="cp-group-empty">{{ fsEmptyText }}</p>
-            <article v-for="it in fsItems" :key="it.name" class="cp-card">
+            <p class="cp-source-line">
+              台账（改名、埋点章、计划回收章、等级）在「工具中心 · 伏笔」；这里只列需要你处理的几条，已埋下/已收掉的不重复列。
+            </p>
+            <p v-if="fsLoaded && !fsActionable.length" class="cp-group-empty">{{ fsEmptyText }}</p>
+            <article v-for="it in fsActionable" :key="it.name" class="cp-card">
               <div class="cp-card-top">
                 <span class="cp-card-tag" :class="`sev-${it.severity}`">{{ fsLabel(it.state) }}</span>
                 <strong class="cp-card-title">{{ fsProblem(it) }}</strong>
@@ -259,6 +261,9 @@
             </article>
             <el-button v-if="fsItems.length < fsTotal" size="small" text type="primary" :loading="fsLoading"
               @click="loadMore('foreshadow')">再看一些</el-button>
+            <p v-if="fsLoaded && fsItems.length > fsActionable.length" class="cp-footnote">
+              其余按计划正常推进的伏笔不在本页重复列，去「工具中心 · 伏笔」看全量台账。
+            </p>
           </div>
 
           <!-- 3. 前后不一致 -->
@@ -439,8 +444,8 @@ const NO_DESC = '只有编号，没有描述'
 
 // 四个分类的用途说明（切页时跟着换，不再各占一层横条）
 const PURPOSE = {
-  coverage: '这块看：AI 写新章节时会参考的那些「设定小抄」（章节摘要、伏笔回收计划、人物当前状态等）有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
-  foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划。',
+  coverage: '这块看：AI 写新章节时会参考的「章节摘要 / 场景清单」有没有跟到最新章节。落后的时候，后面写出来的内容更容易和前面打架。',
+  foreshadow: '这块看：故事里已经埋下、还没给读者交代的线索，只列需要你处理的。「早该收了」最要紧，「很久没推进」次之，「近期该收」可以先排进计划；台账在「工具中心 · 伏笔」。',
   conflicts: '这块看：已有的全书通读检查和单章质检里，指出「和前面的设定或情节对不上」的地方。这里只读汇总、不重新跑检查；逐条证据与改法在对应章的「版本」弹窗。',
   entities: '这块看：人物、地点、势力、物件在正文里各出现在哪些章。点一行能看到具体句子，方便确认某条设定到底有没有落实。',
 }
@@ -520,6 +525,13 @@ const coverageViews = computed(() => (overview.value?.coverage?.views || []).map
   staleChapters: staleChaptersOf(row),
 })))
 
+// REQ-R23 收敛：体检只展开「作者看得到内容」的记录（章节摘要/场景清单），
+// 系统内部账本（关键剧情节点、人物当前状态、前情提要等）不在本页重复罗列——
+// 它们各自的事实页面已经在别处，这里只留一句数量说明。
+const authorViews = computed(() => coverageViews.value.filter((row) => row.showInMust))
+const hiddenViews = computed(() => coverageViews.value.filter((row) => !row.showInMust))
+const hiddenViewNames = computed(() => hiddenViews.value.map((row) => viewName(row.view)).join('、'))
+
 // 冲突项预先把「依据 / 预期实际 / 判定理由」算好，模板只负责展示
 function decorateConflict(it) {
   const basis = conflictBasis(it)
@@ -542,6 +554,9 @@ function decorateConflict(it) {
 }
 const gapNotes = computed(() => (overview.value?.data_gaps || []).map(humanizeGap))
 
+// 只统计作者可见记录的落后项：内部账本已不在本页展开，也不再计入「要处理」的数字
+const authorLagging = computed(() => authorViews.value.filter((row) => row.status === 'lagging').length)
+
 // 各分组真实总数（来自后端计数，不受首屏预览条数限制）
 const counts = computed(() => {
   const ov = overview.value
@@ -549,7 +564,7 @@ const counts = computed(() => {
   const c = ov.conflicts?.counts || {}
   const f = ov.foreshadow?.counts || {}
   return {
-    urgent: (c.high || 0) + (f.overdue || 0) + (ov.coverage?.lagging_views?.length || 0),
+    urgent: (c.high || 0) + (f.overdue || 0) + authorLagging.value,
     suggest: (c.medium || 0) + (f.stalled || 0),
     minor: (c.low || 0) + (c.info || 0) + (f.due_soon || 0) + (f.planted || 0) + (f.revealed || 0),
   }
@@ -559,7 +574,7 @@ const counts = computed(() => {
 const verdict = computed(() => {
   const ov = overview.value
   const c = counts.value
-  const hasSignal = (ov?.conflicts?.total || 0) + (ov?.foreshadow?.total || 0) + (ov?.coverage?.lagging_views?.length || 0)
+  const hasSignal = (ov?.conflicts?.total || 0) + (ov?.foreshadow?.total || 0) + authorLagging.value
   if (!hasSignal) {
     return { level: 'ok', tag: '还没结论', text: '目前还没有可判断的记录（还没有通读检查或质检记录）。多写几章、跑一次全书检查后，这里才会给出结论。' }
   }
@@ -664,8 +679,13 @@ const groupList = computed(() => GROUP_DEFS.map((g) => ({
 })))
 
 const fsEmptyText = computed(() => (fsState.value
-  ? '这个状态下暂时没有伏笔，换个状态看看。'
-  : '这本书还没有登记伏笔。伏笔来自世界观：给线索写上埋在第几章、打算第几章收，这里就会显示进度。'))
+  ? '这个状态下暂时没有需要处理的伏笔，换个状态看看。'
+  : '现在没有需要处理的伏笔。台账（新增、改章号、改等级）在「工具中心 · 伏笔」。'))
+
+// 只列需要处理的伏笔（已埋下/已收掉属于正常推进，不在体检页重复列）
+const FS_ACTIONABLE = ['overdue', 'stalled', 'due_soon', 'not_buried']
+const fsActionable = computed(() => fsItems.value.filter(
+  (it) => FS_ACTIONABLE.includes(it.state) || it.record_stale))
 
 const confEmptyText = computed(() => (confSeverity.value
   ? '这个轻重下暂时没有记录，换个轻重看看。'

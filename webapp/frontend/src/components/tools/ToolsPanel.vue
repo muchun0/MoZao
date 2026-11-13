@@ -15,6 +15,7 @@
         <!-- 三期 F2：场景体检（Scene Inspector） -->
         <el-card class="tool-card">
           <template #header><b>场景体检</b></template>
+          <p class="tool-use">适用于：某章读着不对劲，想先知道哪里不对</p>
           <p class="muted">对已生成章节做字数/事件/重复/承接/钩子体检并给修复建议</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <el-input-number v-model="inspectNo" :min="1" size="small" controls-position="right" style="width:90px" />
@@ -35,6 +36,7 @@
         <!-- 三期 F4：思维链可视化（生成过程） -->
         <el-card class="tool-card">
           <template #header><b>生成过程</b></template>
+          <p class="tool-use">适用于：某章出问题时排障，看 AI 当时怎么想的</p>
           <p class="muted">查看本章「计划→产出→校验」链条与中间产物（只读，不能编辑）</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <el-input-number v-model="cotNo" :min="1" size="small" controls-position="right" style="width:90px" />
@@ -94,6 +96,7 @@
         <!-- 质量校验（临时自检，结果不落库） -->
         <el-card class="tool-card">
           <template #header><b>质量校验</b></template>
+          <p class="tool-use">适用于：手动抽查一次设定/逻辑/合规，不落库</p>
           <p class="muted">临时自检设定一致性/剧情逻辑/合规，结果不写入章节质检记录；逐章改稿建议见「章节 → 版本」弹窗。</p>
           <el-space wrap>
             <el-button size="small" @click="runVerify('consistency', '设定一致性')">设定一致性</el-button>
@@ -118,6 +121,7 @@
         <!-- 多方案生成 -->
         <el-card class="tool-card">
           <template #header><b>多方案生成</b></template>
+          <p class="tool-use">适用于：卡文，想要几个不同走向挑一个</p>
           <p class="muted">为章节目标生成3个走向（参考，不写正文）</p>
           <el-input v-model="altGoal" placeholder="输入章节目标" />
           <el-button size="small" type="primary" style="margin-top:8px" @click="genAlts" :loading="altLoading">生成方案</el-button>
@@ -132,6 +136,7 @@
         <!-- 三期 F3：三分支续写选择 -->
         <el-card class="tool-card">
           <template #header><b>三分支续写</b></template>
+          <p class="tool-use">适用于：想知道下一章还能往哪写</p>
           <p class="muted">基于末章结尾生成 3 个方向（冲突升级/埋伏笔/转折）的续写候选，选一条复制使用</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <el-input-number v-model="branchNo" :min="1" size="small" controls-position="right" style="width:90px" />
@@ -150,6 +155,7 @@
         <!-- 节奏分析 -->
         <el-card class="tool-card">
           <template #header><b>节奏分析</b></template>
+          <p class="tool-use">适用于：怀疑全书节奏有断层</p>
           <p class="muted">每章字数分布与进度</p>
           <el-button size="small" @click="loadRhythm">查看节奏</el-button>
           <div class="result-area">
@@ -172,6 +178,7 @@
         <!-- 封面生成 -->
         <el-card class="tool-card">
           <template #header><b>小说封面</b></template>
+          <p class="tool-use">独立功能：只影响书架展示，不写入正文</p>
           <p class="muted">AI 生成小说封面（每本限 5 次）</p>
           <div v-if="coverUrl" class="cover-preview" style="margin-bottom:10px">
             <img :src="coverUrl" alt="封面" style="max-width:200px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.15)" />
@@ -190,6 +197,7 @@
               <span class="muted">唯一台账：埋点 · 计划回收 · 进度；改这里，全书体检与时间线自动跟着变</span>
             </div>
           </template>
+          <p class="tool-use">适用于：新埋了线索要登记，或旧伏笔要补章号</p>
           <div v-if="!fsSummary.total" class="muted">
             还没有登记伏笔。可在下方添加，或在世界观中补充伏笔计划（含埋设章与计划回收章）。
           </div>
@@ -264,6 +272,7 @@
               <span class="muted">原{{ RULE_TERM_LEGACY }}</span>
             </div>
           </template>
+          <p class="tool-use">适用于：有 AI 必须遵守的硬约束（保存即注入后续生成）</p>
           <p class="muted">{{ RULE_TERM_DESC }}</p>
           <el-space>
             <el-input v-model="lkInput" placeholder="如：主角不能杀人" style="flex:1" />
@@ -565,13 +574,24 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.tools-page { display: flex; flex-direction: column; gap: 22px; }
-.tool-section { display: flex; flex-direction: column; gap: 10px; }
-.tool-section-head h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
-.tool-section-head .muted { margin: 0; }
-.tool-health-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px;
-  background: #f5f7fa; border-left: 3px solid #409eff; border-radius: 4px; font-size: 13px; color: #606266; }
-.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.tools-page { display: flex; flex-direction: column; gap: 18px; }
+.tool-section { display: flex; flex-direction: column; gap: 8px; }
+.tool-section-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.tool-section-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.tool-section-head .muted { margin: 0; font-size: 12px; }
+.tool-health-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 10px;
+  background: #fbf6ea; border-left: 3px solid var(--gold, #c8a24a); border-radius: 4px; font-size: 12.5px; color: #5c6470; }
+/* REQ-R23 原型对齐：三列紧凑卡（视口≥1400 三列，≥1000 两列，窄屏一列），卡片高度不再被拉成两行空白 */
+.tools-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (min-width: 1000px) { .tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1400px) { .tools-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.tool-card :deep(.el-card__header) { padding: 8px 12px; }
+.tool-card :deep(.el-card__body) { padding: 10px 12px; }
+.tool-card :deep(.el-card__header b) { font-size: 13.5px; }
+/* 卡面第一行：这张卡「什么时候用」——先讲用途，再讲操作 */
+.tool-use { margin: 0 0 4px; font-size: 11.5px; color: #8a641f; background: #fbf6ea;
+  border-radius: 3px; padding: 2px 6px; display: inline-block; }
+.tool-card .muted { font-size: 12px; line-height: 1.6; }
 .muted { color: #909399; font-size: 13px; }
 .result-area { margin-top: 10px; max-height: 250px; overflow-y: auto; }
 .issue-box { padding: 8px 10px; background: #fdf6ec; border-left: 3px solid #e6a23c; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }

@@ -3,7 +3,6 @@
     <FactsPanelHead
       title="时间线"
       sub="按章看「已经发生的事件」，以及「发展方向的事件」（埋线、伏笔推进）。虚线卡是作者排的计划事件——只影响写对应章时的约束，不会被当作已发生事实。人物、地点、状态在「世界事实」，检查结论在「全书体检」。"
-      :stats="stats"
       :loading="loading"
       :readonly="false"
       @refresh="reload"
@@ -14,9 +13,9 @@
     </el-empty>
 
     <template v-else>
-      <div v-if="meta" class="tl-meta">
-        <span class="tl-tag mono">版本 {{ meta.version }}</span>
-        <span v-if="meta.sources?.stale" class="tl-tag warn">上游设定已更新，视图可能落后</span>
+      <!-- 内部账本版本号不再对作者展示；只在上游改动后视图可能落后时提示一次 -->
+      <div v-if="meta && meta.sources?.stale" class="tl-meta">
+        <span class="tl-tag warn">上游设定已更新，视图可能落后</span>
       </div>
 
       <!-- 一级页签 + 视图形态 + 筛选 -->
@@ -134,8 +133,9 @@
               </div>
             </div>
           </div>
-          <p class="tl-board-foot">
-            泳道里的空白格＝那几章没有这条线上的事件；泳道名后的「断档」标出最长的一段空档。计划卡可直接拖到别的章格改排期。
+          <p class="tl-legend">
+            <span><i class="lg-solid"></i>实线＝已发生（正文登记）</span>
+            <span><i class="lg-dash"></i>虚线＝计划事件（可拖动改章，可删）</span>
           </p>
         </div>
       </section>
@@ -315,13 +315,6 @@ const lanes = computed(() => {
     return { key: name, label: name, icon: name.slice(0, 1), total: items.length, items, gapText: gapText(items) }
   })
 })
-
-const stats = computed(() => [
-  { label: '写到第几章', value: atCh.value },
-  { label: '已发生', value: happened.value.length },
-  { label: '发展方向', value: directionCount.value },
-  { label: '计划', value: planned.value.length },
-])
 
 function firstLine(s) {
   const t = String(s || '').trim()
@@ -510,8 +503,13 @@ watch(() => props.pid, reload)
 .tl-count { font-size: 12px; color: var(--muted); }
 .tl-dim { color: var(--muted); font-size: 12px; }
 .tl-hint { font-size: 12px; color: var(--muted); line-height: 1.8; margin: 6px 0 0; }
-/* REQ-R23 P0-9：计划事件的「计划≠已发生」口径提示 */
+/* REQ-R23 P0-9：计划事件的「计划≠已发生」口径提示（页面顶部一句话，图上用图例区分） */
 .tl-plan-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 6px 0 4px; }
+.tl-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.tl-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.tl-legend .lg-solid, .tl-legend .lg-dash { width: 16px; height: 9px; border-radius: 2px; border: 1px solid var(--card-line); }
+.tl-legend .lg-solid { background: var(--card); border-left: 3px solid var(--indigo, #5b5bd6); }
+.tl-legend .lg-dash { border-style: dashed; background: transparent; }
 
 /* L1 卡片流 */
 .tl-flow-inner { display: flex; flex-direction: column; gap: 14px; }

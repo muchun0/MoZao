@@ -144,7 +144,7 @@
       <section v-show="tab === 'direction'" class="tl-card">
         <header class="tl-card-head">
           <h4 class="tl-h4">发展方向的事件</h4>
-          <span class="tl-count">指向后文的埋线：已埋未收的线索 {{ threads.length }} 条，伏笔类事件 {{ foreshadowEvents.length }} 条</span>
+          <span class="tl-count">指向后文的埋线：已埋未收的线索 {{ threads.length }} 条（伏笔台账与回收结论分别在「工具中心 · 伏笔」和「全书体检」）</span>
         </header>
 
         <div v-if="threads.length" class="tl-threads">
@@ -159,17 +159,7 @@
           </article>
         </div>
         <p v-else class="tl-hint">还没有已埋未收的线索。写章时埋下的伏笔会进这里；也可以先在「＋ 计划事件」里排一张埋线卡。</p>
-
-        <div v-if="foreshadowEvents.length" class="tl-foreshadow">
-          <h5 class="tl-h5">伏笔类事件</h5>
-          <article v-for="e in foreshadowEvents" :key="e.key" class="tl-ev-card foreshadow" @click="openCard(e)">
-            <div class="tl-ev-top"><el-tag size="small" effect="plain" type="warning">伏笔</el-tag><span class="tl-dim">第 {{ e.ch }} 章</span></div>
-            <p class="tl-ev-title">{{ e.title }}</p>
-            <div v-if="e.participants?.length" class="tl-ev-people">
-              <span v-for="p in e.participants" :key="p" class="tl-person">{{ p }}</span>
-            </div>
-          </article>
-        </div>
+        <p class="tl-hint">伏笔类事件已并入上面这份线索清单和「事实」页的事件流，不再单独列一份；要改伏笔的章号/等级去「工具中心 · 伏笔」。</p>
       </section>
     </template>
 
@@ -603,7 +593,6 @@ watch(() => props.pid, reload)
 .tl-thread-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tl-thread-head strong { font-size: 13px; }
 .tl-thread-desc { margin: 4px 0 0; font-size: 12px; line-height: 1.7; color: var(--ink-soft); }
-.tl-foreshadow { display: flex; flex-direction: column; gap: 8px; }
 
 /* 详情 / 表单 */
 .tl-detail { display: flex; flex-direction: column; gap: 8px; }

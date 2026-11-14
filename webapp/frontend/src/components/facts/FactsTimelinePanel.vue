@@ -110,7 +110,7 @@
                 <span v-if="lane.gapText" class="tl-gap-badge">{{ lane.gapText }}</span>
               </div>
               <div v-for="ch in chapters" :key="ch" class="tl-cell"
-                   @dragover.prevent @drop="dropOn(ch)">
+                   :data-ch="ch" @dragover.prevent @drop.prevent="dropOn(ch)">
                 <article v-for="it in cellItems(lane, ch)" :key="it.key" class="tl-mini"
                          :class="[it.kind, { planned: it.planned }]"
                          :draggable="it.planned"
@@ -124,9 +124,11 @@
             <!-- 计划泳道：把虚线卡拖到任意章格即可改落章 -->
             <div v-if="planned.length" class="tl-board-line tl-board-row tl-plan-row" :style="gridStyle">
               <div class="tl-lane-name"><span class="tl-lane-ico">✎</span><span class="tl-lane-label">作者计划</span><span class="tl-lane-count">{{ planned.length }}</span></div>
-              <div v-for="ch in chapters" :key="ch" class="tl-cell tl-plan-cell" @dragover.prevent @drop="dropOn(ch)">
+              <div v-for="ch in chapters" :key="ch" class="tl-cell tl-plan-cell"
+                   :data-ch="ch" @dragover.prevent @drop.prevent="dropOn(ch)">
                 <article v-for="it in plannedIn(ch)" :key="it.key" class="tl-mini planned"
-                         draggable @dragstart="startDrag(it, $event)" @click="openCard(it)">
+                         draggable="true" @dragstart="startDrag(it, $event)" @dragend="endDrag"
+                         @click="openCard(it)">
                   <span class="tl-mini-title">{{ shortTitle(it) }}</span>
                   <span class="tl-mini-tag">计划</span>
                 </article>
@@ -355,9 +357,14 @@ function startDrag(it, ev) {
   if (!it.planned) return
   dragId = it.id
   try {
-    ev.dataTransfer.setData('text/plain', it.id)
+    ev.dataTransfer.setData('text/plain', String(it.id))
     ev.dataTransfer.effectAllowed = 'move'
+    // 拖起来时给个明确的抓取光标（Chrome 默认会在 dragstart 后接管）
+    ev.dataTransfer.dropEffect = 'move'
   } catch (e) { /* 浏览器差异，忽略 */ }
+}
+function endDrag() {
+  dragId = ''
 }
 async function dropOn(ch) {
   if (!dragId) return
@@ -534,6 +541,8 @@ watch(() => props.pid, reload)
   border-style: dashed; border-left-style: dashed;
   background: repeating-linear-gradient(135deg, rgba(91, 91, 214, .04) 0 8px, transparent 8px 16px);
 }
+.tl-mini.planned { cursor: grab; }
+.tl-mini.planned:active { cursor: grabbing; }
 .tl-ev-top { display: flex; align-items: center; gap: 8px; }
 .tl-ev-title { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.6; color: var(--ink); }
 .tl-ev-desc { margin: 0; font-size: 12px; line-height: 1.7; color: var(--ink-soft); }

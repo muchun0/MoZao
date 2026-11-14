@@ -151,11 +151,15 @@ class VersionedProduct:
     def commit(self, key, content: dict, *, source: str = "ai",
                quality: Optional[dict] = None, promote: bool = True,
                run_id: str = "", upstream: Optional[dict] = None,
-               auto_select_best: bool = True, limit: Optional[int] = None) -> Optional[int]:
+               auto_select_best: bool = True, limit: Optional[int] = None,
+               label: str = "", ts: Optional[int] = None) -> Optional[int]:
         """内容与 HEAD 相同 → None（幂等）；否则追加 v{next} 并返回版本号。
 
         - 存量无索引但有 HEAD：旧 HEAD 存档为 v1(legacy)，新内容为 v2（§3.5）。
         - `promote=False`：只存档+索引，不写 HEAD、不改 selected（候选版本）。
+        - `label`：版本用途标签（如「快照 导入前_1203」「导入前备份」），REQ-R23 起
+          大纲快照与导入前自动备份都并入版本库，用标签区分用途、供版本弹窗展示。
+        - `ts`：版本时间戳（秒）；缺省当前时间。导入存量快照时传原文件时间，保序。
         - `quality`：写入 history（版本弹窗数据源）。
         - `source="user"`：置 `user_managed=True`，此后 auto_select_best 不覆盖。
         - `run_id`：缺省取 `store.current_run()`（无 run 上下文降级为空串）。
@@ -168,7 +172,8 @@ class VersionedProduct:
                 return None  # 幂等：内容未变不追加
             return self._commit_new(key, content, head=head, source=source, quality=quality,
                                     promote=promote, run_id=run_id, upstream=upstream,
-                                    auto_select_best=auto_select_best, limit=limit)
+                                    auto_select_best=auto_select_best, limit=limit,
+                                    label=label, ts=ts)
 
     def commit_head(self, key, *, source: str = "ai", run_id: str = "",
                     upstream: Optional[dict] = None, limit: Optional[int] = None) -> Optional[int]:
@@ -199,7 +204,8 @@ class VersionedProduct:
     def _commit_new(self, key: str, content: dict, *, head: Optional[dict],
                     source: str, quality: Optional[dict], promote: bool,
                     run_id: str, upstream: Optional[dict], auto_select_best: bool,
-                    limit: Optional[int], head_already_on_disk: bool = False) -> int:
+                    limit: Optional[int], head_already_on_disk: bool = False,
+                    label: str = "", ts: Optional[int] = None) -> int:
         """追加一个新版本（调用方已持锁、已判幂等）。`head` 为提交前的旧 HEAD（None=无或 HEAD 即新内容）。"""
         index = self._load_index()
         rec = self._rec(index, key)
@@ -221,9 +227,11 @@ class VersionedProduct:
         self.store._write_json(self.spec.version_path(self.store, key, next_v), content)
         versions.append(next_v)
         entry: dict[str, Any] = {
-            "v": next_v, "ts": int(time.time()), "source": source,
+            "v": next_v, "ts": int(ts) if ts else int(time.time()), "source": source,
             "quality": quality if isinstance(quality, dict) else None,
         }
+        if label:
+            entry["label"] = str(label)
         run_id = self._resolve_run_id(run_id)
         if run_id:
             entry["run_id"] = run_id
@@ -370,6 +378,8 @@ class VersionedProduct:
                 }
                 if h.get("run_id"):
                     item["run_id"] = h["run_id"]
+                if h.get("label"):
+                    item["label"] = h["label"]
                 if isinstance(h.get("upstream"), dict):
                     item["upstream"] = h["upstream"]
                 out.append(item)
@@ -471,15 +481,28 @@ class VersionedProduct:
         return str(getattr(ctx, "run_id", "") or "") if ctx is not None else ""
 
     def _resolve_upstream(self, upstream: Optional[dict]) -> dict:
-        """upstream=None → 自动读取依赖产物的 selected 版本号（评审 I-2）；显式传入则透传。"""
+        """upstream=None → 自动读取依赖产物的 selected 版本号（评审 I-2）；显式传入则透传。
+
+        档2：章节额外支持 `prev_chapters`（章节级依赖）。仅当显式 dict 携带该键时，
+        才自动补齐 outline/world（否则按调用方传入的逻辑透传），避免丢失上游维度。
+        档3：`unstable` 与 `prev_chapters` 同属章节版本元数据，携带时同样补齐上游维度。
+        """
         if upstream is not None:
-            return dict(upstream)
+            if self.kind != "chapter" or not ({"prev_chapters", "unstable"} & set(upstream)):
+                return dict(upstream)
         out: dict[str, int] = {}
+        explicit = dict(upstream or {})
         for dep in _UPSTREAM_DEPS[self.kind]:
+            key = f"{dep}_v"
+            if key in explicit:
+                out[key] = explicit[key]
+                continue
             try:
                 sel = VersionedProduct(self.store, dep).selected_version("all")
             except Exception:
                 sel = None
             if sel is not None:
-                out[f"{dep}_v"] = sel
+                out[key] = sel
+        # 章节级依赖等附加键原样保留（与 outline_v/world_v 同存于 upstream）
+        out.update({k: v for k, v in explicit.items() if k not in out})
         return out

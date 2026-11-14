@@ -1050,9 +1050,9 @@ def scene_prompt(cfg, chapter_no, chapter_title, scene_idx, scene, memory_contex
         f"同样视为重演；如需呼应，只用一句话带过结果）】\n{consumed_events}\n"
     ) if consumed_events else ""
     upcoming_block = (
-        f"\n【本章后续事件预览（禁提前消费：以下事件留给各自的场景推进，本场景正文"
-        f"禁止写出它们的完整流程、动作、冲突或结果；只可做一句铺垫性提及，"
-        f"不得展开演绎）】\n{upcoming_events}\n"
+        f"\n【本章剩余未消费事件（硬约束·禁越权消费：以下事件尚未发生，编号对应后续场景；"
+        f"本场景正文禁止写出它们的完整流程、动作、冲突或结果——连'试探-遭遇-对视-冲过去'"
+        f"这类起手式也禁止；只可对最近一件做一句铺垫性提及，且不得推进其结果）】\n{upcoming_events}\n"
     ) if upcoming_events else ""
     # P0-3 面板数字确定性闭环（2026-10-09 生成端第三轮）：权威基线注入 + 违反方向规则重试。
     # 2026-10-17 机制数字软提示与通用化（REQ-机制数字软提示与通用化）：基线降为
@@ -1251,13 +1251,25 @@ def revise_locate_prompt(cfg, chapter_no, chapter_title, chapter_goal, content):
     return system, user
 
 
-def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
-    """步骤3：分层修改，只改小改 issues。中温 0.7。"""
+def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues,
+                        hard_block: str = ""):
+    """步骤3：分层修改，只改小改 issues（+ 2026-11-10 修复④①：事件重复硬约束）。
+
+    `hard_block` 非空时，允许为执行硬约束而删除重复段，字数下限放宽到原文 60%，
+    避免模型为了满足「±10%」而把重复段留下。
+    """
     system = (
         "你是一位网文润色编辑。用户给你一章正文和一份小改问题清单。"
         "你的任务是只改清单里列出的问题，不改剧情走向、不改人物对话含义。"
-        "保持原文字数基本不变（±10%）。只输出润色后的完整正文。"
     )
+    if hard_block:
+        system += (
+            "清单中标记【硬约束】的问题必须实际改掉（可整段删除重复内容），"
+            "不得只做措辞润色；执行硬约束后字数不得低于原文 60%，其余内容字数基本不变（±10%）。"
+        )
+    else:
+        system += "保持原文字数基本不变（±10%）。"
+    system += "只输出润色后的完整正文。"
     system += "\n\n" + _output_discipline()
     issues_text = chr(10).join(
         f"- [{it.get('type','')}] {it.get('pos','')}：{it.get('detail','')}"
@@ -1269,6 +1281,8 @@ def revise_apply_prompt(cfg, chapter_no, chapter_title, content, small_issues):
         f"【原文】\n{content}\n\n"
         "请只改上述问题，保留剧情和人物，输出修改后的完整正文。"
     )
+    if hard_block:
+        user += "\n\n" + hard_block
     return system, user
 
 
@@ -1878,6 +1892,34 @@ def scene_rewrite_prompt(text: str, done_events: list[str]) -> tuple[str, str]:
         "【已发生事件清单】\n" + ev_block + "\n\n"
         "【待检查场景正文】\n" + (text[:3000] if text else "") + "\n\n"
         "该场景正文是否复写了某个已发生事件？输出命中下标或 -1。"
+    )
+    return system, user
+
+
+def chapter_flow_repeat_prompt(prev_text: str, cur_text: str) -> tuple[str, str]:
+    """2026-11-10 修复③ 章级终检：后一场景是否把前一场景已写过的流程又走一遍。
+
+    与 `scene_rewrite_prompt`（按规划事件清单比对）互补：这里面向「事件清单之外、
+    换措辞重述同一段流程」——《契裂之眼》第 1 章离场动线（走廊尽头→拐弯→大堂→
+    包柱→推旋转门）在前一场景与末场景各走一遍。字面判据实测无效（v4 各接缝
+    700 字 Jaccard 0.073-0.134，v5 仅 0.056-0.094），只能走语义判定。
+    """
+    system = (
+        "你是小说质检编辑。判断【后一场景】是否把【前一场景】已经写过的同一段流程又走了一遍。\n"
+        "判为复述（三条同时成立）：\n"
+        "1. 同一人物 + 同一动线/同一动作序列（如已写「走出包间→走廊尽头→拐弯→大堂→推门离开」，"
+        "后文又写「拐过弯→大堂暖光→靠包柱→推开旋转门」）；\n"
+        "2. 动作顺序可一一对应，只是换了措辞、视角或细节；\n"
+        "3. 后文不是从上一段结束处继续往前推进，而是回到同一流程的上游重新走。\n"
+        "不算复述：后文推进新动作/新信息/新对话，或对前文只用一句话回应。\n"
+        "宁可漏报不误杀：拿不准输出 false。\n"
+        '只输出合法 JSON：{"repeat": true, "evidence": "被复述流程的一句话"} '
+        '或 {"repeat": false, "evidence": ""}。不要代码块标记、解释或省略号。'
+    )
+    user = (
+        "【前一场景（结尾片段）】\n" + (prev_text[-1500:] if prev_text else "（无）") + "\n\n"
+        "【后一场景（开头片段）】\n" + (cur_text[:2000] if cur_text else "（无）") + "\n\n"
+        "后一场景是否复述了前一场景已写过的流程？"
     )
     return system, user
 

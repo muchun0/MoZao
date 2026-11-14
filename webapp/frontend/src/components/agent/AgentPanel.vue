@@ -161,6 +161,9 @@
         <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存为新版本</el-button>
       </template>
     </el-dialog>
+
+    <!-- 档3：生成前一致性门禁（409 stale_gate）的二次确认，可继续或从过期章起重写 -->
+    <StaleGateDialog ref="staleGateRef" />
   </div>
 </template>
 
@@ -174,6 +177,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance, estimateAgentRun } from '../../api/project'
 import { getAgentPrompts, saveAgentPrompt } from '../../api/novel'
 import SkillPicker from './SkillPicker.vue'
+import StaleGateDialog from '../common/StaleGateDialog.vue'
 import MarkdownIt from 'markdown-it'
 import { applyAgentProgress } from '../../composables/useGenerationProgress'
 
@@ -182,6 +186,9 @@ const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
 
 const props = defineProps({
   pid: { type: String, required: true },
+  // REQ-R23：外部入口（409 一致性门禁）不再自己二次提交重写，而是把人送到这里，
+  // 用 presetRange 预填「章节写手 · 区间」，重写只在这里发生一次。
+  presetRange: { type: Object, default: null },
 })
 const emit = defineEmits(['changed', 'recharge', 'started'])
 
@@ -200,6 +207,8 @@ const currentAgent = computed(() => AGENTS.find((a) => a.key === selectedAgent.v
 // ---------- 计费模式 / 余额 ----------
 const billingMode = ref('platform')
 const balance = ref(0)
+// 档3：生成前一致性门禁弹窗（409 stale_gate）
+const staleGateRef = ref(null)
 
 // ---------- 人设版本 ----------
 const prompts = ref({})
@@ -223,6 +232,21 @@ const toChOpen = ref(false)
 const volNo = ref(1)
 const userPrompts = reactive({})
 const estimates = reactive({})
+
+// 外部送来「从第X章起重写」时，切到章节写手 + 区间，并预填起止章（默认到末尾）
+watch(() => props.presetRange, (r) => {
+  if (!r || !r.from_ch) return
+  selectedAgent.value = 'writer.chapter'
+  chapterScope.value = 'range'
+  fromCh.value = Math.max(1, Number(r.from_ch) || 1)
+  if (r.to_ch) {
+    toChOpen.value = false
+    toCh.value = Math.max(fromCh.value, Number(r.to_ch) || fromCh.value)
+  } else {
+    toChOpen.value = true
+    toCh.value = 0
+  }
+}, { immediate: true })
 
 // ---------- 运行状态（单任务轮询） ----------
 const running = ref(false)
@@ -283,33 +307,47 @@ function buildParams(agent) {
   return {}
 }
 
+function buildPayload(agent) {
+  return {
+    agent,
+    params: buildParams(agent),
+    user_prompt: userPrompts[agent] || '',
+    skill_ids: skillIds.value,
+  }
+}
+
+// 启动成功后的统一后续（直接启动与门禁弹窗放行共用）
+function onRunStarted(agent, body) {
+  estimates[agent] = body.estimated_price || 0
+  running.value = true
+  runningAgent.value = agent
+  runningTaskId.value = body.task_id
+  runProgress.value = null
+  runStartedAt.value = body.started_at ? body.started_at * 1000 : Date.now()
+  nowTs.value = Date.now()
+  pollFailCount.value = 0
+  if (!clockTimer) clockTimer = setInterval(() => { nowTs.value = Date.now() }, 1000)
+  if (body.billing_mode === 'platform' && body.estimated_price > 0) {
+    ElMessage.info(`已启动，预估扣费 ¥${body.estimated_price.toFixed(2)}（按实际生成字数结算）`)
+  } else {
+    ElMessage.success('已启动')
+  }
+  // U1：通知 ProjectDetail 触发全局生成横幅（getStatus 轮询跟随 agent_run 占槽状态）
+  emit('started', { task_id: body.task_id, agent })
+  pollTimer.value = setInterval(poll, 2000)
+}
+
 async function startRun(agent) {
+  const payload = buildPayload(agent)
   try {
-    const body = await startAgentRun(props.pid, {
-      agent,
-      params: buildParams(agent),
-      user_prompt: userPrompts[agent] || '',
-      skill_ids: skillIds.value,
-    })
-    estimates[agent] = body.estimated_price || 0
-    running.value = true
-    runningAgent.value = agent
-    runningTaskId.value = body.task_id
-    runProgress.value = null
-    runStartedAt.value = body.started_at ? body.started_at * 1000 : Date.now()
-    nowTs.value = Date.now()
-    pollFailCount.value = 0
-    if (!clockTimer) clockTimer = setInterval(() => { nowTs.value = Date.now() }, 1000)
-    if (body.billing_mode === 'platform' && body.estimated_price > 0) {
-      ElMessage.info(`已启动，预估扣费 ¥${body.estimated_price.toFixed(2)}（按实际生成字数结算）`)
-    } else {
-      ElMessage.success('已启动')
-    }
-    // U1：通知 ProjectDetail 触发全局生成横幅（getStatus 轮询跟随 agent_run 占槽状态）
-    emit('started', { task_id: body.task_id, agent })
-    pollTimer.value = setInterval(poll, 2000)
+    const body = await startAgentRun(props.pid, payload)
+    onRunStarted(agent, body)
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '启动失败')
+    const d = e?.response?.data?.detail
+    // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(props.pid, d, payload, (body) => onRunStarted(agent, body))) {
+      ElMessage.error(typeof d === 'string' ? d : (d?.message || '启动失败'))
+    }
   }
 }
 

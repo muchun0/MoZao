@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from ..store.project import ProjectStore
 from ..store.schemas import World
 from .mechanism_types import has_type, resolve_types
@@ -42,9 +44,27 @@ class Memory:
     def __init__(self, store: ProjectStore, memory_window: int = 5):
         self.store = store
         self.memory_window = max(0, memory_window)
+        # 档2：本章上下文实际消费过的前文章号（L4 摘要 + L4.5 正文直读），
+        # 供生成落盘时写入 upstream.prev_chapters（读时记录，不臆测）
+        self._consumed_chapters: set[int] = set()
+        # 档3：本次装配的过期章（默认空，避免直接调用子方法时缺属性）
+        self._unstable_chapters: set[int] = set()
 
-    def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "") -> str:
+    def consumed_chapters(self) -> list[int]:
+        """返回最近一次 build_context 实际读取过的前文章号（升序）。"""
+        return sorted(self._consumed_chapters)
+
+    def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "",
+                      unstable_chapters: Optional[list[int]] = None,
+                      skip_state_blocks: bool = False) -> str:
         """为第 up_to_chapter 章构建记忆上下文。
+
+        unstable_chapters：档3「已知不一致继续」时的过期章号（可选，默认 None）。
+        命中的 L4 摘要会加前缀标注；不改变装配结构与层级顺序。
+
+        skip_state_blocks：REQ-R20 M0 —— book_facts 开启时，L1.5 人物当前态与
+            L1.6 章间状态账本由单一只读视图统一提供，这里不再各自注入（替换而非叠加）。
+            默认 False，行为与改造前逐字一致（回滚对照用例的依据）。
 
         L1 全局设定库：按章触发注入（P1-3）——只注入预测出场人物卡与相关伏笔；
             用户强约束 / 锁定项 / 核心世界观永不裁剪，置于 prompt 末尾。
@@ -58,14 +78,18 @@ class Memory:
         """
         parts: list[str] = []
         key_parts: list[str] = []   # 强约束区：放 prompt 末尾（权重最高）
+        self._consumed_chapters = set()   # 每次装配重新统计，避免跨章串味
+        # 档3：本次「已知不一致继续」涉及的过期章（只用于摘要前缀标注）
+        self._unstable_chapters = {int(n) for n in (unstable_chapters or [])}
 
         # L1 全局设定库（P1-3 Lorebook 式裁剪）
         if world is not None:
             self._build_l1_world(world, up_to_chapter, chapter_goal, parts, key_parts)
 
-        self._build_l15_states(parts, up_to_chapter)
-
-        self._build_l16_chapter_state(parts, up_to_chapter)
+        if not skip_state_blocks:
+            self._build_l15_states(parts, up_to_chapter)
+            # REQ-R20：book_facts 开启时由单一只读视图统一提供，避免同一事实两种措辞
+            self._build_l16_chapter_state(parts, up_to_chapter)
 
         self._build_l2_and_l3(parts, up_to_chapter)
 
@@ -115,6 +139,9 @@ class Memory:
             from .character_state import format_state_line
             cs = self.store.load_character_states()
             if cs:
+                # 档3：只注入目标章之前已发生的人物状态，防止回写早期章时被未来事实污染
+                cs = {k: v for k, v in cs.items()
+                      if int(v.get("last_seen", 0) or 0) < up_to_chapter}
                 items = sorted(
                     cs.items(),
                     key=lambda kv: int(kv[1].get("last_seen", 0) or 0),
@@ -189,7 +216,15 @@ class Memory:
         recent = [s for s in summaries if int(s.get("no", 0)) < up_to_chapter]
         recent = recent[-self.memory_window:] if self.memory_window else recent
         if recent:
-            lines = [f"第{s['no']}章：{s['summary']}" for s in recent]
+            # 档2：摘要实际进上下文 → 记为本章依赖
+            self._consumed_chapters.update(int(s["no"]) for s in recent if s.get("no") is not None)
+            # 档3：已知不一致继续时，给过期章的摘要加前缀，提醒模型不要盲从旧设定
+            lines = []
+            for s in recent:
+                text = f"第{s['no']}章：{s['summary']}"
+                if int(s.get("no", 0) or 0) in self._unstable_chapters:
+                    text = f"（基于旧版第{s['no']}章撰写，可能与最新设定不一致）" + text
+                lines.append(text)
             parts.append(
                 f"[L4·前章剧情摘要·最近 {len(recent)} 章]\n" + "\n".join(lines)
             )
@@ -207,6 +242,7 @@ class Memory:
                     if ch and ch.content:
                         tail = ch.content.strip()[-chars_d:]
                         if tail:
+                            self._consumed_chapters.add(int(dno))   # 档2：正文直读 → 依赖
                             direct_lines.append(f"第{dno}章《{ch.title}》：{tail}")
                 if direct_lines:
                     parts.append(

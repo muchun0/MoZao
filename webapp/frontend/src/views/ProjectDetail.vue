@@ -64,6 +64,19 @@
               <el-checkbox v-model="qualityOnly" size="small">只看需要处理的章</el-checkbox>
             </div>
           </div>
+          <!-- 档1/档2 过期提示：读时推导，只提示不阻断；两种成因分开说，点章号直接跳章 -->
+          <div v-if="staleHint || prevRewriteHint || staleUnknownHint" class="ch-stale-bar">
+            <el-tag v-if="staleHint" size="small" type="warning" effect="plain">上游已更新</el-tag>
+            <span v-if="staleHint" class="ch-stale-text">{{ staleHint }}</span>
+            <el-tag v-if="prevRewriteHint" size="small" type="danger" effect="plain">前文已重写</el-tag>
+            <span v-if="prevRewriteHint" class="ch-stale-text">{{ prevRewriteHint }}</span>
+            <span v-if="staleUnknownHint" class="ch-stale-sub">{{ staleUnknownHint }}</span>
+            <span v-if="staleHint || prevRewriteHint" class="ch-stale-jumps">
+              <el-button v-for="n in staleJumpChapters.slice(0, 6)" :key="n" size="small" link type="warning"
+                         @click="jumpToStale(n)">第{{ n }}章</el-button>
+              <span v-if="staleJumpChapters.length > 6" class="ch-stale-sub">…</span>
+            </span>
+          </div>
           <div v-if="chapters.length" class="ch-list">
             <div v-for="g in displayGroups" :key="g.key" class="ch-group">
               <div class="ch-group-title">{{ g.name }}</div>
@@ -85,13 +98,17 @@
                   <span v-if="c.quality.has_quality" class="ch-issue-count">{{ c.quality.issue_count }}处</span>
                 </span>
                 <span class="ch-words">{{ c.words ? fmtWords(c.words) : '未生成' }}</span>
+                <el-tag v-if="isStale(c.no)" size="small" type="warning" effect="plain"
+                        :title="staleReasonTitle(c.no)">
+                  可能过期
+                </el-tag>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
                 <div class="ch-actions" @click.stop>
                   <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
                   <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
                   <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
-                    :aria-label="isChLocked(c.no) ? `解锁第${c.no}章` : `锁定第${c.no}章（锁定后重生成不覆盖）`"
-                    :title="isChLocked(c.no) ? '已锁定，点击解锁' : '锁定后重生成不覆盖'"
+                    :aria-label="isChLocked(c.no) ? `取消第${c.no}章的${LOCK_TERM}` : `给第${c.no}章加${LOCK_TERM}（重生成时不覆盖）`"
+                    :title="isChLocked(c.no) ? `已加${LOCK_TERM}，点击取消` : `${LOCK_TERM}：重生成时不覆盖本章`"
                     @click="toggleLock('chapter', c.no)">
                     {{ isChLocked(c.no) ? '🔒' : '🔓' }}
                   </el-button>
@@ -113,20 +130,9 @@
           <div v-if="outlineReady || hadOutline" class="panel-toolbar">
             <div class="panel-toolbar-left">
               <el-button size="small" @click="doRegenOutline" :disabled="genRunning" title="重生成总纲/分卷">重生成大纲</el-button>
-              <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动备份）">导入大纲</el-button>
-              <el-dropdown trigger="click" @command="onSnapCmd">
-                <el-button size="small" :disabled="genRunning">大纲快照 ▾</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item v-if="!snapshots.length" disabled>暂无快照</el-dropdown-item>
-                    <el-dropdown-item v-for="sn in snapshots" :key="sn.name" :command="'restore:' + sn.name">
-                      还原「{{ sn.display || sn.name }}」（{{ sn.chapters }} 章）
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <el-button size="small" @click="openImport" :disabled="genRunning" title="重新导入你写的大纲（覆盖前自动存一版，可在版本弹窗还原）">导入大纲</el-button>
+              <el-button size="small" @click="openProductVersions('outline')" title="每一版大纲都在这里：AI 重生成、你手动保存、导入前自动备份">历史版本</el-button>
             </div>
-            <el-button size="small" type="primary" link @click="openProductVersions('outline')">历史版本</el-button>
           </div>
           <el-empty v-if="!outlineReady && !hadOutline" description="还没有大纲。AI 生成或导入你写的都可以">
             <div class="outline-empty-actions">
@@ -152,18 +158,27 @@
 
         <!-- Agent：生成操作统一入口 -->
         <section v-if="visited.agent" v-show="tab === 'agent'">
-          <AgentPanel :pid="pid" @changed="loadAll" @recharge="rechargeRef?.open()" @started="onAgentStarted" />
+          <AgentPanel :pid="pid" :preset-range="agentPreset" @changed="loadAll" @recharge="rechargeRef?.open()" @started="onAgentStarted" />
         </section>
 
         <!-- 工具 -->
         <section v-if="visited.tools" v-show="tab === 'tools'">
-          <ToolsPanel :pid="pid" />
+          <ToolsPanel :pid="pid" @open-health="tab = 'health'" />
         </section>
 
-        <!-- 全书体检：只读汇总账本覆盖 / 伏笔台账 / 一致性冲突 / 人物设定索引 -->
+        <!-- 时间线：账本事件流只读视图（已发生的事件 / 发展方向的事件） -->
+        <section v-if="visited.facts" v-show="tab === 'facts'">
+          <FactsTimelinePanel :pid="pid" />
+        </section>
+
+        <!-- 世界事实：账本事实侧只读视图（人物 / 状态 / 地点 / 事件 / 设定规则） -->
+        <section v-if="visited.graph" v-show="tab === 'graph'">
+          <StateGraphPanel :pid="pid" @open-rules="openRulesPanel" />
+        </section>
+
+        <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-tools="openToolsPanel"
-                            @open-versions="openVersionsByNo" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo" />
         </section>
       </main>
     </div>
@@ -173,6 +188,9 @@
                    @changed="onVersionChanged" @appeal="appealIssue" />
 
     <RechargeDialog ref="rechargeRef" />
+
+    <!-- 档3：生成前一致性门禁（可确认继续，不硬拒绝） -->
+    <StaleGateDialog ref="staleGateRef" @started="onGateStarted" @open-agent="goAgentRewrite" />
 
     <el-dialog v-model="readerVisible" :title="currentCh?.title" width="800px" top="3vh" @closed="hideSelFloat">
       <template #header>
@@ -207,7 +225,7 @@
     </teleport>
 
     <el-dialog v-model="importVisible" title="导入大纲" width="560px">
-      <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「大纲快照」中一键还原）。AI 不会改写你的内容。</p>
+      <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「版本」弹窗里还原）。AI 不会改写你的内容。</p>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <input type="file" ref="importFileInput" accept=".txt,.md,.docx" @change="onImportFilePick" />
         <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
@@ -225,13 +243,17 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, cancelGenerate, getStatus, downloadProject, startAgentRun, getAgentRun } from '../api/project'
-import { getChapters, getChapterQualityOverview, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
+import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun } from '../api/project'
+import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
   qualityMeta, sortRowsByQuality, filterRows, qualityIndexTitle,
   qualityWorstText, qualityGapText,
 } from '../utils/chapterQuality'
-import { parseContent, listSnapshots, restoreSnapshot } from '../api/tools'
+// REQ-R23 P0-4：所有就近生成入口统一走 utils/agentRun（预估 → 余额校验 → /agent-runs 单轨）
+import { runAgent, errorDetail } from '../utils/agentRunClient'
+// REQ-R23 P0-5：术语统一（防覆盖锁定 / 写作铁律）
+import { LOCK_TERM } from '../utils/toolTerms'
+import { parseContent } from '../api/tools'
 import ToolsPanel from '../components/tools/ToolsPanel.vue'
 import OutlineEditor from '../components/outline/OutlineEditor.vue'
 import WorldEditor from '../components/world/WorldEditor.vue'
@@ -239,9 +261,13 @@ import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
 import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
+import FactsTimelinePanel from '../components/facts/FactsTimelinePanel.vue'
+import StateGraphPanel from '../components/facts/StateGraphPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'
+// 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
+import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {
   begin, applyStatus, isRunning, errorText, reset, AGENT_PHASE,
 } from '../composables/useGenerationProgress'
@@ -260,6 +286,7 @@ const versionsDialog = ref(false)
 const versionsNo = ref(0)
 const versionsKind = ref('chapter')  // 阶段 1C：统一版本弹窗的当前产物类型（chapter/outline/world）
 const rechargeRef = ref(null)
+const staleGateRef = ref(null)
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
 // 导致 outlineReady 翻转、编辑器被空态替换。用 hadOutline 保住工具条与编辑器（生成中置灰而非隐藏）。
@@ -270,7 +297,7 @@ async function toggleLock(kind, key = '', forced) {
     const locked = forced !== undefined ? forced : !((lock.value[kind] || {})[key])
     await setLock(pid, { kind, key: String(key), locked })
     lock.value = await getLock(pid)
-    ElMessage.success(locked ? '已锁定，重生成时不会覆盖' : '已解锁')
+    ElMessage.success(locked ? `已加${LOCK_TERM}，重生成时不会覆盖` : `已取消${LOCK_TERM}`)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '操作失败')
   }
@@ -375,6 +402,84 @@ const displayGroups = computed(() => {
 const worstText = computed(() => qualityWorstText(qualityOverview.value, chapters.value))
 const qualityGap = computed(() => qualityGapText(qualityOverview.value))
 
+// ===== 档1 上游过期标记（读时推导，只读展示） =====
+const staleness = ref(null)   // GET /chapters/staleness 的响应
+const staleMap = computed(() => {
+  const map = {}
+  ;((staleness.value || {}).chapters || []).forEach(r => { map[r.chapter] = r })
+  return map
+})
+function fmtRange(r) { return r.from === r.to ? `第${r.from}章` : `第${r.from}–${r.to}章` }
+// 一条轻量提示：「第 3–5 章可能已过期，因为大纲更新到 v5」
+const staleHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  if (!s || !s.stale_count) return ''
+  const ranges = (s.ranges || []).map(fmtRange).join('、')
+  const current = s.current || {}
+  const causes = (s.causes || [])
+    .map(c => `${c.label}更新到 v${current[c.kind + '_v']}`)
+    .join('、')
+  return `${ranges}可能已过期${causes ? `，因为${causes}` : ''}`
+})
+const staleUnknownHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  return s && s.unknown_count
+    ? `另有 ${s.unknown_count} 章缺少生成时的上游版本记录，无法判断是否过期`
+    : ''
+})
+// 档2「前文重写」提示：与上游大纲/世界观成因分开说，如「第3章已重写（v1→v2），影响第4–6章」
+const prevRewriteHint = computed(() => {
+  const s = staleness.value && staleness.value.summary
+  const items = (s && s.prev_rewrites) || []
+  if (!items.length) return ''
+  return items.map(it => {
+    const act = it.direction === 'reverted' ? '已切回旧版' : '已重写'
+    return `第${it.ch}章${act}（v${it.based_on}→v${it.current}），影响${fmtNos(it.affected)}`
+  }).join('；')
+})
+const staleJumpChapters = computed(() => ((staleness.value || {}).summary || {}).stale_chapters || [])
+function isStale(no) { return (staleMap.value[no] || {}).status === 'stale' }
+// 连续章号压缩：「第4章、第5章」→「第4–5章」
+function fmtNos(list) {
+  const out = []
+  let start = null
+  let prev = null
+  for (const n of list || []) {
+    if (start === null) { start = prev = n; continue }
+    if (n === prev + 1) { prev = n; continue }
+    out.push(start === prev ? `第${start}章` : `第${start}–${prev}章`)
+    start = prev = n
+  }
+  if (start !== null) out.push(start === prev ? `第${start}章` : `第${start}–${prev}章`)
+  return out.join('、')
+}
+// 单章 tag 的 title：把两种成因都说清楚（大纲/世界观更新 + 前文被重写）
+function staleReasonTitle(no) {
+  const r = (staleMap.value[no] || {}).reason || {}
+  const parts = []
+  const dims = Object.keys(r.stale_dims || {}).map(k => (k === 'outline' ? '大纲' : '世界观'))
+  if (dims.length) parts.push(`${dims.join('、')}已更新`)
+  const rewrites = r.prev_rewrites || []
+  if (rewrites.length) {
+    parts.push(rewrites.map(it => `第${it.ch}章已重写（v${it.based_on}→v${it.current}）`).join('、'))
+  }
+  return parts.length ? `该章基于旧版生成：${parts.join('；')}，可能已过期` : '该章可能已过期'
+}
+function jumpToStale(no) {
+  const c = chapters.value.find(x => Number(x.no) === Number(no))
+  if (c) openChapter(c)
+  else ElMessage.info(`第${no}章正文已不存在，无法跳转`)
+}
+
+async function loadStaleness() {
+  try {
+    staleness.value = await getChapterStaleness(pid)
+  } catch {
+    // 只读判定失败不阻断章节列表：降级为无提示
+    staleness.value = { chapters: [], summary: { stale_count: 0, unknown_count: 0 }, data_gaps: ['过期检查失败，本次未展示'] }
+  }
+}
+
 async function loadQualityOverview() {
   try {
     qualityOverview.value = await getChapterQualityOverview(pid)
@@ -387,8 +492,9 @@ async function loadQualityOverview() {
 async function regenChapter(c) {
   try { await ElMessageBox.confirm(`确定重新生成第${c.no}章《${c.title}》？将追加为新版本，旧版本保留。`, '重新生成章节', { type: 'warning' }) } catch { return }
   regenNo.value = c.no
+  const payload = { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } }
   try {
-    const body = await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'single', ch_no: c.no } })
+    const { body } = await runAgent(pid, payload)
     ElMessage.success(`已开始重新生成第${c.no}章`)
     // 单章重写走 getAgentRun 轮询（running 态带 progress；done 态 outputs 带质检/候选反馈，F1）
     const s = await new Promise((resolve) => {
@@ -409,7 +515,10 @@ async function regenChapter(c) {
       ElMessage.success(`第${c.no}章已重新生成`)
     }
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '重生成失败')
+    // 档3：目标章之前存在未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
+      ElMessage.error(errorDetail(e, '重生成失败'))
+    }
   } finally { regenNo.value = 0 }
 }
 
@@ -468,8 +577,8 @@ async function loadAll() {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
     genTotal.value = outline.value?.chapters?.length || 0
-    // 章节列表与质量总览并行拉取（质量总览只读且已内部降级）
-    const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+    // 章节列表、质量总览与上游过期标记并行拉取（后两者只读且已内部降级）
+    const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview(), loadStaleness()])
     chapters.value = chsRes.chapters || []
     genDoneCount.value = chapters.value.length
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
@@ -529,6 +638,7 @@ async function refreshAfterGen(quiet = false) {
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     genDoneCount.value = chapters.value.length
+    await loadStaleness()
     outlineReloadKey.value++
     loadSnapshots()
     if (!quiet) ElMessage.success('任务已完成，数据已刷新')
@@ -558,8 +668,8 @@ function onAgentStarted({ agent, task_id }) {
 }
 
 async function loadChapters() {
-  // 切版本 / 生成完成后同步刷新质量总览，保证列表分数与版本弹窗一致
-  const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview()])
+  // 切版本 / 生成完成后同步刷新质量总览与过期标记，保证列表分数/提示与版本一致
+  const [chsRes] = await Promise.all([getChapters(pid), loadQualityOverview(), loadStaleness()])
   chapters.value = chsRes.chapters || []
 }
 
@@ -580,9 +690,8 @@ function locateChapter(no) {
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
 }
-
-// 体检页「去工具看原始记录」：只切页，不触发任何检查（体检零 LLM、零扣费）
-function openToolsPanel() {
+// 世界事实「设定规则」只读投影 → 跳工具中心维护写作铁律（只切页，不触发任何检查/生成）
+function openRulesPanel() {
   navTouched.value = true
   tab.value = 'tools'
 }
@@ -673,7 +782,7 @@ async function saveEdit() {
 
 async function runOutline() {
   try {
-    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    await runAgent(pid, { agent: 'architect.outline', params: {} })
     ElMessage.success('已开始生成大纲，完成后将自动生成世界观（自动生成的世界观同样按字数计费）')
     beginGenUI('正在生成大纲…')
     // 大纲完成后若无世界观则自动链式生成世界观
@@ -681,45 +790,63 @@ async function runOutline() {
       try {
         const w = await getWorld(pid)
         if (!w || !w.world_view) {
-          await startAgentRun(pid, { agent: 'architect.world', params: {} })
+          await runAgent(pid, { agent: 'architect.world', params: {} })
           ElMessage.success('大纲已完成，正在自动生成世界观（按字数计费）…')
           beginGenUI('正在生成世界观…')
           startPolling() // 世界观完成后走默认刷新
           return true // 已接管后续，跳过本次默认刷新
         }
-      } catch (e) { ElMessage.error(e?.response?.data?.detail || '世界观启动失败') }
+      } catch (e) { ElMessage.error(errorDetail(e, '世界观启动失败')) }
       return false
     })
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '启动失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '启动失败')) }
 }
 async function doRegenOutline() {
-  try { await ElMessageBox.confirm('重生成大纲会覆盖现有总纲/分卷，已锁定内容不受影响。继续？', '重生成大纲', { type: 'warning' }) } catch { return }
+  try { await ElMessageBox.confirm(`重生成大纲会覆盖现有总纲/分卷，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成大纲', { type: 'warning' }) } catch { return }
   try {
-    await startAgentRun(pid, { agent: 'architect.outline', params: {} })
+    await runAgent(pid, { agent: 'architect.outline', params: {} })
     ElMessage.success('已开始重生成大纲')
     beginGenUI('正在重生成大纲…')
     startPolling()
     loadSnapshots()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function doRegenWorld() {
-  try { await ElMessageBox.confirm('重生成世界观会覆盖现有世界设定，已锁定内容不受影响。继续？', '重生成世界观', { type: 'warning' }) } catch { return }
+  try { await ElMessageBox.confirm(`重生成世界观会覆盖现有世界设定，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成世界观', { type: 'warning' }) } catch { return }
   try {
-    await startAgentRun(pid, { agent: 'architect.world', params: {} })
+    await runAgent(pid, { agent: 'architect.world', params: {} })
     ElMessage.success('已开始重生成世界观')
     beginGenUI('正在重生成世界观…')
     startPolling()
-  } catch (e) { ElMessage.error(e?.response?.data?.detail || '失败') }
+  } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function startGen() {
+  const payload = { agent: 'writer.chapter', params: { scope: 'all' } }
   try {
-    await startAgentRun(pid, { agent: 'writer.chapter', params: { scope: 'all' } })
+    await runAgent(pid, payload)
     ElMessage.success('已开始生成')
     beginGenUI('正在启动写作…')
     startPolling()
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '启动失败')
+    // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
+    if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
+      ElMessage.error(errorDetail(e, '启动失败'))
+    }
   }
+}
+
+// 门禁弹窗确认放行后的统一后续
+function onGateStarted() {
+  ElMessage.success('已开始处理')
+  beginGenUI('正在续写…')
+  startPolling()
+}
+
+// REQ-R23：409 弹窗不再自己二次提交重写，统一送到 Agent 页（章节写手 · 区间）发起
+const agentPreset = ref(null)
+function goAgentRewrite({ from_ch }) {
+  agentPreset.value = { from_ch, stamp: Date.now() }
+  tab.value = 'agent'
 }
 
 async function cancelGen() {
@@ -777,7 +904,6 @@ const importText = ref('')
 const importFileMsg = ref('')
 const importFileInput = ref(null)
 const reimporting = ref(false)
-const snapshots = ref([])
 
 function openImport() {
   importText.value = ''
@@ -813,30 +939,13 @@ async function doImport() {
     await importOutline(pid, { text })
     ElMessage.success('已导入（以你的内容为准）')
     importVisible.value = false
-    loadSnapshots()
     loadAll()
   } catch (e) {
     ElMessage.warning(e.response?.data?.detail || '导入失败')
   } finally { reimporting.value = false }
 }
 
-async function loadSnapshots() {
-  try { snapshots.value = (await listSnapshots(pid))?.snapshots || [] } catch (e) { snapshots.value = [] }
-}
-
-async function onSnapCmd(cmd) {
-  if (!cmd || !cmd.startsWith('restore:')) return
-  const name = cmd.slice(8)
-  try { await ElMessageBox.confirm(`从快照「${name}」恢复大纲？当前大纲将被该快照覆盖。`, '恢复大纲', { type: 'warning' }) } catch { return }
-  try {
-    await restoreSnapshot(pid, name)
-    ElMessage.success('已恢复')
-    loadSnapshots()
-    loadAll()
-  } catch (e) { ElMessage.error(e.response?.data?.detail || '恢复失败') }
-}
-
-onMounted(() => { document.addEventListener('mousedown', onDocMouseDown); loadAll(); loadSnapshots() })
+onMounted(() => { document.addEventListener('mousedown', onDocMouseDown); loadAll() })
 onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); if (pollTimer) clearInterval(pollTimer) })
 </script>
 
@@ -924,6 +1033,16 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-quality-empty, .ch-quality-gap { font-size: 12px; color: var(--muted); }
 .ch-quality-gap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .ch-quality-controls { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+/* ===== 档1 上游过期提示（轻量条，不占额外版块） ===== */
+.ch-stale-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 10px; padding: 6px 10px; border-radius: 6px;
+  background: var(--el-color-warning-light-9, #fdf6ec);
+  border: 1px solid var(--el-color-warning-light-7, #faecd8);
+}
+.ch-stale-text { font-size: 12px; color: var(--el-color-warning-dark-2, #b88230); }
+.ch-stale-sub { font-size: 12px; color: var(--muted); }
+.ch-stale-jumps { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; }
 
 /* ===== 面板工具条（大纲页） ===== */
 .panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

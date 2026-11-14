@@ -21,9 +21,9 @@
 from .core import *  # noqa: F401,F403  触发 app 创建与核心状态初始化
 from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       assistant, projects_base, projects_outline,
-                      # R12：质量总览须先于 chapters 注册，否则 /chapters/{no} 会先吃掉
-                      # /chapters/quality-overview（路径参数按注册顺序匹配）
-                      projects_quality, projects_chapters,
+                      # R12：质量总览 / 档1：章节过期标记须先于 chapters 注册，否则
+                      # /chapters/{no} 会先吃掉 /chapters/quality-overview、/chapters/staleness
+                      projects_quality, projects_staleness, projects_chapters,
                       projects_world, projects_generation, projects_versions,
                       projects_consistency)  # noqa: F401  触发路由注册
 

@@ -451,7 +451,8 @@ def download(project_id: str, format: str = "txt", user: dict = Depends(_require
 def import_user_outline(project_id: str, req: OutlineImportReq, user: dict = Depends(_require_user)):
     """重新导入/覆盖用户大纲：以用户传入为准（原样入库，不 AI 重写）。
 
-    - 覆盖前自动备份当前大纲为快照（outline_snapshots/导入前_MMdd_HHmm.json），项目页可一键还原；
+    - 覆盖前自动备份当前大纲为一版 outline 版本（标签「导入前备份」，版本弹窗可见可还原，
+      见 REQ-R23 P1-2；版本化关闭的项目仍退回旧快照文件）；
     - 识别不到章节结构时返回 400 并提示补格式；用户选择不补格式时，
       可点项目页「生成大纲与世界观」——按钮点击即用户确认，AI 才会生成。
     """

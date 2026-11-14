@@ -79,6 +79,12 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "foreshadow_lead", 3, "伏笔临期窗口：距 reveal_ch 提前 N 章开始注入'本章应开始收束该伏笔'（REQ-reader-ledger）"),
     FeatureFlag("memory", "foreshadow_original_text", True, "伏笔原文片段存档（超长篇攻坚 S1.1）：埋设章落盘时确定性抽 1-3 句关键句存 original_excerpt（≤150 token/条），due_soon/overdue 章随收束提醒注入原文块；False=不抽不注入（向后兼容）"),
     FeatureFlag("memory", "chapter_commit", True, "章节原子提交+投影一致性（REQ-借鉴webnovel A/B）：每章收尾把章后入账（人物状态/章末机制/揭示执行/读者账本）收敛为一次统一提交——先落基线、失败留痕、同章幂等，并写 projection_log 供一致性体检；False=回退原分散调用（行为不变）"),
+    FeatureFlag("memory", "book_facts", False, "单一只读状态视图（REQ-R20 / TECH-R20，M0）：把既有账本聚合成 book_facts.json，写章/大纲/世界观按预算注入同一份事实；只读、不接管写入；False=完全回退改造前行为（逐字等价，回滚依据）"),
+    FeatureFlag("memory", "event_stream", False, "事件流 append-only（REQ-R21 / TECH-R21，M1）：events.jsonl 追加写 + consumption.json 消费水位侧车；False=事件仍读 book_memory（M0 行为）"),
+    FeatureFlag("memory", "foreshadow_unified", False, "伏笔唯一写入源（REQ-R21 M1）：foreshadowing.json 为唯一写入口，回收必须带 evidence，世界观点与设定卡降级为派生视图；False=沿用三处各自更新（M0 行为）"),
+    FeatureFlag("memory", "conflict_guard", False, "确定性冲突前置（REQ-R21 M1）：五类规则写前判定，命中时在补偿块之后、硬区之前注入「冲突提醒」；False=不注入（M0 行为）"),
+    FeatureFlag("memory", "timeline_view", False, "时间线只读视图（REQ-R21 M1）：/book-facts 的事件/线索/时间线/冲突查询接口；False=查询接口 404（M0 行为）"),
+    FeatureFlag("memory", "state_graph", False, "状态图谱只读服务（REQ-R22 M2）：/book-facts/graph 一次返回「版本+来源+四视图（世界事实/角色认知/发展线/可能分支）」，生成链路与外部消费者共用同一契约；False=接口 404，消费方走 M1 分散查询（完全回退）"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
@@ -128,8 +134,10 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "scene_inspector", True, "场景体检开关（三期 F2）：对已生成章节做字数/事件推进/重演/承接/钩子确定性体检并给修复建议"),
     FeatureFlag("review", "chain_of_thought", True, "思维链可视化开关（三期 F4）：聚合计划-产出-校验三段产物为只读视图"),
     FeatureFlag("writing", "branch_continue", True, "三分支续写选择开关（三期 F3）：一次生成 3 个方向（冲突升级/埋伏笔/转折）续写候选，用户选一条再写"),
+    FeatureFlag("writing", "planned_events", True, "作者计划事件（REQ-R22 L3）：时间线可新增/拖拽「计划事件」落章并写 planned_events.json；写对应章时注入计划事件约束块，False=不读不注入（只读视图仍可展示已有计划卡）"),
     # ---- guard：成本防护（AgentGuardConfig 承载，环境变量可覆盖）----
     FeatureFlag("guard", "enabled", True, "AgentGuard 总开关"),
+    FeatureFlag("guard", "stale_gate", True, "生成前章节一致性门禁（档3）：目标章之前存在 stale 章且不在本次范围内时 409 提示（可确认继续）；unknown 只提示不拦截；关闭后守卫直接放行"),
     FeatureFlag("guard", "max_loops", 200, "单任务最大 LLM 调用次数"),
     FeatureFlag("guard", "max_tokens", 2_000_000, "单任务累计 Token 上限"),
     FeatureFlag("guard", "input_check", True, "输入注入检测"),
@@ -349,6 +357,7 @@ class NovelConfig:
     confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
     # ---- memory：记忆与长文一致性（P0-1/P0-2，默认值见 FEATURE_FLAGS）----
     memory_window: int = feature_default("memory_window")        # 生成当前章时回填最近 N 章摘要，控制上下文成本
+    stale_gate: bool = feature_default("stale_gate")             # 生成前章节一致性门禁（档3）：False=守卫直接放行
     memory_direct_read_chapters: int = feature_default("memory_direct_read_chapters")  # 前文直读：直读最近 N 章正文（0=关闭，保持纯摘要）
     memory_direct_read_chars: int = feature_default("memory_direct_read_chars")        # 每章直读正文最大字符数（取章节尾部）
     character_state_tracking: bool = feature_default("character_state_tracking")       # 每章正文落盘后更新人物动态状态快照
@@ -377,6 +386,12 @@ class NovelConfig:
     foreshadow_lead: int = feature_default("foreshadow_lead")                          # 伏笔临期窗口：距 reveal_ch 提前 N 章开始收束提醒
     foreshadow_original_text: bool = feature_default("foreshadow_original_text")        # 伏笔原文片段存档（S1.1）：埋设章抽原文句，回收章注入
     chapter_commit: bool = feature_default("chapter_commit")                           # 章节原子提交+投影一致性（REQ-借鉴webnovel）：每章收尾统一提交 + projection_log
+    book_facts: bool = feature_default("book_facts")                                   # 单一只读状态视图（REQ-R20 M0）：账本聚合为 book_facts.json + 三视图预算注入；False=回退改造前
+    event_stream: bool = feature_default("event_stream")                               # 事件流 append-only（REQ-R21 M1）：events.jsonl + consumption.json
+    foreshadow_unified: bool = feature_default("foreshadow_unified")                   # 伏笔唯一写入源（REQ-R21 M1）：foreshadowing.json + 回收证据
+    conflict_guard: bool = feature_default("conflict_guard")                           # 确定性冲突前置（REQ-R21 M1）：五规则写前提醒
+    timeline_view: bool = feature_default("timeline_view")                             # 时间线只读接口（REQ-R21 M1）
+    state_graph: bool = feature_default("state_graph")                                 # 状态图谱只读服务（REQ-R22 M2）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -456,6 +471,7 @@ class NovelConfig:
     scene_inspector: bool = feature_default("scene_inspector")       # F2 场景体检
     chain_of_thought: bool = feature_default("chain_of_thought")     # F4 思维链聚合
     branch_continue: bool = feature_default("branch_continue")     # F3 三分支续写
+    planned_events: bool = feature_default("planned_events")       # 作者计划事件：时间线可编辑卡片 + 写章注入
     high_quality_mode: bool = True                                # 高质量模式：场景级生成 + 动态模块 + 参数分层，3元/万字（固化开启）
     custom_prompt: str = ""           # 用户自定义提示词模板（追加到system末尾）
     persona_override: str = ""        # 当前 agent 的完整人设（运行时内存态，由 webapp 从 agent_prompts 注入到 role_prompt；不落盘）

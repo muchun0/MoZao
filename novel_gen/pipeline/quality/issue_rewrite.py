@@ -8,13 +8,22 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
 from .checker import QualityChecker
+from .consistency_review import (
+    event_duplicate_hard_block,
+    event_duplicate_resolved,
+    event_duplicate_span,
+    is_event_duplicate,
+)
 from .text_tools import align_to_paras, iter_sentences, locate_problem_spans, norm_sentence
 
 __all__ = ["locate_issue_span", "rewrite_issue"]
+
+logger = logging.getLogger(__name__)
 
 # 命中窗口占正文比例上限：超过视为「定位失准」，拒绝改写而不是悄悄改成整章
 _MAX_SPAN_RATIO = 0.6
@@ -89,15 +98,28 @@ def rewrite_issue(cfg, llm, store, chapter_no: int, content: str, issue: dict,
 
     llm/store/cfg 由调用方注入（webapp 走 `_open_pipeline`），本函数不落盘、不计费。
     """
-    span = locate_issue_span(content, issue)
+    span = None
+    is_dup = is_event_duplicate(issue)
+    if is_dup:
+        # 2026-11-10 修复④①：事件重复必须改写「后一处」段落（要保留的在前一版）
+        span = event_duplicate_span(content, issue)
+        if span is None:
+            logger.warning("按此改：事件重复项取不到后一处段落，回退常规定位")
+        elif (span[1] - span[0]) >= len(content) * _MAX_SPAN_RATIO:
+            logger.warning("按此改：事件重复项命中段占正文 %.0f%%（>60%%），回退常规定位",
+                           100.0 * (span[1] - span[0]) / max(1, len(content)))
+            span = None
+    if span is None:
+        span = locate_issue_span(content, issue)
     if span is None:
         return {"ok": False, "content": "", "span": None, "rewritten_chars": 0,
                 "reason": "无法在正文中定位该问题所在段落，未做改动"}
     start, end = span
     checker = QualityChecker(cfg, llm, store, trace=trace, guard=guard, memory=memory)
+    hard_block = event_duplicate_hard_block(issue, content, span) if is_dup else ""
     new_content = checker._rewrite_span(
         chapter_no, plan_title or f"第{chapter_no}章", plan_goal or "",
-        content, span, [issue])
+        content, span, [issue], hard_block=hard_block)
     if not new_content or new_content == content:
         return {"ok": False, "content": "", "span": span, "rewritten_chars": 0,
                 "reason": "模型未返回可用的局部改写结果，原文未改动"}
@@ -107,6 +129,13 @@ def rewrite_issue(cfg, llm, store, chapter_no: int, content: str, issue: dict,
     if new_content[:start] != content[:start] or not tail_same:
         return {"ok": False, "content": "", "span": span, "rewritten_chars": 0,
                 "reason": "局部改写越界（窗口外文本被改动），已放弃本次结果"}
+    # 2026-11-10 修复④①：硬约束确定性验收——重复段没真删掉就不算改成功
+    if is_dup:
+        ok, note = event_duplicate_resolved(content, new_content, issue)
+        if not ok:
+            logger.warning("按此改：事件重复硬约束未执行（%s），放弃本次结果", note)
+            return {"ok": False, "content": "", "span": span, "rewritten_chars": 0,
+                    "reason": f"改写未消除重复现场（{note}），原文未改动"}
     replacement = new_content[start:len(new_content) - tail_len] if tail_len else new_content[start:]
     return {"ok": True, "content": new_content, "span": span,
             "rewritten_chars": len(replacement), "reason": ""}

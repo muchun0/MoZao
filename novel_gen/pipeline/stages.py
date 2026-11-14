@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import re
 
+from typing import Optional
+
 logger = logging.getLogger(__name__)
 
 from ..config import NovelConfig
@@ -107,7 +109,13 @@ class ChapterWriter:
         return self._reader_ledger or None
 
     def _book_canon(self, max_chars: int = 800) -> str:
-        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
+        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。
+
+        REQ-R20 M0：book_facts 开启时设定账本由单一只读视图的硬区提供，
+        此处返回空串以「替换而非叠加」（关闭时行为不变）。
+        """
+        if bool(getattr(self.cfg, "book_facts", False)):
+            return ""
         mem = self._memory()
         if mem is None:
             return ""
@@ -523,6 +531,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("上章承诺补偿块注入失败（降级跳过）")
 
+        # REQ-R22 L3：作者在时间线上排的计划事件（目标章=本章时注入，不改已发生事件流）
+        try:
+            if getattr(self.cfg, "planned_events", True):
+                from .planned_events import from_store, render_block
+                _planned_block = render_block(from_store(self.store), chapter_no)
+                if _planned_block:
+                    memory_context = (memory_context + "\n\n" + _planned_block
+                                      if memory_context else _planned_block)
+        except Exception:
+            logger.exception("计划事件注入失败（降级跳过）")
+
         # 注入时间线提示 + 章末钩子 + 副本上下文
         plan_core_event = ""
         plan_moves = ""
@@ -569,10 +588,33 @@ class ChapterWriter:
         except Exception:
             logger.exception("分卷卡注入失败（降级跳过）")
 
-        # 读者认知账本
+        # REQ-R21 M1：确定性冲突提醒（位置：补偿块之后、硬区之前；不命中不产生文本）
+        if getattr(self.cfg, "conflict_guard", False):
+            try:
+                from .book_facts import BookFacts
+                _cg_block = BookFacts(self.store, self.cfg).render_violation_block(
+                    at_ch=chapter_no, limit=5)
+                if _cg_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _cg_block
+            except Exception:
+                logger.exception("冲突提醒注入失败（降级为不注入，不阻塞写章）")
+
+        # REQ-R20 M0：单一只读状态视图（book_facts）——替换 L1.5/L1.6/读者账本/canon 四处账本块
+        _bf_on = bool(getattr(self.cfg, "book_facts", False))
+        if _bf_on:
+            try:
+                from .book_facts import BookFacts
+                _bf_block = BookFacts(self.store, self.cfg).block_for(
+                    "writer", at_ch=chapter_no)
+                if _bf_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _bf_block
+            except Exception:
+                logger.exception("book_facts 注入块构造失败（降级为不注入，不阻塞写章）")
+
+        # 读者认知账本（book_facts 开启时已被上面的统一视图替换，不重复注入）
         try:
             _rl = self._reader_ledger_obj()
-            if _rl is not None:
+            if _rl is not None and not _bf_on:
                 _rl_block = _rl.inject_block(chapter_no)
                 if _rl_block:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
@@ -665,6 +707,7 @@ class ChapterWriter:
     def _write_body(
         self, chapter_no: int, plan_title: str, plan_goal: str,
         research: ResearchReport | None, is_final: bool, silent: bool,
+        unstable_chapters: Optional[list[int]] = None,
     ) -> tuple[str, str, str, str, str]:
         """生成并清洗正文，返回 (content, summary, system, plan_core_event, plan_moves, scenes)。
 
@@ -679,6 +722,8 @@ class ChapterWriter:
             _mem = self._memory()
             if _mem is not None:
                 _mem.sync_baseline(world)
+                # P2 术语卡接线：别名登记进 canon.terms，供称谓漂移规则比对
+                _mem.sync_terms(world)
         except Exception:
             pass
         try:
@@ -688,8 +733,13 @@ class ChapterWriter:
             pass
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
+            unstable_chapters=unstable_chapters,
+            # REQ-R20 M0：开关开启时 L1.5/L1.6 由 book_facts 单一只读视图统一提供
+            skip_state_blocks=bool(getattr(self.cfg, "book_facts", False)),
         )
         prev_tail = self._prev_tail(chapter_no)
+        # 档2：记录本章上下文实际消费的前文章节及版本（记忆装配后取，不臆测）
+        prev_refs = self._prev_chapter_refs(chapter_no)
 
         memory_context, plan_core_event, plan_moves = self._inject_memory_blocks(
             chapter_no, world, memory_context, plan_title, plan_goal,
@@ -805,7 +855,9 @@ class ChapterWriter:
                 reader.review(chapter_no, plan_title, plan_goal, content)
             except Exception as e:
                 logger.warning(f'  [读者审校] 跳过: {e}')
-        return content, summary, system, plan_core_event, plan_moves, scenes
+        # 档2：把本章实际消费的前文章节依赖一并返回，供 write() 落盘 upstream
+        return (content, summary, system, plan_core_event, plan_moves, scenes,
+                prev_refs)
 
     def write(
         self,
@@ -815,9 +867,13 @@ class ChapterWriter:
         research: ResearchReport | None,
         silent: bool = False,
         is_final: bool = False,
+        unstable_chapters: Optional[list[int]] = None,
     ) -> Chapter:
-        content, summary, system, plan_core_event, plan_moves, scenes = self._write_body(
+        # 档3：已知不一致继续时，过期章号只用于摘要前缀标注 + upstream.unstable 落痕
+        (content, summary, system, plan_core_event, plan_moves, scenes,
+         prev_refs) = self._write_body(
             chapter_no, plan_title, plan_goal, research, is_final, silent,
+            unstable_chapters=unstable_chapters,
         )
 
         # 模块4：ReaderAgent 内置结果自校验（保存前；可开关、异常降级不阻塞）
@@ -976,6 +1032,8 @@ class ChapterWriter:
                         source="rewrite" if _v.get("auto_revised") else "ai",
                         quality=_v.get("quality") if isinstance(_v.get("quality"), dict) else None,
                         promote=False,
+                        prev_chapters=prev_refs,
+                        unstable=bool(unstable_chapters),
                     )
                 _final = _qc_versions[-1]
                 _final_ch = Chapter(no=chapter_no, title=plan_title,
@@ -987,6 +1045,8 @@ class ChapterWriter:
                     source="rewrite" if _final.get("auto_revised") else "ai",
                     quality=_final.get("quality") if isinstance(_final.get("quality"), dict) else None,
                     promote=not kept_previous,
+                    prev_chapters=prev_refs,
+                    unstable=bool(unstable_chapters),
                 )
             except Exception:
                 logger.exception("质检版本落库失败: no=%d", chapter_no)
@@ -994,7 +1054,8 @@ class ChapterWriter:
         chapter = Chapter(no=chapter_no, title=plan_title, content=content, summary=summary, goal=plan_goal)
         if not _qc_versions and not compliance_rejected:
             # 无版本日志（自校验异常跳过等兜底）：保持原行为，直接落盘最终内容
-            self.store.save_chapter(chapter)
+            self.store.save_chapter(chapter, prev_chapters=prev_refs,
+                                    unstable=bool(unstable_chapters))
         self._write_post_gates(chapter_no, plan_title, content, summary,
                                plan_moves, plan_core_event, scenes, silent)
         return chapter
@@ -1062,46 +1123,11 @@ class ChapterWriter:
         # 多计、ch4/ch7 隐式死亡漏计、ch5/ch6 自述面板误计）→ 累计虚高 → 锚正反馈
         # 放大。蚀化差只跟随正文面板链（面板正确性由质检 2.8c「本章死亡必+1、
         # 未死亡必不变」保证），账本与面板永远一致。
+        # P0-10/14/15/16 机制状态账本（零 LLM，确定性）：逻辑抽到 chapter_ledger，
+        # 生成链路与 R1 局部改写共用同一实现，避免两条路径口径漂移。
         try:
-            _mem_st = self._memory()
-            if _mem_st is not None:
-                from .chapter_state import _EROSION_SEQ_RE as _eseq
-                _eros = None
-                _mv = [int(_m.group(1)) for _m in _eseq.finditer(content or "")]
-                if _mv:
-                    _eros = max(_mv)
-                _prev_eros = None
-                try:
-                    _st0 = _mem_st.load().get("state") or {}
-                    _prev_ch = [c for c in _st0.get("chapters", [])
-                                if int(c.get("ch", 0)) < int(chapter_no)]
-                    if _prev_ch:
-                        _prev_eros = _prev_ch[-1].get("erosion")
-                except Exception:
-                    _prev_eros = None
-                # v11 实证（2026-10-10）：ch5 无面板 → erosion=None 断链 → 质检 2.8c
-                # _base 回落起始 97 → ch6 蚀化差误算 101-97=4（把 ch3/ch4 死亡计入 ch6）
-                # → ledger_check 报「4 次死亡」误伤。无面板=无事件=蚀化不变：缺失时
-                # 继承上一章末（与 numbers 链式 chapter_ledger 同口径，账本永不破链）。
-                if _eros is None and _prev_eros is not None:
-                    _eros = int(_prev_eros)
-                _deaths = 0
-                if _eros is not None and _prev_eros is not None and _eros >= int(_prev_eros or 0):
-                    _deaths = _eros - int(_prev_eros or 0)
-                # P0-15/16 通用版：注册字段末值链式入账（ledger_extract_numbers 零 LLM
-                # 抽取；本章未提及字段由 chapter_ledger 继承上一章末值，治 ch5 断链）
-                _nums = {}
-                try:
-                    from .chapter_state import (mechanism_field_registry as _mreg2,
-                                                ledger_extract_numbers as _lex)
-                    _canon2 = (_mem_st.load().get("canon") or {})
-                    _reg2 = _mreg2(_canon2.get("mechanism_baseline") or {})
-                    if _reg2:
-                        _nums = _lex(content or "", _reg2)
-                except Exception:
-                    _nums = {}
-                _mem_st.record_chapter_state(chapter_no, deaths=_deaths, erosion=_eros,
-                                             numbers=_nums)
+            from .chapter_ledger import record_mechanism_state
+            record_mechanism_state(self._memory(), chapter_no, content)
         except Exception:
             pass
         # P2-4 场景落盘：拆场景结果 + 场景状态累积写入 store（供回看/编辑/复用；
@@ -1111,7 +1137,17 @@ class ChapterWriter:
         #（P0-8 已暴露给 write() 的章节累计机制数字）。
         try:
             if scenes:
-                self.store.save_scenes(chapter_no, scenes, self._scene_state_acc or {})
+                # 字段名归一：场景累计数字按机制注册表归一，否则逐章写法变体导致
+                # 冲突规则的「同键跨章比对」恒为空（真实样本实测 0 对可比）。
+                try:
+                    from .chapter_state import (canonicalize_number_list,
+                                                registry_for_world)
+                    _acc = dict(self._scene_state_acc or {})
+                    _acc["numbers"] = canonicalize_number_list(
+                        _acc.get("numbers"), registry_for_world(self.store.load_world()))
+                except Exception:
+                    _acc = self._scene_state_acc or {}
+                self.store.save_scenes(chapter_no, scenes, _acc)
         except Exception:
             pass
         if summary:
@@ -1217,7 +1253,7 @@ class ChapterWriter:
                                         unknown_mechanism_fields as _unk_h,
                                         ledger_check as _lchk_h,
                                         _registry_initial as _rin_h,
-                                        _EROSION_SEQ_RE as _eseq_h)
+                                        cumulative_value as _cumv_h)
             _mem_h = self._memory()
             if _mem_h is None:
                 return True  # 无记忆体系（未启用记忆）不判病，维持旧路径行为
@@ -1234,8 +1270,7 @@ class ChapterWriter:
             if _reg_h:
                 _st_h = (_mem_h.load().get("state") or {})
                 _prev_h = _mem_h.chapter_ledger(chapter_no - 1)
-                _eros_h = max((int(_m.group(1)) for _m in _eseq_h.finditer(content or "")),
-                              default=0)
+                _eros_h = _cumv_h(content or "", _reg_h) or 0
                 _base_h = 0
                 try:
                     _pc = [c for c in _st_h.get("chapters", [])
@@ -1483,6 +1518,7 @@ class ChapterWriter:
         action_plan_block = ""
         fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
         derived_events: list = []
+        events_list: list = []       # try 内可能未赋值：异常回退整章时不得引用未定义变量
         skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
             derived_events = _derive_events_from_moves(
@@ -1645,6 +1681,7 @@ class ChapterWriter:
                               f"（refs={sorted(refs)} vs derived={sorted(derived_ids)}），回退整章生成")
                     scenes = []
         except Exception:
+            logger.exception("拆场景异常，回退整章生成（不阻塞本章）")
             scenes = []
 
         if scenes:
@@ -1751,6 +1788,24 @@ class ChapterWriter:
         # 禁提前消费完整流程）——治"跨场景分布型重演"（事件无 consumed 标记 +
         # 模型对已写事件仍有完整执行权，decisions.md 2026-10-09 §7.2 根因 A）。
         event_ledger: list[dict] = []
+        # 事件锚点账本（2026-11-08）：事件 id 取拆场景 scene_event_ref（与派生事件编号一致），
+        # 每场景结束登记 {id, desc, summary, anchor}；anchor 为该事件在正文里的原文锚点，
+        # 后续场景据此回避「换措辞复述同一事件」。
+        _scene_event_ids = [
+            str(sc.get("scene_event_ref") or "").strip() or f"事件{i}"
+            for i, sc in enumerate(scenes, start=1)
+        ]
+        _event_plan = [
+            (sid, str(sc.get("event") or "").strip())
+            for sid, sc in zip(_scene_event_ids, scenes)
+        ]
+        # 2026-11-10 修复②：事件计划锚点（拆场景产出 anchors），按事件 id 归档，
+        # 与账本里的原文锚点一起作为「复写/越权」兜底比对的通用判据（零词表）。
+        _plan_anchors: dict[str, list[str]] = {
+            sid: [str(a).strip() for a in (sc.get("anchors") or []) if str(a).strip()]
+            for sid, sc in zip(_scene_event_ids, scenes)
+        }
+        _desc_to_id: dict[str, str] = {d: sid for sid, d in _event_plan if d}
         # 2026-10-09 正文级节拍序列登记（REQ-scene-plan-align §7.3 措施3）：
         # done_events 只登记「规划事件」（sc.event），登记不了"场景正文实际越权消费"的
         # 后续事件；这里把每个场景正文的节拍序列（_extract_beat_sequence）登记为正文级
@@ -1794,13 +1849,18 @@ class ChapterWriter:
                                 "禁止跨场景重复落实同一行动/同一节拍，其余行动由后续场景落实）】\n" + action_plan_block)
             else:
                 mem_for_this = "【前情记忆】已在第1个场景完整注入，本场景不再重复全文。"
-            # P0-1 事件消费账本注入：已消费事件（只许回响）/ 后续事件预览（禁提前消费）
+            # P0-1 事件消费账本注入：已消费事件（只许回响；带 id/摘要/原文锚点）/
+            # 剩余未消费事件（硬约束禁止提前消费，逐条带编号与摘要）
+            _consumed_ids = {e.get("id") for e in event_ledger}
             consumed_events_text = "\n".join(
-                f"- {e.get('desc','')}" for e in event_ledger if e.get("desc")
+                (f"- {e.get('id','')}『{e.get('summary') or _event_summary(e.get('desc',''))}』"
+                 f"（原文锚点：{e['anchor']}）") if e.get("anchor")
+                else f"- {e.get('id','')}『{e.get('summary') or _event_summary(e.get('desc',''))}』"
+                for e in event_ledger
             )
             upcoming_events_text = "\n".join(
-                f"- {str(s.get('event') or '').strip()}"
-                for s in scenes[idx:] if str(s.get("event") or "").strip()
+                f"- {sid}（尚未发生）：{_event_summary(desc)}"
+                for sid, desc in _remaining_events(_event_plan, _consumed_ids, idx - 1)
             )
             # P0-3 面板数字确定性闭环：注入本场景开始时的权威基线（上一场景结算值）
             # 2026-10-15 REQ-写作正向引导 5.3：附结算提示——本场景事件层含死亡/复活
@@ -1925,15 +1985,49 @@ class ChapterWriter:
                 # 文本相似度与事件清单双漏检）。对刚生成的场景正文做事件槽位提取
                 # （冲突对象+救援动作），与全部已完成事件比对——命中=复写已发生事件，
                 # 重试本场景（重试提示含被重写事件原文，禁止再次出现）。
-                if piece and done_events:
-                    dup_ev = _scene_text_rewrites_event(
-                        piece, done_events, conflict_names,
+                # 2026-11-08 漏检修复（Q1 ch3 实证）：此前比对集合只有 done_events，
+                # 场景1 的 done_events 为空、场景2 重复内容又恰是"本场景自己的事件"被排除，
+                # 于是"场景1提前写完事件2、场景2再演一遍"全程无人比对。把「剩余未消费
+                # 事件」并入比对集合，给越权消费补上事后拦截；重试仍越权则登记账本兜底。
+                # 2026-11-10 修复①（末场景纳入比对）：比对集合此前只有 done_events +
+                # 「剩余未消费事件」，而剩余事件用 1 基下标切最后一场景恒为空、
+                # 本场景自身事件又不在集合里——「场景1越权写完事件2、场景2 整章重写」
+                # 时末场景没有任何可比对对象。改为显式 0 基取后续事件 + 自身事件在
+                # 已被前序越权消费时纳入（正常推进不算复写）。
+                # 另一维度：已生成场景**正文**也参与比对（`_scene_text_repeats_generated`），
+                # 治"同一段落重新起头"——整章重写时事件措辞可能全变，但开头句照抄。
+                _own_ev = str(sc.get("event") or "").strip()
+                _own_consumed = any(
+                    e.get("id") == _scene_event_ids[idx - 1] for e in event_ledger)
+                _future_events = _remaining_events(_event_plan, _consumed_ids, idx - 1)
+                _future_descs = [d for _, d in _future_events]
+                _check_descs = _scene_check_descs(
+                    done_events, _own_ev, _own_consumed, _future_descs)
+                # 2026-11-10 修复②：与 descs 同序的锚点清单——已发生事件优先用账本里的
+                # 原文锚点（那句实际写成的话），后续未消费事件用拆场景 anchors 关键短语。
+                # 兜底判据由「救援动词表」改为「锚点 bigram 命中」，离席/破门/签约同样可比。
+                _anchor_by_id = {str(e.get("id")): str(e.get("anchor") or "")
+                                 for e in event_ledger}
+                _check_anchors = []
+                for _d in _check_descs:
+                    _aid = _desc_to_id.get(_d, "")
+                    _refs = [r for r in (_anchor_by_id.get(_aid),) if r]
+                    _refs.extend(_plan_anchors.get(_aid, []))
+                    _check_anchors.append(_refs)
+                _future_over = ""
+                _rep_src = _scene_text_repeats_generated(piece, scene_texts) if piece else ""
+                if piece and (_check_descs or scene_texts):
+                    dup_ev = _rep_src or _scene_text_rewrites_event(
+                        piece, _check_descs, conflict_names,
                         llm=self.llm,
                         use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                        anchors=_check_anchors,
                     )
                     if dup_ev:
+                        _future_over = dup_ev if dup_ev in _future_descs else ""
                         if not silent:
-                            logger.warning(f"  [场景] 第{idx}个场景复写了已发生事件"
+                            _kind = "尚未发生事件（越权消费）" if _future_over else "已发生事件"
+                            logger.warning(f"  [场景] 第{idx}个场景复写了{_kind}"
                                   f"（{dup_ev[:50]}），重试强制只写本场景唯一事件")
                         sys_c3, user_c3 = scene_prompt(
                             self.cfg, chapter_no, plan_title, idx, sc,
@@ -1960,10 +2054,13 @@ class ChapterWriter:
                         )
                         retry3 = _strip_html_tags(retry3)
                         if retry3 and not _scene_text_rewrites_event(
-                                retry3, done_events, conflict_names,
+                                retry3, _check_descs, conflict_names,
                                 llm=self.llm,
-                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True))):
+                                use_llm=bool(getattr(self.cfg, "llm_semantic_scene_events", True)),
+                                anchors=_check_anchors) \
+                                and not _scene_text_repeats_generated(retry3, scene_texts):
                             piece = retry3
+                            _future_over = ""
                 # 2026-10-09 情节节拍序列重演检测（REQ-scene-plan-align §7.3 措施3/措施5）：
                 # 换措辞"完整循环"重演（盘问→戳穿→失控→挡死→死亡→复活→面板→留牌→离场）
                 # 文本相似度/救援动词防线全漏检（§7.2 根因 C/D/E），用节拍序列指纹比对；
@@ -2134,6 +2231,60 @@ class ChapterWriter:
                         if not _panel_ok and not silent:
                             logger.warning(f"  [场景] 第{idx}个场景机制数字连续 2 次重试仍违反，"
                                   f"采用最后稿（质检层二次拦截）")
+                # 2026-11-10 修复③（章级终检）：末场景写完后，把「已生成场景正文 + 末场景」
+                # 拼成章文本做最后一道流程复述检测。补场景级判据的盲区：同一段离场/位移
+                # 流程被前一场景走过、末场景换措辞再走一遍时，事件账本（规划事件已消费）、
+                # `_SCENE_ANCHOR_RATIO`（要求同一句原文被照写）都不命中，字面 Jaccard 也
+                # 无法区分（实测 v4 0.07-0.13 / v5 0.06-0.09）——故走语义判定。
+                # 命中只重跑末场景 1 次（不整章回退）；重跑稿不合格则保原稿并留日志。
+                if piece and idx == len(scenes) and scene_texts:
+                    _prev_joined = "\n\n".join(t for t in scene_texts if t)
+                    _sem_on = bool(getattr(self.cfg, "llm_semantic_scene_events", True))
+                    _flow_dup = chapter_flow_repeat(
+                        self.llm, _prev_joined, piece, use_llm=_sem_on)
+                    _clause_dups = _rule_clause_conflicts(_prev_joined, piece)
+                    if _flow_dup or _clause_dups:
+                        if not silent:
+                            _why = ("复述前一场景已写流程" if _flow_dup
+                                    else "守则兜底条款出现第二套口径")
+                            logger.warning(f"  [场景] 章级终检命中（{_why}），"
+                                  f"只重跑末场景一次（不整章回退）")
+                        sys_c6, user_c6 = scene_prompt(
+                            self.cfg, chapter_no, plan_title, idx, sc,
+                            mem_for_this, running_tail, dynamic,
+                            core_event=plan_core_event,
+                            scene_state_hint=scene_state_hint,
+                            force_new_progression=True,
+                            forbid_event=_flow_dup or _clause_dups[0],
+                            consumed_events=consumed_events_text,
+                            upcoming_events=upcoming_events_text,
+                            panel_baseline=panel_baseline_text,
+                            book_pitfalls=book_pitfalls_text,
+                            book_canon=book_canon_text,
+                            user_memory_block=self._user_memory_block(),
+                            state_anchor=state_anchor_text,
+                        )
+                        _reconcile_scene(idx, 6, sys_c6, user_c6)
+                        retry6 = self.llm.chat(
+                            self._with_persona(sys_c6), user_c6,
+                            temperature=0.7,
+                            max_tokens=max(4000, min(8192, int(_target_w * 2.2))),
+                            frequency_penalty=0.35,
+                            presence_penalty=0.2,
+                        )
+                        retry6 = _strip_html_tags(retry6)
+                        # 采纳门槛：非空 + 不短于原稿 60%（防"删段逃逸"式糊弄）+ 复检通过
+                        _ok6 = bool(retry6) and len(retry6) >= int(len(piece) * 0.6)
+                        if _ok6:
+                            _ok6 = not chapter_flow_repeat(
+                                self.llm, _prev_joined, retry6, use_llm=_sem_on)
+                        if _ok6:
+                            _ok6 = not _rule_clause_conflicts(_prev_joined, retry6)
+                        if _ok6:
+                            piece = retry6
+                        else:
+                            logger.warning("  [场景] 章级终检重跑稿未通过复检"
+                                  "（空稿/过短/仍复述或条文仍冲突），保留原稿（不整章回退）")
                 # P0-18 场景字数上限治理（2026-10-10，治 v9 ch4=5050/ch6=4310 超长与
                 # 注水）：单场景正文超 target_words×1.5 → 精简重写 1 次（保留剧情与
                 # 数字、删重复措辞/注水对话/无效描写，压到 target×1.2）；仍超保留
@@ -2171,9 +2322,16 @@ class ChapterWriter:
                                + "\n".join(f"{i}. {e}" for i, e in enumerate(done_events, 1)))
                     scene_state_hint = (scene_state_hint + ev_hint) if scene_state_hint else ev_hint
                 # P0-1 事件消费账本登记：本场景事件标记 consumed（供后续场景「已消费事件」
-                # 注入；desc 为空时用规划事件文本，避免账本缺环）
-                if ev:
-                    event_ledger.append({"desc": ev, "consumed_scene_idx": idx})
+                # 注入；desc 为空时用规划事件文本，避免账本缺环）。事件锚点账本（2026-11-08）
+                # 同时登记 id + 摘要 + 原文锚点，让后续场景看到「原文已写成什么样」。
+                ev_id = _scene_event_ids[idx - 1]
+                if ev and ev_id not in {e.get("id") for e in event_ledger}:
+                    event_ledger.append({
+                        "id": ev_id, "desc": ev,
+                        "summary": _event_summary(ev),
+                        "anchor": _event_anchor(piece, ev),
+                        "consumed_scene_idx": idx,
+                    })
                     # P0-7 小说级记忆：跨章持久化事件消费（零 LLM，失败静默）
                     try:
                         _mem = self._memory()
@@ -2181,7 +2339,19 @@ class ChapterWriter:
                             _mem.record_event_consumed(ev, chapter_no)
                     except Exception:
                         pass
-                # 场景状态推进抽取（REQ-token优化 P0-1）：
+                # 越权消费兜底登记（2026-11-08）：重试后仍写出后续事件 → 该事件按「已发生」
+                # 入账（含原文锚点）。后续场景既不再把它列为「剩余未消费」，复写检测也会命中。
+                if _future_over:
+                    _fid = next((sid for sid, d in _future_events if d == _future_over), "")
+                    if _fid and _fid not in {e.get("id") for e in event_ledger}:
+                        event_ledger.append({
+                            "id": _fid, "desc": _future_over,
+                            "summary": _event_summary(_future_over),
+                            "anchor": _event_anchor(piece, _future_over),
+                            "consumed_scene_idx": idx, "over": True,
+                        })
+                    if _future_over not in done_events:
+                        done_events.append(_future_over)
                 # scene_state_mode=auto → 高质量模式 LLM / 普通模式确定性面板正则；
                 # llm → 全部 LLM；deterministic → 全部确定性（零 LLM）。
                 if idx < len(scenes):
@@ -2421,6 +2591,36 @@ class ChapterWriter:
         except Exception:
             return ""
 
+    def _prev_chapter_refs(self, chapter_no: int) -> list[dict]:
+        """本章章节级依赖：`[{"ch": 3, "v": 2}]`（档2 写入 upstream.prev_chapters）。
+
+        来源只有两处真实读入上下文的位置：`Memory` 记录的 L4/L4.5 消费章节，
+        以及 `_prev_tail` 直读的上一章结尾。无版本索引的存量章记 v=0——
+        后续它一旦被重写产生 v>=1，下游即可判定「前文已改」。
+        """
+        try:
+            nos = set(self.memory.consumed_chapters())
+        except Exception:
+            logger.warning("读取记忆消费章节失败（本章依赖降级为空）: no=%d", chapter_no, exc_info=True)
+            nos = set()
+        try:
+            if chapter_no > 1:
+                prev = self.store.load_chapter(chapter_no - 1)
+                if prev and prev.content:
+                    nos.add(chapter_no - 1)
+        except Exception:
+            logger.warning("读取上一章失败（依赖记录可能缺章）: no=%d", chapter_no, exc_info=True)
+        try:
+            index = self.store.load_chapter_versions() or {}
+        except Exception:
+            logger.warning("读取章节版本索引失败（本章依赖记录为空）: no=%d", chapter_no, exc_info=True)
+            return []
+        refs = []
+        for no in sorted(nos):
+            selected = (index.get(str(no)) or {}).get("selected")
+            refs.append({"ch": int(no), "v": int(selected) if isinstance(selected, int) else 0})
+        return refs
+
     def _prev_tail(self, chapter_no: int) -> str:
         """取上一章结尾约 120 字作为衔接提示，减少章节断裂感。"""
         if chapter_no <= 1:
@@ -2479,6 +2679,9 @@ from .scene_event_utils import (
     _expand_scene_event_refs, _normalize_scene_targets,
     _validate_scene_plan, _scene_events_overlap, _split_summary,
     _is_repetitive_text, _summary_invented_words,
+    _event_summary, _event_anchor, _remaining_events,
+    _scene_check_descs, _scene_text_repeats_generated,
+    _rule_clause_conflicts, chapter_flow_repeat,
     _strip_html_tags, _strip_json_block, _extract_json_field,
     _SCENE_EVENT_OVERLAP_RATIO, _SCENE_ADJACENT_REPEAT_RATIO,
     _SCENE_ADJACENT_SPAN_RATIO,

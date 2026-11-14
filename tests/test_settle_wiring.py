@@ -80,6 +80,11 @@ class _FakePipeline:
     def export(self):
         pass
 
+    def commit_chapter_ledgers(self, no: int, force: bool = False,
+                               silent: bool = True, source: str = "unknown"):
+        """测试桩：章后账本提交由 test_web_ledger_commit.py 覆盖，此处只需存在。"""
+        return {"chapter": int(no), "status": "skipped"}
+
 
 @pytest.fixture
 def wallet(monkeypatch):
@@ -153,7 +158,7 @@ def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, wired, monke
     store.save_chapter(Chapter(no=1, title="第1章", content="初稿" * 500), source="ai")
 
     class _FakeWriter:
-        def write(self, no, title, goal, research, is_final=False):
+        def write(self, no, title, goal, research, is_final=False, unstable_chapters=None):
             content = "重写正文" * 800
             store.save_chapter(Chapter(no=no, title=title, content=content), source="rewrite")
             return Chapter(no=no, title=title, content=content)
@@ -162,6 +167,10 @@ def test_rewrite_settles_new_chapter_version_only(tmp_path, wallet, wired, monke
         def __init__(self):
             self.cfg = store.load_config()
             self.chapter_writer = _FakeWriter()
+
+        def commit_chapter_ledgers(self, no: int, force: bool = False,
+                                   silent: bool = True, source: str = "unknown"):
+            return {"chapter": int(no), "status": "skipped"}
 
     monkeypatch.setattr(server, "_open_pipeline",
                         lambda s, trace_id="": _FakeRewritePipeline())

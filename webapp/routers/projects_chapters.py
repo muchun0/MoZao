@@ -8,7 +8,9 @@ from novel_gen.pipeline.style_anchor import (
 from novel_gen.pipeline import artifact_staleness  # R13 派生记录标脏（只读）
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 from ..version_recommend import attach_chapter_recommendations
+from ..config_overrides import apply_global_overrides  # 后台开关为唯一权威源（读接口同样生效）
 from ..chapter_issue_service import apply_issue_rewrite  # R1「按此改」编排
+from novel_gen.pipeline.chapter_ledger import sync_after_rewrite  # 档2 版本切换后账本同步
 from ..chapter_quality_service import recheck_chapter_quality as _recheck_chapter_quality  # R14 单章重检
 from novel_gen.pipeline.quality.checker import QualityUnavailable  # R14 模型失败 fail-closed
 from novel_gen.pipeline.templates import _style_reference
@@ -44,9 +46,19 @@ def select_chapter_version(project_id: str, no: int, v: int,
     ch = store.select_version(no, v)
     if ch is None:
         raise HTTPException(status_code=400, detail=f"版本 v{v} 不存在（可能已被淘汰）")
+    # 档2：切换后本章正文变了，账本（摘要/人物/章末/揭示/读者）必须跟着同步。
+    # 复用 R1 改写同一条路径（sync_after_rewrite）；结算语义不变，失败只留痕不阻断。
+    ledger = {"status": "skipped"}
+    try:
+        ledger = sync_after_rewrite(store, _open_pipeline(store), no, version=v)
+    except Exception as exc:
+        logger.exception("版本切换后账本同步异常（版本切换已生效，账本可能落后）: "
+                         "project=%s no=%d v=%d", project_id, no, v)
+        ledger = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     # P2（REQ §5 验收10）：切换后账本为该版本投影，仅提示，不重放
-    logger.info("章节版本选择: uid=%d project=%s no=%d v=%d", user["id"], project_id, no, v)
-    return {"no": no, "selected_version": v, "words": len(ch.content)}
+    logger.info("章节版本选择: uid=%d project=%s no=%d v=%d ledger=%s",
+                user["id"], project_id, no, v, ledger.get("chapter_state"))
+    return {"no": no, "selected_version": v, "words": len(ch.content), "ledger": ledger}
 
 
 @app.delete("/api/projects/{project_id}/chapters/{no}/versions/{v}")
@@ -624,3 +636,214 @@ def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)
     return {"saved": True, "chapter_no": chapter_no, "preview": preview,
             "msg": "续写草稿已记录（预览模式，未自动写入章节正文，请复制到编辑器使用）"}
 
+
+@app.get("/api/projects/{project_id}/book-facts")
+def get_book_facts(project_id: str, at_ch: int = 0, agent: str = "",
+                   budget: int | None = None, user: dict = Depends(_require_user)):
+    """REQ-R20 M0：单一只读状态视图。
+
+    at_ch=0 表示到已写最大章；agent 为空返回完整快照，非空（writer/architect/world）
+    额外返回按预算裁剪后的注入块；budget 收敛到 300–3000 字符。
+    只读：不写任何源账本；快照落盘由 BookFacts 经 store.save_book_facts 原子完成。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    try:
+        cfg = store.load_config()
+    except Exception:
+        cfg = None
+    from novel_gen.pipeline.book_facts import BUDGET_MAX, BUDGET_MIN, BookFacts, empty_snapshot
+
+    facts = BookFacts(store, cfg)
+    snapshot = facts.snapshot(at_ch=at_ch)
+    agent = (agent or "").strip()
+    block = ""
+    if agent:
+        if agent not in ("writer", "architect", "world"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"未知 agent 视图: {agent}（可选 writer/architect/world）")
+        if budget is not None:
+            budget = max(BUDGET_MIN, min(BUDGET_MAX, int(budget)))
+        block = facts.block_for(agent, at_ch=at_ch, budget=budget)
+    if snapshot is None:
+        snapshot = empty_snapshot(at_ch)
+    return {
+        "snapshot": snapshot,
+        "block": block,
+        "degraded": bool(facts.degraded),
+        "stale": bool(snapshot.get("stale")),
+        "dropped": int(facts.last_dropped or 0),
+    }
+
+
+
+@app.get("/api/projects/{project_id}/book-facts/events")
+def get_book_facts_events(project_id: str, from_ch: int = 0, to_ch: int = 0,
+                          thread: str = "", participant: str = "", limit: int = 100,
+                          user: dict = Depends(_require_user)):
+    """REQ-R21 M1：事件流查询（按章区间/线索/参与者），含 cause/effect 与消费水位。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.state.events import EventStream
+    stream = EventStream(store)
+    rows = stream.query_with_consumption(from_ch=from_ch, to_ch=to_ch, participant=participant,
+                                        thread=thread, limit=max(1, min(int(limit or 100), 1000)))
+    return {"events": [{
+        "id": r.get("id"), "ch": r.get("ch"), "scene": r.get("scene"),
+        "participants": r.get("participants") or [], "cause": r.get("cause"),
+        "effect": r.get("effect") or [], "desc": r.get("desc"),
+        "kind": r.get("kind"), "consumed_ch": r.get("consumed_ch"),
+    } for r in rows], "count": len(rows)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/threads")
+def get_book_facts_threads(project_id: str, status: str = "", level: str = "",
+                           limit: int = 100, user: dict = Depends(_require_user)):
+    """REQ-R21 M1：伏笔清单（唯一源 foreshadowing.json），按 due_ch 升序。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    rows = BookFacts(store, cfg).open_threads(overdue_only=False)
+    if status:
+        want = {s.strip() for s in str(status).split(",") if s.strip()}
+        rows = [r for r in rows if str(r.get("status")) in want]
+    if level:
+        rows = [r for r in rows if str(r.get("level") or "main") == level]
+    rows = rows[:max(1, min(int(limit or 100), 1000))]
+    return {"threads": rows, "count": len(rows)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/timeline")
+def get_book_facts_timeline(project_id: str, view: str = "chapter", at_ch: int = 0,
+                            user: dict = Depends(_require_user)):
+    """REQ-R21 M1：时间线三切面（chapter/thread/character），每条带章号与摘要。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    facts = BookFacts(store, cfg)
+    snap = facts.snapshot(at_ch=at_ch)
+    view = (view or "chapter").strip()
+    if view == "thread":
+        items = [{
+            "key": t.get("key"), "name": t.get("name"), "summary": t.get("desc") or "",
+            "ch": int(t.get("due_ch") or 0), "planted_ch": t.get("planted_ch"),
+            "status": t.get("status"), "evidence_ch": t.get("evidence_ch"),
+        } for t in facts.open_threads(at_ch=at_ch)]
+    elif view == "character":
+        items = [{
+            "key": c.get("name"), "name": c.get("name"),
+            "summary": "；".join(x for x in (c.get("state"), c.get("location"), c.get("goal")) if x),
+            "ch": int(c.get("last_ch") or 0), "source": c.get("source"),
+        } for c in (snap.get("characters") or [])]
+    elif view == "chapter":
+        items = [{"ch": int(e.get("ch") or 0), "summary": e.get("desc") or "",
+                  "kind": e.get("kind") or "state"} for e in (snap.get("events") or [])]
+    else:
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 chapter/thread/character）")
+    items.sort(key=lambda r: (int(r.get("ch") or 0), str(r.get("key") or "")))
+    return {"view": view, "items": items, "count": len(items),
+            "stale": bool(snap.get("stale")), "degraded": bool(facts.degraded)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/graph")
+def get_book_facts_graph(project_id: str, view: str = "all", at_ch: int = 0,
+                         kind: str = "", participant: str = "", status: str = "",
+                         limit: int = 2000,
+                         user: dict = Depends(_require_user)):
+    """REQ-R22 M2：状态图谱只读视图（canon/characters/timeline/threads 或 all）。
+
+    与 M1 的分散查询接口并存：本接口一次给「版本 + 来源 + 四视图」，是消费方的稳定
+    契约；单视图查询仍走 `/book-facts/events|threads|timeline`。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph")
+    from novel_gen.pipeline.state.views import VIEWS, StateGraph
+    graph = StateGraph(store, cfg)
+    view = (view or "all").strip()
+    if view == "all":
+        return graph.snapshot(at_ch=at_ch)
+    if view not in VIEWS:
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 all/{'/'.join(VIEWS)}）")
+    data = graph.view(view, at_ch=at_ch, **({"kind": kind, "participant": participant,
+                                             "limit": limit} if view == "timeline"
+                                            else {"status": status} if view == "threads"
+                                            else {}))
+    return {"view": view, "version": graph.version([view]),
+            "sources": graph.sources(), "data": data}
+
+
+@app.put("/api/projects/{project_id}/book-facts/planned-events")
+def put_book_facts_planned_events(project_id: str, payload: dict = Body(...),
+                                  user: dict = Depends(_require_user)):
+    """REQ-R22 L3：保存作者在时间线上排的计划事件（全量覆盖，写前归一校验）。
+
+    计划事件只影响「写对应章时的注入」，不改已发生事件流、不触发重生成；
+    非法输入一律 400 并说明是哪一条，绝不静默丢弃。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph")
+    from novel_gen.pipeline.planned_events import normalize
+    try:
+        items = normalize((payload or {}).get("items"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store.save_planned_events(items)
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/violations")
+def get_book_facts_violations(project_id: str, severity: str = "", rule: str = "",
+                              limit: int = 50, at_ch: int = 0,
+                              user: dict = Depends(_require_user)):
+    """REQ-R21 M1：确定性冲突清单（只报不修），每条含两侧原文与章号。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "timeline_view")
+    from novel_gen.pipeline.book_facts import BookFacts
+    rows = BookFacts(store, cfg).violation_list(at_ch=at_ch)
+    if severity:
+        want = {s.strip() for s in str(severity).split(",") if s.strip()}
+        rows = [r for r in rows if str(r.get("severity")) in want]
+    if rule:
+        rows = [r for r in rows if str(r.get("rule")) == rule]
+    rows = rows[:max(1, min(int(limit or 50), 500))]
+    return {"violations": rows, "count": len(rows)}
+
+
+def _facts_cfg(store):
+    """读取项目配置并合并后台全局开关（读不到按未开启处理：查询接口一律 404）。
+
+    REQ-R21/R22 的四个查询接口与生成链路共用同一份开关口径：后台 `sys_config` 是
+    唯一权威源。此前这里只读项目快照，导致后台把 `timeline_view` 打开后，老项目
+    （快照里没有新字段）的面板仍被判为「未启用」。
+    """
+    try:
+        cfg = store.load_config()
+    except Exception:
+        logger.exception("项目配置读取失败（M1 查询接口按未开启处理）")
+        return None
+    try:
+        apply_global_overrides(cfg)
+    except Exception:
+        # 覆盖注入失败不放大成 404：按项目快照判定，留痕可查（§11.6）
+        logger.exception("全局开关覆盖注入失败（按项目快照判定）")
+    return cfg
+
+
+def _require_flag(cfg, name: str) -> None:
+    if not bool(getattr(cfg, name, False)):
+        raise HTTPException(status_code=404, detail=f"开关 {name} 未开启（M1 能力未启用）")

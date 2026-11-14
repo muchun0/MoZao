@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -28,6 +29,8 @@ from typing import Optional
 from ..config import AgentGuardConfig, LLMConfig, NovelConfig, SearchConfig
 from ..utils.paths import get_output_dir
 from .schemas import Chapter, Outline, ProjectState, World
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_name(name: str) -> str:
@@ -277,6 +280,23 @@ class ProjectStore:
     def load_scenes(self) -> dict:
         return self._read_json(self.scenes_path(), {})
 
+    def mark_scenes_stale(self, chapter_no: int, reason: str = "",
+                          version: int | None = None) -> bool:
+        """把本章场景记录标记为过期（正文被局部改写后调用）。
+
+        不重跑拆场景（额外 LLM + 正文漂移风险），只在原记录上追加 stale 元信息，
+        供回看/复用时提示"场景计划与当前正文可能不一致"。无场景记录返回 False。
+        """
+        data = self._read_json(self.scenes_path(), {})
+        rec = data.get(str(chapter_no))
+        if not isinstance(rec, dict):
+            return False
+        rec["stale"] = {"reason": reason, "version": version,
+                        "ts": int(time.time())}
+        data[str(chapter_no)] = rec
+        self._write_json(self.scenes_path(), data)
+        return True
+
     # ---------- 大纲 ----------
     def outline_path(self) -> Path:
         return self.dir / "outline.json"
@@ -447,21 +467,49 @@ class ProjectStore:
     def save_chapter(self, chapter: Chapter, source: Optional[str] = None,
                      version_limit: Optional[int] = None,
                      quality: Optional[dict] = None,
-                     promote: bool = True) -> Optional[int]:
+                     promote: bool = True,
+                     prev_chapters: Optional[list] = None,
+                     unstable: bool = False) -> Optional[int]:
         """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
 
         `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
         门面（统一三类产物版本库）；`False` → 走 `_save_chapter_legacy` 原实现（紧急回退）。
-        对外签名与行为语义不变，详见 `_save_chapter_legacy` docstring。
+
+        档2：`prev_chapters` = 本章上下文实际消费的章节及当时版本
+        （`[{"ch": 3, "v": 2}]`），写入 `upstream.prev_chapters`（与 outline/world 同文件）。
+        传 None 表示"调用方未提供"：同章再生成/改写时沿用上一选中版本的依赖记录，
+        避免把已有的依赖元数据抹掉；存量章无记录则保持缺失（判定为 unknown）。
+        档3：`unstable=True` 表示本章是在"已知前文不一致"下生成的，写入
+        `upstream.unstable`（同文件同权威源，无新账本）。
         """
         if self.versioned_enabled():
+            if prev_chapters is None:
+                prev_chapters = self._carry_prev_chapters(chapter.no)
+            upstream = {}
+            if prev_chapters is not None:
+                upstream["prev_chapters"] = prev_chapters
+            if unstable:
+                upstream["unstable"] = True
             from .versioned import VersionedProduct
             return VersionedProduct(self, "chapter").commit(
                 str(chapter.no), chapter.to_dict(),
                 source=source or getattr(chapter, "source", "ai") or "ai",
-                quality=quality, promote=promote, limit=version_limit)
+                quality=quality, promote=promote, limit=version_limit,
+                upstream=upstream or None)
         return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
                                          quality=quality, promote=promote)
+
+    def _carry_prev_chapters(self, no: int) -> Optional[list]:
+        """读取该章当前选中版本的章节依赖记录（同章改写时沿用）；失败降级 None。"""
+        try:
+            rec = (self.load_chapter_versions() or {}).get(str(no)) or {}
+            for item in rec.get("history") or []:
+                if isinstance(item, dict) and item.get("v") == rec.get("selected"):
+                    prev = (item.get("upstream") or {}).get("prev_chapters")
+                    return prev if isinstance(prev, list) else None
+        except Exception:
+            logger.warning("读取章节依赖记录失败（沿用空）: no=%s", no, exc_info=True)
+        return None
 
     def _save_chapter_legacy(self, chapter: Chapter, source: Optional[str] = None,
                              version_limit: Optional[int] = None,
@@ -743,6 +791,7 @@ class ProjectStore:
     def save_character_states(self, states: dict) -> None:
         """整体覆盖保存（每章更新后写入最新快照）。"""
         self._write_json(self.character_states_path(), states)
+        self.invalidate_book_facts()
 
     # ---------- 章内/章间状态账本（REQ-章内自洽与机制账本） ----------
     def chapter_state_path(self) -> Path:
@@ -756,6 +805,7 @@ class ProjectStore:
     def save_chapter_state(self, state: dict) -> None:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
+        self.invalidate_book_facts()
 
     # ---------- 小说级记忆（P0-7，book_memory） ----------
     def book_memory_path(self) -> Path:
@@ -769,6 +819,68 @@ class ProjectStore:
     def save_book_memory(self, data: dict) -> None:
         """整体覆盖保存（每次账本更新后写入最新快照）。"""
         self._write_json(self.book_memory_path(), data)
+        self.invalidate_book_facts()
+
+    # ---------- 单一只读状态视图（REQ-R20 / TECH-R20，M0） ----------
+    def book_facts_path(self) -> Path:
+        return self.dir / "book_facts.json"
+
+    def load_book_facts(self) -> Optional[dict]:
+        """返回派生的 book_facts 快照；无文件/损坏/缺 version 返回 None（由调用方重建）。"""
+        d = self._read_json(self.book_facts_path(), None)
+        return d if isinstance(d, dict) and d.get("version") else None
+
+    def save_book_facts(self, data: dict) -> None:
+        """整体覆盖保存派生快照（原子写；不写任何源账本，单向只读投影）。
+
+        派生文件：项目重置/删除流程需一并清理（REQ-R20 已知限制 7）。
+        """
+        self._write_json(self.book_facts_path(), data)
+
+    def invalidate_book_facts(self) -> None:
+        """源账本变更后使派生快照失效（只删 book_facts.json，不动任何源文件）。
+
+        重写同一章时 at_ch 不变，若无此失效会把改写前的旧状态当成事实继续注入。
+        """
+        try:
+            self.book_facts_path().unlink(missing_ok=True)
+        except Exception:
+            logger.exception("book_facts 派生快照失效失败（下次同章仍可能复用旧快照）")
+
+    # ---------- 状态层源文件（REQ-R21 / TECH-R21，M1） ----------
+    def events_path(self) -> Path:
+        return self.dir / "events.jsonl"
+
+    def consumption_path(self) -> Path:
+        return self.dir / "consumption.json"
+
+    def load_consumption(self) -> dict:
+        d = self._read_json(self.consumption_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_consumption(self, data: dict) -> None:
+        """整文件原子覆盖（消费水位随时间变化，但不回写事件行）。"""
+        self._write_json(self.consumption_path(), data)
+        self.invalidate_book_facts()
+
+    def foreshadowing_path(self) -> Path:
+        return self.dir / "foreshadowing.json"
+
+    def load_foreshadowing(self) -> Optional[dict]:
+        d = self._read_json(self.foreshadowing_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_foreshadowing(self, data: dict) -> None:
+        """伏笔唯一写入源（原子写）；每次写入使派生快照失效。"""
+        self._write_json(self.foreshadowing_path(), data)
+        self.invalidate_book_facts()
+
+    def reconcile_report_path(self) -> Path:
+        return self.dir / "reconcile_report.json"
+
+    def save_reconcile_report(self, data: dict) -> None:
+        self._write_json(self.reconcile_report_path(), data)
+
 
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
     def user_memory_path(self) -> Path:
@@ -873,6 +985,19 @@ class ProjectStore:
         """取上一章（chapter_no-1）承诺台账，用于下章补偿块注入；无则返回 None。"""
         data = self.load_pending_commitments()
         return data.get(str(chapter_no - 1))
+
+    # ---------- 作者计划事件（时间线可编辑卡片，REQ-R22 L3） ----------
+    def planned_events_path(self) -> Path:
+        return self.dir / "planned_events.json"
+
+    def load_planned_events(self) -> list[dict]:
+        """返回作者在时间线上排好的计划事件（按目标章升序）；无文件返回空列表。"""
+        d = self._read_json(self.planned_events_path(), [])
+        return d if isinstance(d, list) else []
+
+    def save_planned_events(self, items: list[dict]) -> None:
+        """整体覆盖保存（前端一次提交全量，写前由调用方归一与校验）。"""
+        self._write_json(self.planned_events_path(), list(items or []))
 
     # ---------- 场景体检建议（P1-5 读时体检 → 生成反馈闭环） ----------
     def inspector_suggestions_path(self) -> Path:

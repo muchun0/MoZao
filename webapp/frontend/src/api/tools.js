@@ -7,12 +7,14 @@ export const verifyCompliance = (pid) => request.post(`/projects/${pid}/verify/c
 export const getRhythm = (pid) => request.get(`/projects/${pid}/stats/rhythm`)
 export const getReview = (pid) => request.get(`/projects/${pid}/review`)
 export const genAlternatives = (pid, data) => request.post(`/projects/${pid}/generate/alternatives`, data)
-export const listSnapshots = (pid) => request.get(`/projects/${pid}/outline/snapshots`)
-export const saveSnapshot = (pid, name) => request.post(`/projects/${pid}/outline/snapshots`, null, { params: { name } })
-export const restoreSnapshot = (pid, name) => request.post(`/projects/${pid}/outline/snapshots/${name}/restore`)
+// 大纲快照（REQ-R23 P1-1）：已并入 outline 版本库，写入/还原统一走 products/outline 版本接口，
+// 这里不再暴露独立快照 API，避免出现第二个入口。
 export const listForeshadowing = (pid) => request.get(`/projects/${pid}/foreshadowing`)
 export const addForeshadowing = (pid, data) => request.post(`/projects/${pid}/foreshadowing`, data)
+// 伏笔（REQ-R23 P1-3）：删改一律按名称定位（索引会随增删漂移），增改同名即更新
 export const delForeshadowing = (pid, idx) => request.delete(`/projects/${pid}/foreshadowing/${idx}`)
+export const delForeshadowingByName = (pid, name) =>
+  request.delete(`/projects/${pid}/foreshadowing/name/${encodeURIComponent(name)}`)
 export const listLocked = (pid) => request.get(`/projects/${pid}/locked-settings`)
 export const addLocked = (pid, data) => request.post(`/projects/${pid}/locked-settings`, data)
 export const delLocked = (pid, idx) => request.delete(`/projects/${pid}/locked-settings/${idx}`)

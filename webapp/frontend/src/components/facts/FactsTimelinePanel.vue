@@ -62,6 +62,11 @@
           </span>
         </header>
 
+        <!-- 存量项目没有事件流：说清「0 条」不是漏数，而是历史章节不回填 -->
+        <p v-if="!happened.length" class="tl-hint tl-empty-hint">
+          这本书还没有事件记录。事件在写完一章时登记；事件流开启之前生成的历史章节不会回填，从之后新写的章节开始才会出现在这里。
+        </p>
+
         <!-- L1：卡片流 -->
         <div v-if="mode === 'cards'" class="tl-flow">
           <div v-if="cardGroups.length" class="tl-flow-inner">
@@ -92,7 +97,6 @@
               </div>
             </div>
           </div>
-          <p v-else class="tl-hint">还没有事件记录。事件在写完一章后自动登记；早期章节若在事件流修复前生成，就不会有记录——从下一章开始才会出现。</p>
         </div>
 
         <!-- L2：泳道 -->
@@ -510,6 +514,7 @@ watch(() => props.pid, reload)
 .tl-count { font-size: 12px; color: var(--muted); }
 .tl-dim { color: var(--muted); font-size: 12px; }
 .tl-hint { font-size: 12px; color: var(--muted); line-height: 1.8; margin: 6px 0 0; }
+.tl-empty-hint { margin: 2px 0 10px; padding: 6px 10px; background: var(--card-soft, rgba(0,0,0,.02)); border-radius: 6px; }
 /* REQ-R23 P0-9：计划事件的「计划≠已发生」口径提示（页面顶部一句话，图上用图例区分） */
 .tl-plan-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 6px 0 4px; }
 .tl-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 0; font-size: 12px; color: var(--muted); }

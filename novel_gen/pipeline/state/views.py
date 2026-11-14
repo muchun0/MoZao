@@ -202,6 +202,13 @@ class StateGraph:
     def timeline(self, at_ch: int = 0, kind: str = "", participant: str = "",
                  limit: int = TIMELINE_LIMIT_MAX) -> dict:
         """发展线视图：全量事件 + 按章分组 + 类型/参与人统计（供时间线渲染）。"""
+        # at_ch 是「看到第几章」的水位；传 0 表示不设上限，此时回落到真实已写章，
+        # 否则消费方会把 0 当成「一章都没写」（存量项目尤其明显）。
+        written_ch = _int(at_ch)
+        try:
+            written_ch = _int(self._facts().snapshot(at_ch=at_ch).get("at_ch")) or written_ch
+        except Exception:
+            logger.exception("book_facts 快照读取失败（at_ch 水位回退为入参）")
         try:
             rows = EventStream(self.store).query(to_ch=at_ch)
         except Exception:
@@ -241,7 +248,7 @@ class StateGraph:
             planned = [dict(p, planned=True) for p in from_store(self.store)]
         except Exception:
             logger.exception("计划事件读取失败（时间线不返回计划卡）")
-        return {"at_ch": _int(at_ch), "events": out_rows, "count": len(out_rows),
+        return {"at_ch": written_ch, "events": out_rows, "count": len(out_rows),
                 "planned": planned, "planned_count": len(planned),
                 "by_ch": [{"ch": ch, "count": len(v), "descs": v[:6]}
                           for ch, v in sorted(by_ch.items())],

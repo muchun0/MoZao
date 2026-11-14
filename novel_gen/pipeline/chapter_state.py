@@ -168,15 +168,17 @@ def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | N
     if not chapter or not chapter.content:
         return None
     old_state = old_state if isinstance(old_state, dict) else {}
+    registry = registry_for_world(world)
     try:
         if getattr(cfg, "chapter_state_llm", True) and _should_llm_extract(no, cfg):
             state = _llm_chapter_extract(llm, chapter, no)
             state["chapter"] = no
+            state["numbers"] = canonicalize_number_list(state.get("numbers"), registry)
             _carry_rule_state(state, old_state)
             return state
     except Exception:
         logger.warning("章末状态 LLM 抽取失败，降级为确定性面板数字: no=%d", no)
-    nums = _deterministic_numbers(chapter.content)
+    nums = canonicalize_number_list(_deterministic_numbers(chapter.content), registry)
     state: dict = {"chapter": no, "numbers": nums} if nums else {"chapter": no}
     _carry_rule_state(state, old_state)
     if not nums and not any(k in state for k in
@@ -548,6 +550,15 @@ def _cn_to_int(s: str) -> int:
 _FIELD_STOP_RE = re.compile(r"(?:今日|距离|剩余|当前|累计|总共|总|已|可用)")
 
 
+def _strip_prefix(label: str) -> str:
+    """去掉面板前缀限定词（今日/距离/当前/累计/总/已/可用），保留机制主体词。
+
+    与 `_field_core` 的区别：**不剥「剩余」**——「今日剩余」是「剩余」字段的
+    带前缀写法，剥掉就没有字段名可注册（真实基线即此形态）。
+    """
+    return re.sub(r"^(?:今日|距离|当前|累计|总共|总|已|可用)", "", str(label or "")).strip()
+
+
 def _field_core(label: str) -> str:
     """字段核心词：去掉面板常见限定词（今日/距离/累计…），保留机制主体词。"""
     return _FIELD_STOP_RE.sub("", label or "").strip()
@@ -607,9 +618,14 @@ def mechanism_field_registry(baseline: dict | None) -> dict[str, str]:
     if not baseline:
         return reg
     src = " ".join(str(v) for v in baseline.values() if str(v))
-    for m in re.finditer(r"([\u4e00-\u9fff]{1,12}?)\s*[：:]\s*[0-9]", src):
-        core = _field_core(m.group(1))
+    # 占位符形态也要认：「今日剩余：N」「蚀痕：N寸」——真实基线里面板常用 N 占位，
+    # 只认数字会让「剩余」等字段根本不进注册表（数字字段归一因此失效）。
+    for m in re.finditer(r"([\u4e00-\u9fff]{1,12}?)\s*[：:]\s*(?:[0-9]|[Nn])", src):
+        core = _strip_prefix(m.group(1))
         if not core:
+            continue
+        # 单字键多为单位（「寸」「次」「个」），不是字段名
+        if len(core) == 1 and not any(kw in core for kw, _r in _FIELD_DIR_KW):
             continue
         rule = None
         for kw, _r in _FIELD_DIR_KW:
@@ -645,8 +661,15 @@ def unknown_mechanism_fields(text: str, registry: dict[str, str]) -> list[str]:
                   "寸", "尺", "丈", "米", "步", "级", "层", "格", "段", "点", "块")
     for m in _PANEL_RE.finditer(text):
         label = m.group(1).strip()
+        raw = label
+        if raw in registry:
+            continue           # 面板行原样就是注册字段（如「剩余次数」）
         core = _field_core(label)
-        if not core or core in registry:
+        if not core:
+            continue
+        # 面板行写法可能带前缀/异写（「今日剩余」「累积进度」），先归一再比白名单，
+        # 否则白名单里的「剩余次数」会被去前缀成「次数」而误报。
+        if canonical_field_name(label, registry) in registry:
             continue
         if any(kw in core for kw in _MECH_TAIL):
             out.append(
@@ -699,6 +722,103 @@ def ledger_extract_numbers(text: str, registry: dict[str, str]) -> dict[str, int
         if unit_vals:
             out[label] = max(unit_vals)
     return out
+
+
+def cumulative_value(text: str, registry: dict[str, str]) -> int | None:
+    """正文中累积型（increase）注册字段的最大值；无注册字段或未出现返回 None。
+
+    替代已被「机制数字软提示与通用化」删除的单书正则（旧 `_EROSION_SEQ_RE`）：
+    书级累积字段（如《万墟之上》的「蚀化」）由设定账本声明，代码只按方向取
+    increase 字段的正文最大值，作为链式账本锚（死亡数=本章末累积值-上一章末）。
+    """
+    if not text or not registry:
+        return None
+    vals: list[int] = []
+    for label, rule in registry.items():
+        if rule != "increase":
+            continue
+        got = ledger_extract_numbers(text, {label: rule})
+        if got:
+            vals.append(max(got.values()))
+    return max(vals) if vals else None
+
+
+def registry_for_world(world) -> dict[str, str]:
+    """按世界观机制基线派生注册表；无基线/异常返回空表（归一化不启用）。"""
+    try:
+        mb = getattr(world, "mechanism_baseline", None)
+        if hasattr(mb, "to_dict"):
+            mb = mb.to_dict()
+        if isinstance(mb, dict) and mb:
+            return mechanism_field_registry(mb)
+    except Exception:
+        logger.warning("机制基线读取失败（字段归一化跳过）", exc_info=True)
+    return {}
+
+
+def canonical_field_name(label: str, registry: dict[str, str]) -> str:
+    """把任意字段写法归一到注册表字段名。
+
+    逐章 LLM 抽取会把同一机制写成「可死次数 / 剩余次数 / 累计进度」等变体，
+    不归一则跨章同键比对恒为空。归一路径：原样命中 → 去限定词后命中 →
+    同义写法归一（累积≈累计、餘≈余）→ 包含关系里取最长的注册字段；
+    都不命中保留原写法（不臆造字段）。
+    """
+    raw = str(label or "").strip()
+    if not raw or not registry:
+        return raw
+    if raw in registry:
+        return raw
+    core = _field_core(raw)
+    if core in registry:
+        return core
+    norm_core = _syn_form(core)
+    for key in registry:
+        if _syn_form(key) == norm_core:
+            return key
+    hits = [k for k in registry if k and (_syn_form(k) in norm_core
+                                          or norm_core in _syn_form(k)
+                                          or _syn_form(k) in _syn_form(raw))]
+    if hits:
+        return max(hits, key=len)
+    return raw
+
+
+#: 同义写法（同一机制的常见异写；只做字面等价，不做语义猜测）
+_SYN_PAIRS = (("累积", "累计"), ("剩餘", "剩余"))
+
+
+def _syn_form(text: str) -> str:
+    out = str(text or "")
+    for a, b in _SYN_PAIRS:
+        out = out.replace(a, b)
+    return out
+
+
+def canonicalize_numbers(numbers, registry: dict[str, str]) -> dict[str, int]:
+    """把 `["可死次数：3", "累计进度：7/10"]` 或 dict 归一成 `{注册字段: 值}`。
+
+    同一注册字段多写法并存时取最后一次出现的值（末值为准）；不可解析的值跳过。
+    注册表为空时返回 `parse_numbers` 的原结果（不改变现网行为）。
+    """
+    from .state.conflict_rules import parse_numbers
+    raw = parse_numbers(numbers)
+    if not raw or not registry:
+        return raw
+    out: dict[str, int] = {}
+    for label, val in raw.items():
+        key = canonical_field_name(label, registry)
+        out[key] = val
+    return out
+
+
+def canonicalize_number_list(numbers, registry: dict[str, str]):
+    """列表形态的 numbers 就地归一（保持调用方期望的 list[str] 形态）。"""
+    if not isinstance(numbers, list) or not registry:
+        return numbers
+    canon = canonicalize_numbers(numbers, registry)
+    return [f"{k}：{v}" for k, v in canon.items()]
+
 
 
 def _registry_initial(baseline: dict | None, registry: dict[str, str]) -> dict[str, int]:

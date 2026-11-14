@@ -791,6 +791,7 @@ class ProjectStore:
     def save_character_states(self, states: dict) -> None:
         """整体覆盖保存（每章更新后写入最新快照）。"""
         self._write_json(self.character_states_path(), states)
+        self.invalidate_book_facts()
 
     # ---------- 章内/章间状态账本（REQ-章内自洽与机制账本） ----------
     def chapter_state_path(self) -> Path:
@@ -804,6 +805,7 @@ class ProjectStore:
     def save_chapter_state(self, state: dict) -> None:
         """整体覆盖保存（每章落盘后写入最新章末状态）。"""
         self._write_json(self.chapter_state_path(), state)
+        self.invalidate_book_facts()
 
     # ---------- 小说级记忆（P0-7，book_memory） ----------
     def book_memory_path(self) -> Path:
@@ -817,6 +819,68 @@ class ProjectStore:
     def save_book_memory(self, data: dict) -> None:
         """整体覆盖保存（每次账本更新后写入最新快照）。"""
         self._write_json(self.book_memory_path(), data)
+        self.invalidate_book_facts()
+
+    # ---------- 单一只读状态视图（REQ-R20 / TECH-R20，M0） ----------
+    def book_facts_path(self) -> Path:
+        return self.dir / "book_facts.json"
+
+    def load_book_facts(self) -> Optional[dict]:
+        """返回派生的 book_facts 快照；无文件/损坏/缺 version 返回 None（由调用方重建）。"""
+        d = self._read_json(self.book_facts_path(), None)
+        return d if isinstance(d, dict) and d.get("version") else None
+
+    def save_book_facts(self, data: dict) -> None:
+        """整体覆盖保存派生快照（原子写；不写任何源账本，单向只读投影）。
+
+        派生文件：项目重置/删除流程需一并清理（REQ-R20 已知限制 7）。
+        """
+        self._write_json(self.book_facts_path(), data)
+
+    def invalidate_book_facts(self) -> None:
+        """源账本变更后使派生快照失效（只删 book_facts.json，不动任何源文件）。
+
+        重写同一章时 at_ch 不变，若无此失效会把改写前的旧状态当成事实继续注入。
+        """
+        try:
+            self.book_facts_path().unlink(missing_ok=True)
+        except Exception:
+            logger.exception("book_facts 派生快照失效失败（下次同章仍可能复用旧快照）")
+
+    # ---------- 状态层源文件（REQ-R21 / TECH-R21，M1） ----------
+    def events_path(self) -> Path:
+        return self.dir / "events.jsonl"
+
+    def consumption_path(self) -> Path:
+        return self.dir / "consumption.json"
+
+    def load_consumption(self) -> dict:
+        d = self._read_json(self.consumption_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_consumption(self, data: dict) -> None:
+        """整文件原子覆盖（消费水位随时间变化，但不回写事件行）。"""
+        self._write_json(self.consumption_path(), data)
+        self.invalidate_book_facts()
+
+    def foreshadowing_path(self) -> Path:
+        return self.dir / "foreshadowing.json"
+
+    def load_foreshadowing(self) -> Optional[dict]:
+        d = self._read_json(self.foreshadowing_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_foreshadowing(self, data: dict) -> None:
+        """伏笔唯一写入源（原子写）；每次写入使派生快照失效。"""
+        self._write_json(self.foreshadowing_path(), data)
+        self.invalidate_book_facts()
+
+    def reconcile_report_path(self) -> Path:
+        return self.dir / "reconcile_report.json"
+
+    def save_reconcile_report(self, data: dict) -> None:
+        self._write_json(self.reconcile_report_path(), data)
+
 
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
     def user_memory_path(self) -> Path:
@@ -921,6 +985,19 @@ class ProjectStore:
         """取上一章（chapter_no-1）承诺台账，用于下章补偿块注入；无则返回 None。"""
         data = self.load_pending_commitments()
         return data.get(str(chapter_no - 1))
+
+    # ---------- 作者计划事件（时间线可编辑卡片，REQ-R22 L3） ----------
+    def planned_events_path(self) -> Path:
+        return self.dir / "planned_events.json"
+
+    def load_planned_events(self) -> list[dict]:
+        """返回作者在时间线上排好的计划事件（按目标章升序）；无文件返回空列表。"""
+        d = self._read_json(self.planned_events_path(), [])
+        return d if isinstance(d, list) else []
+
+    def save_planned_events(self, items: list[dict]) -> None:
+        """整体覆盖保存（前端一次提交全量，写前由调用方归一与校验）。"""
+        self._write_json(self.planned_events_path(), list(items or []))
 
     # ---------- 场景体检建议（P1-5 读时体检 → 生成反馈闭环） ----------
     def inspector_suggestions_path(self) -> Path:

@@ -124,7 +124,9 @@ import { ref, computed, onMounted } from 'vue'
 import draggable from 'vuedraggable'
 import { getOutline, saveOutline as saveOutlineApi,
          getOutlineCandidates, applyOutlineCandidate } from '../../api/novel'
-import { startAgentRun, getStatus } from '../../api/project'
+import { getStatus } from '../../api/project'
+// REQ-R23 P0-4：重生成本卷与详情页其它入口共用同一发起封装（预估 → 余额校验 → 单轨）
+import { runAgent, errorDetail } from '../../utils/agentRunClient'
 import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -145,7 +147,7 @@ async function regenVolume(vol) {
   } catch { return }
   regeningVol.value = vol.no
   try {
-    await startAgentRun(props.pid, { agent: 'architect.volume', params: { vol_no: vol.no } })
+    await runAgent(props.pid, { agent: 'architect.volume', params: { vol_no: vol.no } })
     ElMessage.success('已开始重生成本卷，完成后自动刷新')
     // 轮询等待生成结束后刷新大纲
     await new Promise((resolve) => {
@@ -158,7 +160,7 @@ async function regenVolume(vol) {
     })
     emit('saved')
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '重生成失败')
+    ElMessage.error(errorDetail(e, '重生成失败'))
   } finally { regeningVol.value = 0 }
 }
 

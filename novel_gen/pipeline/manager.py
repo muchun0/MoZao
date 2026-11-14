@@ -552,6 +552,62 @@ class NovelPipeline:
             logger.exception("读者认知账本章末推进失败（降级跳过）: no=%d", no)
             return False
 
+    def _update_state_layer(self, no: int, silent: bool = False) -> bool:
+        """REQ-R21 M1 章后入账：事件流追加 + 伏笔单一源双写对账。
+
+        事件来源是本章 `chapter_state` 的 facts（章末账本已是抽取产物），
+        这里只做**落盘与对账**，不额外调 LLM；因此写入的事件统一标 `inferred=true`
+        （推定来源），时间线照实展示，不冒充因果抽取结果。
+        """
+        event_stream = bool(getattr(self.cfg, "event_stream", False))
+        unified = bool(getattr(self.cfg, "foreshadow_unified", False))
+        if not (event_stream or unified):
+            return True
+        ok = True
+        try:
+            state = self.store.load_chapter_state() or {}
+        except Exception:
+            logger.exception("章末账本读取失败（状态层入账跳过）: no=%d", no)
+            state = {}
+        chapter = int((state or {}).get("chapter") or no or 0)
+        facts = [str(x).strip() for x in ((state or {}).get("facts") or []) if str(x).strip()]
+        if event_stream:
+            try:
+                from .state.events import EventStream, derive_fact_events
+                stream = EventStream(self.store)
+                names = [str(k) for k in ((state or {}).get("characters") or {}) if str(k).strip()]
+                items = [str(k) for k in ((state or {}).get("items") or {}) if str(k).strip()]
+                if not names or not items:
+                    # 非抽取章只有确定性面板数字：用世界观人物/物品补齐参与人与物品名，
+                    # 否则事件流永远没有 participants、永远没有 kind=object。
+                    try:
+                        world = self.store.load_world()
+                        if not names:
+                            names = [getattr(c, "name", "") for c in
+                                     (getattr(world, "characters", None) or [])]
+                        if not items:
+                            items = [getattr(i, "name", "") for i in
+                                     (getattr(world, "items", None) or [])]
+                    except Exception:
+                        logger.warning("世界观读取失败（事件参与人降级为空）: no=%d", no)
+                rows = derive_fact_events(facts, chapter, names, items)
+                res = stream.append(rows, ch=chapter, allow_inferred=True) if rows else {}
+                if res.get("rejected") and not silent:
+                    logger.warning("事件流拒绝 %d 条（已留痕，不阻塞）", res["rejected"])
+            except Exception:
+                logger.exception("事件流追加失败（降级跳过）: no=%d", no)
+                ok = False
+        if unified:
+            try:
+                from .state.migrate import migrate
+                from .state.reconcile import reconcile
+                migrate(self.store)
+                reconcile(self.store, at_ch=chapter)
+            except Exception:
+                logger.exception("伏笔单一源双写/对账失败（降级跳过）: no=%d", no)
+                ok = False
+        return ok
+
     def _commit_after_chapter(self, no: int, silent: bool = False,
                              force: bool = False, source: str = "cli") -> dict:
         """REQ-借鉴webnovel A：把每章收尾的章后入账收敛为一次统一提交。
@@ -576,6 +632,9 @@ class NovelPipeline:
                 self._update_reveal_status(no, silent=silent)
             if getattr(self.cfg, "reader_ledger", True):
                 self._update_reader_ledger(no, silent=silent)
+            if (getattr(self.cfg, "event_stream", False)
+                    or getattr(self.cfg, "foreshadow_unified", False)):
+                self._update_state_layer(no, silent=silent)
             return {"chapter": int(no), "status": "disabled",
                     "chapter_state_status": self._last_chapter_state_status or "disabled"}
         committer = getattr(self, "_committer", None)
@@ -590,6 +649,9 @@ class NovelPipeline:
                                  enabled=getattr(self.cfg, "reveal_tracking", True))
             committer.add_action("reader_ledger", self._update_reader_ledger,
                                  enabled=getattr(self.cfg, "reader_ledger", True))
+            committer.add_action("state_layer", self._update_state_layer,
+                                 enabled=bool(getattr(self.cfg, "event_stream", False)
+                                              or getattr(self.cfg, "foreshadow_unified", False)))
             self._committer = committer
         result = committer.commit_chapter(no, force=force, silent=silent)
         # 三种情形可区分：written（成功写入）/ skipped_idempotent（同章已提交跳过）

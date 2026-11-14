@@ -109,7 +109,13 @@ class ChapterWriter:
         return self._reader_ledger or None
 
     def _book_canon(self, max_chars: int = 800) -> str:
-        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。"""
+        """P0-7：设定账本注入块（新名词规范/永久纪律/机制基线），空则空串。
+
+        REQ-R20 M0：book_facts 开启时设定账本由单一只读视图的硬区提供，
+        此处返回空串以「替换而非叠加」（关闭时行为不变）。
+        """
+        if bool(getattr(self.cfg, "book_facts", False)):
+            return ""
         mem = self._memory()
         if mem is None:
             return ""
@@ -525,6 +531,17 @@ class ChapterWriter:
         except Exception:
             logger.exception("上章承诺补偿块注入失败（降级跳过）")
 
+        # REQ-R22 L3：作者在时间线上排的计划事件（目标章=本章时注入，不改已发生事件流）
+        try:
+            if getattr(self.cfg, "planned_events", True):
+                from .planned_events import from_store, render_block
+                _planned_block = render_block(from_store(self.store), chapter_no)
+                if _planned_block:
+                    memory_context = (memory_context + "\n\n" + _planned_block
+                                      if memory_context else _planned_block)
+        except Exception:
+            logger.exception("计划事件注入失败（降级跳过）")
+
         # 注入时间线提示 + 章末钩子 + 副本上下文
         plan_core_event = ""
         plan_moves = ""
@@ -571,10 +588,33 @@ class ChapterWriter:
         except Exception:
             logger.exception("分卷卡注入失败（降级跳过）")
 
-        # 读者认知账本
+        # REQ-R21 M1：确定性冲突提醒（位置：补偿块之后、硬区之前；不命中不产生文本）
+        if getattr(self.cfg, "conflict_guard", False):
+            try:
+                from .book_facts import BookFacts
+                _cg_block = BookFacts(self.store, self.cfg).render_violation_block(
+                    at_ch=chapter_no, limit=5)
+                if _cg_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _cg_block
+            except Exception:
+                logger.exception("冲突提醒注入失败（降级为不注入，不阻塞写章）")
+
+        # REQ-R20 M0：单一只读状态视图（book_facts）——替换 L1.5/L1.6/读者账本/canon 四处账本块
+        _bf_on = bool(getattr(self.cfg, "book_facts", False))
+        if _bf_on:
+            try:
+                from .book_facts import BookFacts
+                _bf_block = BookFacts(self.store, self.cfg).block_for(
+                    "writer", at_ch=chapter_no)
+                if _bf_block:
+                    memory_context = (memory_context + "\n\n" if memory_context else "") + _bf_block
+            except Exception:
+                logger.exception("book_facts 注入块构造失败（降级为不注入，不阻塞写章）")
+
+        # 读者认知账本（book_facts 开启时已被上面的统一视图替换，不重复注入）
         try:
             _rl = self._reader_ledger_obj()
-            if _rl is not None:
+            if _rl is not None and not _bf_on:
                 _rl_block = _rl.inject_block(chapter_no)
                 if _rl_block:
                     memory_context = (memory_context + "\n\n" if memory_context else "") + _rl_block
@@ -682,6 +722,8 @@ class ChapterWriter:
             _mem = self._memory()
             if _mem is not None:
                 _mem.sync_baseline(world)
+                # P2 术语卡接线：别名登记进 canon.terms，供称谓漂移规则比对
+                _mem.sync_terms(world)
         except Exception:
             pass
         try:
@@ -692,6 +734,8 @@ class ChapterWriter:
         memory_context = self.memory.build_context(
             world, up_to_chapter=chapter_no, chapter_goal=plan_goal,
             unstable_chapters=unstable_chapters,
+            # REQ-R20 M0：开关开启时 L1.5/L1.6 由 book_facts 单一只读视图统一提供
+            skip_state_blocks=bool(getattr(self.cfg, "book_facts", False)),
         )
         prev_tail = self._prev_tail(chapter_no)
         # 档2：记录本章上下文实际消费的前文章节及版本（记忆装配后取，不臆测）
@@ -1093,7 +1137,17 @@ class ChapterWriter:
         #（P0-8 已暴露给 write() 的章节累计机制数字）。
         try:
             if scenes:
-                self.store.save_scenes(chapter_no, scenes, self._scene_state_acc or {})
+                # 字段名归一：场景累计数字按机制注册表归一，否则逐章写法变体导致
+                # 冲突规则的「同键跨章比对」恒为空（真实样本实测 0 对可比）。
+                try:
+                    from .chapter_state import (canonicalize_number_list,
+                                                registry_for_world)
+                    _acc = dict(self._scene_state_acc or {})
+                    _acc["numbers"] = canonicalize_number_list(
+                        _acc.get("numbers"), registry_for_world(self.store.load_world()))
+                except Exception:
+                    _acc = self._scene_state_acc or {}
+                self.store.save_scenes(chapter_no, scenes, _acc)
         except Exception:
             pass
         if summary:
@@ -1199,7 +1253,7 @@ class ChapterWriter:
                                         unknown_mechanism_fields as _unk_h,
                                         ledger_check as _lchk_h,
                                         _registry_initial as _rin_h,
-                                        _EROSION_SEQ_RE as _eseq_h)
+                                        cumulative_value as _cumv_h)
             _mem_h = self._memory()
             if _mem_h is None:
                 return True  # 无记忆体系（未启用记忆）不判病，维持旧路径行为
@@ -1216,8 +1270,7 @@ class ChapterWriter:
             if _reg_h:
                 _st_h = (_mem_h.load().get("state") or {})
                 _prev_h = _mem_h.chapter_ledger(chapter_no - 1)
-                _eros_h = max((int(_m.group(1)) for _m in _eseq_h.finditer(content or "")),
-                              default=0)
+                _eros_h = _cumv_h(content or "", _reg_h) or 0
                 _base_h = 0
                 try:
                     _pc = [c for c in _st_h.get("chapters", [])
@@ -1465,6 +1518,7 @@ class ChapterWriter:
         action_plan_block = ""
         fallback_events: list = []   # 拆场景失败但 events 可救回时，注入回退整章生成
         derived_events: list = []
+        events_list: list = []       # try 内可能未赋值：异常回退整章时不得引用未定义变量
         skeleton_arg = ""
         if getattr(self.cfg, "scene_plan_align", True) and plan_moves:
             derived_events = _derive_events_from_moves(
@@ -1627,6 +1681,7 @@ class ChapterWriter:
                               f"（refs={sorted(refs)} vs derived={sorted(derived_ids)}），回退整章生成")
                     scenes = []
         except Exception:
+            logger.exception("拆场景异常，回退整章生成（不阻塞本章）")
             scenes = []
 
         if scenes:

@@ -55,11 +55,16 @@ class Memory:
         return sorted(self._consumed_chapters)
 
     def build_context(self, world: World | None, up_to_chapter: int, chapter_goal: str = "",
-                      unstable_chapters: Optional[list[int]] = None) -> str:
+                      unstable_chapters: Optional[list[int]] = None,
+                      skip_state_blocks: bool = False) -> str:
         """为第 up_to_chapter 章构建记忆上下文。
 
         unstable_chapters：档3「已知不一致继续」时的过期章号（可选，默认 None）。
         命中的 L4 摘要会加前缀标注；不改变装配结构与层级顺序。
+
+        skip_state_blocks：REQ-R20 M0 —— book_facts 开启时，L1.5 人物当前态与
+            L1.6 章间状态账本由单一只读视图统一提供，这里不再各自注入（替换而非叠加）。
+            默认 False，行为与改造前逐字一致（回滚对照用例的依据）。
 
         L1 全局设定库：按章触发注入（P1-3）——只注入预测出场人物卡与相关伏笔；
             用户强约束 / 锁定项 / 核心世界观永不裁剪，置于 prompt 末尾。
@@ -81,9 +86,10 @@ class Memory:
         if world is not None:
             self._build_l1_world(world, up_to_chapter, chapter_goal, parts, key_parts)
 
-        self._build_l15_states(parts, up_to_chapter)
-
-        self._build_l16_chapter_state(parts, up_to_chapter)
+        if not skip_state_blocks:
+            self._build_l15_states(parts, up_to_chapter)
+            # REQ-R20：book_facts 开启时由单一只读视图统一提供，避免同一事实两种措辞
+            self._build_l16_chapter_state(parts, up_to_chapter)
 
         self._build_l2_and_l3(parts, up_to_chapter)
 

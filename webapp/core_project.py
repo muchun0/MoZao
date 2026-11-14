@@ -281,13 +281,24 @@ def _guard_user_input(text, field: str) -> None:
 
 
 def _backup_outline(store, prefix: str) -> None:
-    """自动备份当前大纲为快照（outline_snapshots/），供覆盖/重生成后一键还原。
+    """覆盖前自动备份当前大纲（REQ-R23 P1-2：并入 outline 版本库）。
 
-    与项目页手动保存快照一致，名称自动加时间戳，避免覆盖同名快照。
+    - 版本化开启时：写成一个带标签的 outline 版本（source='user'、promote=False，
+      不改当前生效版本），版本弹窗里可见、可「采用此版本」还原；
+    - 版本化关闭时：退回旧 `outline_snapshots/` 快照文件路径（与 save_outline 的回退一致），
+      否则改完备份却在关闭开关的项目里找不到。
     """
     try:
         outline = store.load_outline()
         if not outline:
+            return
+        stamp = datetime.datetime.now().strftime('%m-%d %H:%M')
+        label = f"{prefix}备份 {stamp}"
+        if store.versioned_enabled():
+            from novel_gen.store.versioned import VersionedProduct
+            VersionedProduct(store, "outline").commit(
+                "all", outline.to_dict(), source="user", promote=False,
+                auto_select_best=False, label=label)
             return
         snap_dir = store.dir / "outline_snapshots"
         snap_dir.mkdir(exist_ok=True)

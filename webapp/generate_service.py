@@ -35,6 +35,7 @@ from novel_gen.store.wordcount import count_words
 
 from . import agent_prompts
 from . import db
+from . import gates
 from . import settle_ledger
 from . import teardown_lib
 from .logger import get_logger
@@ -401,6 +402,8 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     guard_balance(mode, uid)
     guard_agent_product(req.agent)
     params = guard_params(req.agent, req.params)
+    # REQ-创作阶段审阅门 M0：世界门前置（门 1 必须已通过）——在占槽/计费之前拒绝
+    gates.guard_agent(store, req.agent)
     guard_locked(store, req.agent, params)
     guard_user_chapter(store, req.agent, params)
     # 档3：章节一致性门禁——必须在计费/占槽之前（被拦截的请求不占槽、不产生任何扣费）

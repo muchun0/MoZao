@@ -175,7 +175,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { startAgentRun, getAgentRun, stopAgentRun, getMyLlm, getBalance, estimateAgentRun } from '../../api/project'
-import { getAgentPrompts, saveAgentPrompt } from '../../api/novel'
+import { getAgentPrompts, saveAgentPrompt, getOutline, getChapters } from '../../api/novel'
 import SkillPicker from './SkillPicker.vue'
 import StaleGateDialog from '../common/StaleGateDialog.vue'
 import MarkdownIt from 'markdown-it'
@@ -224,10 +224,11 @@ function versionShort(agent) {
 // ---------- 运行参数 ----------
 const skillIds = ref([])
 const skillsOpen = ref(false)
-const chapterScope = ref('all')
+// M0：正文默认按批次（5 章）跑，不再默认 scope=all
+const chapterScope = ref('range')
 const chNo = ref(1)
 const fromCh = ref(1)
-const toCh = ref(1)
+const toCh = ref(5)
 const toChOpen = ref(false)
 const volNo = ref(1)
 const userPrompts = reactive({})
@@ -506,9 +507,24 @@ async function refreshBilling() {
   } catch { /* 降级：按平台计费展示 */ }
 }
 
+// M0：进入时把区间默认到"第一个未写章 → 再往后 5 章"，用户可直接点运行
+async function initBatchRange() {
+  try {
+    const [outline, chapters] = await Promise.all([getOutline(props.pid), getChapters(props.pid)])
+    const numbers = (outline?.chapters || []).map(x => Number(x.no)).filter(n => n > 0).sort((a, b) => a - b)
+    if (!numbers.length) return
+    const done = new Set((chapters?.chapters || []).map(x => Number(x.no)))
+    const first = numbers.find(n => !done.has(n))
+    if (!first) return
+    fromCh.value = first
+    toCh.value = Math.min(first + 4, numbers[numbers.length - 1])
+  } catch { /* 区间预填失败不影响手填 */ }
+}
+
 onMounted(() => {
   loadPrompts()
   refreshBilling()
+  initBatchRange()
   if (!localStorage.getItem(BILLING_NOTICE_KEY)) {
     ElMessage.info('提示：重生成与候选版本同样按本次生成字数计费；余额不足时自动停止')
     localStorage.setItem(BILLING_NOTICE_KEY, '1')

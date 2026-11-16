@@ -51,7 +51,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "chapter_state_llm", True, "是否用 LLM 抽取章末/场景状态（False=仅确定性面板数字正则，零 LLM 成本）"),
     FeatureFlag("memory", "lorebook_trim", True, "按章触发注入（Lorebook 式）：预测出场人物，只注入相关角色卡/伏笔，锁定项永不裁剪（P1-3）"),
     FeatureFlag("memory", "scene_state_mode", "auto", "场景间状态抽取模式（REQ-token优化 P0-1）：auto=高质量模式 LLM/普通模式确定性正则；llm=全部 LLM；deterministic=全部确定性正则（零 LLM）"),
-    FeatureFlag("memory", "state_extract_frequency", 5, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4；超长篇攻坚 S4.3 3→5）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章"),
+    FeatureFlag("memory", "state_extract_frequency", 1, "章末/人物状态 LLM 抽取频率（REQ-token优化 P0-4；2026-11-16 定稿 1=每章）：每 N 章抽 1 次 LLM，其余章走确定性；1=每章（账本每章前进，代价每章 1 次小抽取）"),
     FeatureFlag("memory", "setting_cards", True, "分章设定卡索引（REQ-token优化 P1-1）：world 后确定性构建 setting_cards.json，按章只注入相关设定子集，构建失败回退全量注入"),
     FeatureFlag("memory", "scene_delta_inject", True, "场景 prompt 分层注入（REQ-token优化 P1-2）：首场景注入全量记忆，后续场景只注入增量块（已推进状态+人物卡子集+场景大纲），降重复输入"),
     FeatureFlag("memory", "reveal_tracking", True, "揭示执行跟踪：每章检测 world_reveals 真相关键词是否按计划在正文兑现（提前剧透/到点未揭示），落 reveal_status.json，全书完成汇总报告；无关键词旧数据跳过检测"),

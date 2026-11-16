@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -26,6 +28,7 @@ def _store(tmp_path):
                                                           genre="玄幻"))
 
 
+@pytest.mark.p1
 def test_summary_events_use_own_chapter():
     rows = derive_summary_events("沈舟偷绳坠崖。阿桑用藤索把他拽上来；图纸上有小字", 3)
     assert rows and all(r["ch"] == 3 for r in rows)
@@ -33,6 +36,7 @@ def test_summary_events_use_own_chapter():
     assert len(rows) <= 4
 
 
+@pytest.mark.p1
 def test_chapter_events_prefer_facts_of_same_chapter():
     state = {"chapter": 2, "facts": ["沈舟交出铜匣", "阿桑离开码头"]}
     chapter = Chapter(no=2, title="第2章", summary="沈舟交出铜匣。阿桑离开码头")
@@ -41,6 +45,7 @@ def test_chapter_events_prefer_facts_of_same_chapter():
     assert all(r["ch"] == 2 for r in rows)
 
 
+@pytest.mark.p1
 def test_chapter_events_fallback_when_state_is_stale():
     """账本停在第 1 章时，第 5 章的事件必须写 ch=5（不能用旧章号）。"""
     stale = {"chapter": 1, "facts": ["第1章的事实"]}
@@ -50,10 +55,12 @@ def test_chapter_events_fallback_when_state_is_stale():
     assert all("第1章" not in r["desc"] for r in rows)
 
 
+@pytest.mark.p1
 def test_chapter_events_empty_when_no_facts_no_summary():
     assert derive_chapter_events(7, {"chapter": 1, "facts": ["旧事实"]}, Chapter(no=7)) == []
 
 
+@pytest.mark.p1
 def test_backfill_only_fills_empty_chapters_and_is_idempotent(tmp_path):
     store = _store(tmp_path)
     for no in (1, 2, 3):
@@ -71,6 +78,7 @@ def test_backfill_only_fills_empty_chapters_and_is_idempotent(tmp_path):
     assert again["chapters"] == 0 and again["events"] == 0
 
 
+@pytest.mark.p1
 def test_resolve_at_ch_takes_max_water_level(tmp_path):
     """读取侧水位：state.json=0 且账本停在第 1 章时，水位必须取已落盘最大章。"""
     from novel_gen.pipeline.book_facts import BookFacts

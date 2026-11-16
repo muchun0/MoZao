@@ -543,3 +543,13 @@
 - **修法**：`derive_chapter_events(no, state, chapter)`——账本 `chapter == no` 用本章 facts，否则用**本章 summary** 切句兜底（`inferred=true`），事件章号永远写成 `no`；`write_chapter()` 落盘后单调回写 `state.json` 水位（Web/agent 单章路径此前不写）；`resolve_at_ch` 三源（state / 章末账本 / `chapters` 目录文件名）取最大；`_build_events` 只要 `events.jsonl` 有数据就展示。存量书用 `python -m novel_gen.pipeline.state.events <项目目录>` 补空章事件（append-only、幂等、补完自动失效 `book_facts` 缓存）。
 - **踩坑**：补完事件后时间线仍是 5 条全在首章——先以为是快照缓存（`invalidate_book_facts` 了两次都没用），实测 `EventStream.query(to_ch=5)` 有 13 条、快照里只有 5 条，才定位到 `resolve_at_ch` 把 `at_ch` 定成了 1。**只修生成侧不修读取侧，页面永远看不到新事件**。
 - **遗留**：章末账本仍停在首章（降频 + `None` 不写盘），下一章承接注入的仍是旧 facts；这属"承接账本累积语义"，与事件展示解耦，需单独定稿（facts 是否跨章累积 / 降频是否改按需触发）。
+
+## 2026-11-16 账本承接定稿 B+A：每章抽取 + 已发生事实跨章累积
+
+- **决策（用户拍板）**：`state_extract_frequency` 默认 **5→1（每章抽）**；`facts` 跨章累积。理由是两者解决的是同一件事的两半——B 让账本每章前进（不再停在抽取章），A 让承接块记住"已经发生过什么"（不再只看最近一次抽取的切片）。
+- **代价（明说）**：每章多 1 次章末小抽取（输入≈本章正文 + schema，输出几十 token）。人物状态抽取共用同一开关，也变成每章一次——这对 M1「事件×人物状态」的 before/after 是必需的，不是附带浪费。
+- **实现**：`chapter_state._carry_facts`（旧 facts 在前、新 facts 在后，去重，超 `MAX_CHAPTER_FACTS=30` 丢最旧）；确定性兜底路径不再一律 `return None`——只要老账本有 facts 就写盘，保证 `chapter_state.json` 章号单调前进；`_should_llm_extract` 的 `getattr` 兜底同步 3→1；`character_state._should_llm_extract` 同步。
+- **存量书**：不写 config 迁移（沿用既有口径），需要修复的书显式改 `config.json.state_extract_frequency=1` 后跑 `python -m novel_gen.pipeline.chapter_state <项目目录>`。该入口**内存重放链**（逐章用上一章抽出的账本做 `old_state`）后整本落一次盘：不能逐章走 `write_chapter_state_guarded`，护栏会拿磁盘上已是最新章挡住 1~N-1 章的写入，facts 链会断（实测过：三章各自只合并了首章 facts）。
+- **实测（测试书 5 章，真实 LLM）**：重放后 `chapter_state.json` chapter=5、facts=30（ch1 19→ch2 25→ch3 30，之后按上限截断）、numbers=3；承接块 1038 字；`graph?view=characters` 的 `last_ch` 全部前进到 5。
+- **踩坑**：命令行维护入口不加载 `.env`，第一次跑 5 章全部"LLM 抽取失败降级为确定性"，账本只前进不增长（facts 恒为 5）——维护入口必须在开头 `load_dotenv(<repo>/.env)`，否则会误判"B+A 没生效"。
+- **未做**：`character_states.json` 的存量补抽（同开关同机制，需要时跑 `pipeline.commit_chapter_ledgers(force=True)` 或另开维护入口），本轮只修章末账本。

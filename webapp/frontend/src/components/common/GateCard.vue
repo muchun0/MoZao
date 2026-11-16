@@ -51,7 +51,7 @@ const props = defineProps({
   statusLabel: { type: String, default: '' },
   summary: { type: Array, default: () => [] },       // [{label, value}]
   checks: { type: Array, default: () => [] },        // [{level,title,detail,anchor}]
-  actions: { type: Array, default: () => ['approve', 'edit', 'regen'] },
+  actions: { type: Array, default: () => ['approve', 'regen'] },
   approveText: { type: String, default: '通过，继续' },
   hint: { type: String, default: '' },
   busy: { type: Boolean, default: false },

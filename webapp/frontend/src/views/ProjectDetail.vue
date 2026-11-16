@@ -165,7 +165,7 @@
             :summary="gateReview('outline').summary || []" :checks="gateReview('outline').checks || []"
             :busy="gateBusy === 'outline'" approve-text="通过，继续生成世界观"
             :hint="gateHint('outline')" :actions="outlineGateActions"
-            @approve="approveGateNow('outline')" @edit="tab = 'outline'"
+            @approve="approveGateNow('outline')"
             @regen="doRegenOutline" @locate="locateAnchor" />
           <div v-if="outlineReady && gateApproved('outline') && !worldReady" class="gate-next">
             <el-button type="primary" @click="runWorld">生成世界观（按字数计费）</el-button>
@@ -183,7 +183,7 @@
             :summary="gateReview('world').summary || []" :checks="gateReview('world').checks || []"
             :busy="gateBusy === 'world'" approve-text="通过，进入写正文"
             :hint="gateHint('world')" :actions="worldGateActions"
-            @approve="approveGateNow('world')" @skip="skipWorldGate" @edit="tab = 'world'"
+            @approve="approveGateNow('world')" @skip="skipWorldGate"
             @regen="doRegenWorld" @locate="locateAnchor" />
           <WorldEditor ref="worldEditorRef" :pid="pid" :lock="lock"
             @toggle-lock="toggleLock" @open-versions="openProductVersions" @regen-world="doRegenWorld" />
@@ -346,11 +346,13 @@ function gateHint(g) {
   if (st.approved_version) return `产物已变更为 ${st.current_version}，原审批（${st.approved_version}）已失效，请重新审阅`
   return `当前版本 ${st.current_version}`
 }
+// 门卡片的动作：编辑始终允许（编辑器就在卡片下方），所以按钮只留"通过/重生成"，
+// 原先的「先编辑」是空操作（点了只是切到当前 tab），已移除
 const outlineGateActions = computed(() =>
-  gateApproved('outline') ? ['edit', 'regen'] : ['approve', 'edit', 'regen'])
+  gateApproved('outline') ? ['regen'] : ['approve', 'regen'])
 const worldGateActions = computed(() =>
   (gateOf('world').status === 'approved' || gateOf('world').status === 'skipped')
-    ? ['edit', 'regen'] : ['approve', 'edit', 'regen', 'skip'])
+    ? ['regen'] : ['approve', 'regen', 'skip'])
 const gateReview = (g) => gateReviews[g] || {}
 
 // 未写章推算：按大纲章号顺序找第一个没写正文的章，本批到 from+4 为止

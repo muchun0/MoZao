@@ -533,3 +533,13 @@
 - **判断材料确定性零 LLM**：门 1/门 2/批末统计全部纯函数（缺字段/重名/断档/未归属分卷/缺钩子/世界观空壳/人物档案未覆盖章纲/本批字数与扣费），不扣费不耗时；报告里带 `chapter:N` 锚点供前端跳章。批末扣费读 `version_charge_map` 的既有账本，不另算一份金额。
 - **存量项目豁免（踩坑前置）**：新门禁上线时老书从无 `gates.json`、却已写正文，若直接 409 会把「重生成世界观」锁死。判定为存量项目（无 gates.json 且 `list_chapters()` 非空）时 `guard_agent` 放行 + warning 留痕，门状态仍显示 pending（用户仍可正常点通过）；一旦 gates.json 出现，豁免立即失效。
 - **取舍**：M0 只做断点 + 门 1/门 2 + 分批 + 一键，门 3 与「事件×人物状态」事件链留 M1；事件链方案在 32 本 / 304 章实测后判「前提不成立」，已标「待重定稿」（见 REQ §9）。
+
+## 2026-11-16 验收反馈两处修复：移除门卡「先编辑」+ 事件章号归属（fix/events-chapter-attr）
+
+- **决策 1：门卡片不再给「先编辑」按钮**。用户验收指出按钮无用——编辑器就在卡片下方，编辑随时可做，而 `@edit` 只是 `tab = 'outline'`，卡片本来就渲染在当前 tab，点了是空操作。门 1 动作收敛为「通过 / 重生成」，门 2 为「通过 / 重生成 / 跳过」；`GateCard` 组件保留 edit 能力但不再有人传。
+- **决策 2：事件章号一律等于本章，绝不复用"最新章末快照"的章号**。根因是两条独立的链：
+  - 生成侧：`state_extract_frequency` 默认 3 章抽 1 次，非抽取章 `extract_chapter_state` 无数字时返回 `None` → `chapter_state.json` 长期停在首章；`_update_state_layer` 读这份快照派生事件，章号恒等于首章、同 id 又被去重，后 4 章一条事件不增。
+  - 读取侧：`BookFacts.resolve_at_ch(0)` 逐级早退（`state.json` 的 `last_chapter` 为 0 → 章末账本 = 1），水位定在第 1 章，`to_ch=1` 把 2 章以后的事件全过滤；`_build_events` 还被 `event_stream` 开关挡回 `book_memory.consumed` 旧列表。
+- **修法**：`derive_chapter_events(no, state, chapter)`——账本 `chapter == no` 用本章 facts，否则用**本章 summary** 切句兜底（`inferred=true`），事件章号永远写成 `no`；`write_chapter()` 落盘后单调回写 `state.json` 水位（Web/agent 单章路径此前不写）；`resolve_at_ch` 三源（state / 章末账本 / `chapters` 目录文件名）取最大；`_build_events` 只要 `events.jsonl` 有数据就展示。存量书用 `python -m novel_gen.pipeline.state.events <项目目录>` 补空章事件（append-only、幂等、补完自动失效 `book_facts` 缓存）。
+- **踩坑**：补完事件后时间线仍是 5 条全在首章——先以为是快照缓存（`invalidate_book_facts` 了两次都没用），实测 `EventStream.query(to_ch=5)` 有 13 条、快照里只有 5 条，才定位到 `resolve_at_ch` 把 `at_ch` 定成了 1。**只修生成侧不修读取侧，页面永远看不到新事件**。
+- **遗留**：章末账本仍停在首章（降频 + `None` 不写盘），下一章承接注入的仍是旧 facts；这属"承接账本累积语义"，与事件展示解耦，需单独定稿（facts 是否跨章累积 / 降频是否改按需触发）。

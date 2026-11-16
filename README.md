@@ -552,6 +552,7 @@ docker compose ps          # 两个容器均 healthy 即就绪
   - 回归：`python -m pytest tests/ -m "p0 or p1"` **937 passed**；测试书真机实测承接块 `chapter=5` / `facts=30` / 1038 字，时间线 13 条按章分布（ch1=5/ch2=3/ch3=1/ch4=2/ch5=2），characters `last_ch` 前进到 5。
   - 工程说明：本次 `github.com:443` 多次被重置，PR #16 经 GitHub API（blob→tree→commit→ref→PR→merge）提交，带入的 CRLF 行尾已由 PR #17（`b086e34` / `d3e5570`）统一还原 LF，内容未变。
   - 部署：`git archive master` → workbench 上传 → `python3 -m zipfile -e` 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上只验容器 health + 主页 JS 体积（不白屏）。
+  - 上线证据：包 `novel_master.zip` md5 `85b4c5c2494d5ad64f7273395dce5ccd`（本地与服务器一致）；部署前备份 `/opt/novel-gen-bak-20261116.tgz`（6.9 M）；镜像 `novel-gen:latest` 重建（容器内前端多阶段构建真实执行）；`novel-gen` 容器 `healthy`；`https://mozao.click/api/health` 200 `{"status":"ok"}`；主页 `assets/index-DulP8qXO.js`（1,119,237 B）不白屏；容器内 `novel_gen/pipeline/chapter_state.py` 已含 `_carry_facts`（确认新代码生效）。回滚：`tar xzf /opt/novel-gen-bak-20261116.tgz -C /opt && cd /opt/novel-gen && docker compose up -d --build`。
 - **2026-11-04 00:03**：第三十三次部署（服务器代码 = master `faa5358`，**已上线**）——**小墨AI 支持付费用户按字数计费 + 文档口径补充**（feat/assistant-billing 合并 master，含 `3df5f2a` / `faa5358` 两次 `--no-ff` 合并）：
   - **① 付费用户走平台 Key 按字数扣费**：统一 3 元/万字，按 AI 实际生成字数结算；BYOK 用户不扣费；独立 `assistant_billing` 账本（不占项目 500 条账本、不计入 `ai_words_total` 项目累计），先落用户消息再调用 + 请求级 `Idempotency-Key` 幂等（唯一索引）。
   - **② 前端接线**：小墨回答改为 markdown 渲染（`markdown-it`，`html:false` 防注入、`breaks:true`），新增 `utils/requestId.js` 自动携带幂等键，后台新增开关配置入口。

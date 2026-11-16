@@ -6,6 +6,7 @@ import re  # noqa: F401  用户大纲导入：标题/章节解析
 from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from .. import generate_service  # noqa: F401  Agent 运行进度快照（GET /projects/{id} 暴露真实阶段/进度）
+from .. import gates  # REQ-创作阶段审阅门 M0：门状态随项目详情下发（fail-open）
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
 
 
@@ -255,7 +256,18 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
         "cover_max": 5,
         "has_epub": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.epub").exists(),
         "has_docx": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.docx").exists(),
+        # 门状态：读取即做版本比对与失效级联；任何异常都降级为空字典，不影响详情返回
+        "gates": _gates_snapshot(store),
     }
+
+
+def _gates_snapshot(store) -> dict:
+    """门状态快照（与 current_task_progress 同口径的兜底：异常不影响项目详情）。"""
+    try:
+        return gates.compute(store)
+    except Exception:
+        logger.exception("门状态读取失败（降级为空）: project=%s", store.dir.name)
+        return {}
 
 
 @app.post("/api/projects/{project_id}/refund")

@@ -26,3 +26,8 @@ export const getAgentRun = (id, taskId) => request.get(`/projects/${id}/agent-ru
 export const stopAgentRun = (id, taskId) => request.post(`/projects/${id}/agent-runs/${taskId}/stop`)
 // 只读预估（UX 评审 U2）：参数变化时实时刷新预估价，不占槽不扣费
 export const estimateAgentRun = (id, data) => request.post(`/projects/${id}/agent-runs/estimate`, data)
+
+// 创作阶段审阅门（REQ-创作阶段审阅门 M0）：门状态 / 通过（可跳过世界观）/ 判断材料
+export const getGates = (id) => request.get(`/projects/${id}/gates`)
+export const approveGate = (id, gate, data = {}) => request.post(`/projects/${id}/gates/${gate}/approve`, data)
+export const getGateReview = (id, gate, params = {}) => request.get(`/projects/${id}/gates/${gate}/review`, { params })

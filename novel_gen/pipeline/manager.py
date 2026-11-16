@@ -464,6 +464,15 @@ class NovelPipeline:
         logger.info("章节完成: 第 %d 章「%s」（%d 字）", no, plan.title,
                     len(chapter.content) if chapter else 0)
         self._trace_step(f"第{no}章正文生成完成", {"words": len(chapter.content) if chapter else 0})
+        # 断点/水位回写：Web 与 agent 单章生成不走 run()，此前只有 CLI 全流程会写
+        # state.json，导致 last_chapter 长期为 0，时间线水位退到章末账本（旧章），
+        # 表现为"事件全挂第 1 章"。这里按最大章号单调前进。
+        try:
+            cur = int(getattr(self.store.load_state(), "last_chapter", 0) or 0)
+            if int(no) > cur:
+                self._mark_state("writing", last_chapter=int(no))
+        except Exception:
+            logger.warning("state.json 水位回写失败（断点降级）: no=%d", no)
 
         return chapter
 
@@ -573,7 +582,7 @@ class NovelPipeline:
         facts = [str(x).strip() for x in ((state or {}).get("facts") or []) if str(x).strip()]
         if event_stream:
             try:
-                from .state.events import EventStream, derive_fact_events
+                from .state.events import EventStream, derive_chapter_events
                 stream = EventStream(self.store)
                 names = [str(k) for k in ((state or {}).get("characters") or {}) if str(k).strip()]
                 items = [str(k) for k in ((state or {}).get("items") or {}) if str(k).strip()]
@@ -590,8 +599,11 @@ class NovelPipeline:
                                      (getattr(world, "items", None) or [])]
                     except Exception:
                         logger.warning("世界观读取失败（事件参与人降级为空）: no=%d", no)
-                rows = derive_fact_events(facts, chapter, names, items)
-                res = stream.append(rows, ch=chapter, allow_inferred=True) if rows else {}
+                # 章号永远取本章：账本因降频停在旧章时用本章摘要兜底，
+                # 绝不再把旧章事实按旧章号反复写进事件流（时间线全挂第 1 章的根因）
+                rows = derive_chapter_events(no, state, self.store.load_chapter(no),
+                                            names, items)
+                res = stream.append(rows, ch=no, allow_inferred=True) if rows else {}
                 if res.get("rejected") and not silent:
                     logger.warning("事件流拒绝 %d 条（已留痕，不阻塞）", res["rejected"])
             except Exception:

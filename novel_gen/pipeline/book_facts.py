@@ -105,30 +105,30 @@ class BookFacts:
     def resolve_at_ch(self, at_ch: int = 0) -> int:
         """0 = 已写最大章；显式章号原样返回（不越界纠正，只用于过滤）。
 
-        优先读 state.json / chapter_state.json（都是小文件），避免 list_chapters
-        把每章正文全量解析一遍（100 章书的性能红线来自这里）。
+        三源取最大：state.json（CLI 全流程写）/ chapter_state.json（章末账本）/
+        chapters 目录文件名（零正文解析）。任一源滞后都不能压低水位——此前按
+        "state → 账本 → 章节列表"逐级早退，state 为 0 且账本停在首章时水位被定在
+        第 1 章，时间线查询 `to_ch=1` 把 2 章以后的事件全部过滤掉（用户实测
+        "已发生事件都在第 1 章"的读取侧根因）。
         """
         n = _int(at_ch, 0)
         if n > 0:
             return n
+        candidates: list[int] = []
         try:
-            last = _int(getattr(self.store.load_state(), "last_chapter", 0), 0)
-            if last > 0:
-                return last
+            candidates.append(_int(getattr(self.store.load_state(), "last_chapter", 0), 0))
         except Exception:
             logger.warning("state.json 读取失败（改读章末账本）", exc_info=True)
         try:
-            ch = _int((self.store.load_chapter_state() or {}).get("chapter", 0), 0)
-            if ch > 0:
-                return ch
+            candidates.append(_int((self.store.load_chapter_state() or {}).get("chapter", 0), 0))
         except Exception:
-            logger.warning("chapter_state.json 读取失败（改用章节列表）", exc_info=True)
+            logger.warning("chapter_state.json 读取失败（改用章节文件）", exc_info=True)
         try:
-            chapters = self.store.list_chapters() or []
-            return max((_int(getattr(c, "no", 0), 0) for c in chapters), default=0)
+            if hasattr(self.store, "last_chapter_no"):
+                candidates.append(_int(self.store.last_chapter_no(), 0))
         except Exception:
-            logger.warning("读取已写章号失败（按 0 处理）", exc_info=True)
-            return 0
+            logger.warning("章节文件水位读取失败（按已收集水位处理）", exc_info=True)
+        return max(candidates, default=0)
 
     def _current_versions(self) -> tuple:
         """当前生效的 (outline_v, world_v)；读不到给 None（不冒充已同步）。"""
@@ -374,18 +374,21 @@ class BookFacts:
         return out, dropped
 
     def _build_events(self, mem: dict, at_ch: int) -> list:
-        if self._flag("event_stream"):
-            try:
-                from .state.events import EventStream
-                rows = EventStream(self.store).query_with_consumption(to_ch=at_ch)
-                out = [{"ch": r["ch"], "desc": r["desc"],
-                        "participants": r.get("participants") or [],
-                        "kind": r.get("kind") or "state",
-                        "consumed_ch": r.get("consumed_ch")}
-                       for r in rows if r.get("desc")]
+        # events.jsonl 是事件流的唯一权威写入源：只要里面已有数据就必须展示，
+        # 开关只决定"要不要生成"，不能把已生成的事件藏起来（此前这里被开关挡回
+        # book_memory 的 consumed 列表，时间线只剩第 1 章那几条）。
+        try:
+            from .state.events import EventStream
+            rows = EventStream(self.store).query_with_consumption(to_ch=at_ch)
+            out = [{"ch": r["ch"], "desc": r["desc"],
+                    "participants": r.get("participants") or [],
+                    "kind": r.get("kind") or "state",
+                    "consumed_ch": r.get("consumed_ch")}
+                   for r in rows if r.get("desc")]
+            if out:
                 return out[-EVENT_RECENT:]
-            except Exception:
-                logger.exception("events.jsonl 读取失败（退回 book_memory 事件）")
+        except Exception:
+            logger.exception("events.jsonl 读取失败（退回 book_memory 事件）")
         consumed = ((mem.get("events") or {}).get("consumed") or [])
         rows = []
         for e in consumed:

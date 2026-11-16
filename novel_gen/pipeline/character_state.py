@@ -58,7 +58,7 @@ def extract_character_states(llm, cfg, world, chapter, no: int, old_states: dict
 def _should_llm_extract(no: int, cfg) -> bool:
     """REQ-token优化 P0-4：章末/人物状态 LLM 抽取降频——每 state_extract_frequency 章抽 1 次，
     其余章只走确定性（出场记录/面板正则，零 LLM 成本）。1=每章（原行为）。"""
-    freq = int(getattr(cfg, "state_extract_frequency", 3) or 3)
+    freq = int(getattr(cfg, "state_extract_frequency", 1) or 1)
     if freq <= 1:
         return True
     return (int(no) % freq) == 1

@@ -586,3 +586,18 @@
   - 持有者判定改按动词类型分开处理：给类（交给/还给/弹还…）取动作之后的人，夺/收类（抢走/收进/收起…）取动作之前的人——M2 的「由顾长卿弹还，陆沉收进铁匣」判给陆沉而不是顾长卿。
 - **对比（同一批数据，改动前 → 改动后）**：M2 书 5 边 → 11 边（holds 3、ally 2、enemy 1、present_at 5），节点 42 → 45（多出 3 个账本物品），构建 6ms，体检 0 error；M1 书不变（13 边，其账本从未存 items/facts，属历史数据缺口，不回溯）。
 - **未做**：Plan 图（`plan_graph.py`/`derive_constraints`/`diff`/`impact`）、`state_graph_v2` 在生成链路注入（本轮只开只读接口）、`factions.parent` 之外的人际边（ally/enemy/mentor 需要设定卡结构化字段，world 现无该字段）。
+
+## 2026-11-17 R24 G1'：时间维 + 主体归一 + 两规则改读图 + impact（feat/r24-state-graph）
+
+- **决策**：G0' 的图只回答「现在」，本章把图升级到「任意章时点」。四件事一起做，因为它们共用同一份边表：时间维（`valid_from_ch`/`valid_to_ch`）、主体归一（别名→标准名）、`death_state`/`item_owner` 两条规则改读图、`impact()` 影响面。
+- **时间维唯一来源是逐章归属表**：`CanonGraph._history()` 读 `scenes.json` 逐章 `state.items` + 最新 `chapter_state`，`_owner_segments()` 压成「持有者变化点」——同一人跨章延续**不新开边**，换人时旧边 `valid_to_ch = 新段起始章`；`build(at_ch=N)` 只保留当章有效的边。没有 `scenes.json` 的书退化为单章快照，行为与 G0' 完全一致（M1 书指纹 `c64f7feca83de440` 未变，可作回归锚点）。
+- **放弃式描述不建边（本轮踩到的真错）**：归属表写「被老陈头砸碎在地」「从陆沉袖口滚落至石地」时，账本只说东西没了、没说谁持有，硬判一个人就是造证据。`_LOST_WORDS`（砸碎/碎裂/销毁/焚毁/丢失/遗失/滚落/掉落/脱手/散落…）命中即跳过该物品本章段，M2 书因此少 2 条假 holds（9 → 7）。
+- **主体归一只认已登记别名**：`_build_alias_index()` 从 `book_memory.canon.terms` 取「别名→标准名」，`_NAME_OK_RE` 过滤句子/书名形态，按「标准名是已知实体优先、别名字短优先」排序并封顶 `MAX_ALIAS=20`。**不做全量文本归一、不从正文猜别名**——这与 M1-lite 砍掉的「别名全量归一」口径一致。别名可用于 `subgraph/impact` 的 seed。
+- **坑：概念层不能占主体归一名额**。第一版把 `terminology` 的 term→canonical 也写进 `alias_map`，导致 40 条术语直接把配额打穿（`aliases=41 > 20`），cap 断言当场失败。改为概念映射单独进 `concept_alias_map`（只影响 concept 节点别名），主体归一表只管人物/物品/地点，`sources.aliases` 从此只计主体别名。
+- **两规则改读图（开关即回退）**：`check_death_state(..., graph=None)` 有图时死亡章只认节点 `attrs.dead_ch`（`_DEAD_RE` 与 `conflict_rules` 同表，两处须同步改）；`check_item_owner(..., graph=None)` 有图时「应该归谁」由该章 holds 边回答，图没覆盖该章就不比（宁漏不误报），object 类事件豁免保留。`book_facts.violation_list` 在 `state_graph_v2` 打开时建图传入，**建图异常降级为 None 并留 logger**——不让图的失败把其余三条规则一起吞掉。
+- **new 体检两类**：`alias_conflict`（同一别称映射到两个标准名，warning）、`overlapping_holds`（同一物品同一时点两个持有者，error，`ok=False`）。后者是时间维派生出的硬矛盾，只在段重叠时才报，不惩罚正常易主。
+- **`impact()` 口径（确定性零 LLM）**：`chapters` = 该实体参与的边里证据章 > `ch` 的章号；`foreshadows` = `due_ch ≥ ch` 的未回收伏笔；`closed_edges` = `ch` 之后被关闭的旧边。不给 `ch` 时按全书看，用于「改这条关系要重看哪几章」。
+- **实测（真实书）**：M2（14 章，8 章有 items）49 节点 / 15 边（holds 7、present_at 5、ally 2、enemy 1），`sources.chapters=8`、`aliases=12`，体检 0 error / 5 info；`at_ch=6` 只回 1 条边（当章有效的 hold），时间维生效。M1（30 章）36 节点 / 13 边，`chapters=22`，指纹与 G0' 相同（无 items → 无时间轴，属数据缺口非缺陷）。`impact(灰光团)` → `chapters=[8]`、5 条未回收伏笔。
+- **性能**：M2 首次建图 212ms（冷读 `scenes.json`），同进程第二次 7ms（OS 缓存）；M1 7ms。读时派生省掉了缓存失效逻辑，但百章量级书要注意首次成本，必要时再上进程内缓存。
+- **单测**：`tests/test_graph_g1.py` 13 条（时间轴关旧边/同主不新开边/放弃式描述不建边/别名并节点/别名封顶/别名撞车/死亡读图/归属读图/无覆盖不比/impact/未知实体/overlap/API impact）；连同 G0' 27 条与 state、character、book_facts 回归共 **127 passed**。
+- **未做**：Plan 图（P0）、约束注入（P1）、`diff` + 编辑接口 + 门 1/门 2 前端（P2）、老书账本回填（需 LLM 重扫正文才有历史 holds 段）、facts 30 条上限调整。

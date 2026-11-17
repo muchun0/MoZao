@@ -461,3 +461,37 @@ def test_diff_marks_character_checks_unverifiable_without_characters():
     # 只抽到物品、没抽到人物：判「无法核实」，不当作没做到扣分
     assert r["counts"]["missing"] == 0 and r["score"] == 0
     assert r["unverifiable"][0]["reason"].startswith("本章未抽取到人物状态")
+
+def test_manager_compiles_plan_before_writing(store, outline, world):
+    """接线：开 plan_graph 时写章前必须已落 plan_graph.json（否则约束注入为空）。"""
+    from unittest.mock import MagicMock
+    from novel_gen.pipeline.manager import NovelPipeline
+
+    cfg = cfg_with_plan()
+    store.save_config(cfg)
+    pipe = NovelPipeline(cfg, store, MagicMock())
+    store.save_outline(outline)
+    store.save_world(world)
+    before = plan_graph.load(store)
+    assert before is None
+    assert pipe._ensure_plan_graph(silent=True) is True
+    plan = plan_graph.load(store)
+    assert plan and plan["constraints"], "写章前必须有可用约束"
+    # 幂等：再次调用不递增版本（大纲未变）
+    v1 = plan.get("plan_version")
+    assert pipe._ensure_plan_graph(silent=True) is True
+    assert plan_graph.load(store).get("plan_version") == v1
+
+
+def test_manager_skips_plan_when_flag_off(store, outline, world):
+    from unittest.mock import MagicMock
+    from novel_gen.pipeline.manager import NovelPipeline
+
+    cfg = cfg_with_plan()
+    cfg.plan_graph = False
+    store.save_config(cfg)
+    pipe = NovelPipeline(cfg, store, MagicMock())
+    store.save_outline(outline)
+    store.save_world(world)
+    assert pipe._ensure_plan_graph(silent=True) is True
+    assert plan_graph.load(store) is None

@@ -931,6 +931,38 @@ class NovelPipeline:
         """扩写已有章节模式：把用户已有章节扩写到目标字数（content_type=chapters_expand）。"""
         return self.cfg.content_type == "chapters_expand"
 
+    def _ensure_plan_graph(self, silent: bool = False) -> bool:
+        """写章前编译/刷新 Plan（REQ-R24 P0/P1 接线，零 LLM）。
+
+        不接这一步，`plan_graph` 开关打开后 `constraints_block` 只会读到空 Plan，
+        整条约束注入等于没生效。重编译保留 `source=manual` 的人工卡；大纲没变时
+        `save()` 不递增版本，幂等可重复调用。失败只留痕，不阻塞正文生成。
+        """
+        if not bool(getattr(self.cfg, "plan_graph", False)):
+            return True
+        try:
+            from .state import plan_graph
+            outline = self.store.load_outline()
+            if outline is None:
+                logger.warning("Plan 编译跳过：大纲不存在")
+                return False
+            world = self.store.load_world()
+            existing = plan_graph.load(self.store)
+            plan = plan_graph.compile_from_outline(outline, world,
+                                                   keep_existing=True, existing=existing)
+            version = plan_graph.save(self.store, plan)
+            check = plan_graph.validate(plan, world)
+            logger.info("Plan 编译完成: v%s，%d 条约束（结构问题 %d 条）",
+                        version, len(plan.get("constraints") or []),
+                        len(check.get("issues") or []))
+            if not silent:
+                logger.info("[Plan] v%s %d 条约束", version,
+                            len(plan.get("constraints") or []))
+            return True
+        except Exception:
+            logger.exception("Plan 编译失败（本章约束注入降级为空）")
+            return False
+
     def resume(self, silent: bool = False) -> None:
         """从当前进度继续：缺失产物即生成，已生成章节自动跳过。"""
         if not silent:
@@ -951,6 +983,7 @@ class NovelPipeline:
         self.run_editor_review(silent=silent)
         self._mark_state("world")
         self.run_world(silent=silent)
+        self._ensure_plan_graph(silent=silent)
         self._mark_state("writing")
 
         done, total = self.progress()

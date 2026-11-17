@@ -523,3 +523,13 @@
   - `_update_state_layer` 只 import `EventStream` 未实例化，`NameError` 被吞，14 章 0 事件、每章 `state_layer` 失败；
   - `_split_scenes` 异常时 `events_list` 未初始化，第 15 章整本中断。
 - **约束**：新增状态消费方一律走 `StateGraph` 契约，禁止各自拼 `book_memory/scenes/events`；改四视图字段必须同步 `version` 计算与接口文档。
+## 2026-11-17 R24 G0'：Canon 事实图 + 事件三契约（feat/r24-state-graph）
+
+- **决策**：账本从「扁平快照」升级为「节点 + 带证据的边」的派生图，先落 G0'（`state/graph.py` + 事件契约），Plan 图（写前约束）留 P 段。理由：R22 四视图回答得了「现在是什么样」，回答不了「这条关系是第几章哪句话立的」，冲突判定与后续 Plan diff 都需要可回指的边。
+- **无证据不建边（核心约束）**：`_make_edge` 在 `evidence{ch,offset,snippet}` 不全时返回 None，候选计入 `skipped_edges`；一句里出现多物品/多人物（归属歧义）也直接不建。M1 实测 `item_owner` 唯一那条误报正是无证据推断，这条规则是把它压到 0 的机制，不是洁癖。
+- **事件流扩契约但不改 append-only**：id 加 `_r{02}` 重写版本；`batch_id` 随行落盘，整批校验后一次追加（拒一条不影响其余，但写入动作只有一次）；`supersede.json` 侧车记录「旧行被新版替代」，查询时隐藏旧行——**不回写、不删行**，否则「重放 ≡ 旧快照」的验收前提失效。
+- **不落盘、不缓存**：全书重建 <30ms（M0 实测同量级），缓存失效逻辑比构建本身贵；图是每次读时派生，源账本变更自动反映。
+- **与 M1-lite 决策的关系**：本轮不实现事件 `delta`、不改 facts 30 条上限（这两项已被 2026-11-16 决策否决/改造）；图的数据源只用现有账本字段，`events.jsonl` 仍只服务时间线展示。
+- **开关**：`state_graph_v2` 默认 False，关闭时接口 404、无任何注入变化；与 R22 四视图并存不替代。
+- **实测**：`tests/test_canon_graph.py` 21 条（含接口开/关、体检六类、子图、契约），state/book_facts 回归 101 passed。
+- **未做**：Plan 图（`plan_graph.py`/`derive_constraints`/`diff`/`impact`）、`state_graph_v2` 在生成链路注入（本轮只开只读接口）、`factions.parent` 之外的人际边（ally/enemy/mentor 需要设定卡结构化字段，world 现无该字段）。

@@ -863,6 +863,18 @@ class ProjectStore:
         self._write_json(self.consumption_path(), data)
         self.invalidate_book_facts()
 
+    def supersede_path(self) -> Path:
+        return self.dir / "supersede.json"
+
+    def load_supersede(self) -> dict:
+        """事件版本替代记录（append-only 的补丁：旧 id → 新 id，不回写事件行）。"""
+        d = self._read_json(self.supersede_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_supersede(self, data: dict) -> None:
+        self._write_json(self.supersede_path(), data)
+        self.invalidate_book_facts()
+
     def foreshadowing_path(self) -> Path:
         return self.dir / "foreshadowing.json"
 

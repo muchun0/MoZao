@@ -27,16 +27,20 @@ from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-#: id 规则：ev_ch{章号 2-3 位}_s{场景 2 位}_{章内 3 位序号}
-ID_RE = re.compile(r"^ev_ch(\d{2,3})_s(\d{2})_(\d{3})$")
+#: id 规则：ev_ch{章号 2-3 位}_s{场景 2 位}_{章内 3 位序号}[_r{版本 2 位}]
+#: 重写章用 `_r02` 后缀另立一版（同一 (ch, scene, seq) 的旧版由 supersede.json 标注），
+#: 不用覆盖写——append-only 一旦允许就地改行，"重放 ≡ 旧快照" 的验收前提就没了。
+ID_RE = re.compile(r"^ev_ch(\d{2,3})_s(\d{2})_(\d{3})(?:_r(\d{2}))?$")
 
 #: 事件类型白名单（未登记的 kind 落 state，避免拼错词导致过滤失效）
 KINDS = {"object", "relationship", "state", "foreshadow"}
 
 
-def make_id(ch: int, scene: int, seq: int) -> str:
-    """章内单调递增生成，不依赖全局计数。"""
-    return f"ev_ch{int(ch):02d}_s{int(scene):02d}_{int(seq):03d}"
+def make_id(ch: int, scene: int, seq: int, revision: int = 1) -> str:
+    """章内单调递增生成，不依赖全局计数；revision>1 时加 `_r{02d}` 后缀。"""
+    base = f"ev_ch{int(ch):02d}_s{int(scene):02d}_{int(seq):03d}"
+    rev = int(revision or 1)
+    return base if rev <= 1 else f"{base}_r{rev:02d}"
 
 
 def _as_list(value) -> list:
@@ -67,6 +71,9 @@ class EventStream:
 
     def consumption_path(self):
         return self.store.consumption_path()
+
+    def supersede_path(self):
+        return self.store.supersede_path()
 
     # ---------- 读 ----------
     def _read_raw(self) -> list:
@@ -115,6 +122,10 @@ class EventStream:
               cause: str = "", thread: str = "", limit: int = 0) -> list:
         """按章区间/参与者/因果/线索过滤；limit>0 取最近 limit 条。"""
         rows = self.all()
+        # 被新版本替代的行不再参与查询（侧车为空时零开销，老项目行为不变）
+        sup = self.superseded()
+        if sup:
+            rows = [r for r in rows if str(r.get("id")) not in sup]
         lo = int(from_ch or 0)
         hi = int(to_ch or 0)
         if lo > 0:
@@ -166,7 +177,8 @@ class EventStream:
     # ---------- 写 ----------
     @staticmethod
     def normalize(rec: dict, *, ch: int = 0, scene: int = 0, seq: int = 0,
-                  allow_inferred: bool = False) -> dict:
+                  allow_inferred: bool = False, revision: int = 0,
+                  batch_id: str = "") -> dict:
         """校验并补全一条事件；不合法抛 EventError。"""
         if not isinstance(rec, dict):
             raise EventError("事件必须是 dict")
@@ -176,9 +188,10 @@ class EventStream:
         desc = str(rec.get("desc") or "").strip()
         if not desc:
             raise EventError("事件缺描述")
+        rev = int(rec.get("revision") or revision or 1)
         rid = str(rec.get("id") or "").strip()
         if not rid:
-            rid = make_id(chapter, int(rec.get("scene") or scene or 0), int(seq or 1))
+            rid = make_id(chapter, int(rec.get("scene") or scene or 0), int(seq or 1), rev)
         if not ID_RE.match(rid):
             raise EventError(f"事件 id 不合规: {rid}")
         kind = str(rec.get("kind") or "state").strip()
@@ -204,18 +217,31 @@ class EventStream:
             out["threads"] = threads
         if inferred:
             out["inferred"] = True
+        # 重写版本与批次号只在有值时落盘：老行保持原样，不因新契约整列变脏
+        if rev > 1:
+            out["revision"] = rev
+        bid = str(rec.get("batch_id") or batch_id or "").strip()
+        if bid:
+            out["batch_id"] = bid
         return out
 
     def append(self, events: Iterable[dict], *, ch: int = 0, scene: int = 0,
-               allow_inferred: bool = False) -> dict:
-        """追加写入；返回 {written, skipped, rejected}。已存在的 id 跳过并计数。"""
+               allow_inferred: bool = False, batch_id: str = "",
+               revision: int = 0) -> dict:
+        """追加写入；返回 {written, skipped, rejected}。已存在的 id 跳过并计数。
+
+        批次原子性：整批先全部校验、再一次性追加（任一条不合法只拒该条，但
+        **写入动作只有一次**）；调用方核对 `rejected>0` 后自行决定是否整批重来，
+        半截批次不会落盘。
+        """
         existing = {str(r.get("id")) for r in self.all()}
         written = skipped = rejected = 0
         lines: list[str] = []
         for i, rec in enumerate(events or [], start=1):
             try:
                 item = self.normalize(rec, ch=ch, scene=scene, seq=i,
-                                      allow_inferred=allow_inferred)
+                                      allow_inferred=allow_inferred,
+                                      batch_id=batch_id, revision=revision)
             except EventError as exc:
                 rejected += 1
                 logger.warning("事件被拒绝：%s（%s）", exc, rec)
@@ -232,7 +258,38 @@ class EventStream:
             with path.open("a", encoding="utf-8") as fh:
                 for line in lines:
                     fh.write(line + "\n")
-        return {"written": written, "skipped": skipped, "rejected": rejected}
+        return {"written": written, "skipped": skipped, "rejected": rejected,
+                "batch_id": str(batch_id or "")}
+
+    # ---------- 版本替代（append-only 的补丁） ----------
+    def superseded(self) -> dict:
+        """旧事件 id → {by, ch}；由 `supersede.json` 侧车承载，不回写事件行。"""
+        try:
+            data = self.store.load_supersede()
+        except Exception:
+            logger.exception("supersede.json 读取失败（按无替代处理）")
+            return {}
+        items = data.get("items") if isinstance(data, dict) else None
+        out = {}
+        if isinstance(items, dict):
+            for old, meta in items.items():
+                if isinstance(meta, dict):
+                    out[str(old)] = {"by": str(meta.get("by") or ""),
+                                     "ch": int(meta.get("ch") or 0)}
+        return out
+
+    def supersede(self, pairs: Iterable[dict]) -> dict:
+        """标注旧事件被新版替代：`[{old, new, ch, reason}]`（写侧车，幂等）。"""
+        items = {k: dict(v) for k, v in self.superseded().items()}
+        for p in (pairs or []):
+            old = str((p or {}).get("old") or "").strip()
+            new = str((p or {}).get("new") or "").strip()
+            if not old or not new:
+                continue
+            items[old] = {"by": new, "ch": int((p or {}).get("ch") or 0),
+                          "reason": str((p or {}).get("reason") or "")}
+        self.store.save_supersede({"version": 1, "items": items})
+        return {"superseded": len(items)}
 
     def mark_consumed(self, event_ids: Iterable[str], ch: int) -> dict:
         """整文件原子覆盖写消费水位（走 store._write_json），返回最新水位条数。"""

@@ -591,7 +591,15 @@ class NovelPipeline:
                     except Exception:
                         logger.warning("世界观读取失败（事件参与人降级为空）: no=%d", no)
                 rows = derive_fact_events(facts, chapter, names, items)
-                res = stream.append(rows, ch=chapter, allow_inferred=True) if rows else {}
+                # 重写章另立一版：版本号不递增会让新事件 id 与旧记录撞车 → 被当成重复丢弃，
+                # 账本停在旧事实（而 P2 的 diff 正读这份账本）。写完再把旧版标为被替代。
+                rev = stream.next_revision(chapter)
+                res = stream.append(rows, ch=chapter, allow_inferred=True,
+                                    revision=rev) if rows else {}
+                if res.get("written") and rev > 1:
+                    marked = stream.supersede_revision(chapter, rev)
+                    logger.info("第%d章事件重写入库 %d 条，旧版标注 %d 条 (r%02d)",
+                                chapter, res.get("written") or 0, marked, rev)
                 if res.get("rejected") and not silent:
                     logger.warning("事件流拒绝 %d 条（已留痕，不阻塞）", res["rejected"])
             except Exception:

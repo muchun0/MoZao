@@ -236,15 +236,16 @@ def test_fingerprint_stable_and_changes_with_source(store, cfg):
 
 # ---------- 契约 ----------
 @pytest.mark.p1
-def test_append_stamps_batch_id(store, cfg):
+def test_append_normalizes_and_returns_counts(store, cfg):
     store.save_config(cfg)
     res = EventStream(store).append(
         [{"ch": 3, "scene": 1, "desc": "甲拿到铜匣", "participants": ["甲"],
           "kind": "object", "cause": "", "effect": ["得匣"]}],
-        ch=3, batch_id="batch_ch03")
-    assert res["written"] == 1
+        ch=3)
+    assert res["written"] == 1 and res["skipped"] == 0
     row = EventStream(store).all()[-1]
-    assert row.get("batch_id") == "batch_ch03"
+    assert row["id"] == make_id(3, 1, 1)
+    assert row["kind"] == "object" and row["participants"] == ["甲"]
 
 
 @pytest.mark.p1
@@ -255,11 +256,11 @@ def test_rejected_event_does_not_write_partial_batch(store, cfg):
           "kind": "state", "cause": "c", "effect": []},
          {"ch": 4, "scene": 1, "desc": "  ", "participants": [],
           "kind": "state", "cause": "", "effect": []}],
-        ch=4, batch_id="batch_ch04")
+        ch=4)
     assert res["written"] == 1 and res["rejected"] == 1
     # 拒一条不影响已校验通过的那条落盘；整批仍只有一次写入
-    rows = EventStream(store).all()
-    assert len([r for r in rows if r.get("batch_id") == "batch_ch04"]) == 1
+    rows = [r for r in EventStream(store).all() if r.get("ch") == 4]
+    assert len(rows) == 1
 
 
 @pytest.mark.p1
@@ -268,18 +269,17 @@ def test_revision_id_and_supersede_sidecar(store, cfg):
     es = EventStream(store)
     es.append([{"ch": 7, "scene": 2, "desc": "旧版：甲在墟口",
                 "participants": ["甲"], "kind": "state", "cause": "c",
-                "effect": []}], ch=7, scene=2, batch_id="b1")
+                "effect": []}], ch=7, scene=2)
     old = make_id(7, 2, 1)
     new = make_id(7, 2, 1, revision=2)
     assert f"{old}_r02" == new
     es.append([{"ch": 7, "scene": 2, "desc": "新版：甲在墟内二层",
                 "participants": ["甲"], "kind": "state", "cause": "c",
-                "effect": []}], ch=7, scene=2, revision=2, batch_id="b2")
-    es.supersede([{"old": old, "new": new, "ch": 7, "reason": "门卡编辑重写"}])
-    # 原行仍在（append-only），但查询不再返回被替代的旧版
+                "effect": []}], ch=7, scene=2, revision=2)
+    # 重写章走统一口径：标注旧版被替代（不删行）
+    es.supersede_revision(7, 2)
     assert old in {r["id"] for r in es.all()}
-    rows = es.query()
-    ids = {r["id"] for r in rows}
+    ids = {r["id"] for r in es.query()}
     assert new in ids and old not in ids
 
 

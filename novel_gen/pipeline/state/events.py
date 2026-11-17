@@ -177,8 +177,7 @@ class EventStream:
     # ---------- 写 ----------
     @staticmethod
     def normalize(rec: dict, *, ch: int = 0, scene: int = 0, seq: int = 0,
-                  allow_inferred: bool = False, revision: int = 0,
-                  batch_id: str = "") -> dict:
+                  allow_inferred: bool = False, revision: int = 0) -> dict:
         """校验并补全一条事件；不合法抛 EventError。"""
         if not isinstance(rec, dict):
             raise EventError("事件必须是 dict")
@@ -217,17 +216,13 @@ class EventStream:
             out["threads"] = threads
         if inferred:
             out["inferred"] = True
-        # 重写版本与批次号只在有值时落盘：老行保持原样，不因新契约整列变脏
+        # 重写版本只在有值时落盘：老行保持原样，不因新契约整列变脏
         if rev > 1:
             out["revision"] = rev
-        bid = str(rec.get("batch_id") or batch_id or "").strip()
-        if bid:
-            out["batch_id"] = bid
         return out
 
     def append(self, events: Iterable[dict], *, ch: int = 0, scene: int = 0,
-               allow_inferred: bool = False, batch_id: str = "",
-               revision: int = 0) -> dict:
+               allow_inferred: bool = False, revision: int = 0) -> dict:
         """追加写入；返回 {written, skipped, rejected}。已存在的 id 跳过并计数。
 
         批次原子性：整批先全部校验、再一次性追加（任一条不合法只拒该条，但
@@ -241,7 +236,7 @@ class EventStream:
             try:
                 item = self.normalize(rec, ch=ch, scene=scene, seq=i,
                                       allow_inferred=allow_inferred,
-                                      batch_id=batch_id, revision=revision)
+                                      revision=revision)
             except EventError as exc:
                 rejected += 1
                 logger.warning("事件被拒绝：%s（%s）", exc, rec)
@@ -258,8 +253,61 @@ class EventStream:
             with path.open("a", encoding="utf-8") as fh:
                 for line in lines:
                     fh.write(line + "\n")
-        return {"written": written, "skipped": skipped, "rejected": rejected,
-                "batch_id": str(batch_id or "")}
+        return {"written": written, "skipped": skipped, "rejected": rejected}
+
+    # ---------- 版本（重写章另立一版） ----------
+    def next_revision(self, ch: int) -> int:
+        """本章下一版版本号：已有最大 revision +1（首写返回 1）。
+
+        重写章必须换版本号，否则 `seq` 从批次位置重新计数会让新旧 id 撞车，
+        新事实会被 append 当成重复静默跳过（账本停在旧版）。
+        """
+        chapter = int(ch or 0)
+        if chapter <= 0:
+            return 1
+        best = 0
+        for r in self._read_raw():
+            if int(r.get("ch") or 0) != chapter:
+                continue
+            try:
+                best = max(best, int(r.get("revision") or 1))
+            except (TypeError, ValueError):
+                continue
+        return best + 1
+
+    def supersede_revision(self, ch: int, revision: int) -> int:
+        """把本章 `revision-1` 版的事件标成被新版替代，返回标注条数。
+
+        只写 `supersede.json` 侧车（不删行、不改行）：`query()` 会隐藏旧版，
+        但 `all()` 仍保留原始行，重放/回滚仍可查。
+        """
+        chapter = int(ch or 0)
+        rev = int(revision or 0)
+        if chapter <= 0 or rev < 2:
+            return 0
+        rows = self._read_raw()
+        old_rev, new_rev = rev - 1, rev
+        new_by_base = {}
+        old_rows = []
+        for r in rows:
+            if int(r.get("ch") or 0) != chapter:
+                continue
+            try:
+                rrev = int(r.get("revision") or 1)
+            except (TypeError, ValueError):
+                continue
+            base = str(r.get("id") or "").split("_r")[0]
+            if rrev == new_rev:
+                new_by_base[base] = str(r.get("id"))
+            elif rrev == old_rev:
+                old_rows.append((base, str(r.get("id"))))
+        pairs = [{"old": old, "new": new_by_base[base], "ch": chapter,
+                  "reason": f"第{chapter}章重写（r{old_rev:02d}→r{new_rev:02d}）"}
+                 for base, old in old_rows if base in new_by_base]
+        if not pairs:
+            return 0
+        self.supersede(pairs)
+        return len(pairs)
 
     # ---------- 版本替代（append-only 的补丁） ----------
     def superseded(self) -> dict:

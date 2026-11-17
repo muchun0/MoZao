@@ -118,20 +118,65 @@ def check_mechanism_delta(chapters: Iterable[dict], min_delta: int = 1) -> list:
     return out
 
 
+# ---------- 图接口（G1'：两条规则改读 Canon 图） ----------
+def _graph_holds_timeline(graph: dict) -> dict:
+    """Canon 图 holds 边 → `{物品名: [(from_ch, to_ch, 持有者名), ...]}`（按时间升序）。"""
+    names = {n.get("id"): str(n.get("name") or "") for n in (graph.get("nodes") or [])}
+    out: dict[str, list] = {}
+    for e in (graph.get("edges") or []):
+        if e.get("rel") != "holds":
+            continue
+        item = names.get(e.get("src"), "")
+        owner = names.get(e.get("dst"), "")
+        if not item or not owner:
+            continue
+        out.setdefault(item, []).append(
+            (_int(e.get("valid_from_ch")), _int(e.get("valid_to_ch")) or 0, owner,
+             (e.get("evidence") or {}).get("snippet", "")))
+    for rows in out.values():
+        rows.sort(key=lambda r: r[0])
+    return out
+
+
+def _graph_dead_chapters(graph: dict) -> dict:
+    """Canon 图人物节点上的 `dead_ch` 标记 → `{人名: 死亡章}`（无标记即未判死亡）。"""
+    out = {}
+    for n in (graph.get("nodes") or []):
+        if n.get("type") != "character":
+            continue
+        dead_ch = _int((n.get("attrs") or {}).get("dead_ch"))
+        if dead_ch > 0 and n.get("name"):
+            out[str(n["name"])] = dead_ch
+    return out
+
+
+def graph_expected_owner(graph: dict, item: str, ch: int) -> str:
+    """图里某物品在第 `ch` 章的有效持有者；无覆盖该章的边返回空（=无证据，不比）。"""
+    for start, end, owner, _ in _graph_holds_timeline(graph).get(str(item), []):
+        if start <= ch and (not end or ch < end):
+            return owner
+    return ""
+
+
 # ---------- 规则 2：死亡后仍有主动行为 ----------
-def check_death_state(chapters: Iterable[dict], events: Iterable[dict]) -> list:
+def check_death_state(chapters: Iterable[dict], events: Iterable[dict],
+                      graph: dict = None) -> list:
     """某人物在章 N 已被判定死亡，却在更晚章的事件里作为参与者主动出场。
 
-    只用事件参与人做判定（显式动作），复活机制由本书 canon 声明后由调用方跳过。
+    给了 `graph` 时死亡章只认图节点上的 `dead_ch`（同一份证据、可回指）；
+    未给时退回逐章状态文本判定（M1 原行为，逐字不变）。
     """
-    death: dict[str, int] = {}
-    for ch in sorted(chapters or [], key=lambda c: _int(c.get("no"))):
-        chars = ch.get("characters") or {}
-        if not isinstance(chars, dict):
-            continue
-        for name, state in chars.items():
-            if _DEAD_RE.search(str(state or "")):
-                death.setdefault(str(name).strip(), _int(ch.get("no")))
+    if graph:
+        death = _graph_dead_chapters(graph)
+    else:
+        death = {}
+        for ch in sorted(chapters or [], key=lambda c: _int(c.get("no"))):
+            chars = ch.get("characters") or {}
+            if not isinstance(chars, dict):
+                continue
+            for name, state in chars.items():
+                if _DEAD_RE.search(str(state or "")):
+                    death.setdefault(str(name).strip(), _int(ch.get("no")))
     out = []
     for ev in (events or []):
         ch = _int(ev.get("ch"))
@@ -143,6 +188,7 @@ def check_death_state(chapters: Iterable[dict], events: Iterable[dict]) -> list:
                     "death_state", ch, f"{name} 已于第{d}章死亡，不得有主动行为",
                     f"第{ch}章事件：{ev.get('desc') or ''}", d))
     return out
+
 
 
 # ---------- 规则 3：物品归属 ----------
@@ -189,11 +235,15 @@ def owner_subject(owner: str, names: Iterable[str] = ()) -> str:
     return head
 
 
-def check_item_owner(chapters: Iterable[dict], events: Iterable[dict]) -> list:
+def check_item_owner(chapters: Iterable[dict], events: Iterable[dict],
+                     graph: dict = None) -> list:
     """同一物品归属变化，且两次出现之间没有 item 类转移事件。
 
     比对对象是**持有者主体**而非整段描述：真实样本里「在陆沉怀中」对
     「在陆沉怀中/领口」曾被判成归属变化，属描述性差异误报。
+
+    给了 `graph` 时，「应该归谁」改由图里该章的 holds 边回答（跨 `scenes` 时间轴
+    与章末账本两源对齐）；图里没有覆盖该章的边就不比——宁漏不误报。
     """
     out = []
     known_names = sorted({
@@ -203,6 +253,7 @@ def check_item_owner(chapters: Iterable[dict], events: Iterable[dict]) -> list:
         if str(n).strip()
     })
     prev: dict[str, tuple] = {}
+    timeline = _graph_holds_timeline(graph) if graph else {}
     item_events: list[int] = [
         _int(ev.get("ch")) for ev in (events or [])
         if str(ev.get("kind") or "") == "object"
@@ -219,6 +270,21 @@ def check_item_owner(chapters: Iterable[dict], events: Iterable[dict]) -> list:
                 continue
             owner_now = owner_subject(owner_raw, known_names)
             if not owner_now:
+                continue
+            if graph:
+                expect, since = "", 0
+                for start, end, name_, snippet in timeline.get(item, []):
+                    if start <= no and (not end or no < end):
+                        expect, since = name_, start
+                        break
+                if expect and expect != owner_now:
+                    moved = any(since < ec <= no for ec in item_events)
+                    if not moved:
+                        out.append(_violation(
+                            "item_owner", no,
+                            f"「{item}」按时间轴（第{since}章起）应在{expect}手中",
+                            f"第{no}章记为{owner_now}（{owner_raw}）", since))
+                prev[item] = (no, owner_now, owner_raw)
                 continue
             if item in prev:
                 prev_ch, prev_owner, prev_raw = prev[item]
@@ -280,15 +346,19 @@ def check_time_reverse(chapters: Iterable[dict]) -> list:
 
 # ---------- 汇总 ----------
 def detect(chapters: Iterable[dict], events: Iterable[dict] = None,
-           canon_terms: dict = None) -> list:
-    """跑全五条规则并排序；空数据返回空列表（不产生任何文本）。"""
+           canon_terms: dict = None, graph: dict = None) -> list:
+    """跑全五条规则并排序；空数据返回空列表（不产生任何文本）。
+
+    `graph` 非空时 `death_state` / `item_owner` 改读 Canon 图（G1'）；为空时退回
+    M1 原逻辑，逐字不变（开关关闭即完全回退）。
+    """
     chapters = list(chapters or [])
     events = list(events or [])
     violations: list[dict] = []
     for fn in (
         lambda: check_mechanism_delta(chapters),
-        lambda: check_death_state(chapters, events),
-        lambda: check_item_owner(chapters, events),
+        lambda: check_death_state(chapters, events, graph),
+        lambda: check_item_owner(chapters, events, graph),
         lambda: check_address_drift(chapters, canon_terms or {}),
         lambda: check_time_reverse(chapters),
     ):

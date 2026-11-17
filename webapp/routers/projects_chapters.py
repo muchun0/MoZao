@@ -760,8 +760,9 @@ def get_book_facts_canon_graph(project_id: str, view: str = "all", seed: str = "
     """REQ-R24 G0'：每书 Canon 事实图（节点 + 带证据的边）。
 
     view=all 返回整图（含 sources/skipped_edges/fingerprint）；view=validate 返回
-    六类体检结论；view=entity 按 seed（节点 id 或名称）取单节点与相邻边；
-    view=subgraph 从 seed 按 rel（默认 holds/part_of）扩散 depth 跳。
+    体检结论；view=entity 按 seed（节点 id、名称或已登记别名）取单节点与相邻边；
+    view=subgraph 从 seed 按 rel（默认 holds/part_of）扩散 depth 跳；
+    view=impact（G1'）按 seed 回答「改这个实体影响哪些章、哪些伏笔」。
     开关 state_graph_v2 关闭时 404——与 R22 四视图并存，不互相替代。
     """
     _check_project_access(project_id, user)
@@ -772,16 +773,18 @@ def get_book_facts_canon_graph(project_id: str, view: str = "all", seed: str = "
                                                 CanonGraph)
     g = CanonGraph(store, cfg)
     view = (view or "all").strip()
-    if view not in ("all", "validate", "entity", "subgraph"):
+    if view not in ("all", "validate", "entity", "subgraph", "impact"):
         raise HTTPException(status_code=400,
-                            detail=f"未知 view: {view}（可选 all/validate/entity/subgraph）")
+                            detail=f"未知 view: {view}（可选 all/validate/entity/subgraph/impact）")
     if view == "validate":
         return g.validate(at_ch=at_ch)
     if view == "all":
         graph = g.build(at_ch=at_ch)
         return {"version": g.fingerprint(graph), "graph": graph}
     if not seed.strip():
-        raise HTTPException(status_code=400, detail="view=entity/subgraph 需要 seed")
+        raise HTTPException(status_code=400, detail="view=entity/subgraph/impact 需要 seed")
+    if view == "impact":
+        return g.impact(entity=seed, ch=int(at_ch or 0), at_ch=at_ch)
     if view == "entity":
         rels = tuple(r for r in (rel or "").split(",") if r in EDGE_RELS) or SUBGRAPH_RELS
         return g.subgraph(seed=seed, depth=1, rels=rels, at_ch=at_ch)

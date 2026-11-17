@@ -42,6 +42,12 @@ SUBGRAPH_RELS = ("holds", "part_of")
 #: 图结构版本（节点/边类型集合变化时递增）
 VERSION = 1
 
+#: 主体归一上限（M1-lite：只做主角 + 关键道具，别名表 ≤20 条，不做全量归一）
+MAX_ALIAS = 20
+
+#: 死亡判定的确定性词表（与 `conflict_rules._DEAD_RE` 同源；改一处必须同步另一处）
+_DEAD_RE = re.compile(r"已死|身死|身亡|死亡|殒命|毙命|断气")
+
 #: 节点 id 前缀缩写（与 TECH-R24 的 `ent_{缩写}_{hash8}` 对齐）
 _TYPE_ABBR = {"character": "char", "faction": "fac", "place": "place",
               "item": "item", "mechanism": "mech", "concept": "cpt",
@@ -160,6 +166,83 @@ def _s(value) -> str:
     return str(value or "").strip()
 
 
+#: 允许进别名表的名字形态：短名词、无空白、无标点（书名/句子不会被误收）
+_NAME_OK_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z0-9·]{2,12}$")
+
+
+def _build_alias_index(canon: dict, known: Iterable[str]) -> tuple[dict, dict]:
+    """从 `book_memory.canon.terms` 提取「别名 → 标准名」，封顶 `MAX_ALIAS` 条。
+
+    M1-lite 明确砍掉「实体别名全量归一」，只做主角 + 关键道具（canonical ≤20）。
+    因此这里**只认账本已经登记过的别称**：不做字形/尊称启发式猜测，也不跨条目
+    合并——猜错会把两个人并成一个节点，比不归一更坏。
+
+    返回 `(alias_map, aliases_by_canonical)`；`known` 是设定卡与账本里出现过
+    的实体名，用于给「标准名就是实体」的条目更高优先级。
+    """
+    known = {_s(k) for k in (known or []) if _s(k)}
+    pairs: list[tuple[int, str, str]] = []
+    for term, meta in (canon.get("terms") or {}).items():
+        meta = meta if isinstance(meta, dict) else {}
+        term = _s(term)
+        canonical = _s(meta.get("canonical")) or term
+        if not term or not canonical or term == canonical:
+            continue
+        if not (_NAME_OK_RE.match(term) and _NAME_OK_RE.match(canonical)):
+            continue
+        if canonical and canonical not in ("", term):
+            pairs.append((0 if canonical in known else 1, term, canonical))
+        for a in (meta.get("aliases") or []):
+            alias = _s(a)
+            if not alias or alias == canonical or not _NAME_OK_RE.match(alias):
+                continue
+            pairs.append((0 if canonical in known else 1, alias, canonical))
+    pairs.sort(key=lambda p: (p[0], len(p[1]), p[1]))
+    alias_map: dict[str, str] = {}
+    for _, alias, canonical in pairs:
+        if len(alias_map) >= MAX_ALIAS:
+            break
+        if alias == _s(canonical):
+            continue
+        alias_map.setdefault(alias, canonical)
+    aliases_by: dict[str, list[str]] = {}
+    for alias, canonical in alias_map.items():
+        aliases_by.setdefault(canonical, []).append(alias)
+    return alias_map, aliases_by
+
+
+#: 归属表里的「放弃/失去」描述：物品碎毁、脱手、丢失时不能建持有边
+_LOST_WORDS = ("砸碎", "碎裂", "碎在", "捣碎", "销毁", "焚毁", "烧毁", "丢失",
+               "遗失", "不见", "消失", "滚落", "掉落", "脱手", "脱落", "散落",
+               "扔在", "丢在", "抛下")
+
+
+def _owner_segments(history: Iterable[dict], chars: Iterable[str]) -> dict:
+    """把逐章 `items` 归属表压成「持有者变化点」序列。
+
+    同一个人在连续多章持有同一物品只算一段（`valid_to_ch` 为空表示仍在手），
+    换人则关旧段、开新段——这是 `valid_from_ch / valid_to_ch` 的唯一来源。
+    「已经不再持有」的描述（碎了/丢了/滚落）不建边：账本写了去向但没写持有者，
+    硬判一个人就是造证据。
+    """
+    segs: dict[str, list] = {}
+    for h in (history or []):
+        for item, desc in ((h or {}).get("items") or {}).items():
+            item, desc = _s(item), _s(desc)
+            if not item or not desc:
+                continue
+            if any(w in desc for w in _LOST_WORDS):
+                continue
+            owner = _owner_from_state(desc, list(chars or []))
+            if not owner:
+                continue
+            cur = segs.setdefault(item, [])
+            if cur and cur[-1][1] == owner:
+                continue
+            cur.append((int((h or {}).get("no") or 0), owner, desc))
+    return segs
+
+
 def _int(value, default: int = 0) -> int:
     try:
         return int(value)
@@ -186,15 +269,20 @@ def _make_node(kind: str, name: str, *, first_ch: int = 0, aliases: Optional[lis
 
 def _make_edge(src: str, dst: str, rel: str, *, ch: int, snippet: str,
                confidence: str = "explicit", sources: Optional[list] = None,
-               attrs: Optional[dict] = None) -> Optional[dict]:
-    """建一条带证据的边；证据不全返回 None（调用方计入 skipped_edges）。"""
+               valid_to_ch: Optional[int] = None, attrs: Optional[dict] = None) -> Optional[dict]:
+    """建一条带证据的边；证据不全返回 None（调用方计入 skipped_edges）。
+
+    `valid_to_ch` 只在时间维里出现：同一物品换了持有者、或人物离开某地时，旧边
+    被关闭（`valid_to_ch = 新边起始章`），查询按 `at_ch` 判断是否仍在有效期内。
+    """
     if not (src and dst and rel in EDGE_RELS):
         return None
     if not _s(snippet) or _int(ch) <= 0:
         return None
     edge = {"id": f"edge_{hashlib.sha1(f'{src}>{rel}>{dst}'.encode('utf-8')).hexdigest()[:8]}",
             "src": src, "dst": dst, "rel": rel,
-            "valid_from_ch": int(ch), "valid_to_ch": None,
+            "valid_from_ch": int(ch),
+            "valid_to_ch": int(valid_to_ch) if valid_to_ch else None,
             "evidence": {"ch": int(ch), "offset": 0, "snippet": _s(snippet)},
             "confidence": confidence,
             "sources": list(sources or [])}
@@ -265,6 +353,35 @@ class CanonGraph:
             logger.exception("events.jsonl 读取失败（图按无事件构建）")
             return []
 
+    def _history(self, at_ch: int = 0) -> list:
+        """逐章状态序列（时间维的数据源）：`scenes.json` 历史 + 最新章末账本。
+
+        没有 `scenes.json` 的书退化为「只有最新一章」——此时时间维的输出与 G0'
+        的单快照完全一致，不会凭空造出跨章历史。
+        """
+        out: list[dict] = []
+        try:
+            scenes = self.store.load_scenes() or {}
+        except Exception:
+            logger.exception("scenes.json 读取失败（时间维退化为当前快照）")
+            scenes = {}
+        for no, rec in (scenes.items() if isinstance(scenes, dict) else []):
+            n = _int(no)
+            if n <= 0 or (at_ch and n > at_ch):
+                continue
+            state = (rec or {}).get("state") if isinstance(rec, dict) else {}
+            if not isinstance(state, dict):
+                continue
+            out.append({"no": n, "items": state.get("items") or {},
+                        "characters": state.get("characters") or {}})
+        cs = self._chapter_state()
+        no = _int(cs.get("chapter"))
+        if no > 0 and not (at_ch and no > at_ch) and not any(h["no"] == no for h in out):
+            out.append({"no": no, "items": cs.get("items") or {},
+                        "characters": cs.get("characters") or {}})
+        out.sort(key=lambda h: h["no"])
+        return out
+
     # ---------- 构建 ----------
     def build(self, at_ch: int = 0) -> dict:
         """按当前账本构建 Canon 图（纯函数式：源不变则结果完全一致）。"""
@@ -304,32 +421,63 @@ class CanonGraph:
         chapter_state = self._chapter_state()
         char_states = self._char_states()
         events = self._events(at_ch)
+        history = self._history(at_ch)
+
+        # ---- 主体归一：只认账本登记过的别称，封顶 20 条 ----
+        known: set[str] = set()
+        for c in (getattr(world, "characters", None) or []):
+            known.add(_s(_as_dict(c).get("name")))
+        for it in (getattr(world, "items", None) or []):
+            known.add(_s(_as_dict(it).get("name")))
+        for loc in (getattr(world, "locations", None) or []):
+            known.add(_s(_as_dict(loc).get("name")))
+        known |= {_s(k) for k in (chapter_state.get("characters") or {})}
+        known |= {_s(k) for k in (chapter_state.get("items") or {})}
+        known |= {_s(k) for k in (char_states or {})}
+        alias_map, aliases_by = _build_alias_index(canon, known)
+        concept_alias_map: dict[str, str] = {}
+
+        def canon_of(name) -> str:
+            name = _s(name)
+            return alias_map.get(name, name)
+
+        def variants(name: str) -> list:
+            """标准名的全部写法（自身 + 已登记别名），用于在散文里认出实体。"""
+            return [name] + [a for a in aliases_by.get(name, []) if a != name]
 
         # ---- 节点：人物 / 物品 / 地点 / 势力 / 机制 ----
         char_names: list[str] = []
         for c in (getattr(world, "characters", None) or []):
             d = _as_dict(c)
-            n = add_node("character", d.get("name"), attrs={"role": _s(d.get("role"))})
-            if n and _s(d.get("name")) not in char_names:
-                char_names.append(_s(d.get("name")))
+            n = add_node("character", canon_of(d.get("name")),
+                         aliases=aliases_by.get(canon_of(d.get("name")), []),
+                         attrs={"role": _s(d.get("role"))})
+            if n and canon_of(d.get("name")) not in char_names:
+                char_names.append(canon_of(d.get("name")))
         for name in (chapter_state.get("characters") or {}):  # 章末账本里有、设定卡没有的人
-            if add_node("character", name) and _s(name) not in char_names:
-                char_names.append(_s(name))
+            name = canon_of(name)
+            if add_node("character", name, aliases=aliases_by.get(name, [])) and name not in char_names:
+                char_names.append(name)
         for name in char_states:
-            if add_node("character", name) and _s(name) not in char_names:
-                char_names.append(_s(name))
+            name = canon_of(name)
+            if add_node("character", name, aliases=aliases_by.get(name, [])) and name not in char_names:
+                char_names.append(name)
 
         item_names: list[str] = []
         for it in (getattr(world, "items", None) or []):
             d = _as_dict(it)
-            if add_node("item", d.get("name"), attrs={"origin": _s(d.get("origin"))}):
-                item_names.append(_s(d.get("name")))
+            name = canon_of(d.get("name"))
+            if add_node("item", name, aliases=aliases_by.get(name, []),
+                        attrs={"origin": _s(d.get("origin"))}):
+                item_names.append(name)
 
         place_names: list[str] = []
         for loc in (getattr(world, "locations", None) or []):
             d = _as_dict(loc)
-            if add_node("place", d.get("name"), attrs={"terrain": _s(d.get("terrain"))}):
-                place_names.append(_s(d.get("name")))
+            name = canon_of(d.get("name"))
+            if add_node("place", name, aliases=aliases_by.get(name, []),
+                        attrs={"terrain": _s(d.get("terrain"))}):
+                place_names.append(name)
 
         for fac in (getattr(world, "factions", None) or []):
             d = _as_dict(fac)
@@ -349,8 +497,9 @@ class CanonGraph:
                 aliases.append(_s(term))
             nid = add_node("concept", canonical, aliases=aliases,
                            attrs={"category": _s(meta.get("category"))})
-            if nid:
-                alias_map[_s(term)] = canonical
+            if nid and _s(term) != canonical:
+                # 术语层自带的标准名映射只进 concept 节点别名，不占主体归一配额
+                concept_alias_map[_s(term)] = canonical
 
         # ---- 节点：伏笔 ----
         for fs in (getattr(world, "foreshadowing", None) or []):
@@ -362,46 +511,50 @@ class CanonGraph:
         # ---- 边 1：present_at（人物状态 → 地点）----
         for name, st in (char_states or {}).items():
             st = st if isinstance(st, dict) else {}
+            name = canon_of(name)
             loc = _s(st.get("location"))
             last = _int(st.get("last_seen"))
             if not loc or last <= 0 or (at_ch and last > at_ch):
                 continue
-            cid = add_node("character", name)
+            cid = add_node("character", name, aliases=aliases_by.get(name, []))
             pid = add_node("place", loc)
             add_edge(cid, pid, "present_at", ch=last,
-                     snippet=f"{_s(name)}在{loc}", sources=["character_states"])
+                     snippet=f"{name}在{loc}", sources=["character_states"])
 
-        # ---- 边 2：holds（章末 items 归属表 → 物品持有）----
+        # ---- 边 2：holds（时间维：逐章归属表，换人就关旧边开新边）----
         # 归属表是账本自己写下的结论（"由顾长卿弹还，陆沉收进铁匣"），比句子抽
         # 取更可靠；物品名以归属表 key 为准，没进设定卡也照样建节点（账本即事实）。
-        fch = _int(chapter_state.get("chapter"))
-        items_state = chapter_state.get("items")
-        for iname, desc in (items_state.items() if isinstance(items_state, dict) else []):
-            iname, desc = _s(iname), _s(desc)
-            if not iname or not desc:
-                continue
+        # `_history` 给出逐章 items，`_owner_segments` 压成变化点：同一持有者跨章
+        # 延续不新开边，换人时旧边 `valid_to_ch = 新段起始章`。
+        segs = _owner_segments(history, char_names)
+        for iname, points in segs.items():
+            iname = _s(iname)
             add_node("item", iname, attrs={"origin": "章末账本"})
             if iname not in item_names:
                 item_names.append(iname)
-            owner = _owner_from_state(desc, char_names)
-            if not owner:
-                self.last_skipped += 1
-                continue
-            add_edge(node_id("item", iname), node_id("character", owner), "holds",
-                     ch=fch, snippet=f"{iname}：{desc}", sources=["chapter_state"])
+            for i, (ch, owner, desc) in enumerate(points):
+                nxt = points[i + 1][0] if i + 1 < len(points) else None
+                add_edge(node_id("item", iname), node_id("character", owner), "holds",
+                         ch=ch, valid_to_ch=nxt, snippet=f"{iname}：{desc}",
+                         sources=["timeline"])
 
-        # ---- 边 2b：holds（章末 facts 兜底：归属表没登记的物品由事实句补）----
+        # ---- 边 2b：holds（章末 facts 兜底：时间轴没覆盖的物品由事实句补）----
+        fch = _int(chapter_state.get("chapter"))
         facts = [f for f in (chapter_state.get("facts") or []) if _s(f)]
+        covered = set(segs)
         for fact in facts:
             text = _s(fact)
-            hit_items = [i for i in item_names if i and i in text]
-            hit_chars = [c for c in char_names if c and c in text]
+            hit_items = [i for i in item_names if i and not i in covered
+                         and any(v in text for v in variants(i))]
+            hit_chars = [c for c in char_names if c and any(v in text for v in variants(c))]
             if not hit_items or not hit_chars:
                 continue
             if len(hit_items) > 1:
                 self.last_skipped += 1  # 一句里多个物品，无从判定是哪一个
                 continue
-            holder = _pick_holder(text, hit_chars)
+            # 命中别名时把持有者归一到标准名，避免同一个人拆成两个节点
+            holder = _pick_holder(text, [v for c in hit_chars for v in variants(c)])
+            holder = canon_of(holder)
             if not holder:
                 self.last_skipped += 1
                 continue
@@ -421,11 +574,13 @@ class CanonGraph:
         # 只认账本里已经写下的关系句，不从正文猜：evidence 就是那句话本身。
         for name, st in (char_states or {}).items():
             st = st if isinstance(st, dict) else {}
+            name = canon_of(name)
             last = _int(st.get("last_seen"))
             if last <= 0 or (at_ch and last > at_ch):
                 continue
             for raw in (st.get("relations") or []):
                 other, text = _split_relation(raw)
+                other = canon_of(other)
                 if not other or not text:
                     continue
                 if other not in char_names:
@@ -435,16 +590,33 @@ class CanonGraph:
                 if not rel:
                     self.last_skipped += 1
                     continue
-                add_edge(node_id("character", _s(name)), node_id("character", other),
+                add_edge(node_id("character", name), node_id("character", other),
                          rel, ch=last, snippet=text,
                          sources=["character_states"])
 
+        # ---- 死亡标记（供 `death_state` 规则改读图）----
+        for name, st in (char_states or {}).items():
+            text = st if isinstance(st, str) else (
+                (st or {}).get("state") if isinstance(st, dict) else "")
+            nid = node_id("character", canon_of(name))
+            if nid not in nodes or not _DEAD_RE.search(str(text or "")):
+                continue
+            dead_ch = _int((st or {}).get("last_seen")) if isinstance(st, dict) else 0
+            nodes[nid].setdefault("attrs", {})["dead_ch"] = dead_ch or _int(
+                chapter_state.get("chapter"))
+
         node_list = sorted(nodes.values(), key=lambda n: (n["type"], n["name"]))
         edge_list = sorted(edges.values(), key=lambda e: (e["rel"], e["src"], e["dst"]))
+        # at_ch 视图：只保留在该章有效的边（时间维的价值就在这——问「第 10 章时
+        # 东西在谁手上」，而不是只给今天的结果）
+        if at_ch:
+            edge_list = [e for e in edge_list
+                         if _int(e.get("valid_from_ch")) <= at_ch
+                         and (not e.get("valid_to_ch") or at_ch < _int(e.get("valid_to_ch")))]
         sources = {
             "nodes": {t: sum(1 for n in node_list if n["type"] == t) for t in NODE_TYPES},
             "edges": {r: sum(1 for e in edge_list if e["rel"] == r) for r in EDGE_RELS},
-            "facts": len(facts), "events": len(events),
+            "facts": len(facts), "events": len(events), "chapters": len(history),
             "skipped_edges": self.last_skipped, "aliases": len(alias_map),
         }
         return {"version": VERSION, "at_ch": at_ch, "nodes": node_list,
@@ -516,6 +688,34 @@ class CanonGraph:
                 if _s(a) == n.get("name"):
                     add("alias_self_ref", "warning", node=n.get("id"), alias=a)
 
+        # 7. 别名撞车（同一别称映射到两个标准名 → 归一后仍是两个人，必须人工裁决）
+        seen_alias: dict[str, str] = {}
+        for n in nodes:
+            for a in (n.get("aliases") or []):
+                alias = _s(a)
+                if not alias:
+                    continue
+                prev = seen_alias.get(alias)
+                if prev and prev != n.get("name"):
+                    add("alias_conflict", "warning", alias=alias,
+                        names=[prev, n.get("name")])
+                else:
+                    seen_alias[alias] = n.get("name")
+
+        # 8. 同一物品在同一时点有两个持有者（时间维派生出的硬矛盾）
+        holds: dict[str, list] = {}
+        for e in edges:
+            if e.get("rel") == "holds":
+                holds.setdefault(e.get("src"), []).append(e)
+        for item, rows in holds.items():
+            rows.sort(key=lambda e: _int(e.get("valid_from_ch")))
+            for i in range(len(rows) - 1):
+                cur, nxt = rows[i], rows[i + 1]
+                cur_to = _int(cur.get("valid_to_ch")) or 10 ** 6
+                if cur_to > _int(nxt.get("valid_from_ch")):
+                    add("overlapping_holds", "error", item=item,
+                        edges=[cur.get("id"), nxt.get("id")])
+
         errors = [i for i in issues if i["severity"] == "error"]
         return {"ok": not errors, "issues": issues,
                 "counts": {"nodes": len(nodes), "edges": len(edges),
@@ -535,7 +735,8 @@ class CanonGraph:
         seed = _s(seed)
         start = None
         for n in graph["nodes"]:
-            if n["id"] == seed or (seed and n["name"] == seed):
+            if n["id"] == seed or (seed and n["name"] == seed) or (
+                    seed and seed in (n.get("aliases") or [])):
                 start = n["id"]
                 break
         if not start:
@@ -564,3 +765,47 @@ class CanonGraph:
         return {"seed": seed, "seed_id": start, "depth": hops, "rel": list(rels),
                 "nodes": out_nodes, "edges": picked, "found": True,
                 "counts": {"nodes": len(out_nodes), "edges": len(picked)}}
+
+    # ---------- 影响面 ----------
+    def impact(self, entity: str, ch: int = 0, at_ch: int = 0) -> dict:
+        """一条实体/关系变更会影响哪些章节与伏笔（门 2 编辑 Base 前的检查入口）。
+
+        口径（确定性、零 LLM）：
+        - `chapters`：该实体参与的所有边里，证据章 > `ch` 的章号（去重升序）。
+          这就是「改了这条关系，后面哪几章要重看」。
+        - `foreshadows`：尚未回收（`due_ch` ≥ `ch`）的伏笔 + 与受影响章节相交的伏笔。
+        - `closed_edges`：`ch` 之后被关闭的旧边（改一条边等于改写后续所有依赖它的事实）。
+
+        找不到实体时返回空结果而不抛错——检索 miss 是正常输入。
+        """
+        graph = self.build(at_ch=at_ch)
+        entity = _s(entity)
+        target = None
+        for n in graph["nodes"]:
+            if n["id"] == entity or n["name"] == entity or entity in (n.get("aliases") or []):
+                target = n
+                break
+        if not target:
+            return {"entity": entity, "found": False, "chapters": [],
+                    "foreshadows": [], "edges": [], "closed_edges": [],
+                    "counts": {"chapters": 0, "foreshadows": 0, "edges": 0}}
+        ch = _int(ch)
+        touched = [e for e in graph["edges"]
+                   if target["id"] in (e.get("src"), e.get("dst"))
+                   and _int(e.get("evidence", {}).get("ch")) >= ch]
+        chapters = sorted({_int(e.get("evidence", {}).get("ch")) for e in touched
+                           if _int(e.get("evidence", {}).get("ch")) > ch})
+        closed = [e for e in touched if _int(e.get("valid_to_ch")) > ch]
+        fsnodes = [n for n in graph["nodes"] if n.get("type") == "foreshadow"]
+        foreshadows = [{"id": n["id"], "name": n["name"],
+                        "due_ch": _int((n.get("attrs") or {}).get("due_ch")),
+                        "buried_ch": _int(n.get("first_ch"))}
+                       for n in fsnodes
+                       if _int((n.get("attrs") or {}).get("due_ch")) >= ch]
+        foreshadows.sort(key=lambda f: (f["due_ch"] or 10 ** 6, f["name"]))
+        return {"entity": target["name"], "entity_id": target["id"],
+                "found": True, "from_ch": ch, "chapters": chapters,
+                "foreshadows": foreshadows, "edges": touched, "closed_edges": closed,
+                "counts": {"chapters": len(chapters), "foreshadows": len(foreshadows),
+                           "edges": len(touched)}}
+

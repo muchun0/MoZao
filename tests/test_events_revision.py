@@ -51,7 +51,7 @@ def test_supersede_hides_old_but_keeps_raw(store):
     stream.append([_row(3, "初版甲"), _row(3, "初版乙")], ch=3)
     stream.append([_row(3, "改写甲")], ch=3, revision=2)
     marked = stream.supersede_revision(3, 2)
-    assert marked == 1
+    assert marked == 2  # 旧版两条整体退场（含新版没有对应条目的一条）
     # query() 隐藏旧版（被替代的两条里只有首条有对应新版）
     descs = [r["desc"] for r in stream.query() if r["ch"] == 3]
     assert "改写甲" in descs and "初版甲" not in descs
@@ -98,3 +98,12 @@ def test_manager_wiring_rewrite_replaces_ledger(store):
     assert "陆沉把铜匣沉入井底" in ch3
     assert "陆沉取出铜匣" not in ch3  # 旧版已被 supersede 隐藏
     assert EventStream(store).next_revision(3) == 3
+
+def test_supersede_hides_leftover_old_events(store):
+    """重写后事件变少：旧版多出来的条目也必须退场，不能作为陈旧事实留在查询里。"""
+    stream = EventStream(store)
+    stream.append([_row(3, "旧甲"), _row(3, "旧乙"), _row(3, "旧丙")], ch=3)
+    stream.append([_row(3, "新甲")], ch=3, revision=2)
+    assert stream.supersede_revision(3, 2) == 3
+    ch3 = [r["desc"] for r in stream.query() if r["ch"] == 3]
+    assert ch3 == ["新甲"]

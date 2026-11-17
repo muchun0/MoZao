@@ -301,9 +301,10 @@ class EventStream:
                 new_by_base[base] = str(r.get("id"))
             elif rrev == old_rev:
                 old_rows.append((base, str(r.get("id"))))
-        pairs = [{"old": old, "new": new_by_base[base], "ch": chapter,
-                  "reason": f"第{chapter}章重写（r{old_rev:02d}→r{new_rev:02d}）"}
-                 for base, old in old_rows if base in new_by_base]
+        pairs = [{"old": old, "new": new_by_base.get(base, ""), "ch": chapter,
+                  "reason": (f"第{chapter}章重写（r{old_rev:02d}→r{new_rev:02d}）"
+                             + ("" if base in new_by_base else "，新版无对应条目"))}
+                 for base, old in old_rows]
         if not pairs:
             return 0
         self.supersede(pairs)
@@ -332,7 +333,8 @@ class EventStream:
         for p in (pairs or []):
             old = str((p or {}).get("old") or "").strip()
             new = str((p or {}).get("new") or "").strip()
-            if not old or not new:
+            # `new` 允许为空：重写后新版条数变少时，旧版多出来的条目也要退场（只隐藏、不删行）
+            if not old:
                 continue
             items[old] = {"by": new, "ch": int((p or {}).get("ch") or 0),
                           "reason": str((p or {}).get("reason") or "")}

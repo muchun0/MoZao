@@ -40,6 +40,14 @@ export const getVersionSelectImpact = (pid, kind, v) => request.get(`/projects/$
 export const getVersionReview = (pid, kind, v1, v2, chapterNo) =>
   request.get(`/projects/${pid}/products/${kind}/versions/review`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
 
+// Plan 计划图（REQ-R24 P2）：门 1 分章约束卡 / 门 2 编辑 Base 前的影响预览
+// getPlanGraph(pid, { view: 'cards'|'validate'|'diff'|'impact', ch, seed })
+export const getPlanGraph = (pid, params) => request.get(`/projects/${pid}/plan-graph`, { params })
+export const compilePlanGraph = (pid, data = {}) => request.post(`/projects/${pid}/plan-graph/compile`, data)
+export const savePlanConstraint = (pid, data) => request.put(`/projects/${pid}/plan-graph/constraints`, data)
+export const deletePlanConstraint = (pid, cid) => request.delete(`/projects/${pid}/plan-graph/constraints/${cid}`)
+export const previewPlanImpact = (pid, entities) => request.post(`/projects/${pid}/plan-graph/impact-preview`, { entities })
+
 // Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
 export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)
 export const saveAgentPrompt = (pid, agent, text) => request.put(`/projects/${pid}/agent-prompts/${agent}`, { text })

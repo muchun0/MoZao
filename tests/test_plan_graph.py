@@ -212,3 +212,252 @@ def test_constraints_block_renders_when_flag_on(store, cfg, outline, world):
     text = plan_graph.constraints_block(store, cfg, 1)
     assert text.startswith("【本章硬约束】")
     assert "陆沉" in text
+
+
+# ---------- P2：卡片 / 编辑 / diff / impact / 观察 ----------
+@pytest.mark.p2
+def test_cards_resolve_names_and_labels(outline, world):
+    plan = plan_graph.compile_from_outline(outline, world)
+    rows = plan_graph.cards(plan, ch=1)
+    assert rows and all(r["ch"] == 1 for r in rows)
+    present = [r for r in rows if r["kind"] == "must_present"][0]
+    assert present["object"] == "陆沉" and present["kind_label"] == "必须出场"
+    # ch=0 返回全部章
+    assert len(plan_graph.cards(plan)) == len(plan["constraints"])
+
+
+@pytest.mark.p2
+def test_upsert_constraint_creates_then_replaces():
+    plan = {"constraints": [], "intents": [], "names": {}}
+    card = plan_graph.upsert_constraint(plan, {
+        "ch": 3, "kind": "must_present", "dst_name": "陆沉",
+        "strength": "must", "text": "陆沉必须在第3章出现"})
+    assert card["id"].startswith("cst_ch3_m") and card["source"] == "manual"
+    assert plan["names"][card["dst"]] == "陆沉"
+    # 同 id 再保存 → 覆盖，不新增
+    plan_graph.upsert_constraint(plan, {**card, "strength": "should"})
+    assert len(plan["constraints"]) == 1
+    assert plan["constraints"][0]["strength"] == "should"
+
+
+@pytest.mark.p2
+def test_upsert_constraint_hold_uses_item_and_owner():
+    plan = {"constraints": [], "intents": [], "names": {}}
+    card = plan_graph.upsert_constraint(plan, {
+        "ch": 5, "kind": "must_hold", "src_name": "铜匣", "dst_name": "陆沉"})
+    assert card["src"] == node_id("item", "铜匣")
+    assert card["dst"] == node_id("character", "陆沉")
+    assert "铜匣" in card["text"]
+
+
+@pytest.mark.p2
+@pytest.mark.parametrize("payload,fragment", [
+    ({"ch": 1, "kind": "nope", "dst_name": "陆沉"}, "未知 kind"),
+    ({"ch": 0, "kind": "must_present", "dst_name": "陆沉"}, "章号"),
+    ({"ch": 1, "kind": "must_present"}, "dst"),
+    ({"ch": 1, "kind": "must_hold", "dst_name": "陆沉"}, "src/dst"),
+    ({"ch": 1, "kind": "must_present", "dst_name": "陆沉", "strength": "hard"}, "strength"),
+])
+def test_upsert_constraint_rejects_bad_input(payload, fragment):
+    with pytest.raises(ValueError) as e:
+        plan_graph.upsert_constraint({"constraints": []}, payload)
+    assert fragment in str(e.value)
+
+
+@pytest.mark.p2
+def test_remove_constraint():
+    plan = {"constraints": [{"id": "a"}, {"id": "b"}]}
+    assert plan_graph.remove_constraint(plan, "a") is True
+    assert [c["id"] for c in plan["constraints"]] == ["b"]
+    assert plan_graph.remove_constraint(plan, "zzz") is False
+
+
+@pytest.mark.p2
+def test_diff_missing_costs_five_and_does_not_block():
+    plan = {"names": {node_id("character", "陆沉"): "陆沉"},
+            "constraints": [{"id": "c1", "ch": 2, "kind": "must_present",
+                             "dst": node_id("character", "陆沉"), "strength": "must",
+                             "text": "陆沉必须出场"}]}
+    observed = {"available": True, "characters": {"独眼刘": "存活"}, "items": {}, "dead": []}
+    r = plan_graph.diff(plan, 2, observed)
+    assert r["counts"]["missing"] == 1 and r["score"] == -5
+    assert r["blocking"] is False
+    assert r["missing"][0]["label"] == "陆沉"
+
+
+@pytest.mark.p2
+def test_diff_satisfied_hold_counts_as_satisfied():
+    plan = {"names": {node_id("item", "铜匣"): "铜匣", node_id("character", "陆沉"): "陆沉"},
+            "constraints": [{"id": "c1", "ch": 4, "kind": "must_hold",
+                             "src": node_id("item", "铜匣"),
+                             "dst": node_id("character", "陆沉"),
+                             "strength": "must", "text": "铜匣必须仍由陆沉持有"}]}
+    observed = {"available": True, "characters": {"陆沉": "存活"},
+                "items": {"铜匣": {"owner": "陆沉", "state": "held"}}, "dead": []}
+    r = plan_graph.diff(plan, 4, observed)
+    assert r["counts"]["satisfied"] == 1 and r["score"] == 0
+
+
+@pytest.mark.p2
+def test_diff_violation_blocks():
+    plan = {"names": {node_id("character", "陆沉"): "陆沉"},
+            "constraints": [{"id": "c1", "ch": 6, "kind": "forbidden_present",
+                             "dst": node_id("character", "陆沉"), "strength": "must",
+                             "text": "陆沉已被禁止出现"}]}
+    observed = {"available": True, "characters": {"陆沉": "存活"}, "items": {}, "dead": []}
+    r = plan_graph.diff(plan, 6, observed)
+    assert r["blocking"] is True and r["counts"]["violation"] == 1
+    assert "禁止项冲突" in r["violation"][0]["detail"]
+
+
+@pytest.mark.p2
+def test_diff_unplanned_holds_are_info_only():
+    plan = {"names": {}, "constraints": []}
+    observed = {"available": True, "characters": {"独眼刘": "存活"},
+                "items": {"铜匣": {"owner": "独眼刘", "state": "held"}}, "dead": []}
+    r = plan_graph.diff(plan, 7, observed)
+    assert r["blocking"] is False and r["score"] == 0
+    assert r["unplanned"][0]["kind"] == "item_transfer"
+
+
+@pytest.mark.p2
+def test_diff_must_resolve_needs_real_resolution():
+    plan = {"names": {"fp_铜匣来历": "铜匣来历"}, "constraints": []}
+    fs_unresolved = {"items": [{"key": "fp_铜匣来历", "name": "铜匣来历",
+                                "due_ch": 4, "status": "overdue"}]}
+    fs_resolved = {"items": [{"key": "fp_铜匣来历", "name": "铜匣来历", "due_ch": 4,
+                              "status": "resolved", "reveal_ch": 5}]}
+    observed = {"available": True, "characters": {}, "items": {}, "dead": []}
+    miss = plan_graph.diff(plan, 5, observed, foreshadowing=fs_unresolved)
+    assert any(m["kind"] == "must_resolve" for m in miss["missing"])
+    ok = plan_graph.diff(plan, 5, observed, foreshadowing=fs_resolved)
+    assert any(s["kind"] == "must_resolve" for s in ok["satisfied"])
+
+
+@pytest.mark.p2
+def test_diff_forbidden_from_death_and_unplanned_death():
+    canon = {"nodes": [{"id": node_id("character", "独眼刘"), "type": "character",
+                        "name": "独眼刘", "attrs": {"dead_ch": 3}}], "edges": []}
+    observed = {"available": True, "characters": {"独眼刘": "已死"}, "items": {}, "dead": ["独眼刘"]}
+    r = plan_graph.diff({"names": {}, "constraints": []}, 5, observed, canon=canon)
+    assert r["blocking"] is True  # 死人在本章出现
+    # 同一章内的死亡若 Plan 未声明 → info
+    r2 = plan_graph.diff({"names": {}, "constraints": []}, 3,
+                         {"available": True, "characters": {"独眼刘": "身亡"},
+                          "items": {}, "dead": ["独眼刘"]}, canon=canon)
+    assert any(u["kind"] == "character_death" for u in r2["unplanned"])
+
+
+@pytest.mark.p2
+def test_observe_reads_scenes_state(store, cfg):
+    store.save_scenes(5, [], {"characters": {"陆沉": "存活"},
+                              "items": {"铜匣": {"owner": "陆沉", "state": "held"}},
+                              "time": "墟内二层"})
+    obs = plan_graph.observe(store, 5)
+    assert obs["available"] is True
+    assert obs["characters"] == {"陆沉": "存活"}
+    assert obs["items"]["铜匣"]["state"] == "held"
+    # 没写过的章：明确不可用，不造数据
+    assert plan_graph.observe(store, 9)["available"] is False
+
+
+@pytest.mark.p2
+def test_plan_impact_lists_affected_chapters():
+    plan = {"names": {node_id("character", "陆沉"): "陆沉"},
+            "constraints": [{"id": "c1", "ch": 2, "kind": "must_present",
+                             "dst": node_id("character", "陆沉"), "strength": "must",
+                             "text": "陆沉必须出场"},
+                            {"id": "c2", "ch": 6, "kind": "must_present",
+                             "dst": node_id("character", "陆沉"), "strength": "must",
+                             "text": "陆沉必须出场"},
+                            {"id": "c3", "ch": 4, "kind": "must_locate",
+                             "dst": node_id("place", "墟内二层"), "strength": "must",
+                             "text": "必须在墟内二层"}]}
+    r = plan_graph.impact(plan, "陆沉")
+    assert r["found"] is True and r["chapters"] == [2, 6]
+    assert plan_graph.impact(plan, "墟内二层")["chapters"] == [4]
+    assert plan_graph.impact(plan, "不存在")["found"] is False
+
+
+# ---------- P2 接口 ----------
+@pytest.mark.p2
+def test_api_cards_validate_and_edit(store, outline, world, monkeypatch):
+    import webapp.routers.projects_plan as router
+
+    store.save_config(cfg_with_plan())
+    store.save_world(world)
+    store.save_outline(outline)
+    import webapp.routers.projects_plan as r2
+    monkeypatch.setattr(r2, "_check_project_access", lambda *a, **k: None)
+    monkeypatch.setattr(r2, "_find_project", lambda project_id: store)
+    monkeypatch.setattr(r2, "apply_global_overrides", lambda c: None)
+    res = router.post_plan_compile(project_id="p2", payload={}, user={"open_id": "t"})
+    assert res["ok"] is True and res["plan_version"] == 1
+
+    cards = router.get_plan_graph(project_id="p2", view="cards", ch=1, seed="", up_to=0,
+                                  user={"open_id": "t"})
+    assert cards["cards"]
+
+    put = router.put_plan_constraint(project_id="p2",
+                                     payload={"ch": 1, "kind": "forbidden_present",
+                                              "dst_name": "独眼刘", "strength": "must"},
+                                     user={"open_id": "t"})
+    assert put["plan_version"] == 2
+    del_res = router.delete_plan_constraint(project_id="p2",
+                                            cid=put["constraint"]["id"],
+                                            user={"open_id": "t"})
+    assert del_res["removed"] == put["constraint"]["id"]
+
+    diff = router.get_plan_graph(project_id="p2", view="diff", ch=1, seed="", up_to=0,
+                                 user={"open_id": "t"})
+    assert diff["has_observation"] is False and diff["counts"]["missing"] == 0
+
+
+@pytest.mark.p2
+def test_api_impact_preview_merges_plan_and_canon(store, world, monkeypatch):
+    import webapp.routers.projects_plan as router
+
+    cfg = cfg_with_plan()
+    cfg.state_graph_v2 = True
+    store.save_config(cfg)
+    store.save_world(world)
+    plan = {"names": {node_id("character", "陆沉"): "陆沉"}, "constraints": [
+        {"id": "c1", "ch": 3, "kind": "must_present",
+         "dst": node_id("character", "陆沉"), "strength": "must", "text": "陆沉必须出场"}],
+        "intents": []}
+    store.save_plan_graph(plan)
+    store.save_scenes(5, [], {"items": {"铜匣": {"owner": "陆沉", "state": "held",
+                                              "evidence": "陆沉握住铜匣"}}})
+    store.save_chapter_state({"chapter": 5, "characters": {"陆沉": ""},
+                              "items": {"铜匣": {"owner": "陆沉", "state": "held"}},
+                              "facts": [], "numbers": []})
+    monkeypatch.setattr(router, "_check_project_access", lambda *a, **k: None)
+    monkeypatch.setattr(router, "_find_project", lambda project_id: store)
+    monkeypatch.setattr(router, "apply_global_overrides", lambda c: None)
+    res = router.post_plan_impact_preview(project_id="p3", payload={"entities": ["陆沉"]},
+                                          user={"open_id": "t"})
+    assert res["enabled"] is True and res["canon_available"] is True
+    row = res["entities"][0]
+    assert 3 in row["plan_chapters"]
+    assert 5 in row["canon_chapters"]
+
+
+def cfg_with_plan():
+    c = NovelConfig(title="P2测试")
+    c.plan_graph = True
+    c.book_facts = True
+    c.conflict_guard = True
+    return c
+
+@pytest.mark.p2
+def test_diff_marks_character_checks_unverifiable_without_characters():
+    plan = {"names": {node_id("character", "陆沉"): "陆沉"},
+            "constraints": [{"id": "c1", "ch": 9, "kind": "must_present",
+                             "dst": node_id("character", "陆沉"), "strength": "must",
+                             "text": "陆沉必须出场"}]}
+    observed = {"available": True, "characters": {},
+                "items": {"铜匣": {"owner": "陆沉", "state": "held"}}, "dead": []}
+    r = plan_graph.diff(plan, 9, observed)
+    # 只抽到物品、没抽到人物：判「无法核实」，不当作没做到扣分
+    assert r["counts"]["missing"] == 0 and r["score"] == 0
+    assert r["unverifiable"][0]["reason"].startswith("本章未抽取到人物状态")

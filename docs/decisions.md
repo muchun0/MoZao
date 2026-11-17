@@ -614,3 +614,18 @@
 - **实测（真实书）**：M2 编译 131 条约束 / 1 intent（ch_range 1–30，0 issue），ch8 约束块 59c、ch13 153c（holds 占 must、出场降「建议」、含「第12章到期的伏笔『嵌在岩壁里的灯』必须回收」）；M1 编译 116 条 / 6 intents、0 issue，ch1 27c / ch8 55c / ch13 36c。两书冲突块均 0c（体检 0 violation，属干净数据）。**方案 B 的真实 LLM 抽取已用 DeepSeek 实跑 M2 第13章**：4 个物品全部返回 `{owner,state,evidence}`（如「小结晶/陆沉/held/『陆沉伸手接住……把结晶塞进铁匣，合盖』」），提示词改动可被模型稳定执行。
 - **单测**：`tests/test_plan_graph.py` 13 条（编译枚举/确定性/保留 manual/validate 四类错/派生读 Plan+holds 与有效期/死亡禁止与本章刚死不禁止/`must_resolve` 跳过 resolved/cap 降级/render 预算/merge 去重+预算/版本仅内容变才递增/开关关为空/开有文本）+ `tests/test_item_state.py` 10 条（旧字符串包装/结构化采信/非法 state 回落/label 三态/`_clean_items` 双形态/共享渲染/结构化 lost 不建边/held 建边带证据/unknown 不猜 owner/规则跳过 lost），与既有状态层回归合跑 **118 passed**。
 - **未做**：P2（`diff` + 编辑接口 + impact 打通 + 门 1/门 2 前端）、老书账本回填（B 方案不追溯历史章节）、facts 30 条上限、Plan 的 `intents` 消费（`derive_constraints` 暂不读 intents，P2 才用）。
+
+## 2026-11-17 R24 P2：diff 三档 + 约束卡编辑 + 双向 impact（feat/r24-state-graph）
+
+**决策**
+1. **diff 只比 Plan 与「已写账本」，不判语义**：`missing`（本章 must 未满足，扣 5 分/条、不阻断）、`violation`（命中 `forbidden_present`，`blocking=True`）、`unplanned`（计划外的物品易主/死亡，仅 info 不扣分）；`must_advance` 一律 `unverifiable`。语义问题（「他其实还在」「不算失去」）靠写账本前的 LLM 结构化抽取（方案 B），编码侧只认字段。
+2. **没观察就不判**：本章未写（无 `scenes[...].state`）→ `skipped=no_observation`、全零判定，避免把「还没写」误报成「没做到」。同理，本章只抽到物品、没抽到人物时，人物类约束降 `unverifiable`（带原因）而不是扣分——否则 9 章一类数据缺失会直接 -25。
+3. **Plan 可改、Canon 只增不改**：门 1 手改卡写 `source=manual`（id `cst_ch{N}_m{NN}` 避让编译 id），重编译默认 `keep_manual=true`；删除只动 Plan，不动账本。
+4. **门 2 是提醒不是硬门**：`WorldEditor` 保存 Base 前用 `impact-preview` 拉受影响章，有影响才二次确认；接口不存在（Plan 未开/未编译）直接放行保存，不让提示挡住正常写作。
+5. **前端门 1 用独立 tab「创作图」**，不并入「大纲」：大纲是 prose、约束卡是结构化，混在同一面板会让两种编辑语义互相污染；`visited.plan` 懒挂载，与既有面板同构。
+
+**踩坑**
+- `_name_for_id` 原先按 `partition("_")` 取前缀，拿到的是 `ent` 而不是 `char`，导致编译期 `names` 永远为空、真实书全靠 `text` 兜住；改为按 `ent_{type}_{sha}` 三段解析并从 chars/locs/items 名单反查。
+- 到期伏笔被 `status=resolved` 提前排除，导致「已回收」进不了 satisfied；改为只按 `due_ch<=ch` 纳入，是否满足由 `reveal_ch<=ch` 判断。
+- 真实 M2 复验（重编译 131 约束，8 章有账本状态）：violation/unplanned 全 0，score 0~-10；`天权界墟口` 这类地点判定依赖章内时间/人物文本字面命中，属确定性方案的已知边界，不追求用编码兜语义。
+- `routers/*` 的 `from ..core import *` 不含 `logging`，模块级 `logger = logging.getLogger(__name__)` 会 `NameError`，必须显式 `import logging`。

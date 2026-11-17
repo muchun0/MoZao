@@ -214,14 +214,16 @@ def compile_from_outline(outline, world=None, *, keep_existing: bool = True,
 
 
 def _name_for_id(nid: str, chars, locs, items) -> str:
-    """按 id 前缀反查名字（编译期已知名单里找，找不到留空）。"""
-    prefix, _, _h = str(nid).partition("_")
-    type_of = {"char": "character", "place": "place", "item": "item"}
-    if prefix not in type_of:
+    """按 id 反查名字（`ent_{type}_{sha1}`）：编译期已知名单里找，找不到留空。"""
+    parts = str(nid).split("_")
+    if len(parts) < 3 or parts[0] != "ent":
         return ""
-    pool = {"char": chars, "place": locs, "item": items}[prefix]
+    type_of = {"char": "character", "place": "place", "item": "item"}
+    if parts[1] not in type_of:
+        return ""
+    pool = {"char": chars, "place": locs, "item": items}[parts[1]]
     for name in pool:
-        if node_id(type_of[prefix], name) == nid:
+        if node_id(type_of[parts[1]], name) == nid:
             return name
     return ""
 
@@ -267,9 +269,9 @@ def validate(plan: Optional[dict], world=None) -> dict:
             add("ch_out_of_range", ch, f"第{ch}章超出范围 [{cmin},{cmax}]", cid=cid)
         for key, label in (("src", "src"), ("dst", "dst")):
             v = str(c.get(key) or "")
-            if v and v not in known and _name_for_id(v, _names_of(world, "characters"),
-                                                     _names_of(world, "locations"),
-                                                     _names_of(world, "items")):
+            if v and v not in known and not _name_for_id(
+                    v, _names_of(world, "characters"),
+                    _names_of(world, "locations"), _names_of(world, "items")):
                 add("unknown_endpoint", ch, f"{label} 指向未登记实体：{v}",
                     severity="warning", cid=cid)
         if kind in ("must_present", "must_locate", "forbidden_present") and not c.get("dst"):
@@ -496,3 +498,332 @@ def constraints_block(store, cfg, ch: int, canon: Optional[dict] = None) -> str:
     constraints = derive_constraints(ch, plan=plan, canon=canon,
                                      foreshadowing=foreshadowing)
     return render_block(constraints)
+
+
+# ---------- P2：卡片视图 / 编辑 / diff / impact ----------
+_KIND_TO_TYPE = {"must_present": "character", "forbidden_present": "character",
+                 "must_locate": "place"}
+_DEATH_MARKERS = ("已死", "身死", "身亡", "死亡", "殒命", "毙命", "断气")
+
+
+def cards(plan: Optional[dict], ch: int = 0) -> list[dict]:
+    """门 1 的「分章约束卡」：把约束翻译成人能改的字段（名称优先，id 藏起来）。
+
+    `ch=0` 返回全部章；卡片保持 Plan 内的顺序，便于前端原地编辑。
+    """
+    plan = plan or {}
+    names = plan.get("names") or {}
+    out: list[dict] = []
+    for c in plan.get("constraints") or []:
+        if not isinstance(c, dict):
+            continue
+        if ch and _int(c.get("ch")) != _int(ch):
+            continue
+        src = str(c.get("src") or "")
+        dst = str(c.get("dst") or "")
+        kind = str(c.get("kind") or "")
+        out.append({
+            "id": str(c.get("id") or ""), "ch": _int(c.get("ch")), "kind": kind,
+            "kind_label": _KIND_LABEL.get(kind, kind),
+            "strength": str(c.get("strength") or "must"),
+            "text": str(c.get("text") or ""),
+            "subject": names.get(src, src), "object": names.get(dst, dst),
+            "src": src, "dst": dst,
+            "evidence": str(c.get("evidence") or ""),
+            "source": str(c.get("source") or ""),
+        })
+    return out
+
+
+def _next_id(plan: dict, ch: int) -> str:
+    used = {str(c.get("id") or "") for c in plan.get("constraints") or [] if isinstance(c, dict)}
+    for n in range(1, 200):
+        cid = f"cst_ch{ch}_m{n:02d}"
+        if cid not in used:
+            return cid
+    return f"cst_ch{ch}_m999"
+
+
+def upsert_constraint(plan: dict, payload: dict) -> dict:
+    """门 1 保存单张卡：允许按 id 覆盖，也允许新建（自动分配 id）。
+
+    字段接受 id 或人类可读名称（`src_name`/`dst_name`），语义按 kind 决定：
+    must_hold 是「物品(src)→持有者(dst)」，present/locate/forbidden 只看 dst，
+    must_resolve 的 dst 是伏笔名或 key。非法输入一律 ValueError（由路由转 400）。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("约束必须是对象")
+    kind = str(payload.get("kind") or "").strip()
+    if kind not in KINDS:
+        raise ValueError(f"未知 kind：{kind}（可选 {'/'.join(KINDS)}）")
+    ch = _int(payload.get("ch"))
+    if ch <= 0:
+        raise ValueError("约束缺少章号 ch")
+    strength = str(payload.get("strength") or "must").strip()
+    if strength not in STRENGTHS:
+        raise ValueError(f"未知 strength：{strength}（可选 {'/'.join(STRENGTHS)}）")
+
+    plan = plan or {}
+    plan.setdefault("constraints", [])
+    plan.setdefault("intents", [])
+    plan.setdefault("names", {})
+    names = plan["names"]
+
+    src = str(payload.get("src") or "")
+    dst = str(payload.get("dst") or "")
+    src_name = str(payload.get("src_name") or "").strip()
+    dst_name = str(payload.get("dst_name") or "").strip()
+    if src_name and not src:
+        src = node_id("item" if kind == "must_hold" else "character", src_name)
+        names.setdefault(src, src_name)
+    if dst_name and not dst:
+        dst = node_id(_KIND_TO_TYPE.get(kind, "character"), dst_name)
+        names.setdefault(dst, dst_name)
+    if kind in ("must_present", "must_locate", "forbidden_present") and not dst:
+        raise ValueError(f"{kind} 需要 dst 或 dst_name")
+    if kind == "must_hold" and not (src and dst):
+        raise ValueError("must_hold 需要 src/dst（物品与持有者）")
+    if kind == "must_resolve" and not dst:
+        raise ValueError("must_resolve 需要 dst（伏笔名或 key）")
+
+    cid = str(payload.get("id") or "").strip() or _next_id(plan, ch)
+    text = str(payload.get("text") or "").strip()
+    base = {"id": cid, "ch": ch, "kind": kind, "src": src, "dst": dst,
+            "strength": strength, "source": "manual",
+            "evidence": str(payload.get("evidence") or "manual")}
+    if not text:
+        text = _kind_text(base, names)
+    base["text"] = text
+
+    replaced = False
+    for i, c in enumerate(plan["constraints"]):
+        if isinstance(c, dict) and str(c.get("id") or "") == cid:
+            plan["constraints"][i] = base
+            replaced = True
+            break
+    if not replaced:
+        plan["constraints"].append(base)
+    plan["constraints"].sort(key=lambda c: (_int(c.get("ch")), str(c.get("id"))))
+    return base
+
+
+def remove_constraint(plan: dict, cid: str) -> bool:
+    """按 id 删除一张卡；返回是否删到（没删到由路由报 404）。"""
+    target = str(cid or "").strip()
+    rows = (plan or {}).get("constraints") or []
+    keep = [c for c in rows if not (isinstance(c, dict) and str(c.get("id") or "") == target)]
+    if len(keep) == len(rows):
+        return False
+    plan["constraints"] = keep
+    return True
+
+
+def impact(plan: Optional[dict], seed: str, ch: int = 0) -> dict:
+    """Plan 侧反向索引：改这个实体，会动到哪些章的约束（Canon 侧由 graph.impact 回答）。"""
+    key = str(seed or "").strip()
+    names = (plan or {}).get("names") or {}
+    hit_ids = {nid for nid, name in names.items()
+               if key and (key == name or key == nid)}
+    chapters: list[int] = []
+    rows: list[dict] = []
+    for c in (plan or {}).get("constraints") or []:
+        if not isinstance(c, dict):
+            continue
+        src, dst = str(c.get("src") or ""), str(c.get("dst") or "")
+        text = str(c.get("text") or "")
+        if not ((src in hit_ids) or (dst in hit_ids)
+                or (names.get(dst, dst) == key) or (names.get(src, src) == key)
+                or (key and key in text)):
+            continue
+        cch = _int(c.get("ch"))
+        if ch and cch < ch:
+            continue
+        chapters.append(cch)
+        rows.append({"id": str(c.get("id") or ""), "ch": cch,
+                     "kind": str(c.get("kind") or ""),
+                     "strength": str(c.get("strength") or ""),
+                     "text": text})
+    chapters = sorted({c for c in chapters if c > 0})
+    return {"entity": key, "found": bool(rows), "chapters": chapters,
+            "constraints": rows, "counts": {"chapters": len(chapters),
+                                            "constraints": len(rows)}}
+
+
+# ---------- 观察：这一章实际发生了什么 ----------
+def observe(store, ch: int) -> dict:
+    """取第 ch 章的实际状态（写前算不出来、写完才有）。
+
+    数据源优先 `scenes.json` 的逐章 state（拆场景时落盘），缺失时退回最新
+    `chapter_state.json`（只对最新章有效）。返回 items 已归一（三态语义）。
+    """
+    from ..chapter_state import _clean_items
+    from ..item_state import normalize_item
+
+    ch = _int(ch)
+    state: dict = {}
+    try:
+        scenes = store.load_scenes() or {}
+        entry = scenes.get(str(ch)) or {}
+        state = (entry or {}).get("state") or {}
+    except Exception:
+        logger.exception("scenes.json 读取失败（diff 观察降级）")
+    if not state:
+        try:
+            cs = store.load_chapter_state() or {}
+            if _int(cs.get("chapter")) == ch:
+                state = cs
+        except Exception:
+            logger.exception("chapter_state.json 读取失败（diff 观察降级）")
+    chars = {str(k): str(v or "") for k, v in (state.get("characters") or {}).items() if k}
+    items = _clean_items(state.get("items") or {}) if state.get("items") else {}
+    dead = [name for name, desc in chars.items()
+            if any(m in desc for m in _DEATH_MARKERS)]
+    return {"available": bool(chars or items), "characters": chars,
+            "items": {k: normalize_item(v) for k, v in (items or {}).items()},
+            "dead": dead, "time": str(state.get("time") or ""),
+            "numbers": state.get("numbers")}
+
+
+def _expected_for_ch(plan: dict, ch: int, canon: Optional[dict],
+                     foreshadowing: Optional[dict]) -> list[dict]:
+    """「Plan 期望这一章有什么」：Plan 约束 + 到期伏笔 + 死亡禁止（不含 Canon 的持有观察）。"""
+    names = dict((plan or {}).get("names") or {})
+    rows: list[dict] = []
+    for c in (plan or {}).get("constraints") or []:
+        if _int(c.get("ch")) != ch or str(c.get("kind")) not in KINDS:
+            continue
+        rows.append({"id": str(c.get("id") or ""), "ch": ch,
+                     "kind": str(c["kind"]), "src": str(c.get("src") or ""),
+                     "dst": str(c.get("dst") or ""),
+                     "strength": str(c.get("strength") or "must"),
+                     "text": str(c.get("text") or _kind_text(c, names))})
+    for n in (canon or {}).get("nodes") or []:
+        dead_ch = _int((n.get("attrs") or {}).get("dead_ch"))
+        if n.get("type") == "character" and dead_ch and dead_ch < ch:
+            nid = str(n.get("id") or "")
+            names.setdefault(nid, str(n.get("name") or nid))
+            rows.append({"id": f"cst_ch{ch}_canon_death_{nid[-4:]}", "ch": ch,
+                         "kind": "forbidden_present", "src": "", "dst": nid,
+                         "strength": "must", "text": f"{names[nid]}已于第{dead_ch}章死亡，不得出场"})
+    for it in (foreshadowing or {}).get("items") or []:
+        due = _int(it.get("due_ch"))
+        if not due or due > ch:
+            continue  # 没到期的不比；已回收的仍要比（能否算满足由 diff 按 reveal_ch 判定）
+        name = str(it.get("name") or it.get("key") or "")
+        if name:
+            rows.append({"id": f"cst_ch{ch}_fs_{str(it.get('key') or name)[-6:]}", "ch": ch,
+                         "kind": "must_resolve", "src": "", "dst": name,
+                         "strength": "must", "text": f"第{due}章到期的伏笔「{name}」必须回收"})
+    return rows
+
+
+def diff(plan: Optional[dict], ch: int, observed: dict,
+         canon: Optional[dict] = None, foreshadowing: Optional[dict] = None,
+         names: Optional[dict] = None) -> dict:
+    """Plan 期望 vs 本章实际：missing / violation / unplanned 三档（TECH-R24 §P2）。
+
+    - `missing`：must 未满足，**-5 分，不阻断**（漏了记分，不卡生成）；
+    - `violation`：命中 forbidden（死而复生、禁止露面），**阻断**——生成前拦截，
+      漏网则由调用方决定大改；
+    - `unplanned`：计划外的重要变化（物品易主、计划外死亡），**仅 info 不扣分**。
+    只比 `must` 与 `should` 两级；`hint` 不参与判定。
+    """
+    ch = _int(ch)
+    names = dict(names or (plan or {}).get("names") or {})
+    for n in (canon or {}).get("nodes") or []:
+        if n.get("id") and n.get("name"):
+            names.setdefault(str(n["id"]), str(n["name"]))
+    expected = _expected_for_ch(plan or {}, ch, canon, foreshadowing)
+    observed = observed or {}
+    if not observed.get("available"):
+        # 本章还没写（没有逐章账本状态）：不做判定，避免把「未写」误报成「没做到」
+        return {"ch": ch, "has_observation": False, "skipped": "no_observation",
+                "expected": len(expected), "missing": [], "violation": [],
+                "unplanned": [], "satisfied": [], "unverifiable": [],
+                "score": 0, "blocking": False,
+                "counts": {"expected": len(expected), "satisfied": 0, "missing": 0,
+                           "violation": 0, "unplanned": 0, "unverifiable": 0}}
+    chars = observed.get("characters") or {}
+    items = observed.get("items") or {}
+    time_text = str(observed.get("time") or "")
+    chars_ok = bool(chars)  # 本章没抽到人物状态时，人物类判定只能标「无法核实」
+    missing: list[dict] = []
+    violation: list[dict] = []
+    satisfied: list[dict] = []
+    unplanned: list[dict] = []
+    unverifiable: list[dict] = []
+
+    def label(nid: str) -> str:
+        return names.get(nid, nid)
+
+    for c in expected:
+        kind = c["kind"]
+        name = label(c["dst"]) if c["dst"] else label(c["src"])
+        if kind == "must_present":
+            ok = name in chars
+        elif kind == "must_hold":
+            st = items.get(label(c["src"]))
+            ok = bool(st) and item_state_state(st) == "held" and (
+                str(st.get("owner") or "") == label(c["dst"])
+                or str(st.get("owner") or "") == c["dst"])
+            if st and item_state_state(st) == "lost":
+                ok = False
+        elif kind == "must_locate":
+            ok = bool(name) and (name in time_text or any(name in d for d in chars.values()))
+        elif kind == "forbidden_present":
+            ok = name not in chars
+        elif kind == "must_resolve":
+            ok = False
+            for it in (foreshadowing or {}).get("items") or []:
+                if str(it.get("name") or "") != name and str(it.get("key") or "") != name:
+                    continue
+                ok = str(it.get("status") or "") == "resolved" and _int(it.get("reveal_ch")) <= ch
+        else:
+            unverifiable.append({**c, "label": name, "kind_label": _KIND_LABEL.get(kind, kind)})
+            continue
+        row = {**c, "label": name, "kind_label": _KIND_LABEL.get(kind, kind)}
+        if not chars_ok and kind in ("must_present", "forbidden_present"):
+            unverifiable.append({**row, "reason": "本章未抽取到人物状态，无法核实"})
+            continue
+        if kind == "must_locate" and not (chars or time_text):
+            unverifiable.append({**row, "reason": "本章没有地点/时间文本，无法核实地点了"})
+            continue
+        if ok:
+            satisfied.append(row)
+        elif kind == "forbidden_present":
+            violation.append({**row, "detail": f"{name}在第{ch}章出现，与禁止项冲突"})
+        else:
+            missing.append({**row, "penalty": -5 if c["strength"] == "must" else 0})
+
+    # 计划外：本章实际持有的物品没被 Plan 声明（易主/新增），或计划外死亡
+    planned_holds = {(c["src"], c["dst"]) for c in expected if c["kind"] == "must_hold"}
+    for iname, st in items.items():
+        if item_state_state(st) != "held":
+            continue
+        owner = str(st.get("owner") or "")
+        if not owner:
+            continue
+        pair = (node_id("item", iname), node_id("character", owner))
+        if pair in planned_holds:
+            continue
+        unplanned.append({"kind": "item_transfer", "text": f"{iname}在第{ch}章由{owner}持有（Plan 未声明）",
+                          "item": iname, "owner": owner})
+    for name in observed.get("dead") or []:
+        if not any(c["kind"] == "forbidden_present" and label(c["dst"]) == name for c in expected):
+            unplanned.append({"kind": "character_death", "text": f"{name}在第{ch}章死亡（Plan 未标注）",
+                              "name": name})
+
+    penalised = [m for m in missing if m.get("penalty")]
+    score = -5 * len(penalised)
+    return {"ch": ch, "has_observation": bool(observed.get("available")),
+            "expected": len(expected), "missing": missing, "violation": violation,
+            "unplanned": unplanned, "satisfied": satisfied, "unverifiable": unverifiable,
+            "score": score, "blocking": bool(violation),
+            "counts": {"expected": len(expected), "satisfied": len(satisfied),
+                       "missing": len(missing), "violation": len(violation),
+                       "unplanned": len(unplanned), "unverifiable": len(unverifiable)}}
+
+
+def item_state_state(st: dict) -> str:
+    """`normalize_item()` 结果的 state（避免在 diff 里重复读键）。"""
+    return str((st or {}).get("state") or "unknown")

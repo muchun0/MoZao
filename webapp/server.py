@@ -25,7 +25,7 @@ from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       # /chapters/{no} 会先吃掉 /chapters/quality-overview、/chapters/staleness
                       projects_quality, projects_staleness, projects_chapters,
                       projects_world, projects_generation, projects_versions,
-                      projects_consistency)  # noqa: F401  触发路由注册
+                      projects_consistency, projects_plan)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

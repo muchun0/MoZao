@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ _HOLD_VERBS = ("持有", "拿着", "握着", "取出", "掏出", "拿到", "得�
 #: 人际关系的确定性词表（顺序即优先级：敌对 > 师承 > 结盟）
 _REL_RULES = (
     ("enemy", ("仇", "敌", "杀", "通缉", "撕破", "反制", "背叛", "清算", "提防",
-               "不信任", "算计", "威胁", "告发")),
+               "不信任", "威胁", "告发")),
     ("mentor", ("师", "父子", "父女", "母女", "收养", "抚养", "教", "指点",
                 "传承", "护着", "依赖")),
     ("ally", ("信任", "同盟", "结盟", "合作", "共享", "托付", "并肩", "同伴",
@@ -63,17 +64,21 @@ _REL_RULES = (
 
 
 def _split_relation(raw) -> tuple[str, str]:
-    """把 `"苏妄言：信任初步修复"` 拆成 (人物名, 关系原文)；不认识的结构返回空。"""
+    """把 `"苏妄言：信任初步修复"` / `"与顾长卿：互相提防"` 拆成 (人物名, 关系原文)。"""
     if isinstance(raw, dict):
         other = _s(raw.get("name") or raw.get("target"))
         text = _s(raw.get("desc") or raw.get("text"))
-        return other, text
-    text = _s(raw)
-    for sep in ("：", ":"):
-        if sep in text:
-            other, desc = text.split(sep, 1)
-            return _s(other), _s(desc)
-    return "", text
+    else:
+        text = _s(raw)
+        other = ""
+        for sep in ("：", ":"):
+            if sep in text:
+                other, desc = text.split(sep, 1)
+                other, text = _s(other), _s(desc)
+                break
+    # 抽取提示词历史上产出过「与X：…」，去掉关系介词再比对人物名
+    other = re.sub(r"^(与|和|跟|对|同)\s*", "", other)
+    return other, text
 
 
 def _classify_relation(text: str) -> str:
@@ -112,6 +117,43 @@ def _pick_holder(text: str, chars: list[str]) -> str:
         return max(before)[1]
     after_any = [(text.find(c), c) for c in chars if text.find(c) >= 0]
     return min(after_any)[1] if len(after_any) == 1 else ""
+
+
+#: 归属表里的「给」类动词：持有者取动词之后的最后一个人（接收方）
+_GIVE_WORDS = ("交给", "递给", "还给", "塞给", "送给", "归还", "交还", "弹还")
+#: 归属表里的「夺」类动词：持有者取动词之前的最后一个人（施动方）
+_TAKE_WORDS = ("抢走", "夺走", "收进", "收起", "揣进", "塞进", "藏进")
+
+
+def _owner_from_state(text: str, chars: list[str]) -> str:
+    """从章末 `items` 的归属描述里判当前持有者（`"由顾长卿弹还，陆沉收进铁匣"` → 陆沉）。
+
+    判不出返回空，调用方计入 skipped——归属表不是自由文本，不猜。
+    """
+    hits = sorted([(text.find(c), c) for c in chars if c in text])
+    if not hits:
+        return ""
+    # 1) 给类：动作之后出现的人（接收方）；句中还有别的动词也以给类为准
+    for w in _GIVE_WORDS:
+        pos = text.rfind(w)
+        if pos >= 0:
+            after = [h for h in hits if h[0] > pos]
+            if after:
+                return after[-1][1]
+    # 2) 夺/收类：动作之前的人（施动方）
+    for w in _TAKE_WORDS:
+        pos = text.rfind(w)
+        if pos >= 0:
+            before = [h for h in hits if h[0] < pos]
+            if before:
+                return before[-1][1]
+    # 3) 携带类固定说法：「在X怀中/手中/身上」「被X」「由X」
+    for _, c in hits:
+        if any(p in text for p in (f"在{c}怀", f"在{c}手", f"在{c}身",
+                                   f"在{c}腰", f"被{c}", f"由{c}")):
+            return c
+    # 4) 兜底：只出现一个人就是他；多人且判不出 → 空
+    return hits[0][1] if len(hits) == 1 else ""
 
 
 def _s(value) -> str:
@@ -329,9 +371,27 @@ class CanonGraph:
             add_edge(cid, pid, "present_at", ch=last,
                      snippet=f"{_s(name)}在{loc}", sources=["character_states"])
 
-        # ---- 边 2：holds（章末 facts → 物品归属）----
-        facts = [f for f in (chapter_state.get("facts") or []) if _s(f)]
+        # ---- 边 2：holds（章末 items 归属表 → 物品持有）----
+        # 归属表是账本自己写下的结论（"由顾长卿弹还，陆沉收进铁匣"），比句子抽
+        # 取更可靠；物品名以归属表 key 为准，没进设定卡也照样建节点（账本即事实）。
         fch = _int(chapter_state.get("chapter"))
+        items_state = chapter_state.get("items")
+        for iname, desc in (items_state.items() if isinstance(items_state, dict) else []):
+            iname, desc = _s(iname), _s(desc)
+            if not iname or not desc:
+                continue
+            add_node("item", iname, attrs={"origin": "章末账本"})
+            if iname not in item_names:
+                item_names.append(iname)
+            owner = _owner_from_state(desc, char_names)
+            if not owner:
+                self.last_skipped += 1
+                continue
+            add_edge(node_id("item", iname), node_id("character", owner), "holds",
+                     ch=fch, snippet=f"{iname}：{desc}", sources=["chapter_state"])
+
+        # ---- 边 2b：holds（章末 facts 兜底：归属表没登记的物品由事实句补）----
+        facts = [f for f in (chapter_state.get("facts") or []) if _s(f)]
         for fact in facts:
             text = _s(fact)
             hit_items = [i for i in item_names if i and i in text]

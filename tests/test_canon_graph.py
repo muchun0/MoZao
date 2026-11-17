@@ -296,7 +296,7 @@ def test_relation_edges_from_character_states(store, cfg):
     store.save_character_states({
         "陆沉": {"last_seen": 5, "location": "墟内二层",
                  "relations": ["苏妄言：信任初步修复，她要求下次先告知",
-                               "独眼刘：欠七条命的账先记着"]},
+                               "独眼刘：当面撕破脸，互相提防"]},
         "苏妄言": {"last_seen": 5, "relations": ["陆沉：信任初步修复"]}})
     g = CanonGraph(store, cfg).build(at_ch=5)
     rels = {(e["rel"], e["src"], e["dst"]) for e in g["edges"]}
@@ -329,6 +329,52 @@ def test_holder_uses_verb_position(store, cfg):
     holds = {e["src"]: e["dst"] for e in g["edges"] if e["rel"] == "holds"}
     assert holds[node_id("item", "铜匣")] == node_id("character", "独眼刘")
     assert holds[node_id("item", "灰髓袋")] == node_id("character", "独眼刘")
+
+
+@pytest.mark.p1
+def test_relation_prefix_with_yu_is_parsed(store, cfg):
+    """历史提示词产出过「与X：…」，解析要能剥掉介词、照样连到人。"""
+    _seed(store, cfg, chapter=5)
+    store.save_character_states({"陆沉": {
+        "last_seen": 5,
+        "relations": ["与独眼刘：表面达成交易，实则互相提防",
+                      "与苏妄言：结成临时同盟"]},
+        "苏妄言": {"last_seen": 5}})
+    g = CanonGraph(store, cfg).build(at_ch=5)
+    rels = {(e["rel"], e["dst"]) for e in g["edges"]}
+    assert ("enemy", node_id("character", "独眼刘")) in rels
+    assert ("ally", node_id("character", "苏妄言")) in rels
+
+
+@pytest.mark.p1
+def test_items_table_creates_nodes_and_holds(store, cfg):
+    """章末 items 归属表是账本结论：物品没进设定卡也要建节点并连边。"""
+    _seed(store, cfg, chapter=7)
+    store.save_chapter_state({
+        "chapter": 7, "characters": {"陆沉": "", "顾长卿": ""},
+        "items": {"小结晶": "由顾长卿弹还，陆沉收进铁匣",
+                  "符箓": "顾长卿手按其上",
+                  "无主铜钱": "散在桌上，无人认领"},
+        "facts": [], "numbers": []})
+    g = CanonGraph(store, cfg).build(at_ch=7)
+    holds = {e["src"]: e["dst"] for e in g["edges"] if e["rel"] == "holds"}
+    assert holds[node_id("item", "小结晶")] == node_id("character", "陆沉")
+    assert holds[node_id("item", "符箓")] == node_id("character", "顾长卿")
+    assert node_id("item", "无主铜钱") not in holds  # 判不出持有者 → 不建边
+    names = {n["name"] for n in g["nodes"]}
+    assert "小结晶" in names and "符箓" in names
+
+
+@pytest.mark.p1
+def test_item_node_available_to_facts_matching(store, cfg):
+    """归属表建出的物品节点，应能被同一轮的 facts 句匹配到（顺序回归）。"""
+    _seed(store, cfg, chapter=8)
+    store.save_chapter_state({
+        "chapter": 8, "characters": {"陆沉": "", "独眼刘": ""},
+        "items": {"小结晶": "在陆沉怀中"},
+        "facts": ["独眼刘把铜匣和小结晶一并抢走"], "numbers": []})
+    g = CanonGraph(store, cfg).build(at_ch=8)
+    assert [e for e in g["edges"] if e["rel"] == "holds"]  # 多物品 → 跳过，但节点存在
 
 
 # ---------- 接口层 ----------

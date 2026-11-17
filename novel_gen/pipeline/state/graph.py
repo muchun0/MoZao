@@ -47,9 +47,71 @@ _TYPE_ABBR = {"character": "char", "faction": "fac", "place": "place",
               "foreshadow": "fs"}
 
 #: 判定「持有」的确定性动词（宁缺不臆造：只认明确的拿/给/夺）
-_HOLD_VERBS = ("持有", "拿着", "握着", "取出", "掏出", "拿到", "得到", "抢走",
-               "夺走", "收到", "捡到", "拾起", "收进", "收起", "藏进", "交给",
-               "递给", "还给", "塞给", "买了", "购得")
+_HOLD_VERBS = ("持有", "拿着", "握着", "取出", "掏出", "拿到", "得到", "取得",
+               "获得", "抢走", "夺走", "收到", "捡到", "拾起", "收进", "收起",
+               "藏进", "交给", "递给", "还给", "塞给", "买了", "购得")
+
+#: 人际关系的确定性词表（顺序即优先级：敌对 > 师承 > 结盟）
+_REL_RULES = (
+    ("enemy", ("仇", "敌", "杀", "通缉", "撕破", "反制", "背叛", "清算", "提防",
+               "不信任", "算计", "威胁", "告发")),
+    ("mentor", ("师", "父子", "父女", "母女", "收养", "抚养", "教", "指点",
+                "传承", "护着", "依赖")),
+    ("ally", ("信任", "同盟", "结盟", "合作", "共享", "托付", "并肩", "同伴",
+              "搭档", "帮助", "答应")),
+)
+
+
+def _split_relation(raw) -> tuple[str, str]:
+    """把 `"苏妄言：信任初步修复"` 拆成 (人物名, 关系原文)；不认识的结构返回空。"""
+    if isinstance(raw, dict):
+        other = _s(raw.get("name") or raw.get("target"))
+        text = _s(raw.get("desc") or raw.get("text"))
+        return other, text
+    text = _s(raw)
+    for sep in ("：", ":"):
+        if sep in text:
+            other, desc = text.split(sep, 1)
+            return _s(other), _s(desc)
+    return "", text
+
+
+def _classify_relation(text: str) -> str:
+    """关系句 → ally/enemy/mentor；词表都不命中返回空（不建边）。"""
+    for rel, words in _REL_RULES:
+        if any(w in text for w in words):
+            return rel
+    return ""
+
+
+#: 给出类动词：物品流向动词**之后**的那个人（"他把铜匣还给甲" → 甲）
+_GIVE_VERBS = ("交给", "递给", "还给", "塞给", "送给", "转交", "归还")
+
+
+def _pick_holder(text: str, chars: list[str]) -> str:
+    """从一句事实里判定物品持有者：给 → 动词后最近的人；取/得 → 动词前最近的人。
+
+    判不出（无持有动词、动词两侧都没有人物）返回空，调用方计入 skipped——
+    宁可少一条边，也不拿"句子里出现过的人"当持有者（那正是 M1 误报的来源）。
+    """
+    verbs = []
+    for v in _HOLD_VERBS + _GIVE_VERBS:
+        pos = text.find(v)
+        if pos >= 0:
+            verbs.append((pos, v))
+    if not verbs:
+        return ""
+    pos, verb = min(verbs)
+    if verb in _GIVE_VERBS:
+        after = [(text.find(c), c) for c in chars if text.find(c) > pos]
+        if after:
+            return min(after)[1]
+        # 没有接收者 → 退化为持有者，仍以动词前最近的人为准
+    before = [(text.find(c), c) for c in chars if 0 <= text.find(c) < pos]
+    if before:
+        return max(before)[1]
+    after_any = [(text.find(c), c) for c in chars if text.find(c) >= 0]
+    return min(after_any)[1] if len(after_any) == 1 else ""
 
 
 def _s(value) -> str:
@@ -276,13 +338,14 @@ class CanonGraph:
             hit_chars = [c for c in char_names if c and c in text]
             if not hit_items or not hit_chars:
                 continue
-            if not any(v in text for v in _HOLD_VERBS):
+            if len(hit_items) > 1:
+                self.last_skipped += 1  # 一句里多个物品，无从判定是哪一个
                 continue
-            # 一章一句里出现多个物品/人物时无从判定归属，直接不建（宁可少一条）
-            if len(hit_items) > 1 or len(hit_chars) > 1:
+            holder = _pick_holder(text, hit_chars)
+            if not holder:
                 self.last_skipped += 1
                 continue
-            add_edge(node_id("item", hit_items[0]), node_id("character", hit_chars[0]),
+            add_edge(node_id("item", hit_items[0]), node_id("character", holder),
                      "holds", ch=fch, snippet=text, sources=["chapter_state"])
 
         # ---- 边 3：part_of（势力的上级关系由设定卡给出时才有证据）----
@@ -293,6 +356,28 @@ class CanonGraph:
                 add_edge(node_id("faction", parent), node_id("faction", d.get("name")),
                          "part_of", ch=_int(d.get("parent_evidence_ch")),
                          snippet=_s(d.get("parent_evidence")), sources=["world"])
+
+        # ---- 边 4：人际（character_states.relations 原文 → ally/enemy/mentor）----
+        # 只认账本里已经写下的关系句，不从正文猜：evidence 就是那句话本身。
+        for name, st in (char_states or {}).items():
+            st = st if isinstance(st, dict) else {}
+            last = _int(st.get("last_seen"))
+            if last <= 0 or (at_ch and last > at_ch):
+                continue
+            for raw in (st.get("relations") or []):
+                other, text = _split_relation(raw)
+                if not other or not text:
+                    continue
+                if other not in char_names:
+                    self.last_skipped += 1
+                    continue
+                rel = _classify_relation(text)
+                if not rel:
+                    self.last_skipped += 1
+                    continue
+                add_edge(node_id("character", _s(name)), node_id("character", other),
+                         rel, ch=last, snippet=text,
+                         sources=["character_states"])
 
         node_list = sorted(nodes.values(), key=lambda n: (n["type"], n["name"]))
         edge_list = sorted(edges.values(), key=lambda e: (e["rel"], e["src"], e["dst"]))

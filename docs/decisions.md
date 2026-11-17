@@ -531,5 +531,9 @@
 - **不落盘、不缓存**：全书重建 <30ms（M0 实测同量级），缓存失效逻辑比构建本身贵；图是每次读时派生，源账本变更自动反映。
 - **与 M1-lite 决策的关系**：本轮不实现事件 `delta`、不改 facts 30 条上限（这两项已被 2026-11-16 决策否决/改造）；图的数据源只用现有账本字段，`events.jsonl` 仍只服务时间线展示。
 - **开关**：`state_graph_v2` 默认 False，关闭时接口 404、无任何注入变化；与 R22 四视图并存不替代。
-- **实测**：`tests/test_canon_graph.py` 21 条（含接口开/关、体检六类、子图、契约），state/book_facts 回归 101 passed。
+- **实测**：单测 24 条（含接口开/关、体检六类、子图、契约）；state/book_facts 回归 104 passed。
+- **端到端（真实书）**：`20261111_233808_M1`（30 章）36 节点 / 13 边（present_at 7、ally 4、enemy 1、mentor 1），构建 4.9ms，指纹两次一致，体检 0 error、3 条 isolated_node(info)；`20261112_010242_M2`（14 章）42 节点 / 5 边（仅 present_at），7 条 facts 因「物品未进设定卡」和「无关系句」而建不出边。
+- **人际边来源（本轮补）**：`character_states.relations` 的原文句（`"苏妄言：信任初步修复"`）按词表分 ally/enemy/mentor，evidence 就是那句话；目标人物不是节点时不建边（计入 skipped）。人物状态里没有 relations 的老书人际边为 0，这是数据依赖而非实现缺陷。
+- **持有者判定（本轮补）**：原「一句多人物直接跳过」会把大量正常事实丢掉，改按动词位置判定——给类动词（交给/递给/还给）取动词后最近的人，取类动词（取出/取得/得到）取动词前最近的人；句内多物品仍直接跳过。仍判不出的计入 `skipped_edges`。
+- **已知缺口（下一阶段必须解）**：facts 里的物品若没登记进 `world.items`，就没有 item 节点、`holds` 建不出来（M2 书 7 条 facts 全部因此落空）；补这个要么扩设定卡同步，要么在 P 段引入受限抽取，不能靠猜。
 - **未做**：Plan 图（`plan_graph.py`/`derive_constraints`/`diff`/`impact`）、`state_graph_v2` 在生成链路注入（本轮只开只读接口）、`factions.parent` 之外的人际边（ally/enemy/mentor 需要设定卡结构化字段，world 现无该字段）。

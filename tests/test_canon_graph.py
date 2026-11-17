@@ -290,6 +290,47 @@ def test_edge_rels_whitelist_is_capped(store, cfg):
     assert {e["rel"] for e in g["edges"]} <= set(EDGE_RELS)
 
 
+@pytest.mark.p1
+def test_relation_edges_from_character_states(store, cfg):
+    _seed(store, cfg, chapter=5)
+    store.save_character_states({
+        "陆沉": {"last_seen": 5, "location": "墟内二层",
+                 "relations": ["苏妄言：信任初步修复，她要求下次先告知",
+                               "独眼刘：欠七条命的账先记着"]},
+        "苏妄言": {"last_seen": 5, "relations": ["陆沉：信任初步修复"]}})
+    g = CanonGraph(store, cfg).build(at_ch=5)
+    rels = {(e["rel"], e["src"], e["dst"]) for e in g["edges"]}
+    assert ("ally", node_id("character", "陆沉"), node_id("character", "苏妄言")) in rels
+    assert ("enemy", node_id("character", "陆沉"), node_id("character", "独眼刘")) in rels
+    for e in g["edges"]:
+        if e["rel"] in ("ally", "enemy", "mentor"):
+            assert e["evidence"]["snippet"] and e["evidence"]["ch"] == 5
+
+
+@pytest.mark.p1
+def test_relation_edge_skipped_for_unknown_target(store, cfg):
+    _seed(store, cfg, chapter=5)
+    store.save_character_states({"陆沉": {"last_seen": 5,
+                                          "relations": ["路人甲：背后捅刀"]}})
+    g = CanonGraph(store, cfg).build(at_ch=5)
+    assert [e for e in g["edges"] if e["rel"] == "enemy"] == []
+    assert g["skipped_edges"] >= 1
+
+
+@pytest.mark.p1
+def test_holder_uses_verb_position(store, cfg):
+    """多人物句里判持有者：给类动词取动词后最近的人，取类取动词前最近的人。"""
+    _seed(store, cfg, chapter=6)
+    store.save_chapter_state({
+        "chapter": 6, "characters": {"陆沉": "", "独眼刘": ""},
+        "facts": ["陆沉把铜匣交给独眼刘", "独眼刘取得灰髓袋"],
+        "numbers": []})
+    g = CanonGraph(store, cfg).build(at_ch=6)
+    holds = {e["src"]: e["dst"] for e in g["edges"] if e["rel"] == "holds"}
+    assert holds[node_id("item", "铜匣")] == node_id("character", "独眼刘")
+    assert holds[node_id("item", "灰髓袋")] == node_id("character", "独眼刘")
+
+
 # ---------- 接口层 ----------
 @pytest.mark.p1
 def test_api_canon_graph_returns_whole_graph(store, cfg, monkeypatch):

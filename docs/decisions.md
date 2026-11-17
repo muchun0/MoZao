@@ -629,3 +629,10 @@
 - 到期伏笔被 `status=resolved` 提前排除，导致「已回收」进不了 satisfied；改为只按 `due_ch<=ch` 纳入，是否满足由 `reveal_ch<=ch` 判断。
 - 真实 M2 复验（重编译 131 约束，8 章有账本状态）：violation/unplanned 全 0，score 0~-10；`天权界墟口` 这类地点判定依赖章内时间/人物文本字面命中，属确定性方案的已知边界，不追求用编码兜语义。
 - `routers/*` 的 `from ..core import *` 不含 `logging`，模块级 `logger = logging.getLogger(__name__)` 会 `NameError`，必须显式 `import logging`。
+
+## 2026-11-17 R24 P2 定稿口径（用户确认）
+
+1. **diff 的 missing 不给「补写提示」**：`diff` 只做「计划 vs 已写」的展示与扣分，不反向生成补写指令、不改稿；补写仍由人决定。
+2. **门 2 允许跳过保存**：`WorldEditor` 的影响确认弹窗确认按钮为「仍然保存」、取消为「先不保存」，点取消即放弃本次保存，不强留。
+3. **老书不回填账本**：历史书（M1/M2 等）不跑 `events`/`chapter_state`/Plan 回填，只在新书与新生成章生效，避免旧书被动改状态。
+4. **`batch_id` 待删、`revision`/`supersede` 必须接线（待办，不在 P2 内）**：现状是生产写章只调 `stream.append(rows, ch=chapter, allow_inferred=True)`，没传 `revision` 也没调 `supersede`；重写同一章时 `seq` 从批次位置重新计数，事件 id 与旧记录撞车 → `append` 判 `skipped`，改写后的新事实被静默丢弃（读到的仍是旧版事实）。这属硬红线 10「建了能力没接线」，需要单独修补。

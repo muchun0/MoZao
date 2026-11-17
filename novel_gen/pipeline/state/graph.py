@@ -27,6 +27,8 @@ import logging
 import re
 from typing import Iterable, Optional
 
+from .. import item_state
+
 logger = logging.getLogger(__name__)
 
 #: 节点类型（封顶 7 类；新增须评审并升 graph_version）
@@ -222,18 +224,28 @@ def _owner_segments(history: Iterable[dict], chars: Iterable[str]) -> dict:
 
     同一个人在连续多章持有同一物品只算一段（`valid_to_ch` 为空表示仍在手），
     换人则关旧段、开新段——这是 `valid_from_ch / valid_to_ch` 的唯一来源。
-    「已经不再持有」的描述（碎了/丢了/滚落）不建边：账本写了去向但没写持有者，
-    硬判一个人就是造证据。
+
+    **方案 B（REQ-R24）**：账本写成结构化 `{owner,state,evidence}` 时直接采信
+    `owner`，`state=lost/unknown` 一律不建边——语义判断交给写入前的抽取，图不再猜。
+    旧字符串形态仍走原路径，并用 `_LOST_WORDS` 兜住「碎了/丢了/滚落」这类描述。
     """
     segs: dict[str, list] = {}
+    names = list(chars or [])
     for h in (history or []):
-        for item, desc in ((h or {}).get("items") or {}).items():
-            item, desc = _s(item), _s(desc)
-            if not item or not desc:
+        for item, raw in ((h or {}).get("items") or {}).items():
+            item = _s(item)
+            if not item:
                 continue
-            if any(w in desc for w in _LOST_WORDS):
+            st = item_state.normalize_item(raw)
+            legacy = isinstance(raw, str)
+            if not legacy and st["state"] in ("lost", "unknown"):
                 continue
-            owner = _owner_from_state(desc, list(chars or []))
+            desc = st["evidence"] or st["text"]
+            if legacy:
+                # 旧文本没有 state 信息，仅靠词表兜底；结构化输入已由抽取判过
+                if not desc or any(w in desc for w in _LOST_WORDS):
+                    continue
+            owner = st["owner"] or _owner_from_state(desc, names)
             if not owner:
                 continue
             cur = segs.setdefault(item, [])

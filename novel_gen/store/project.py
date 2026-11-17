@@ -893,6 +893,18 @@ class ProjectStore:
     def save_reconcile_report(self, data: dict) -> None:
         self._write_json(self.reconcile_report_path(), data)
 
+    # ---------- Plan 计划图（REQ-R24 P0/P1；与 Canon 分文件，可改 vs 只追加） ----------
+    def plan_graph_path(self) -> Path:
+        return self.dir / "plan_graph.json"
+
+    def load_plan_graph(self) -> Optional[dict]:
+        d = self._read_json(self.plan_graph_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_plan_graph(self, data: dict) -> None:
+        """整文件原子覆盖（Plan 是可改的，版本号由 plan_graph.save 递增）。"""
+        self._write_json(self.plan_graph_path(), data)
+
 
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
     def user_memory_path(self) -> Path:

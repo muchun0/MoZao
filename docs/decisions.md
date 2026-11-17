@@ -601,3 +601,16 @@
 - **性能**：M2 首次建图 212ms（冷读 `scenes.json`），同进程第二次 7ms（OS 缓存）；M1 7ms。读时派生省掉了缓存失效逻辑，但百章量级书要注意首次成本，必要时再上进程内缓存。
 - **单测**：`tests/test_graph_g1.py` 13 条（时间轴关旧边/同主不新开边/放弃式描述不建边/别名并节点/别名封顶/别名撞车/死亡读图/归属读图/无覆盖不比/impact/未知实体/overlap/API impact）；连同 G0' 27 条与 state、character、book_facts 回归共 **127 passed**。
 - **未做**：Plan 图（P0）、约束注入（P1）、`diff` + 编辑接口 + 门 1/门 2 前端（P2）、老书账本回填（需 LLM 重扫正文才有历史 holds 段）、facts 30 条上限调整。
+
+## 2026-11-17 R24 方案 B + P0/P1：items 语义进抽取、Plan 计划图与约束注入（feat/r24-state-graph）
+
+- **决策一（方案 B，用户拍板）**：物品语义（「东西还在不在他手上」）是开放集合，用确定性词表补「砸碎/滚落/交还/被抢」等于把语义判断伪装成字符串匹配。改为**语义判断只在写账本前发生一次**（复用已有的每章一次 LLM 抽取，仅把 items 值从字符串扩成 `{owner,state,evidence}`，约 +200~300 token/章），图与冲突规则仍是纯确定性投影。否决的方案：A 继续扩词表（假阴性永远追不完）、C 建图时 LLM 复核（读接口不可复现/变慢/失败退化成空图，且违反 TECH §7「LLM 只在写入前」）。
+- **决策二（唯一口径）**：`pipeline/item_state.py` 做 items 的唯一读写口径——旧字符串包装成 `state=unknown`（保留 `text`，图侧仍走 `_LOST_WORDS`+正则，**不把旧的「已失去」文本当结构化 unknown 一律跳过**，否则存量书全部丢边）、`held` 无 owner 一律判 `unknown`（没有持有者的 held 等于没说清）。`graph._owner_segments` 与 `conflict_rules.check_item_owner` 改为先 `normalize_item()`，结构化 `lost/unknown` 直接跳过、`held` 采信 owner 并把 evidence 当 snippet。
+- **决策三（Plan 可改、不判冲突）**：`state/plan_graph.py` 只做「写前约束」：`compile_from_outline()` 零 LLM 从大纲确定性命中（人物名出现在 `character_moves`、地点名命中正文段、物品名 + 持有类动词），`source=manual` 的人工约束编译不冲掉；`validate()` 只报不修；`derive_constraints()` 在写章前合并 Plan + Canon 当章 holds + 死亡禁止 + 到期伏笔。Plan 不参与冲突判定，冲突仍只由 Canon + 规则回答。
+- **决策四（must 配额按价值分配）**：每章 must ≤5；**优先级 must_hold > forbidden_present > must_resolve > must_advance > must_present > must_locate**。理由：人物「有没有出场」模型基本不会错，真正会错的是「东西现在在谁手上」「死人又说话了」。为此额外加一条图上的一致性去重：同一目标已有 `must_hold` 时，删掉对应的 `must_present`（省预算、少噪音）。
+- **决策五（合并注入、开关即回退）**：`stages._inject_memory_blocks` 把 Plan 约束块与既有冲突提醒块**同位置合并**（`merge_blocks`：块头去重 + 行级归一化去重 + 合计 ≤300 字符），新开关 `plan_graph` 默认 False，关闭时该块完全不渲染、行为逐字回退；两处构造各自 try/except，Plan 失败不影响冲突提醒，反之亦然。
+- **踩坑 1（legacy 字符串被误当结构化 unknown）**：第一版「结构化 unknown 一律跳过」把存量字符串账本全部判成 unknown，7 个既有测试直接挂。修法：加 `isinstance(raw,str)` 的 legacy 分支，只有显式结构化 unknown 才跳过。
+- **踩坑 2（类名错）**：`constraints_block` 里写成不存在的 `ForeshadowStore`，真实类名是 `ForeshadowLedger`；真实书跑出 ImportError 后才暴露，现已由 logger 留痕降级（读伏笔失败只少 `must_resolve`，不阻塞写章）。
+- **实测（真实书）**：M2 编译 131 条约束 / 1 intent（ch_range 1–30，0 issue），ch8 约束块 59c、ch13 153c（holds 占 must、出场降「建议」、含「第12章到期的伏笔『嵌在岩壁里的灯』必须回收」）；M1 编译 116 条 / 6 intents、0 issue，ch1 27c / ch8 55c / ch13 36c。两书冲突块均 0c（体检 0 violation，属干净数据）。**方案 B 的真实 LLM 抽取已用 DeepSeek 实跑 M2 第13章**：4 个物品全部返回 `{owner,state,evidence}`（如「小结晶/陆沉/held/『陆沉伸手接住……把结晶塞进铁匣，合盖』」），提示词改动可被模型稳定执行。
+- **单测**：`tests/test_plan_graph.py` 13 条（编译枚举/确定性/保留 manual/validate 四类错/派生读 Plan+holds 与有效期/死亡禁止与本章刚死不禁止/`must_resolve` 跳过 resolved/cap 降级/render 预算/merge 去重+预算/版本仅内容变才递增/开关关为空/开有文本）+ `tests/test_item_state.py` 10 条（旧字符串包装/结构化采信/非法 state 回落/label 三态/`_clean_items` 双形态/共享渲染/结构化 lost 不建边/held 建边带证据/unknown 不猜 owner/规则跳过 lost），与既有状态层回归合跑 **118 passed**。
+- **未做**：P2（`diff` + 编辑接口 + impact 打通 + 门 1/门 2 前端）、老书账本回填（B 方案不追溯历史章节）、facts 30 条上限、Plan 的 `intents` 消费（`derive_constraints` 暂不读 intents，P2 才用）。

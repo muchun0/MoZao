@@ -14,6 +14,8 @@ import logging
 import re
 from typing import Iterable
 
+from .. import item_state
+
 logger = logging.getLogger(__name__)
 
 #: 规则名（写进结论，便于作者与质检对照）
@@ -263,11 +265,15 @@ def check_item_owner(chapters: Iterable[dict], events: Iterable[dict],
         items = ch.get("items") or {}
         if not isinstance(items, dict):
             continue
-        for item, owner in items.items():
+        for item, value in items.items():
             item = str(item or "").strip()
-            owner_raw = str(owner or "").strip()
             if not item:
                 continue
+            # 方案 B：结构化字段（owner/state）优先；旧字符串仍走规则解析
+            st = item_state.normalize_item(value)
+            if not isinstance(value, str) and st["state"] in ("lost", "unknown"):
+                continue
+            owner_raw = st["owner"] or st["text"]
             owner_now = owner_subject(owner_raw, known_names)
             if not owner_now:
                 continue

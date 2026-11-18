@@ -626,7 +626,10 @@ def continue_branches(project_id: str, req: dict, user: dict = Depends(_require_
 @app.post("/api/projects/{project_id}/apply-branch")
 def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)):
     """F3 应用选中分支：默认预览模式——把选中的续写草稿记录到 continue_drafts.json，
-    不自动改写章节正文（由用户在编辑器里自行粘贴，防污染既有正文链路）。"""
+    不自动改写章节正文（由用户在编辑器里自行粘贴，防污染既有正文链路）。
+
+    R26 前置修复：写盘失败必须显式报错（此前吞异常仍返回 saved=True，验收会失真）。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     chapter_no = int(req.get("chapter_no", 0) or 0)
@@ -634,12 +637,14 @@ def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)
     if not preview:
         raise HTTPException(status_code=400, detail="缺少分支续写内容")
     draft = {"direction": req.get("direction", ""), "label": req.get("label", ""),
-             "preview": preview, "applied_at": time.time()}
+             "preview": preview, "applied_at": time.time(), "origin": "tools"}
     try:
         store.save_continue_draft(chapter_no, draft)
     except Exception:
-        logger.exception("[ApplyBranch] 续写草稿落盘失败（仍返回预览）: project=%s ch=%d",
+        logger.exception("[ApplyBranch] 续写草稿落盘失败: project=%s ch=%d",
                          project_id, chapter_no)
+        raise HTTPException(status_code=500,
+                            detail="DRAFT_WRITE_FAILED: 续写草稿写入失败，请重试")
     return {"saved": True, "chapter_no": chapter_no, "preview": preview,
             "msg": "续写草稿已记录（预览模式，未自动写入章节正文，请复制到编辑器使用）"}
 

@@ -657,3 +657,18 @@
 - `GET /chapters/{no}` 增补 `version/base_hash/source/summary_stale` 只读字段，向后兼容；写作页生成前若本地有未保存修改直接拦截，保证锚点偏移与服务器正文一致。
 
 **单测**：`tests/test_inline_writing.py` 32 条（P0：规范化/精确拼接/版本语义/自动选分不覆盖/守卫/结算免扣/账本分档淘汰/token 幂等与作废/生成计费一次/空候选与合规不计费/BYOK 0 元留审计/采纳不二次扣费/切版本后 409/**越权 403/资金合计对账/并发采纳仅 1 个版本/并发同 token 单飞**；P1：检索正文与设定、控制字符拒绝、审计关联）。
+
+## 2026-11-18 R29 写作参考侧栏：只读聚合 + 挂写作页（feat/r29-writing-sidebar）
+
+**背景**：REQ-R29 v0.1 评审（2026-11-18 REVIEW-R25-R29 §3.5）阻断 1 条——"复用 mentions/实体索引做全文搜索"不成立；并要求修正 `character_moves`/`setting_cards` 数据源表述、把"短暂高亮"改成可实现的定位方式、补写作态载体前提与 R23 独立交付路径。
+
+**决策**
+1. **搜索复用 R25 基座 `/search`**：任意关键词检索走 `search_service.search_project`（正文/设定双 scope、分页、超时截断），不再用 `/consistency/entities`（仅 world 实体名且会被 `MAX_INDEX_ENTITIES` 截断）与 `/consistency/mentions`（必须传实体 `name`）。
+2. **"高亮"改为"选中 + 滚动可见"**：textarea 无法真正高亮，命中后切章 → `focusAt(offset, offset+q.length)`（`setSelectionRange`）→ 按字符比例滚动；`StorySearch` 的 `open` 事件回传 `q` 用于计算选区长度。
+3. **新增 1 个只读聚合接口 `GET /writing-context?ch=N`**（`webapp/writing_context.py` + `routers/projects_writing.py`）：① 章计划字段以 `ChapterPlan.to_dict()` 为准（`character_moves` 而非 `moves`）；② 出场人物按章计划文本名称直判（≥2 字，≤12）；③ 本章相关伏笔筛 `due_soon/overdue` 或 `reveal_ch==ch`，并在 `at_ch=N` 下统计五态计数；④ `reveal_in` 由后端算（0=本章到期，负数=逾期），前端不推导。整接口零 LLM、零写盘、不计费。
+4. **`setting_cards` 不当接口用**：它是 world 落盘后的构建期索引（供记忆注入裁剪），没有按章只读入口；侧栏「本章」不读它，改由 `writing-context` 直接读 outline+world 匹配。
+5. **`GET /world` 只增只读字段**：补 `terminology[]` 与 `items[]` 供「设定」页签速查（原序列化遗漏，前端无接口可读）；只增键、不改既有语义，PUT 仍增量接收。
+6. **挂载点与降级**：侧栏挂在 R25 独立写作页，位于编辑器与右侧 AI 面板之间；收起 40px、展开 320px（260–480 可拖宽），展开/宽度/页签写 localStorage；`<1200px` 变覆盖式抽屉 + 遮罩。`search_enabled` 关闭 → 搜索页签 403 提示；`reader_ledger` 关闭 → 伏笔空 + `available.foreshadow=false`；无大纲/世界观 → 空态，不 500。
+7. **R23 独立交付**：侧栏不新增全局入口、不依赖入口收敛结果，R23 未落地也能独立上线。
+
+**单测**：`tests/test_writing_context.py` 8 条（章计划字段/人物匹配/本章伏笔与五态计数/切章口径/`reader_ledger` 关闭降级/空项目/非法章号/调用前后零写盘/越权 403/400 映射）；前端 `webapp/frontend/tests/writingSidebar.test.mjs` 8 条（宽度收敛/状态记忆回退/切章请求参数/角标/窄屏阈值/距回收文案/命中选区）。

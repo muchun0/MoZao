@@ -112,11 +112,12 @@ function getCursor() {
   return ta ? { start: ta.selectionStart, end: ta.selectionEnd } : { start: 0, end: 0 }
 }
 
-function focusAt(pos) {
+function focusAt(pos, end) {
   const ta = taRef.value
   if (!ta) return
   ta.focus()
-  ta.setSelectionRange(pos, pos)
+  // 搜索命中时选中整个关键词区间，仅光标定位时 end 可省略
+  ta.setSelectionRange(pos, Number.isFinite(end) ? end : pos)
   // 让目标位置尽量滚入视野（按字符比例估算行高）
   const ratio = ta.value.length ? pos / ta.value.length : 0
   ta.scrollTop = Math.max(0, ta.scrollHeight * ratio - ta.clientHeight / 2)

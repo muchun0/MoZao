@@ -138,6 +138,16 @@
 
 > 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` 等。
 
+### 写作参考侧栏（R29）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | /api/projects/{id}/writing-context?ch=N | 是 | 只读聚合（零 LLM / 零写盘 / 不计费）：`chapter` 当前章计划（`ChapterPlan.to_dict()`，含 `goal/core_event/conflict/cliffhanger/character_moves/foreshadowing`）、`characters[]`（按章计划文本名称命中，≤12，含 `name/role/personality/desc/speech_style`）、`foreshadow.items[]`（`state ∈ due_soon/overdue` 或 `reveal_ch == N`，含 `state_label/severity/reveal_in/excerpt`）、`foreshadow.counts`（planted/due_soon/overdue/stalled/revealed）、`available.{outline,world,foreshadow}`；`ch<1` 返回 400 `BAD_CHAPTER`；`reader_ledger` 关闭时伏笔为空且 `available.foreshadow=false` |
+| GET | /api/projects/{id}/outline | 是 | 侧栏「大纲」页签数据：`volumes[]` + `chapters[]`（含 `volume_no`、`core_event`、`goal`、`tag`） |
+| GET | /api/projects/{id}/world | 是 | 侧栏「人物」「设定」页签数据：`characters[]`、`world_view`、`mechanism_rules`、`locations/factions/enemies/style_taboos`；**R29 只读新增 `terminology[]` 与 `items[]`**（只增字段，语义不变） |
+| GET | /api/projects/{id}/foreshadowing | 是 | 侧栏「伏笔」页签数据：`items[]`（`state/state_label/distance/distance_label/buried_ch/reveal_ch/revealed_ch/excerpt`）、`unstructured[]`、`summary`（五态计数） |
+| GET | /api/projects/{id}/search?q=&scope=&limit=&offset= | 是 | 侧栏「搜索」页签，复用 R25 只读全文检索（`search_enabled` 关闭时 403 `SEARCH_DISABLED`） |
+
 ### 生成控制
 
 | 方法 | 路径 | 鉴权 | 说明 |

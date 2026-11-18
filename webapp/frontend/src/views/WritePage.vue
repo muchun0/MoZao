@@ -9,6 +9,7 @@
                    @save="save" @back="$router.push(`/project/${pid}`)"
                    @versions="versionsDialog = true" @continue="generate('continue')"
                    @select="onSelect" />
+    <WritingSidebar :pid="pid" :ch="currentNo" @jump="switchChapter" @open-search="openSearchHit" />
     <div class="right">
       <div class="tabs">
         <button class="tab" :class="{ on: tab === 'ai' }" @click="tab = 'ai'">AI 写作</button>
@@ -46,6 +47,8 @@ import WritingEditor from '../components/write/WritingEditor.vue'
 import CandidatePanel from '../components/write/CandidatePanel.vue'
 import InlineFloatBar from '../components/write/InlineFloatBar.vue'
 import StorySearch from '../components/write/StorySearch.vue'
+import WritingSidebar from '../components/write/WritingSidebar.vue'
+import { searchSelection } from '../utils/writingSidebar'
 import VersionDialog from '../components/VersionDialog.vue'
 
 const route = useRoute()
@@ -125,18 +128,19 @@ async function reloadCurrent() {
 }
 
 async function switchChapter(no) {
-  if (no === currentNo.value) return
+  if (no === currentNo.value) return true
   if (dirty.value) {
     try {
       await ElMessageBox.confirm('当前章节有未保存修改，切换后会丢失。继续？', '未保存',
         { type: 'warning', confirmButtonText: '丢弃并切换', cancelButtonText: '取消' })
     } catch {
       currentNo.value = currentNo.value
-      return
+      return false
     }
   }
   currentNo.value = no
   await loadChapter(no)
+  return true
 }
 
 onMounted(async () => {
@@ -304,14 +308,16 @@ function restoreDraft(draft) {
 // ---------- 检索 ----------
 async function openSearchHit(hit) {
   if (hit.kind === 'settings') {
-    ElMessage.info(`设定命中：${hit.ch_title}`)
+    ElMessage.info(`设定命中：${hit.ch_title}（设定页签可查全文）`)
     return
   }
   if (hit.ch !== currentNo.value) {
-    currentNo.value = hit.ch
-    await loadChapter(hit.ch)
+    const ok = await switchChapter(hit.ch)
+    if (!ok) return
   }
-  editorRef.value?.focusAt(hit.offset)
+  // textarea 不支持高亮：定位到命中位置并选中关键词、滚动到可见
+  const { offset, end } = searchSelection(hit)
+  editorRef.value?.focusAt(offset, end)
 }
 
 watch(dirty, (v) => { if (v) genToken.value = '' })
@@ -322,6 +328,7 @@ watch(dirty, (v) => { if (v) genToken.value = '' })
   display: flex; height: calc(100vh - 130px); min-height: 560px;
   border: 1px solid var(--card-line); border-radius: var(--radius);
   overflow: hidden; background: var(--paper); box-shadow: var(--shadow);
+  position: relative;
 }
 .right { width: 360px; flex: 0 0 360px; display: flex; flex-direction: column; background: var(--card); border-left: 1px solid var(--card-line); }
 .tabs { display: flex; border-bottom: 1px solid var(--card-line); }

@@ -18,7 +18,7 @@
     <p v-if="meta?.truncated" class="s-warn">扫描已到上限，结果可能不完整</p>
     <div class="s-list">
       <button v-for="(it, i) in (meta?.items || [])" :key="i" class="s-item"
-              @click="$emit('open', it)">
+              @click="$emit('open', { ...it, q: q.trim() })">
         <span class="s-ch">{{ it.kind === 'settings' ? it.ch_title : `第${it.ch}章` }}</span>
         <span class="s-snip">{{ it.snippet }}</span>
       </button>

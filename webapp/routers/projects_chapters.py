@@ -374,7 +374,12 @@ def project_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     ch = store.load_chapter(no)
     if not ch:
         raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
-    return {"no": ch.no, "title": ch.title, "content": ch.content, "summary": ch.summary}
+    # R25：写作页需要 version + base_hash 做锚点乐观锁（只读补充字段，向后兼容）
+    from novel_gen.store.inline_edit import content_hash, current_version
+    return {"no": ch.no, "title": ch.title, "content": ch.content, "summary": ch.summary,
+            "source": ch.source, "user_edited": ch.user_edited,
+            "summary_stale": ch.summary_stale,
+            "version": current_version(store, no), "base_hash": content_hash(ch.content)}
 
 
 @app.put("/api/projects/{project_id}/chapters/{no}")
@@ -397,10 +402,12 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     # 摘要处理：用户显式给 → 用之；否则若正文变了且允许 → 自动重新生成
     if req.summary:
         ch.summary = req.summary
+        ch.summary_stale = False  # R25：摘要被显式刷新，落后标记清除
     elif req.regen_summary and req.content and req.content != _load_prev_content(store, no):
         new_summary = _regenerate_summary(store, ch)
         if new_summary:
             ch.summary = new_summary
+            ch.summary_stale = False
 
     # REQ-双锚风格锚定：用户编辑保存 = 人工修订标记（个人风格锚来源）
     ch.user_edited = True

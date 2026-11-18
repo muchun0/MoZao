@@ -107,7 +107,9 @@ def _product_version(store, kind: str) -> Optional[str]:
     if isinstance(version, int) and version > 0:
         return f"v{version}"
     try:
-        head = VersionedProduct(store, kind).head_path(store, "all")
+        # 存量项目兜底读 HEAD 文件；VersionedProduct 不对外暴露 head_path，
+        # 直接按存储约定取 <kind>.json（outline/world），避免此处属性错误导致门永远 400。
+        head = Path(store.dir) / f"{kind}.json"
         if head.exists():
             digest = hashlib.sha1(head.read_bytes()).hexdigest()[:10]
             return f"h{digest}"

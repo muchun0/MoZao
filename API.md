@@ -175,6 +175,21 @@
 | POST | /api/projects/{id}/stop | 是 | 停止生成 |
 | GET | /api/projects/{id}/status | 是 | 生成状态（轮询用，3秒一次） |
 
+### 分步确认式生成流（R27，2026-11-18）
+
+编排状态唯一权威源为项目文件 `generation_stage.json`；阶段 `research / outline / world / volume / chapters`。
+`volume` 固定为 `skipped(reason=merged_into_outline)`（卷纲并入大纲确认）。`expand` 项目 `supported=false`。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | /api/projects/{id}/generation/flow?with_card=1 | 是 | 只读：`{supported, mode, mode_source, flow}`；`flow=null` 表示未启动；`flow.stages[]` 含状态/digest/run_id/last_error，`flow.cards[]` 为当前阶段确认卡（lines/actions/regenerate_estimate）。每次读取按 run 侧写与产物 digest 对账，**不主动起 run** |
+| POST | /api/projects/{id}/generation/flow/start | 是 | body：`{mode?: "auto"\|"stepwise"}`；建流程并起首阶段（`with_research=false` 时调研 skipped；正文在 stepwise 下只置 `ready` 不起 run）；已存在流程直接返回现状（双击幂等）。expand → 400 `MODE_UNSUPPORTED` |
+| POST | /api/projects/{id}/generation/flow/confirm | 是 | body：`{stage, action: continue\|regenerate\|skip\|back_outline, digest, client_token?, force?}`。确认放行/放弃本步重生成（**新版本、再次扣费**，10 分钟内二次需 `force=true`）/跳过未开始的调研/返回改大纲。旧 digest → 409 `STAGE_CHANGED`；状态不符 → 409 `STAGE_NOT_READY`；同 `(flow_id,stage,action,digest)` 重放返回首次结果（`idempotent=true`）。确认大纲/世界观时同步通过对应审阅门 |
+| POST | /api/projects/{id}/generation/flow/mode | 是 | body：`{mode: "auto"\|"stepwise"}`；写 `config.json` 的 `generation_mode`；stepwise→auto 且当前阶段为 done 时自动放行下一阶段 |
+| POST | /api/projects/{id}/generation/flow/abort | 是 | 停止当前阶段 run 并置 `stopped`（已完成产物与结算保留，不自动重试） |
+
+> 资金语义：起 run 前失败（402/409/429）阶段状态与产物不变、不扣费；run 失败不自动重试；重生成按新版本再次结算。
+
 ### 质量与审校
 
 | 方法 | 路径 | 鉴权 | 说明 |

@@ -448,6 +448,7 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     return {
         "started": True,
         "task_id": task_id,
+        "run_id": run_id,  # R27 分步编排据此把 run 与阶段绑定（纯新增字段）
         "agent": req.agent,
         "billing_mode": mode,
         "estimated_price": _estimated_price(req.agent, params, store, mode),
@@ -656,6 +657,14 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
                            trace_id, outputs, entries, handle)
         core._clear_task(store)
         core._release_slot(project_id)
+        # R27：阶段编排同步（无 generation_stage.json 时立即返回；异常只留日志，
+        # 不影响本次 run 已完成的结算与收尾）
+        try:
+            from . import generation_flow
+            generation_flow.on_run_finished(store, agent, run_id, status)
+        except Exception:
+            logger.exception("分步流程状态同步失败（降级）: project=%s agent=%s",
+                             project_id, agent)
         logger.info("agent run 结束: project=%s agent=%s task=%s status=%s",
                     project_id, agent, task_id, status)
 

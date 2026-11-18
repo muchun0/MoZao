@@ -712,3 +712,21 @@
 - 应用后锚点偏移会随字数变化失效，写作页应用成功即收起浮层并重载章节，避免继续用旧锚点再应用。
 
 **单测**：`tests/test_assistant_inline.py` 16 条（P0：段落窗口/零宽扩段/evidence 最近命中与定位失败/span 渲染不注入整章/预算折算/漂移标记/锚点越界 400/锚点落库/单段写入与单次计费/同 token 重放不双扣/令牌复用 409/编辑与文本不一致拒绝且不扣费/跨段 400/版本漂移 409/越权 403/写盘失败回滚账本与余额；P1：BYOK 0 元仍留审计）。
+## 2026-11-18 R27 分步确认式生成流：编排状态独立于 task.json
+
+**背景**：应变「大纲很好，直接生成世界观」的断链问题，需要阶段间可持久化暂停点。原 `task.json` 在 run 结束即删，无法承载编排状态；前端 `confirm` 字段从未被生成链路读取。
+
+**决策**：
+- 新增项目级 `generation_stage.json` 作为唯一权威源（`stage/status/run_id/version/updated_at/idempotency`），`task.json` 只表示当前 run 是否在跑。阶段固定五项 `research/outline/world/volume/chapters`。
+- 生成通路零新增：`confirm`/auto 推进全部复用 `generate_service.start_agent_run`，计费口径、幂等基线、占槽与停止语义不变；`start_agent_run` 返回值仅**新增** `run_id` 字段。
+- 正文阶段「确认开始」= `scope=all`（等价既有「一键全部」，但必须先看确认卡与预估），成功后直接 `confirmed`；M0 的每批 5 章入口保留。
+- 卷纲阶段显式登记为 `skipped + reason=merged_into_outline`：现状大纲一次产分卷与章计划，不新增逐卷自动跑（避免第二条编排与额外扣费），大纲卡展示卷/章数。
+- 模式优先级：项目显式 `generation_mode` > 老项目（有 run 侧写或已写正文）默认 auto > 新书默认 stepwise；`expand` 项目返回 `supported=false`。
+- 分步确认即「用户看过」：确认大纲/世界观时同步 `gates.approve`，失败原样 409，不吞、不强行起 run。
+- 失败与资金：起 run 前失败（402/409/429）回滚阶段状态并落盘、不扣费；run 失败/中断不自动重试；「放弃本步重生成」= 新版本 = 再次扣费，UI 展示预估并二次确认；停止保留已完成章。
+- 恢复只认 `agent_runs/<run_id>.json` 侧写 + 产物 digest 对账，绝不因「run 不存在」判失败；关页/重启后刷新仍回到同一张确认卡。
+- 主链路唯一新增接线：`_run_agent_task` 的 finally 末尾调用 `generation_flow.on_run_finished`（无 flow 立即返回、异常只留日志，不影响结算与收尾）；auto 推进发生在此钩子之后。
+- 前端新增 `GenerationFlow.vue` + `StageConfirmCard.vue`，`ProjectDetail.vue` 只加一行挂载与一个切页函数，降低并行冲突面。
+- 顺带修复 `gates._product_version` 引用不存在的 `VersionedProduct.head_path`（存量无版本索引项目会因此永远 400），改为按存储约定读 `<kind>.json`。
+
+**单测**：`tests/test_generation_flow.py` 18 条（模式优先级/启动即暂停/刷新不重发/错误 digest 409/双击幂等/编辑后必须刷新/重生成再次起 run/force 二次确认/402 停当前阶段（含首次启动 402）/失败不自动重试/侧写恢复不误判/Agent 面板对账/auto 推进/expand 不支持/未鉴权 401/损坏可重建）；`pytest -m p0` 106 passed + 2 skipped，全量 1768 passed。

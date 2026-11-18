@@ -33,7 +33,9 @@ from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       # R26：剧情走向候选生成 / 采纳便签 / 便签读取与删除
                       projects_branches,
                       # R29：写作侧栏只读聚合（章计划/出场人物/本章伏笔/五态计数）
-                      projects_writing)  # noqa: F401  触发路由注册
+                      projects_writing,
+                      # R27：分步确认式生成流（阶段编排 / 确认卡 / 模式切换）
+                      projects_flow)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

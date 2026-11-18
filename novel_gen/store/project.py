@@ -668,6 +668,19 @@ class ProjectStore:
         items.sort(key=lambda c: c.no)
         return items
 
+    def last_chapter_no(self) -> int:
+        """已落盘的最大章号（只看文件名，不解析正文）。
+
+        供"已写到哪里"的水位判断使用：state.json 的 last_chapter 可能滞后
+        （Web/agent 单章生成历史上不写 state.json），此处按文件名兜底，
+        100 章也只是 100 次目录项读取，不触发正文解析。
+        """
+        try:
+            nos = [int(p.stem) for p in self.chapters_dir.glob("*.json") if p.stem.isdigit()]
+        except Exception:
+            return 0
+        return max(nos, default=0)
+
     def iter_chapter_texts(self):
         """逐章流式产出 (no, title, content)，按章节号升序。
 

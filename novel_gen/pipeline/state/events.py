@@ -415,3 +415,116 @@ def derive_fact_events(facts: Iterable[str], ch: int, names: Iterable[str] = (),
 
 def resolve_at_ch_from_rows(rows: list, default: int = 0) -> int:
     return max((int(r.get("ch") or 0) for r in (rows or [])), default=default)
+
+
+#: 摘要切句（摘要天然是分句概述，按句末标点切）
+_SUMMARY_SPLIT_RE = re.compile(r"[。！？!?；;\n]")
+
+#: 单章摘要事件上限（再多就是复述整章，时间线不可扫读）
+SUMMARY_EVENT_LIMIT = 4
+
+
+def derive_summary_events(summary: str, ch: int, names: Iterable[str] = (),
+                          items: Iterable[str] = (), limit: int = SUMMARY_EVENT_LIMIT) -> list:
+    """确定性兜底事件：章末账本缺本章时，用**本章摘要**切句生成事件。
+
+    章号永远写成传入的 ch（调用方保证是本章），来源标 `inferred=true`——
+    它不是因果抽取结果，只是"本章发生了什么"的确定性投影。
+    """
+    parts = [p.strip() for p in _SUMMARY_SPLIT_RE.split(str(summary or "")) if p.strip()]
+    rows = []
+    for part in parts[:max(1, int(limit or SUMMARY_EVENT_LIMIT))]:
+        if len(part) < 4:   # 过短片段（"走了""他"）不是事件
+            continue
+        participants, kind = classify_fact(part, names, items)
+        rows.append({"ch": int(ch), "scene": 0, "desc": part,
+                     "participants": participants, "cause": "", "effect": [],
+                     "kind": kind, "inferred": True})
+    return rows
+
+
+def derive_chapter_events(no: int, state: Optional[dict], chapter,
+                          names: Iterable[str] = (), items: Iterable[str] = ()) -> list:
+    """本章事件：账本属于本章 → 用 facts；账本停在旧章 → 用本章摘要兜底。
+
+    硬约束：事件章号永远等于本章章号。旧实现直接读"最新章末快照"，账本因降频
+    （`state_extract_frequency`）停在旧章时，会把旧章事实反复按旧章号写进事件流，
+    表现为时间线里"事件全挂第 1 章、后面章节没有事件"。
+    """
+    no = int(no or 0)
+    state_ch = int((state or {}).get("chapter") or 0)
+    if state_ch == no:
+        facts = [str(x).strip() for x in ((state or {}).get("facts") or []) if str(x).strip()]
+        if facts:
+            return derive_fact_events(facts, no, names, items)
+    return derive_summary_events(getattr(chapter, "summary", "") or "", no, names, items)
+
+
+def _world_names(store) -> tuple[list, list]:
+    """世界观里的人物/物品名（补齐参与人与物品事件判定，失败降级空）。"""
+    try:
+        world = store.load_world()
+        names = [str(getattr(c, "name", "") or "") for c in
+                 (getattr(world, "characters", None) or [])]
+        items = [str(getattr(i, "name", "") or "") for i in
+                 (getattr(world, "items", None) or [])]
+        return [n for n in names if n], [i for i in items if i]
+    except Exception:
+        logger.exception("世界观读取失败（事件参与人降级为空）")
+        return [], []
+
+
+def backfill_chapter_events(store, upto: int = 0) -> dict:
+    """给"没有事件"的历史章补本章摘要事件（append-only，幂等）。
+
+    用途：修复账本降频/抽取失败导致后续章零事件、时间线全挂第 1 章的存量书。
+    只补空章：已有事件的章一条不动；同一 id 重复写入由 append 去重，重复跑无副作用。
+    """
+    stream = EventStream(store)
+    taken = {int(r.get("ch") or 0) for r in stream.all()}
+    names, items = _world_names(store)
+    chapters = written = 0
+    for ch in store.list_chapters():
+        no = int(getattr(ch, "no", 0) or 0)
+        if no <= 0 or no in taken or (upto and no > int(upto)):
+            continue
+        rows = derive_summary_events(getattr(ch, "summary", "") or "", no, names, items)
+        if not rows:
+            continue
+        res = stream.append(rows, ch=no, allow_inferred=True)
+        if res.get("written"):
+            chapters += 1
+            written += res["written"]
+    if written:
+        # 快照缓存（book_facts.json）不感知 events.jsonl 的追加，必须显式失效，
+        # 否则时间线接口会继续返回补齐前的旧快照（实测过一次）。
+        try:
+            store.invalidate_book_facts()
+        except Exception:
+            logger.exception("事件补齐后 book_facts 缓存失效失败（下次生成会重建）")
+    return {"chapters": chapters, "events": written}
+
+
+def _main(argv: list) -> int:
+    """维护入口：补齐某本书缺失章号的事件。
+
+    用法：python -m novel_gen.pipeline.state.events <项目目录> [--upto N]
+    """
+    if not argv:
+        print("用法: python -m novel_gen.pipeline.state.events <项目目录> [--upto N]")
+        return 2
+    from ...store.project import ProjectStore
+    project_dir = argv[0]
+    upto = 0
+    if "--upto" in argv:
+        idx = argv.index("--upto")
+        upto = int(argv[idx + 1]) if idx + 1 < len(argv) else 0
+    store = ProjectStore.open(project_dir)
+    res = backfill_chapter_events(store, upto=upto)
+    print(json.dumps({"project": store.dir.name, **res}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(_main(sys.argv[1:]))

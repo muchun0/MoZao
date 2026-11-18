@@ -46,6 +46,22 @@
       <main class="pd-main">
         <!-- 章节 -->
         <section v-if="visited.chapters" v-show="tab === 'chapters'">
+          <!-- 门 4 批末卡片：本批字数/质检合格率/扣费；继续下一批或结束 -->
+          <GateCard v-if="batchCard" title="本批已完成" status="batch" status-label="批末"
+            :summary="batchCard.summary" :checks="batchCard.checks" :actions="['continue', 'finish']"
+            hint="批量运行期间正文只读；要继续先点「继续下一批」"
+            @continue="startGen" @finish="batchCard = null" @locate="locateAnchor" />
+          <!-- 正文入口：默认一批 5 章，批末自动停；「一键全部」是小字逃生舱（二次确认+预估） -->
+          <div v-if="outlineReady" class="ch-gen-bar">
+            <el-button v-if="nextUnwritten" type="primary" size="small" :disabled="genRunning" @click="startGen">
+              写第 {{ nextUnwritten }}–{{ batchEnd }} 章（每批 {{ BATCH_SIZE }} 章）
+            </el-button>
+            <el-tag v-else size="small" type="success" effect="plain">全部章节已写完</el-tag>
+            <el-button v-if="nextUnwritten" link size="small" class="ch-gen-all" :disabled="genRunning"
+                       title="不经过审阅门，一次写完；会显示预估总额并二次确认"
+                       @click="startGenAll">一键全部生成 ›</el-button>
+            <span v-if="genRunning" class="ch-gen-readonly">批量生成中，正文只读</span>
+          </div>
           <div v-if="chapters.length" class="ch-quality-bar">
             <div class="ch-quality-summary">
               <el-tag v-if="worstText" type="danger" size="small" effect="plain" class="ch-worst-tag clickable"
@@ -104,7 +120,7 @@
                 </el-tag>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
                 <div class="ch-actions" @click.stop>
-                  <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no">重生成</el-button>
+                  <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no" :disabled="genRunning">重生成</el-button>
                   <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
                   <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
                     :aria-label="isChLocked(c.no) ? `取消第${c.no}章的${LOCK_TERM}` : `给第${c.no}章加${LOCK_TERM}（重生成时不覆盖）`"
@@ -137,12 +153,25 @@
           <el-empty v-if="!outlineReady && !hadOutline" description="还没有大纲。AI 生成或导入你写的都可以">
             <div class="outline-empty-actions">
               <el-button type="primary" @click="runOutline" :loading="genRunning">
-                {{ genRunning ? '生成中…' : '生成大纲与世界观' }}
+                {{ genRunning ? '生成中…' : '生成大纲（完成后停下等你审阅）' }}
               </el-button>
               <el-button @click="openImport" :disabled="genRunning">导入我写的大纲</el-button>
             </div>
           </el-empty>
-          <OutlineEditor v-else :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
+          <!-- 门 1：大纲跑完即停，这里给判断材料与三个动作（通过 / 先编辑 / 重生成） -->
+          <GateCard v-if="outlineReady"
+            title="门 1 · 大纲已生成，先审阅再继续"
+            :status="gateOf('outline').status" :status-label="gateLabel('outline')"
+            :summary="gateReview('outline').summary || []" :checks="gateReview('outline').checks || []"
+            :busy="gateBusy === 'outline'" approve-text="通过，继续生成世界观"
+            :hint="gateHint('outline')" :actions="outlineGateActions"
+            @approve="approveGateNow('outline')"
+            @regen="doRegenOutline" @locate="locateAnchor" />
+          <div v-if="outlineReady && gateApproved('outline') && !worldReady" class="gate-next">
+            <el-button type="primary" @click="runWorld">生成世界观（按字数计费）</el-button>
+            <span class="gate-next-hint">也可以先跳过：直接去 Agent 页写正文，世界观缺失会降低一致性</span>
+          </div>
+          <OutlineEditor v-if="outlineReady || hadOutline" :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
         </section>
 
         <!-- 创作图（门 1）：分章约束卡。Plan 层（可改）与账本（Canon，只增不改）分开 -->
@@ -152,6 +181,15 @@
 
         <!-- 世界观 -->
         <section v-if="visited.world" v-show="tab === 'world'">
+          <!-- 门 2：世界观审阅（含"受影响章纲清单"反向提示） -->
+          <GateCard v-if="worldReady"
+            title="门 2 · 世界观已生成，先审阅再写正文"
+            :status="gateOf('world').status" :status-label="gateLabel('world')"
+            :summary="gateReview('world').summary || []" :checks="gateReview('world').checks || []"
+            :busy="gateBusy === 'world'" approve-text="通过，进入写正文"
+            :hint="gateHint('world')" :actions="worldGateActions"
+            @approve="approveGateNow('world')" @skip="skipWorldGate"
+            @regen="doRegenWorld" @locate="locateAnchor" />
           <WorldEditor ref="worldEditorRef" :pid="pid" :lock="lock"
             @toggle-lock="toggleLock" @open-versions="openProductVersions" @regen-world="doRegenWorld" />
         </section>
@@ -248,7 +286,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun } from '../api/project'
+import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun, getGates, approveGate, getGateReview, estimateAgentRun } from '../api/project'
 import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
   qualityMeta, sortRowsByQuality, filterRows, qualityIndexTitle,
@@ -272,6 +310,7 @@ import StateGraphPanel from '../components/facts/StateGraphPanel.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'
+import GateCard from '../components/common/GateCard.vue'
 // 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
 import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {
@@ -294,6 +333,93 @@ const versionsKind = ref('chapter')  // 阶段 1C：统一版本弹窗的当前�
 const rechargeRef = ref(null)
 const staleGateRef = ref(null)
 const outlineReady = computed(() => !!(outline.value && outline.value.chapters && outline.value.chapters.length))
+
+// === 创作阶段审阅门（REQ-创作阶段审阅门 M0）===
+// 门状态由后端按"审批版本 vs 产物当前版本"实时判定，前端只读展示 + 触发通过
+const BATCH_SIZE = 5
+const gates = ref({})
+const gateReviews = reactive({})
+const gateBusy = ref('')
+const batchCard = ref(null)
+const worldReady = ref(false)
+const gateOf = (g) => gates.value?.[g] || { status: 'pending', current_version: null, approved_version: null }
+const gateApproved = (g) => gateOf(g).status === 'approved'
+const gateLabel = (g) => ({ pending: '待审阅', approved: '已通过', skipped: '已跳过' }[gateOf(g).status] || '')
+function gateHint(g) {
+  const st = gateOf(g)
+  if (st.status === 'approved' || st.status === 'skipped') return `审批版本 ${st.approved_version}`
+  if (!st.current_version) return '产物尚未生成'
+  if (st.approved_version) return `产物已变更为 ${st.current_version}，原审批（${st.approved_version}）已失效，请重新审阅`
+  return `当前版本 ${st.current_version}`
+}
+// 门卡片的动作：编辑始终允许（编辑器就在卡片下方），所以按钮只留"通过/重生成"，
+// 原先的「先编辑」是空操作（点了只是切到当前 tab），已移除
+const outlineGateActions = computed(() =>
+  gateApproved('outline') ? ['regen'] : ['approve', 'regen'])
+const worldGateActions = computed(() =>
+  (gateOf('world').status === 'approved' || gateOf('world').status === 'skipped')
+    ? ['regen'] : ['approve', 'regen', 'skip'])
+const gateReview = (g) => gateReviews[g] || {}
+
+// 未写章推算：按大纲章号顺序找第一个没写正文的章，本批到 from+4 为止
+const outlineChapters = computed(() =>
+  (outline.value?.chapters || []).map(c => Number(c.no)).filter(n => n > 0).sort((a, b) => a - b))
+const writtenNos = computed(() => new Set(chapters.value.map(c => Number(c.no))))
+const nextUnwritten = computed(() => {
+  const set = writtenNos.value
+  for (const no of outlineChapters.value) if (!set.has(no)) return no
+  return 0
+})
+const batchEnd = computed(() => {
+  if (!nextUnwritten.value || !outlineChapters.value.length) return 0
+  const last = outlineChapters.value[outlineChapters.value.length - 1]
+  return Math.min(nextUnwritten.value + BATCH_SIZE - 1, last)
+})
+
+async function loadGates() {
+  try {
+    gates.value = (await getGates(pid)).gates || {}
+    await loadGateReviews()
+  } catch { /* 门状态读取失败不阻塞项目页 */ }
+}
+async function loadGateReviews() {
+  for (const g of ['outline', 'world']) {
+    const hasProduct = g === 'outline' ? outlineReady.value : worldReady.value
+    if (!hasProduct || !gateOf(g).current_version) continue
+    try { gateReviews[g] = await getGateReview(pid, g) } catch { /* 材料获取失败只影响提示 */ }
+  }
+}
+async function loadWorldFlag() {
+  try { worldReady.value = !!((await getWorld(pid))?.world_view) } catch { worldReady.value = false }
+}
+async function approveGateNow(g) {
+  gateBusy.value = g
+  try {
+    gates.value = (await approveGate(pid, g)).gates || {}
+    ElMessage.success(g === 'outline' ? '大纲已通过，可以生成世界观了' : '世界观已通过，可以开始写正文')
+    await loadGates()
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '操作失败'))
+  } finally { gateBusy.value = '' }
+}
+async function skipWorldGate() {
+  try {
+    await ElMessageBox.confirm('跳过世界观直接写正文，前后一致性会下降（可随时回来生成）。确定跳过？',
+      '跳过世界观门', { type: 'warning', confirmButtonText: '确定跳过' })
+  } catch { return }
+  gateBusy.value = 'world'
+  try {
+    gates.value = (await approveGate(pid, 'world', { skip: true })).gates || {}
+    ElMessage.success('已跳过世界观门')
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '操作失败'))
+  } finally { gateBusy.value = '' }
+}
+// 体检项定位：anchor 形如 chapter:12 → 切章节页并打开该章
+function locateAnchor(anchor) {
+  const m = /^chapter:(\d+)$/.exec(anchor || '')
+  if (m) { tab.value = 'chapters'; locateChapter(Number(m[1])) }
+}
 // 记忆"曾生成过大纲"：重生成大纲期间后端会先删 outline.json，若此时重载大纲会拿到空值，
 // 导致 outlineReady 翻转、编辑器被空态替换。用 hadOutline 保住工具条与编辑器（生成中置灰而非隐藏）。
 const hadOutline = ref(false)
@@ -588,6 +714,9 @@ async function loadAll() {
     chapters.value = chsRes.chapters || []
     genDoneCount.value = chapters.value.length
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
+    // 门状态与世界观存在性：决定门 1/2 的按钮与判断材料（读取失败各自降级）
+    await loadWorldFlag()
+    await loadGates()
     // 首次进入且用户未手动选过导航时，按数据状态引导：无大纲→大纲页，有大纲→章节页
     if (!navTouched.value) tab.value = outlineReady.value ? 'chapters' : 'outline'
     await checkStatus()
@@ -641,6 +770,8 @@ async function refreshAfterGen(quiet = false) {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
     await worldEditorRef.value?.reload()
+    await loadWorldFlag()
+    await loadGates()
     try { lock.value = await getLock(pid) } catch { lock.value = {} }
     chapters.value = (await getChapters(pid)).chapters || []
     genDoneCount.value = chapters.value.length
@@ -703,6 +834,11 @@ function openRulesPanel() {
 }
 
 function startEdit() {
+  // M0 硬约束：批量生成期间正文只读（中途编辑会让记忆账本 stale，后续章基于旧账本写）
+  if (genRunning.value) {
+    ElMessage.warning('批量生成中正文只读，要修改请先停止本批')
+    return
+  }
   editing.value = true
 }
 function cancelEdit() {
@@ -789,22 +925,19 @@ async function saveEdit() {
 async function runOutline() {
   try {
     await runAgent(pid, { agent: 'architect.outline', params: {} })
-    ElMessage.success('已开始生成大纲，完成后将自动生成世界观（自动生成的世界观同样按字数计费）')
+    // M0：取消"大纲完成自动接世界观"的链式调用——跑完即停，由门 1 审阅后显式继续
+    ElMessage.success('已开始生成大纲，完成后会停下等你审阅（不会自动生成世界观）')
     beginGenUI('正在生成大纲…')
-    // 大纲完成后若无世界观则自动链式生成世界观
-    startPolling(async () => {
-      try {
-        const w = await getWorld(pid)
-        if (!w || !w.world_view) {
-          await runAgent(pid, { agent: 'architect.world', params: {} })
-          ElMessage.success('大纲已完成，正在自动生成世界观（按字数计费）…')
-          beginGenUI('正在生成世界观…')
-          startPolling() // 世界观完成后走默认刷新
-          return true // 已接管后续，跳过本次默认刷新
-        }
-      } catch (e) { ElMessage.error(errorDetail(e, '世界观启动失败')) }
-      return false
-    })
+    startPolling()
+  } catch (e) { ElMessage.error(errorDetail(e, '启动失败')) }
+}
+// 门 1 通过后显式触发的第一次世界观生成（原先是 runOutline 内自动链过来的）
+async function runWorld() {
+  try {
+    await runAgent(pid, { agent: 'architect.world', params: {} })
+    ElMessage.success('已开始生成世界观（按字数计费），完成后会停下等你审阅')
+    beginGenUI('正在生成世界观…')
+    startPolling()
   } catch (e) { ElMessage.error(errorDetail(e, '启动失败')) }
 }
 async function doRegenOutline() {
@@ -827,17 +960,52 @@ async function doRegenWorld() {
   } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function startGen() {
-  const payload = { agent: 'writer.chapter', params: { scope: 'all' } }
+  // M0：正文不再 scope=all，默认按 5 章一批（批末停，给批末卡片）
+  const from = nextUnwritten.value
+  if (!from) { ElMessage.info('全部章节都已写完'); return }
+  const to = batchEnd.value
+  const payload = { agent: 'writer.chapter', params: { scope: 'range', from_ch: from, to_ch: to } }
   try {
     await runAgent(pid, payload)
-    ElMessage.success('已开始生成')
-    beginGenUI('正在启动写作…')
-    startPolling()
+    batchCard.value = null
+    ElMessage.success(`已开始写第 ${from}–${to} 章，本批结束会停下`)
+    beginGenUI('正在写本批章节…')
+    startPolling(async () => { await buildBatchCard(from, to); return false })
   } catch (e) {
     // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
     if (!staleGateRef.value?.open(pid, e?.response?.data?.detail, payload, onGateStarted)) {
       ElMessage.error(errorDetail(e, '启动失败'))
     }
+  }
+}
+
+// 批末材料：本批字数 / 质检合格率 / 扣费（后端确定性汇总，零 LLM）
+async function buildBatchCard(from, to) {
+  try {
+    const r = await getGateReview(pid, 'batch', { from_ch: from, to_ch: to })
+    batchCard.value = { from, to, summary: r.summary || [], checks: r.checks || [] }
+    tab.value = 'chapters'
+  } catch { /* 批末统计失败不影响正文已落盘 */ }
+}
+
+// 「一键全部生成」：小字逃生舱，二次确认 + 预估总额，跳过全部门
+async function startGenAll() {
+  const payload = { agent: 'writer.chapter', params: { scope: 'all' } }
+  let estimate = null
+  try { estimate = (await estimateAgentRun(pid, payload)).estimated_price } catch { /* 预估失败不阻塞 */ }
+  const money = typeof estimate === 'number' ? `，预估约 ¥${estimate.toFixed(2)}` : ''
+  try {
+    await ElMessageBox.confirm(
+      `将一次写完所有未完成章${money}。这条路径不经过审阅门，中途只能靠「停止」与版本回滚，确定继续？`,
+      '一键全部生成', { type: 'warning', confirmButtonText: '确认，一次跑完' })
+  } catch { return }
+  try {
+    await runAgent(pid, payload)
+    ElMessage.success('已开始一次跑完全部未完成章')
+    beginGenUI('正在逐章写作…')
+    startPolling()
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '启动失败'))
   }
 }
 
@@ -956,6 +1124,12 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 </script>
 
 <style scoped>
+/* 门 1 通过后的下一步入口 + 正文批次入口（M0） */
+.gate-next { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; flex-wrap: wrap; }
+.gate-next-hint { color: var(--el-text-color-secondary); font-size: 12px; }
+.ch-gen-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.ch-gen-all { color: var(--el-text-color-secondary); }
+.ch-gen-readonly { color: var(--el-color-warning); font-size: 12px; }
 /* ===== 顶栏：书名 + 元数据 + 导出 ===== */
 .pd-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--card-line); margin-bottom: 16px; }
 .pd-title { font-size: 24px; font-weight: 600; letter-spacing: .01em; line-height: 1.2; }

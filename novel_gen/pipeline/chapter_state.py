@@ -42,6 +42,10 @@ _PANEL_RE = re.compile(
 #: 状态，不能再把后半章状态截出账本（REQ-章内自洽与机制账本·扩展）。
 _NORM_TEXT_LIMIT = 12000
 
+#: 已发生事实的跨章累积上限（条）。facts 只能增加不能丢，但承接块要控长度：
+#: 超限时丢弃最旧的，保留最近 30 条（约 600 字，仍在承接块可读范围内）。
+MAX_CHAPTER_FACTS = 30
+
 
 def _norm_text(text: str) -> str:
     """抽取输入的归一化：默认全文传入。
@@ -210,14 +214,19 @@ def extract_chapter_state(llm, cfg, world, chapter, no: int, old_state: dict | N
             state["chapter"] = no
             state["numbers"] = canonicalize_number_list(state.get("numbers"), registry)
             _carry_rule_state(state, old_state)
+            _carry_facts(state, old_state)
             return state
     except Exception:
         logger.warning("章末状态 LLM 抽取失败，降级为确定性面板数字: no=%d", no)
     nums = canonicalize_number_list(_deterministic_numbers(chapter.content), registry)
     state: dict = {"chapter": no, "numbers": nums} if nums else {"chapter": no}
     _carry_rule_state(state, old_state)
+    _carry_facts(state, old_state)
+    # 无新增数字、无规则状态、也没有可承接的旧事实时才返回 None；
+    # 只要旧账本里有 facts 就继续写盘，让 chapter_state.json 的章号单调前进
     if not nums and not any(k in state for k in
-                            ("current_instance", "rules_active", "rule_events")):
+                            ("current_instance", "rules_active", "rule_events")) \
+            and not state.get("facts"):
         return None
     return state
 
@@ -245,10 +254,24 @@ def _carry_rule_state(state: dict, old_state: dict) -> None:
         state["rule_events"] = old_events
 
 
+def _carry_facts(state: dict, old_state: dict) -> None:
+    """已发生事实跨章累积（2026-11-16 用户定稿 B+A 的 A）。
+
+    facts 是"不可逆事件"，只能增加不能丢：只按章覆盖会让承接块永远停在抽取章，
+    模型在第 5 章仍看到第 1 章的事，容易把已发生的事再写一遍（剧情回退/重演）。
+    合并顺序保持时间序（旧在前、新在后），去重，超 `MAX_CHAPTER_FACTS` 丢弃最旧的。
+    """
+    old = [str(x).strip() for x in (old_state.get("facts") or []) if str(x).strip()]
+    new = [str(x).strip() for x in (state.get("facts") or []) if str(x).strip()]
+    merged = list(dict.fromkeys(old + new))
+    if merged:
+        state["facts"] = merged[-MAX_CHAPTER_FACTS:]
+
+
 def _should_llm_extract(no: int, cfg) -> bool:
     """REQ-token优化 P0-4：章末状态 LLM 抽取降频——每 state_extract_frequency 章抽 1 次，
-    其余章走确定性面板数字正则（零 LLM）。1=每章（原行为）。"""
-    freq = int(getattr(cfg, "state_extract_frequency", 3) or 3)
+    其余章走确定性面板数字正则（零 LLM）。1=每章（2026-11-16 起的默认口径）。"""
+    freq = int(getattr(cfg, "state_extract_frequency", 1) or 1)
     if freq <= 1:
         return True
     return (int(no) % freq) == 1
@@ -982,3 +1005,71 @@ def active_rules_for_instance(ruleset: list, instance: str = "") -> list:
         elif instance and scope == f"instance:{instance}":
             out.append(rule)
     return out
+
+
+# ---------- 维护入口：存量书补/重抽章末账本 ----------
+
+def _main(argv: list) -> int:
+    """按章重抽章末状态账本（不重写正文、不扣生成费）。
+
+    用法：python -m novel_gen.pipeline.chapter_state <项目目录> [--to N]
+
+    按顺序从第 1 章重放到 `--to`（默认已落盘最大章），每章都用上一章账本当
+    `old_state`，保证 facts 累积链正确；本条入口强制每章抽（`state_extract_frequency=1`），
+    LLM 不可用/失败自动降级确定性面板数字，章号仍单调前进。
+    """
+    import json
+    if not argv:
+        print("用法: python -m novel_gen.pipeline.chapter_state <项目目录> [--to N]")
+        return 2
+    from pathlib import Path
+    try:
+        # 维护入口在命令行跑：与 webapp 口径一致，从仓库根 .env 取模型密钥（缺省不致命）
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+    except Exception:
+        logger.warning("维护入口未加载 .env（若抽取降级为确定性，检查模型密钥）")
+    from ..llm.factory import create_llm
+    from ..store.project import ProjectStore
+
+    store = ProjectStore.open(argv[0])
+    cfg = store.load_config()
+    cfg.state_extract_frequency = 1
+    world = store.load_world()
+    end = store.last_chapter_no()
+    if "--to" in argv:
+        idx = argv.index("--to")
+        if idx + 1 < len(argv):
+            end = min(end, int(argv[idx + 1]))
+    try:
+        llm = create_llm(cfg.llm)
+    except Exception:
+        logger.exception("LLM 构造失败（降级为确定性面板数字抽取）")
+        llm = None
+    # 重放链在内存里推进：逐章用"上一章刚抽出的账本"做 old_state，最后只落一次盘。
+    # 不能逐章 write_chapter_state_guarded —— 护栏会拿磁盘上的最新章（可能已是 5）挡住
+    # 1~4 章的写入，facts 累积链就断了（实测过一次：三章各自只合并了首章 facts）。
+    prev = store.load_chapter_state()
+    steps = []
+    for no in range(1, end + 1):
+        chapter = store.load_chapter(no)
+        if not chapter or not chapter.content:
+            continue
+        state = extract_chapter_state(llm, cfg, world, chapter, no, old_state=prev)
+        if not state:
+            steps.append({"ch": no, "status": "empty"})
+            continue
+        prev = state
+        steps.append({"ch": no, "status": "ok", "facts": len(state.get("facts") or [])})
+    if prev:
+        store.save_chapter_state(prev)   # save 自带 book_facts 失效；整本重放属有意覆盖
+    final = store.load_chapter_state() or {}
+    print(json.dumps({"project": store.dir.name, "steps": steps,
+                      "chapter": final.get("chapter"),
+                      "facts": len(final.get("facts") or [])}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(_main(sys.argv[1:]))

@@ -545,6 +545,14 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
+- **2026-11-16**：第三十四次部署（服务器代码 = master，随 devtest `d3e5570` 合并，**已上线**）——**创作阶段审阅门 M0 + 验收 bug 修复 + 章末账本承接 B+A**：
+  - **① 创作阶段审阅门 M0（`508c6ad` → PR #14 `5a4f408`）**：生成链路拆成断点——大纲生成完停下、世界观生成完停下，各带「通过 / 重生成 / 跳过」门卡；未过门时下游接口返回 409；正文按 5 章一批，批末回材料后停；小字「一键全部生成」是逃生舱（二次确认 + 预估）。
+  - **② 验收两处 bug 修复（`910c961` / `3736e4f` → PR #15 `96a270b`）**：门卡片去掉「先编辑」（本就渲染在当前 tab，是空操作，编辑随时可做），动作收敛为「通过 / 重生成 / 跳过」；时间线事件章号归属到本章（`derive_chapter_events` + 章末 summary 兜底），水位改为三源取最大（`state.last_chapter` / `chapter_state.chapter` / `store.last_chapter_no()`），不再把事件全挂第 1 章。
+  - **③ 章末账本承接 B+A（`1eb8d20` / `66aa0e0` → PR #16 `02083d2`）**：`state_extract_frequency` 默认 5→1（每章抽，人物状态共用同一开关）；`_carry_facts` 让「已发生事实」跨章累积（去重、保留最近 30 条），确定性兜底有旧 facts 时也写盘，保证 `chapter_state.json` 章号单调前进；新增维护入口 `python -m novel_gen.pipeline.chapter_state <项目目录> [--to N]`（内存重放链、整本落一次盘）。
+  - 回归：`python -m pytest tests/ -m "p0 or p1"` **937 passed**；测试书真机实测承接块 `chapter=5` / `facts=30` / 1038 字，时间线 13 条按章分布（ch1=5/ch2=3/ch3=1/ch4=2/ch5=2），characters `last_ch` 前进到 5。
+  - 工程说明：本次 `github.com:443` 多次被重置，PR #16 经 GitHub API（blob→tree→commit→ref→PR→merge）提交，带入的 CRLF 行尾已由 PR #17（`b086e34` / `d3e5570`）统一还原 LF，内容未变。
+  - 部署：`git archive master` → workbench 上传 → `python3 -m zipfile -e` 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上只验容器 health + 主页 JS 体积（不白屏）。
+  - 上线证据：包 `novel_master.zip` md5 `85b4c5c2494d5ad64f7273395dce5ccd`（本地与服务器一致）；部署前备份 `/opt/novel-gen-bak-20261116.tgz`（6.9 M）；镜像 `novel-gen:latest` 重建（容器内前端多阶段构建真实执行）；`novel-gen` 容器 `healthy`；`https://mozao.click/api/health` 200 `{"status":"ok"}`；主页 `assets/index-DulP8qXO.js`（1,119,237 B）不白屏；容器内 `novel_gen/pipeline/chapter_state.py` 已含 `_carry_facts`（确认新代码生效）。回滚：`tar xzf /opt/novel-gen-bak-20261116.tgz -C /opt && cd /opt/novel-gen && docker compose up -d --build`。
 - **2026-11-04 00:03**：第三十三次部署（服务器代码 = master `faa5358`，**已上线**）——**小墨AI 支持付费用户按字数计费 + 文档口径补充**（feat/assistant-billing 合并 master，含 `3df5f2a` / `faa5358` 两次 `--no-ff` 合并）：
   - **① 付费用户走平台 Key 按字数扣费**：统一 3 元/万字，按 AI 实际生成字数结算；BYOK 用户不扣费；独立 `assistant_billing` 账本（不占项目 500 条账本、不计入 `ai_words_total` 项目累计），先落用户消息再调用 + 请求级 `Idempotency-Key` 幂等（唯一索引）。
   - **② 前端接线**：小墨回答改为 markdown 渲染（`markdown-it`，`html:false` 防注入、`breaks:true`），新增 `utils/requestId.js` 自动携带幂等键，后台新增开关配置入口。

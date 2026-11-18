@@ -523,6 +523,7 @@
   - `_update_state_layer` 只 import `EventStream` 未实例化，`NameError` 被吞，14 章 0 事件、每章 `state_layer` 失败；
   - `_split_scenes` 异常时 `events_list` 未初始化，第 15 章整本中断。
 - **约束**：新增状态消费方一律走 `StateGraph` 契约，禁止各自拼 `book_memory/scenes/events`；改四视图字段必须同步 `version` 计算与接口文档。
+
 ## 2026-11-16 创作阶段审阅门 M0：断点 + 门 1/门 2 + 5 章一批（feat/gate-review-m0）
 
 - **决策**：把「点一次开始就无人值守跑完全流程」改成三段断点——大纲跑完即停（删掉 `runOutline` 里自动链世界观的回调）、世界观跑完即停、正文默认 5 章一批；每段停下渲染 `GateCard`（摘要 + 确定性体检 + 只展最可疑 3 条）让用户通过/编辑/重生成再继续；「一键全部生成」降级为小字逃生舱（预估总额 + 二次确认）。

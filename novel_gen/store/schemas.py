@@ -1031,13 +1031,15 @@ class Chapter:
     content: str = ""
     summary: str = ""  # 本章摘要，用于后续章节的记忆回填
     goal: str = ""     # 生成时的大纲目标快照（用于大纲变更检测；旧数据为空不误报）
-    source: str = "ai" # 内容来源：ai=平台生成；user=用户手写（AI 流程不得覆盖，除非显式确认）
+    source: str = "ai" # 内容来源：ai=平台生成；rewrite=改写；inline=内联采纳；user=用户手写；legacy=存量
     user_edited: bool = False  # AI 生成后被用户编辑过（个人风格锚来源；旧数据缺字段默认 False）
+    # R25：内联采纳只改正文不改摘要，标记摘要落后于正文（不触发额外 LLM 调用）
+    summary_stale: bool = False
 
     def to_dict(self) -> dict:
         return {"no": self.no, "title": self.title, "content": self.content,
                 "summary": self.summary, "goal": self.goal, "source": self.source,
-                "user_edited": self.user_edited}
+                "user_edited": self.user_edited, "summary_stale": self.summary_stale}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Chapter":
@@ -1049,6 +1051,7 @@ class Chapter:
             goal=d.get("goal", ""),
             source=d.get("source", "ai"),
             user_edited=bool(d.get("user_edited", False)),
+            summary_stale=bool(d.get("summary_stale", False)),
         )
 
 

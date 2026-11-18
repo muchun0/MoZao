@@ -126,6 +126,18 @@
 | POST | /api/projects/{id}/expand-selection | 是 | 扩写选中片段 |
 | POST | /api/projects/{id}/chapters/{no}/issues/rewrite | 是 | 按单条改稿建议局部改写（只改命中段落，新增版本并设为当前，按版本字数计费） |
 
+### 内联写作（R25）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/chapters/{no}/inline/generate | 是 | 生成内联候选（续写/改写/扩写）。body：`mode`、`anchor{start,end}`、`base_version`、`base_hash`、`client_token`、`candidates`(2–3)、`target_words`(100–800)、`instruction`(≤500)。**生成即按候选合计字数计费，未采纳也计费**；同 `client_token` 重放不重复扣费 |
+| POST | /api/projects/{id}/chapters/{no}/inline/adopt | 是 | 人工采纳候选：按记录 anchor 落一个新版本（`source=inline`），**不二次计费**。body：`gen_id`、`candidate_id`、`base_version`、`base_hash`、`client_token`；版本/哈希漂移返回 409 且候选保留 |
+| GET | /api/projects/{id}/chapters/{no}/inline/drafts | 是 | 该章 48h 内未采纳、未作废候选（重开面板不重复计费） |
+| GET | /api/projects/{id}/chapters/{no}/inline/estimate?chars=&candidates= | 是 | 触发前只读预估（字数/金额），不扣费、不调模型 |
+| GET | /api/projects/{id}/search?q=&limit=&offset=&scope= | 是 | 只读全文检索（R28/R29 共用）：`scope=body/settings/all`，`q` 2–40 字，片段前后 40 字，返回 `items/scanned_chars/truncated/elapsed_ms` |
+
+> 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` 等。
+
 ### 生成控制
 
 | 方法 | 路径 | 鉴权 | 说明 |

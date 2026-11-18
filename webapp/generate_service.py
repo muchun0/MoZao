@@ -201,14 +201,14 @@ def guard_locked(store: ProjectStore, agent: str, params: dict) -> None:
 
 
 def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
-    """手写章守卫：单章手写拒重写；范围起点 ≤ 最大手写章号拒。
+    """手写/内联采纳章守卫：单章拒重写；范围起点 ≤ 最大受保护章号拒。
 
-    判定口径：`chapter_versions.json` 索引中**当前 selected 版本**的 `source=="user"`
-    （`save_chapter(source="user")` 用户编辑保存时 history 记录 source=user），叠加存量
-    HEAD `source=="user"` 兜底（无版本索引的 legacy 项目）。不用 `user_managed` 标记：
-    `select()`（用户选择/回滚版本）也置位它但只改 selected，选中 AI 版本后 source 仍为
-    ai，不算手写——旧实现误用 user_managed 会把「用户只是选中 AI 重生成版本」判成手写
-    （存量缺陷，见 docs/decisions.md）。
+    判定口径：`chapter_versions.json` 索引中**当前 selected 版本**的
+    `source in {user, inline}`（`save_chapter` 用户编辑保存时记 source=user，
+    R25 内联采纳记 source=inline），叠加存量 HEAD 同口径兜底（无版本索引的 legacy 项目）。
+    不用 `user_managed` 标记：`select()`（用户选择/回滚版本）也置位它但只改 selected，
+    选中 AI 版本后 source 仍为 ai，不算手写——旧实现误用 user_managed 会把
+    「用户只是选中 AI 重生成版本」判成手写（存量缺陷，见 docs/decisions.md）。
     """
     if agent != "writer.chapter":
         return
@@ -216,7 +216,7 @@ def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
         if _is_user_chapter(store, params["ch_no"]):
             raise HTTPException(
                 status_code=400,
-                detail="该章为用户手写内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
+                detail="该章为人工修订或内联采纳内容，AI 不自动重写；如需修改请使用「编辑本章」手动调整")
         return
     user_max = max((no for no in _user_chapter_numbers(store)), default=0)
     if not user_max:
@@ -226,12 +226,17 @@ def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
     if start <= user_max:
         raise HTTPException(
             status_code=400,
-            detail=f"第 {start} 章起范围内含用户手写内容（到第 {user_max} 章），"
-                   f"重新生成会覆盖手写内容，已禁止；请从第 {user_max + 1} 章开始")
+            detail=f"第 {start} 章起范围内含人工修订/内联采纳内容（到第 {user_max} 章），"
+                   f"重新生成会覆盖，已禁止；请从第 {user_max + 1} 章开始")
+
+
+# R25 基座：内联采纳（inline）与用户手写（user）同属「人已拍板、AI 不得自动覆盖」的受保护来源，
+# 统一在此声明，避免三处判定各写一份字面量导致漏改。
+_PROTECTED_SOURCES = {"user", "inline"}
 
 
 def _selected_version_is_user(rec: dict) -> bool:
-    """版本索引单条记录中，当前 selected 版本是否用户手写（source=="user"）。
+    """版本索引单条记录中，当前 selected 版本是否受保护来源（user/inline）。
 
     `history` 的 source 在存档时可靠记录（versioned 门面与 legacy 路径一致）；
     `select()` 只改 selected + user_managed，不改 history——选中 AI 版本后
@@ -243,27 +248,27 @@ def _selected_version_is_user(rec: dict) -> bool:
     selected = rec.get("selected")
     for h in rec.get("history") or []:
         if isinstance(h, dict) and h.get("v") == selected:
-            return h.get("source") == "user"
+            return h.get("source") in _PROTECTED_SOURCES
     return False
 
 
 def _is_user_chapter(store: ProjectStore, no: int) -> bool:
-    """单章是否用户手写（selected 版本 source=="user" 优先，存量 HEAD source 兜底）。"""
+    """单章是否受保护（selected 版本 source in {user,inline} 优先，存量 HEAD 兜底）。"""
     rec = (store.load_chapter_versions() or {}).get(str(no)) or {}
     if _selected_version_is_user(rec):
         return True
     ch = store.load_chapter(no)
-    return ch is not None and ch.source == "user"
+    return ch is not None and ch.source in _PROTECTED_SOURCES
 
 
 def _user_chapter_numbers(store: ProjectStore) -> list[int]:
-    """全部手写章号（selected 版本 source==user ∪ 存量 HEAD source==user）。"""
+    """全部受保护章号（selected 版本 ∪ 存量 HEAD，source in {user,inline}）。"""
     numbers: set[int] = set()
     for no, rec in (store.load_chapter_versions() or {}).items():
         if _selected_version_is_user(rec) and str(no).isdigit():
             numbers.add(int(no))
     for c in store.list_chapters():
-        if c.source == "user":
+        if c.source in _PROTECTED_SOURCES:
             numbers.add(c.no)
     return sorted(numbers)
 

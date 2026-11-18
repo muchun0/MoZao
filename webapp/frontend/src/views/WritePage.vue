@@ -12,6 +12,9 @@
     <div class="right">
       <div class="tabs">
         <button class="tab" :class="{ on: tab === 'ai' }" @click="tab = 'ai'">AI 写作</button>
+        <button class="tab" :class="{ on: tab === 'direction' }" @click="tab = 'direction'">
+          走向<span v-if="dirNotes.length" class="tab-badge">{{ dirNotes.length }}</span>
+        </button>
         <button class="tab" :class="{ on: tab === 'search' }" @click="tab = 'search'">检索</button>
       </div>
       <CandidatePanel v-if="tab === 'ai'"
@@ -22,6 +25,13 @@
         @update:mode="mode = $event" @update:target-words="onTargetWords"
         @update:candidate-count="onCandidateCount" @update:instruction="instruction = $event"
         @generate="generate(mode)" @adopt="adopt" @copy="copyCandidate" @restore="restoreDraft" />
+      <DirectionPanel v-else-if="tab === 'direction'"
+        :stuck-type="dirStuckType" :stuck-text="dirStuckText" :count="dirCount"
+        :generating="dirGenerating" :batch="dirBatch" :notes="dirNotes"
+        :adopting="dirAdoptingId" :can-generate="canGenerate" :blocked-reason="blockedReason"
+        @update:stuck-type="dirStuckType = $event" @update:stuck-text="dirStuckText = $event"
+        @update:count="dirCount = $event" @generate="generateDirections"
+        @adopt="adoptDirection" @use="useDirection" @delete-note="deleteDirNote" />
       <StorySearch v-else :pid="pid" @open="openSearchHit" />
     </div>
 
@@ -40,10 +50,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getChapters, getChapter, updateChapterContent } from '../api/novel'
 import { inlineGenerate, inlineAdopt, getInlineDrafts, getInlineEstimate,
   contentHash, newClientToken } from '../api/inline'
+import { generateDirections as apiGenerateDirections,
+  adoptDirection as apiAdoptDirection, getBranchNotes, deleteBranchNote } from '../api/branches'
+import { directionInstruction } from '../utils/direction'
 import { errorDetail } from '../utils/agentRun'
 import ChapterRail from '../components/write/ChapterRail.vue'
 import WritingEditor from '../components/write/WritingEditor.vue'
 import CandidatePanel from '../components/write/CandidatePanel.vue'
+import DirectionPanel from '../components/write/DirectionPanel.vue'
 import InlineFloatBar from '../components/write/InlineFloatBar.vue'
 import StorySearch from '../components/write/StorySearch.vue'
 import VersionDialog from '../components/VersionDialog.vue'
@@ -75,6 +89,16 @@ const selection = ref({ start: 0, end: 0 })
 const floatBar = ref({ show: false, x: 0, y: 0 })
 const genToken = ref('')
 
+// R26 剧情走向
+const dirStuckType = ref('')
+const dirStuckText = ref('')
+const dirCount = ref(4)
+const dirBatch = ref(null)
+const dirNotes = ref([])
+const dirGenerating = ref(false)
+const dirAdoptingId = ref('')
+const dirToken = ref('')
+
 const dirty = computed(() => content.value !== serverContent.value)
 const words = computed(() => content.value.replace(/\s/g, '').length)
 const blockedReason = computed(() => {
@@ -101,8 +125,11 @@ async function loadChapter(no) {
     candidates.value = []
     genMeta.value = null
     genToken.value = ''
+    dirBatch.value = null
+    dirToken.value = ''
     floatBar.value.show = false
     await loadDrafts(no)
+    await loadDirNotes(no)
     refreshEstimate()
   } catch (e) {
     ElMessage.error(errorDetail(e, '章节加载失败'))
@@ -117,6 +144,15 @@ async function loadDrafts(no) {
     drafts.value = res.items || []
   } catch {
     drafts.value = []
+  }
+}
+
+async function loadDirNotes(no) {
+  try {
+    const res = await getBranchNotes(pid, no)
+    dirNotes.value = res.items || []
+  } catch {
+    dirNotes.value = []
   }
 }
 
@@ -301,6 +337,77 @@ function restoreDraft(draft) {
   }
 }
 
+// ---------- 剧情走向（R26） ----------
+async function generateDirections() {
+  if (!current.value || dirGenerating.value) return
+  if (dirty.value) { ElMessage.warning('请先保存当前修改'); return }
+  if (dirBatch.value?.items?.length) {
+    const note = dirBatch.value.billing || dirBatch.value.charged > 0
+      ? '换一批会再次按候选合计字数计费（上一批已计费）。继续？'
+      : '换一批会丢弃当前候选（不涉及计费）。继续？'
+    try {
+      await ElMessageBox.confirm(note, '换一批', { type: 'warning' })
+    } catch {
+      return
+    }
+  }
+  if (!dirToken.value) dirToken.value = newClientToken()
+  dirGenerating.value = true
+  try {
+    const res = await apiGenerateDirections(pid, currentNo.value, {
+      count: dirCount.value,
+      stuck_type: dirStuckType.value || null,
+      stuck_text: dirStuckType.value === 'custom' ? dirStuckText.value : '',
+      client_token: dirToken.value,
+    })
+    dirBatch.value = res
+    dirToken.value = ''
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '走向生成失败'))
+  } finally {
+    dirGenerating.value = false
+  }
+}
+
+async function adoptDirection(item) {
+  if (!dirBatch.value || dirAdoptingId.value) return
+  dirAdoptingId.value = item.id
+  try {
+    const res = await apiAdoptDirection(pid, currentNo.value, {
+      gen_id: dirBatch.value.gen_id, item_id: item.id, client_token: newClientToken(),
+    })
+    await loadDirNotes(currentNo.value)
+    ElMessage.success(res.duplicated ? '便签已存在（未重复保存）' : '已存为写作便签')
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '存便签失败'))
+  } finally {
+    dirAdoptingId.value = ''
+  }
+}
+
+function useDirection(item) {
+  // 「按此写」只预填 R25 续写指令并切回 AI 面板，不自动触发生成（避免意外扣费）
+  mode.value = 'continue'
+  instruction.value = directionInstruction(item)
+  tab.value = 'ai'
+  ElMessage.success('已带入走向，点「从光标处续写」生成正文')
+}
+
+async function deleteDirNote(note) {
+  try {
+    await ElMessageBox.confirm('删除这条便签？不影响正文，也不退费。', '删除便签',
+      { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await deleteBranchNote(pid, currentNo.value, note.draft_id)
+    await loadDirNotes(currentNo.value)
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '删除便签失败'))
+  }
+}
+
 // ---------- 检索 ----------
 async function openSearchHit(hit) {
   if (hit.kind === 'settings') {
@@ -314,7 +421,7 @@ async function openSearchHit(hit) {
   editorRef.value?.focusAt(hit.offset)
 }
 
-watch(dirty, (v) => { if (v) genToken.value = '' })
+watch(dirty, (v) => { if (v) { genToken.value = ''; dirToken.value = '' } })
 </script>
 
 <style scoped>
@@ -330,4 +437,9 @@ watch(dirty, (v) => { if (v) genToken.value = '' })
   font-family: var(--sans); font-size: 13px; color: var(--muted);
 }
 .tab.on { color: var(--indigo); font-weight: 600; box-shadow: inset 0 -2px 0 var(--indigo); }
+.tab-badge {
+  display: inline-block; min-width: 15px; margin-left: 3px; padding: 0 4px;
+  border-radius: 8px; background: var(--gold-soft); color: var(--gold-deep);
+  font-size: 10px; line-height: 15px; text-align: center;
+}
 </style>

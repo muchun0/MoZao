@@ -25,30 +25,11 @@ from fastapi import HTTPException
 from novel_gen.store.run_context import read_run_file
 
 from .logger import get_logger
+from . import generation_flow_cards as flow_cards
+from .generation_flow_defs import (AGENT_STAGE, FLOW_FILE, FLOW_VERSION, MIDDLE_STAGES,
+                                   STAGE_AGENT, STAGE_KEYS, STAGE_LABELS)
 
 logger = get_logger("generation_flow")
-
-FLOW_FILE = "generation_stage.json"
-FLOW_VERSION = 1
-
-STAGE_KEYS = ("research", "outline", "world", "volume", "chapters")
-STAGE_AGENT = {
-    "research": "researcher",
-    "outline": "architect.outline",
-    "world": "architect.world",
-    "volume": "architect.volume",
-    "chapters": "writer.chapter",
-}
-AGENT_STAGE = {v: k for k, v in STAGE_AGENT.items()}
-STAGE_LABELS = {
-    "research": "题材调研",
-    "outline": "大纲",
-    "world": "人物世界观",
-    "volume": "卷纲",
-    "chapters": "正文",
-}
-#: 中间阶段在 run 成功后进入 done（等确认）；chapters 成功后直接 confirmed（终态）
-_MIDDLE_STAGES = ("research", "outline", "world", "volume")
 
 _MAX_IDEMPOTENCY = 50
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -342,108 +323,6 @@ def _refresh_digests(store, flow: dict) -> bool:
     return changed
 
 
-# ---------- 价格提示 ----------
-
-def _price_hint(store, key: str) -> float:
-    """只读预估价（BYOK 恒 0；失败降级为 0，不影响卡片渲染）。"""
-    try:
-        from . import db, generate_service
-
-        uid = db.project_owner(store.dir.name)
-        mode = generate_service.resolve_billing_mode(uid)
-        agent = STAGE_AGENT[key]
-        params = {"scope": "all"} if key == "chapters" else (
-            {"vol_no": 1} if key == "volume" else {})
-        if key == "volume":
-            return 0.0
-        return float(generate_service._estimated_price(agent, params, store, mode))
-    except Exception:
-        logger.exception("阶段预估价计算失败（降级为 0）: project=%s stage=%s",
-                         store.dir.name, key)
-        return 0.0
-
-
-# ---------- 确认卡 ----------
-
-def _clip(text, limit: int = 90) -> str:
-    s = str(text or "").strip().replace("\n", " ")
-    return s if len(s) <= limit else s[:limit] + "…"
-
-
-def _build_card(store, st: dict, cfg) -> dict | None:
-    """后端从产物只读生成卡片摘要；失败时 lines=[] + error，卡片仍可操作。"""
-    key, status = st["key"], st["status"]
-    if status not in ("done", "ready", "failed", "stopped", "skipped", "confirmed"):
-        return None
-    lines: list[str] = []
-    error = ""
-    try:
-        if key == "research" and status in ("done", "confirmed", "skipped"):
-            report = store.load_research()
-            if report is not None:
-                lines = [f"题材：{report.genre or cfg.genre}",
-                         f"共性：{_clip(report.summary, 100)}"]
-                lines += [f"流行方向：{_clip(x, 50)}" for x in (report.trends or [])[:3]]
-                lines += [f"可混合文风：{_clip(x, 50)}" for x in (report.styles or [])[:3]]
-        elif key == "outline" and status in ("done", "confirmed"):
-            outline = store.load_outline()
-            if outline is not None:
-                lines = [f"一句话卖点：{_clip(outline.intro, 100)}",
-                         f"主线：{_clip(outline.main_line or outline.core_conflict, 100)}",
-                         f"结构：{len(outline.chapters)} 章 / {len(outline.volumes)} 卷"]
-                for v in (outline.volumes or [])[:3]:
-                    lines.append(f"{v.name or ('第%s卷' % v.no)}：{_clip(v.intro, 50)}")
-        elif key == "world" and status in ("done", "confirmed"):
-            world = store.load_world()
-            if world is not None:
-                names = [c.name for c in (world.characters or []) if getattr(c, "name", "")]
-                lines = [f"世界观：{_clip(world.world_view, 100)}",
-                         f"人物卡：{len(names)} 人" + (f"（{'、'.join(names[:5])}）" if names else ""),
-                         f"机制类型：{'、'.join(world.mechanism_types or []) or '未声明'}"]
-                lines += [f"核心设定：{_clip(x, 60)}" for x in (world.locked_settings or [])[:3]]
-        elif key == "volume":
-            lines = ["卷纲已并入大纲一次生成（大纲阶段已产出分卷与逐章计划）"]
-        elif key == "chapters" and status in ("ready",):
-            outline = store.load_outline()
-            total = len(outline.chapters) if outline else 0
-            words = int(getattr(cfg, "chapter_words", 2500) or 2500)
-            done = len(store.list_chapters())
-            lines = [f"计划：全书 {total} 章，待写 {max(0, total - done)} 章",
-                     f"目标字数：约 {total * words} 字",
-                     f"预估费用：¥{_price_hint(store, 'chapters'):.2f}（按实际生成字数结算）"]
-    except Exception as exc:  # noqa: BLE001 — 摘要失败不能挡住确认
-        logger.exception("确认卡摘要生成失败: project=%s stage=%s", store.dir.name, key)
-        lines, error = [], f"{type(exc).__name__}: 摘要暂不可用"
-    actions = _card_actions(key, status)
-    card = {"stage": key, "title": STAGE_LABELS[key], "status": status,
-            "lines": lines, "actions": actions, "digest": st.get("digest") or "",
-            "edited": bool(st.get("edited_at")), "error": error,
-            "reason": st.get("reason") or "",
-            "message": (st.get("last_error") or {}).get("message", "")}
-    if actions and "regenerate" in actions and key != "chapters":
-        card["regenerate_estimate"] = _price_hint(store, key)
-    return card
-
-
-def _card_actions(key: str, status: str) -> list[str]:
-    if key == "chapters":
-        if status == "ready":
-            return ["continue", "back_outline"]
-        if status in ("failed", "stopped"):
-            return ["continue"]
-        return []
-    if status == "ready":
-        return ["continue", "back_outline"] if key == "chapters" else ["continue"]
-    if status == "done":
-        return ["continue", "edit", "regenerate"] if key in ("outline", "world") \
-            else ["continue", "regenerate"]
-    if status == "skipped" and key == "volume":
-        return []
-    if status in ("failed", "stopped"):
-        return ["regenerate"]
-    return []
-
-
 # ---------- 对外的读取 ----------
 
 def _public_flow(store, flow: dict, cfg, with_card: bool) -> dict:
@@ -461,7 +340,7 @@ def _public_flow(store, flow: dict, cfg, with_card: bool) -> dict:
     flow["current"] = cur["key"] if cur else ""
     cards = []
     if with_card and cur:
-        card = _build_card(store, cur, cfg)
+        card = flow_cards.build_card(store, cur, cfg)
         if card:
             cards.append(card)
     return {"flow_id": flow.get("flow_id"), "mode": flow.get("mode"),
@@ -743,7 +622,7 @@ def set_mode(store, user: dict, mode: str) -> dict:
         flow["mode_source"] = "project"
         _reconcile(store, flow)
         cur = _current(flow)
-        if mode == "auto" and cur and cur["key"] in _MIDDLE_STAGES and cur.get("status") == "done":
+        if mode == "auto" and cur and cur["key"] in MIDDLE_STAGES and cur.get("status") == "done":
             try:
                 _continue_locked(store, flow, cur["key"], user)
             except HTTPException as exc:
@@ -809,7 +688,7 @@ def on_run_finished(store, agent: str, run_id: str, status: str) -> None:
             st.update(status="failed", finished_at=_now(),
                       last_error={"code": "run_failed", "message": "生成失败，可重试（再次计费）"})
         advance = (flow.get("mode") == "auto" and st.get("status") == "done"
-                   and key in _MIDDLE_STAGES)
+                   and key in MIDDLE_STAGES)
         _save(store, flow)
     if advance:
         threading.Thread(target=_auto_advance, args=(store, key), daemon=True).start()

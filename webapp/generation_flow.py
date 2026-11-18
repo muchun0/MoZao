@@ -705,6 +705,12 @@ def _auto_advance(store, key: str) -> None:
             break
         time.sleep(0.05)
     try:
+        from . import db
+
+        uid = db.project_owner(pid)
+    except Exception:
+        uid = None
+    try:
         with _lock(store):
             flow, corrupt = read_flow(store)
             if corrupt or not flow or flow.get("mode") != "auto":
@@ -712,7 +718,7 @@ def _auto_advance(store, key: str) -> None:
             st = _stage(flow, key)
             if st is None or st.get("status") != "done":
                 return
-            _continue_locked(store, flow, key, {})
+            _continue_locked(store, flow, key, {"id": uid})
             _save(store, flow)
     except Exception:
         logger.exception("auto 模式自动推进失败（不阻断已完成的 run）: project=%s stage=%s",

@@ -55,7 +55,10 @@ LEDGER_MODE = "version_ledger"
 _LEDGER_FILE = "settle.json"
 _DEBT_FILE = "debt.json"
 _MAX_ENTRIES = 500          # 账本条目上限（超出按插入顺序淘汰最旧，TECH §4.4.2）
-_FREE_SOURCES = {"user", "legacy"}  # 人工编辑不计费；legacy=升级前已扣过费的存量版本，绝不补扣
+# R25 基座：inline（内联生成）在生成阶段已按候选合计算过费，采纳产生版本不再二次扣费
+_FREE_SOURCES = {"user", "legacy", "inline"}
+_INLINE_PREFIX = "inline:"
+_INLINE_RETENTION = 48 * 3600  # inline 明细短期保留窗口（秒），与 inline_drafts TTL 对齐
 _MODE_USER_LLM = "user_llm"
 _MODE_PLATFORM = "platform"
 
@@ -159,13 +162,36 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _evict_entries(entries: dict) -> None:
+    """账本超上限时按分档优先级淘汰（R25 基座 §4.5）。
+
+    顺序：① 48h 外的 inline 明细（最旧优先）→ ② 仍超限则淘汰最旧 inline →
+    ③ 最后才按插入顺序淘汰其他条目。这样高频内联不会把正文结算记录挤掉；
+    inline 的幂等由 `inline_drafts.tokens` 承担，删除账本明细不会造成二次扣费。
+    """
+    if len(entries) <= _MAX_ENTRIES:
+        return
+    cutoff = int(time.time()) - _INLINE_RETENTION
+    for key in list(entries):
+        if len(entries) <= _MAX_ENTRIES:
+            return
+        entry = entries.get(key) or {}
+        if str(key).startswith(_INLINE_PREFIX) and int(entry.get("ts") or 0) < cutoff:
+            entries.pop(key, None)
+    for key in list(entries):
+        if len(entries) <= _MAX_ENTRIES:
+            return
+        if str(key).startswith(_INLINE_PREFIX):
+            entries.pop(key, None)
+    while len(entries) > _MAX_ENTRIES:
+        entries.pop(next(iter(entries)))
+
+
 def _write_ledger(store, data: dict) -> None:
     data["mode"] = LEDGER_MODE
     data["updated_at"] = int(time.time())
     entries = data.get("entries") or {}
-    # 超上限淘汰最旧（dict 保序，最旧即第一个键）
-    while len(entries) > _MAX_ENTRIES:
-        entries.pop(next(iter(entries)))
+    _evict_entries(entries)
     _atomic_write_json(_ledger_path(store), data)
 
 

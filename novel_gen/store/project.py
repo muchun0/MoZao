@@ -469,7 +469,8 @@ class ProjectStore:
                      quality: Optional[dict] = None,
                      promote: bool = True,
                      prev_chapters: Optional[list] = None,
-                     unstable: bool = False) -> Optional[int]:
+                     unstable: bool = False,
+                     label: str = "") -> Optional[int]:
         """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
 
         `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
@@ -481,6 +482,7 @@ class ProjectStore:
         避免把已有的依赖元数据抹掉；存量章无记录则保持缺失（判定为 unknown）。
         档3：`unstable=True` 表示本章是在"已知前文不一致"下生成的，写入
         `upstream.unstable`（同文件同权威源，无新账本）。
+        `label`：版本用途标签（R25 内联采纳记 `inline:adopt:<gen_id>`，供审计按 gen_id 关联）。
         """
         if self.versioned_enabled():
             if prev_chapters is None:
@@ -495,7 +497,7 @@ class ProjectStore:
                 str(chapter.no), chapter.to_dict(),
                 source=source or getattr(chapter, "source", "ai") or "ai",
                 quality=quality, promote=promote, limit=version_limit,
-                upstream=upstream or None)
+                upstream=upstream or None, label=label)
         return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
                                          quality=quality, promote=promote)
 
@@ -572,8 +574,8 @@ class ProjectStore:
         else:
             rec = {"versions": versions, "selected": rec.get("selected"), "history": history,
                    "user_managed": bool(rec.get("user_managed"))}
-        # 人工编辑 → 标记用户已管理（此后自动选分不再覆盖）
-        if src == "user":
+        # 人工编辑 / 内联采纳 → 标记用户已管理（此后自动选分不再覆盖）
+        if src in ("user", "inline"):
             rec["user_managed"] = True
 
         # 版本上限淘汰最旧（跳过 selected，永不淘汰 HEAD）

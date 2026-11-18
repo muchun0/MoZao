@@ -657,3 +657,22 @@
 - `GET /chapters/{no}` 增补 `version/base_hash/source/summary_stale` 只读字段，向后兼容；写作页生成前若本地有未保存修改直接拦截，保证锚点偏移与服务器正文一致。
 
 **单测**：`tests/test_inline_writing.py` 32 条（P0：规范化/精确拼接/版本语义/自动选分不覆盖/守卫/结算免扣/账本分档淘汰/token 幂等与作废/生成计费一次/空候选与合规不计费/BYOK 0 元留审计/采纳不二次扣费/切版本后 409/**越权 403/资金合计对账/并发采纳仅 1 个版本/并发同 token 单飞**；P1：检索正文与设定、控制字符拒绝、审计关联）。
+
+## 2026-11-18 R26 剧情走向候选面板：新接口 + `kind=branch` + 便签 v2（feat/r26-plot-directions）
+
+**决策**
+1. **新接口而非原地升级**：新增 `POST /chapters/{no}/branches/generate|adopt` + 便签 `GET/DELETE .../branches/notes`；旧 `/continue-branches` + `/apply-branch` 双轨期冻结且**始终免费**，`branches_billing_enabled` 只作用于新接口，存量用户不会被动开始付费。
+2. **前置修复 `apply_branch` 假成功**：写盘失败由「吞异常仍返回 `saved=True`」改为 500 `DRAFT_WRITE_FAILED`（红线 12）；测试 `test_apply_branch_write_failure_returns_error` 锁死。
+3. **计费归口 `kind=branch`**：生成阶段 `settle_product(kind="branch", key=gen_id)` 按候选合计字数结算一次；开关 `branches_billing_enabled` 默认 False（首周灰度），关闭时 `charged=0` 且不写账本，但 `client_token` 幂等保留。采纳便签不二次计费；「按此写」进入 R25 后按 `kind=inline` 口径单独计费，落版本时 `source=inline` 仍免扣（不产生第二套流水）。
+4. **便签 v2 多便签**：`continue_drafts.json` 升级为 `{version:2, chapters:{no:{items[],_evicted[]}}}`；稳定 `draft_id`、每章 10 条上限、文件 ≤2MB 全局淘汰、`(gen_id,item_id)` 自然键去重（判定在项目锁内，保证并发只落一张）；旧单槽结构读时迁移并原子写回，未知字段保留 `_legacy`。旧 `save_continue_draft` 升级为追加，旧入口「记录草稿」不再覆盖第一张。
+5. **生成记录复用 `inline_drafts.json` 但按 `kind` 分流**：走向记录 `kind=branch` 与内联共用 `tokens` 幂等表；`list_for_chapter`/`invalidate_chapter` 加 kind 参数（默认 inline，行为不变），走向多批共存、不被内联新批次作废。
+6. **输出契约 3~5 条**：`direction`(≤10 字) + `summary`(2~3 句) + `source_tag`(五枚举) + `tags`；解析先剥 ``` 围栏再 `json.loads`（不做正则截取）；`source_tag` 非法回落 `pacing`，方向去重；服务端不硬校验「至少 1 条非 pacing」，由前端提示「本批偏通用」+ P1 人工抽检。
+7. **上下文三块**：未回收伏笔 Top-5（`build_foreshadow` 同口径）、章末承诺最近 3 章（`pending_commitments`）、本章+后一章大纲节点；任一块缺失只省略该块，不阻塞；Memory 上下文独立 6000 字预算。
+
+**踩坑 / 边界**
+- 走向候选 `stuck_text` 只在 `custom` 时读取，其他枚举忽略并 `logger.info`；无效枚举 400 且不调模型。
+- 账本淘汰新增 `branch:` 前缀，与 `inline:` 同属短期明细，优先于正文结算条目被淘汰；幂等由 `inline_drafts.tokens` 承担，删明细不会二次扣费。
+- 旧入口测试 `test_old_continue_branches_contract_and_free` 同时锁定「字段不变」与「不产生结算条目」。
+- 前端「按此写」只预填 R25 指令并切回 AI 面板，**不自动触发生成**，避免意外扣费；「换一批」按上一批 `billing` 状态给不同二次确认文案。
+
+**单测**：`tests/test_plot_directions.py` 19 条（P0：3~5 字段契约/`kind=branch` 一次计费与 token 重放/空输出与余额不足不计费/BYOK 0 元审计/非法卡点 400/便签采纳不扣费与自然键幂等/并发采纳仅 1 张/便签删除 404/旧单槽迁移 v2/旧入口冻结且免费/`apply_branch` 写盘失败 500/adopt 写盘失败 500/越权 403/三批资金对账；P1：卡点上下文注入/三块缺失降级/便签 10 条上限淘汰）。前端 `webapp/frontend/tests/direction.test.mjs` 6 条（来源标签/卡点枚举/指令拼接与 500 字截断/偏通用判定）。

@@ -786,9 +786,11 @@ async function refreshAfterGen(quiet = false) {
     genDoneCount.value = chapters.value.length
     await loadStaleness()
     outlineReloadKey.value++
-    loadSnapshots()
+    // R23 P1：大纲快照已并入版本库，刷新由版本弹窗打开时自行拉取，这里不再单独刷新快照列表
     if (!quiet) ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
+    // 降级必留痕：编程错误（如未定义标识符）不能被静默降级成一句提示
+    console.error('[ProjectDetail] 生成后数据刷新失败:', e)
     ElMessage.error('数据刷新失败，请手动刷新页面')
   }
 }
@@ -978,7 +980,6 @@ async function doRegenOutline() {
     ElMessage.success('已开始重生成大纲')
     beginGenUI('正在重生成大纲…')
     startPolling()
-    loadSnapshots()
   } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function doRegenWorld() {

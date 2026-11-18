@@ -637,3 +637,23 @@
 2. **门 2 允许跳过保存**：`WorldEditor` 的影响确认弹窗确认按钮为「仍然保存」、取消为「先不保存」，点取消即放弃本次保存，不强留。
 3. **老书不回填账本**：历史书（M1/M2 等）不跑 `events`/`chapter_state`/Plan 回填，只在新书与新生成章生效，避免旧书被动改状态。
 4. **`batch_id` 已删、`revision`/`supersede` 已接线（2026-11-17 当轮完成，方案 A）**：生产写章此前只调 `stream.append(rows, ch=chapter, allow_inferred=True)`，没传 `revision` 也没调 `supersede`；重写同一章时 `seq` 从批次位置重新计数，事件 id 与旧记录撞车 → `append` 判 `skipped`，改写后的新事实被静默丢弃。现改为：入账前 `next_revision(ch)` 取本章最大版本 +1，`append(..., revision=rev)`；有写入且 `rev>1` 时调 `supersede_revision(ch, rev)` 把旧版标为被替代（只写侧车、不删不改行）。接口保持 append-only，`all()` 仍可查旧版用于回滚。
+
+## 2026-11-18 R25 内联写作基座：独立写作页 + `source=inline` + 生成即计费（feat/r25-inline-writing）
+
+**决策**
+1. **载体是独立写作页，不是加宽弹窗**：原 800px 阅读弹窗保留只读，新增 `/project/:id/write`。写作页 = 左章节目录 + 中 textarea 内核 + 右 AI/检索；`WritingEditor` 用镜像 div 计算 caret 坐标给浮动条定位，组件契约（`ChapterRail`/`WritingEditor`/`InlineFloatBar`/`CandidatePanel`/`StorySearch`）供 R26/R28/R29 挂载复用。
+2. **`source` 新增 `inline`，五处消费方统一口径**：版本 `user_managed` 置真（阻止自动选分覆盖，单一判定点 `_commit_new`）；手写守卫三处只认 `source in {user, inline}`，统一常量 `_PROTECTED_SOURCES`；个人风格锚与 good 账本**不计入**（AI 文本不能学成用户文风）；版本展示单独标签「内联采纳」；结算免扣集合 `{user, legacy, inline}`。采纳不走 `edit_chapter`（避免 `user_edited`/风格锚/good 账本三处副作用）。
+3. **正文写动作计费归口 `settle.json` v2**：生成阶段 `settle_product(kind="inline", key=gen_id)` 按候选合计 AI 字数计费，未采纳也计费；采纳阶段只落版本、不二次计费。不写 `assistant_billing`，避免返佣口径污染。
+4. **锚点用版本指纹**：`base_version`（selected，无索引按 0）+ `base_hash`（`sha1:` + sha1(normalize(text))）双校验，任一漂移返回 409 且候选保留；`normalize` 只做 CRLF/CR → LF，前后端同函数口径。
+5. **幂等与账本解耦**：`inline_drafts.json` 的 `tokens`（48h TTL）承担 `client_token → gen_id` 重放，独立于 items 50 条与结算账本 500 条淘汰；items 被挤出但 token 在 → 410 让用户重新生成，不重复扣费。
+6. **账本淘汰分档**：① 48h 外 `inline:*` 最旧优先 → ② 仍超限淘汰最旧 inline → ③ 最后才按插入顺序淘汰其他。保证连续 600 次内联后正文结算条目仍完整（P0）。
+7. **开关**：`editor_inline_enabled` 未在 `sys_config` 配行时按开启处理（本批随写作页上线，后台显式 false 关闭）；`inline_candidates_default=2`、`inline_daily_limit=200`（用户级，汇总其项目当日 `inline:*` 条目近似统计）、`search_enabled` 默认开。
+
+**踩坑 / 边界**
+- 同 token 并发靠进程内事件单飞（与既有 `_RUNS` 的单进程假设一致）；跨进程部署需换分布式锁，当前部署形态不涉及。
+- 采纳的「读当前版本 → 校验哈希 → 提交」必须在同一把项目锁内完成：首版只锁了写入，两个标签页并发采纳会各自基于旧版本追加出两个新版本（并发测试暴露），现 `apply_inline_text` 全程持 `versioned._project_lock`（RLock，与 commit 重入）。
+- 同章新生成只在**新批次成功落盘后**作废旧批，避免新生成失败时把用户已付费的旧候选一并作废。
+- 采纳后的摘要不重算，只置 `summary_stale`（精确重算摘要需额外 LLM，超出 R25 范围）。
+- `GET /chapters/{no}` 增补 `version/base_hash/source/summary_stale` 只读字段，向后兼容；写作页生成前若本地有未保存修改直接拦截，保证锚点偏移与服务器正文一致。
+
+**单测**：`tests/test_inline_writing.py` 32 条（P0：规范化/精确拼接/版本语义/自动选分不覆盖/守卫/结算免扣/账本分档淘汰/token 幂等与作废/生成计费一次/空候选与合规不计费/BYOK 0 元留审计/采纳不二次扣费/切版本后 409/**越权 403/资金合计对账/并发采纳仅 1 个版本/并发同 token 单飞**；P1：检索正文与设定、控制字符拒绝、审计关联）。

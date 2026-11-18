@@ -138,6 +138,17 @@
 
 > 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` 等。
 
+### 剧情走向候选与写作便签（R26）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/chapters/{no}/branches/generate | 是 | 生成 3~5 个剧情走向。body：`count`(3–5，默认 4)、`stuck_type`(`foreshadow/commitment/conflict/pace/custom`，可空)、`stuck_text`(仅 custom，≤200 字)、`client_token`。返回 `{gen_id, items:[{id,direction,summary,source_tag,tags}], words, charged, balance, billing, replayed}`。`source_tag ∈ foreshadow/commitment/conflict/twist/pacing`。`branches_billing_enabled` 开启时按候选合计字数结算一次（`kind=branch`）；关闭时 `charged=0` 且不写账本。失败/空输出不扣费；同 `client_token` 重放返回同一批 |
+| POST | /api/projects/{id}/chapters/{no}/branches/adopt | 是 | 把某个走向存为写作便签。body：`gen_id`、`item_id`、`client_token`（可选）。以 `(gen_id,item_id)` 为自然键幂等，返回 `{draft_id, duplicated, item}`；**不改正文、不落版本、不二次计费** |
+| GET | /api/projects/{id}/chapters/{no}/branches/notes | 是 | 该章写作便签列表（v2 多便签；旧单槽结构读时迁移），返回 `{items:[{draft_id,direction,summary,source_tag,tags,origin,created_at}]}` |
+| DELETE | /api/projects/{id}/chapters/{no}/branches/notes/{draft_id} | 是 | 删除单条便签：只删便签，不退费、不改正文；不存在返回 404 `NOTE_NOT_FOUND` |
+
+> 错误码：`BAD_STUCK` / `BAD_ITEM` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `PROJECT_BUSY` / `TOKEN_CONFLICT` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` / `WRITE_FAILED` / `NOTE_NOT_FOUND`。旧 `/continue-branches` + `/apply-branch` 双轨期保持冻结且不计费；`apply_branch` 写盘失败改为 500 `DRAFT_WRITE_FAILED`（不再返回 `saved=True`）。
+
 ### 生成控制
 
 | 方法 | 路径 | 鉴权 | 说明 |

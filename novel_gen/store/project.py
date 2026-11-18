@@ -1189,19 +1189,30 @@ class ProjectStore:
         )
         os.replace(tmp, path)
 
-    # ---------- 三分支续写草稿（三期 F3，预览模式不写正文章节） ----------
+    # ---------- 写作便签（三期 F3 草稿 / R26 v2 多便签，预览模式不写正文章节） ----------
     def continue_drafts_path(self) -> Path:
         return self.dir / "continue_drafts.json"
 
     def load_continue_drafts(self) -> dict:
-        d = self._read_json(self.continue_drafts_path(), {})
-        return d if isinstance(d, dict) else {}
+        """返回 v2 结构 `{version, chapters}`（旧单槽结构读时迁移）。"""
+        from . import continue_drafts
+        return continue_drafts.load(self)
 
     def save_continue_draft(self, chapter_no: int, draft: dict) -> None:
-        """记录用户选用的分支续写草稿（按章幂等；默认不写 chapters/*.json）。"""
-        data = self.load_continue_drafts()
-        data[str(chapter_no)] = dict(draft or {})
-        self._write_json(self.continue_drafts_path(), data)
+        """追加一张写作便签（旧单槽写入升级为 v2 多便签，默认不写 chapters/*.json）。"""
+        from . import continue_drafts
+        draft = dict(draft or {})
+        note = {
+            "direction": draft.get("direction") or draft.get("label") or "",
+            "summary": draft.get("preview") or "",
+            "source_tag": draft.get("source_tag") or "",
+            "tags": draft.get("tags") or [],
+            "origin": draft.get("origin") or "tools",
+        }
+        if draft.get("applied_at"):
+            note["created_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(draft["applied_at"])))
+        continue_drafts.add_note(self, chapter_no, note)
 
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:

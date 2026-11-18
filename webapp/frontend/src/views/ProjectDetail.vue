@@ -247,6 +247,8 @@
               <el-button @click="fontSize = Math.max(14, fontSize - 2)" title="缩小字体">A-</el-button>
               <el-button @click="fontSize = Math.min(24, fontSize + 2)" title="放大字体">A+</el-button>
             </el-button-group>
+            <el-button v-if="currentCh" size="small" type="primary"
+                       @click="$router.push(`/project/${pid}/write?ch=${currentCh.no}`)">写作页</el-button>
             <el-button v-if="!editing" size="small" type="primary" @click="startEdit">编辑</el-button>
             <template v-else>
               <el-button size="small" @click="cancelEdit">取消</el-button>

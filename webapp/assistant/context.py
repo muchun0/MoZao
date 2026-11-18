@@ -3,13 +3,18 @@
 
 分层（TECH §7）：
   层1 system = assistant.md 人设 + <story_bible>（可裁）
-  层2 user   = <chapter_context>（质检事实/体检/正向事实/设计卡/前情）+ <chapter_text>
+  层2 user   = <chapter_context>（质检事实/体检/正向事实/设计卡/前情）+ 正文
   层3 user   = <dialogue> 最近 N 轮 + 当前提问
+
+R28 段落协同：传 `span={ch,start,end,text_sha}` 时层2 正文块切成
+「段落原文 + 前后段窗口 + 命中 issue」渲染分支（不是另起一套注入），
+4 档裁剪的正文预算按 1/3 折算（600–2400 字）。其余块沿用既有规则。
 
 只读纪律：本模块不写 projects/<id>/ 任何文件，不做 SQL。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 
@@ -25,7 +30,122 @@ CHARS_PER_TOKEN = 1.6
 CHAPTER_TEXT_LIMIT = 12000
 #: 正向事实块字符上限
 POSITIVE_LIMIT = 2000
+#: R28 span 模式：正文预算 = 档位正文预算 / 3，下限/上限（字符）
+SPAN_BUDGET_MIN = 600
+SPAN_BUDGET_MAX = 2400
+#: R28 span 模式：命中的质检/体检 issue 注入上限
+SPAN_ISSUE_LIMIT = 3
+#: 段落分隔符（与全站正文口径一致）
+PARA_SEP = "\n\n"
 _TRUNC = "\n……（正文过长，此处省略中段）……\n"
+
+
+def _normalize(text: str) -> str:
+    """与 `novel_gen.store.inline_edit.normalize_text` 同口径（只统一换行）。"""
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _sha1(text: str) -> str:
+    return "sha1:" + hashlib.sha1(_normalize(text).encode("utf-8")).hexdigest()
+
+
+def _paragraph_spans(text: str) -> list[tuple[int, int, str]]:
+    """按 `\\n\\n` 切段：返回 [(start, end, 段落原文)]，偏移基于规范化正文。"""
+    out: list[tuple[int, int, str]] = []
+    pos = 0
+    for seg in text.split(PARA_SEP):
+        out.append((pos, pos + len(seg), seg))
+        pos += len(seg) + len(PARA_SEP)
+    return out
+
+
+def _expand_to_paragraph(text: str, start: int, end: int) -> tuple[int, int, int]:
+    """零宽/段内锚点扩展到所在自然段；返回 (start, end, 段索引)。"""
+    spans = _paragraph_spans(text)
+    for idx, (s, e, _seg) in enumerate(spans):
+        if s <= start <= e or (start == end and s <= start < e):
+            return s, e, idx
+    # 越界兜底：落在最后一段之后
+    if spans:
+        s, e, _ = spans[-1]
+        return s, e, len(spans) - 1
+    return 0, 0, 0
+
+
+def _nearest_evidence_pos(content: str, evidence: str, anchor_start: int) -> int | None:
+    """在正文中定位 evidence 子串；多处命中取离 anchor 最近的一处，找不到返回 None。"""
+    if not evidence:
+        return None
+    best: int | None = None
+    pos = content.find(evidence)
+    while pos >= 0:
+        if best is None or abs(pos - anchor_start) < abs(best - anchor_start):
+            best = pos
+        pos = content.find(evidence, pos + 1)
+    return best
+
+
+def _span_issues(review: dict | None, content: str, anchor_start: int) -> list[dict]:
+    """命中的质检 issue 摘要（最多 3 条）：evidence 能定位时附位置，不能则只给类型与改法。"""
+    issues = [it for it in ((review or {}).get("issues") or []) if isinstance(it, dict)]
+    out: list[dict] = []
+    for it in issues[:SPAN_ISSUE_LIMIT]:
+        evidence = str(it.get("evidence") or "").strip()
+        out.append({
+            "level": it.get("level", ""),
+            "type": it.get("type", ""),
+            "detail": _clip(it.get("detail", ""), 120),
+            "evidence": _clip(evidence, 120),
+            "suggestion": _clip(it.get("fix_suggestion") or it.get("suggestion") or "", 160),
+            "pos": _nearest_evidence_pos(content, evidence, anchor_start) if evidence else None,
+        })
+    return out
+
+
+def span_snapshot(store, chapter_no: int, span: dict) -> dict:
+    """R28：把段落锚点解析为可渲染的 span 结构（只读）。
+
+    Args:
+        span: `{ch, start, end, text_sha}`；`start == end` 表示光标所在段，自动扩段。
+
+    Returns:
+        `{anchor, text, prev, next, index, total, issues, stale}`：
+        锚点越界按正文长度收敛并标 `stale`；`text_sha` 与当前段落不一致也标 `stale`
+        （不阻断回答，前端提示重新选段）。
+    """
+    chapter = None
+    try:
+        chapter = store.load_chapter(int(chapter_no))
+    except Exception:
+        logger.warning("章节读取失败（span 降级为空段）: chapter=%s", chapter_no)
+    content = _normalize(chapter.content if chapter else "")
+    try:
+        start, end = int(span.get("start")), int(span.get("end"))
+    except (TypeError, ValueError):
+        start, end = 0, 0
+    stale = False
+    if not (0 <= start <= end <= len(content)):
+        start = max(0, min(start, len(content)))
+        end = max(start, min(end, len(content)))
+        stale = True
+    para_start, para_end, index = _expand_to_paragraph(content, start, end)
+    spans = _paragraph_spans(content)
+    text = content[para_start:para_end]
+    text_sha = str(span.get("text_sha") or "")
+    if text_sha and _sha1(text) != text_sha:
+        stale = True
+    return {
+        "anchor": {"ch": int(chapter_no), "start": start, "end": end,
+                   "text_sha": text_sha},
+        "text": text,
+        "prev": spans[index - 1][2] if index > 0 else "",
+        "next": spans[index + 1][2] if index + 1 < len(spans) else "",
+        "index": index,
+        "total": len(spans),
+        "issues": _span_issues(_read_review(store, chapter_no), content, start),
+        "stale": stale,
+    }
+
 
 
 def estimate_tokens(text: str) -> int:
@@ -140,8 +260,12 @@ def _prev_summaries(store, chapter_no: int, n: int = 2) -> list[str]:
     return out
 
 
-def snapshot(store, chapter_no: int, target_words: int = 0) -> dict:
-    """层2 事实快照：章节正文 + 质检事实 + 体检 + 设计卡 + Bible + 前情。"""
+def snapshot(store, chapter_no: int, target_words: int = 0,
+             span: dict | None = None) -> dict:
+    """层2 事实快照：章节正文 + 质检事实 + 体检 + 设计卡 + Bible + 前情。
+
+    传 `span` 时追加 `span` 结构（段落原文/邻段/命中 issue），供 `build_prompt` 走渲染分支。
+    """
     chapter = None
     try:
         chapter = store.load_chapter(chapter_no)
@@ -154,7 +278,7 @@ def snapshot(store, chapter_no: int, target_words: int = 0) -> dict:
         inspector = inspect_chapter(store, chapter_no, target_words) or {}
     except Exception:
         logger.warning("场景体检失败（降级跳过）: chapter=%s", chapter_no)
-    return {
+    snap = {
         "chapter_no": int(chapter_no),
         "title": (chapter.title if chapter else "") or "",
         "content": content,
@@ -167,6 +291,9 @@ def snapshot(store, chapter_no: int, target_words: int = 0) -> dict:
         "facts": _book_facts_text(store, chapter_no),
         "prev_summaries": _prev_summaries(store, chapter_no),
     }
+    if span:
+        snap["span"] = span_snapshot(store, chapter_no, span)
+    return snap
 
 
 def _goods_items(store) -> list[dict]:
@@ -330,6 +457,55 @@ _LEVELS = (
 )
 
 
+def _span_budget(text_budget: int) -> int:
+    """R28：span 模式正文预算 = 档位正文预算 / 3，收敛到 600–2400 字。"""
+    return min(SPAN_BUDGET_MAX, max(SPAN_BUDGET_MIN, int(text_budget or 0) // 3))
+
+
+def _span_window_text(span: dict, budget: int) -> tuple[str, str, str]:
+    """在预算内分配「本段 / 前段 / 后段」：本段优先，剩余均分给邻段。"""
+    cur = str(span.get("text") or "")
+    if len(cur) >= budget:
+        return cur[:budget] + "…", "", ""
+    left = budget - len(cur)
+    prev = _clip(span.get("prev") or "", left // 2)
+    nxt = _clip(span.get("next") or "", left - len(prev))
+    return cur, prev, nxt
+
+
+def _span_issues_block(span: dict) -> str:
+    """命中 issue 块：证据能定位附位置，不能定位只给类型与改法（不报错）。"""
+    issues = span.get("issues") or []
+    if not issues:
+        return "本段未命中质检/体检问题（无记录不等于没问题）。"
+    lines = []
+    for idx, it in enumerate(issues, 1):
+        pos = it.get("pos")
+        loc = f"正文第 {pos} 字起" if isinstance(pos, int) else "正文中未找到原文（可能已修改）"
+        lines.append(
+            f"- S-{idx}【{it.get('level') or '?'}｜{it.get('type') or '?'}】{it.get('detail') or ''}"
+            f"｜证据：「{it.get('evidence') or ''}」"
+            f"｜改法：{it.get('suggestion') or '无'}｜定位：{loc}")
+    return "\n".join(lines)
+
+
+def _span_body_block(span: dict, text_budget: int) -> str:
+    """R28 层2 正文块：段落原文 + 前后段窗口 + 命中 issue（替代整章注入）。"""
+    cur, prev, nxt = _span_window_text(span, _span_budget(text_budget))
+    anchor = span.get("anchor") or {}
+    lines = [f"段落位置：第{int(span.get('index', 0)) + 1}段 / 共{int(span.get('total', 1))}段"
+             f"（正文第 {anchor.get('start', 0)}–{anchor.get('end', 0)} 字）",
+             "<current_paragraph>", cur, "</current_paragraph>"]
+    if prev:
+        lines += ["<prev_paragraph>", prev, "</prev_paragraph>"]
+    if nxt:
+        lines += ["<next_paragraph>", nxt, "</next_paragraph>"]
+    lines += ["<paragraph_issues>", _span_issues_block(span), "</paragraph_issues>"]
+    if span.get("stale"):
+        lines.append("（注意：正文在你提问后已变化，请以当前段落原文为准）")
+    return "\n".join(lines)
+
+
 def _render(persona: str, snap: dict, positive: dict, dialogue: list[dict],
             question: str, mode: str, lv: dict) -> tuple[str, str]:
     system = (f"{persona}\n\n<story_bible>\n{_clip(snap.get('bible'), lv['range'])}\n"
@@ -354,25 +530,45 @@ def _render(persona: str, snap: dict, positive: dict, dialogue: list[dict],
     if lv["prev"] and snap.get("prev_summaries"):
         ctx += ["<prev_summaries>", "\n".join(snap["prev_summaries"]), "</prev_summaries>"]
     parts = ["<chapter_context>", *ctx, "</chapter_context>"]
-    if lv["text"] and snap.get("content"):
+    span = snap.get("span")
+    if span:
+        # R28：段落模式只注入段落窗口，不塞整章
+        parts += ["<paragraph_context>", _span_body_block(span, lv["text"]),
+                  "</paragraph_context>"]
+    elif lv["text"] and snap.get("content"):
         parts += ["<chapter_text>", _chapter_content(snap["content"], lv["text"]),
                   "</chapter_text>"]
     dlg = _dialogue_block(dialogue, 3 if lv["issues"] <= 10 else 6)
     if dlg:
         parts += ["<dialogue>", dlg, "</dialogue>"]
+    if mode == "inline_span":
+        parts += ["<answer_requirements>", _INLINE_ANSWER_RULES, "</answer_requirements>"]
     parts += [f'<question mode="{mode}">', _clip(question, 4000), "</question>"]
     return system, "\n".join(parts)
 
 
+#: 内联段落模式的输出约束（前端按 <suggestion> 提取可应用的改写段）
+_INLINE_ANSWER_RULES = (
+    "- 只针对 <paragraph_context> 的当前段落作答，不要泛泛评价全章。\n"
+    "- 若给出改写，必须在回答最后单独用一个 <suggestion>…</suggestion> 包裹改写后的正文："
+    "只写这一段、单段、不含空行、不超过 2000 字，不要夹解释、标题或列表。\n"
+    "- 引用章节号/质检项必须来自提示词中的数据，不得编造。")
+
+
 def build_prompt(persona: str, snap: dict, positive: dict, dialogue: list[dict],
                  question: str, mode: str, token_limit: int = 20000) -> dict:
-    """组装并裁剪：返回 {system, user, tokens, level}；level=所用裁剪档位（从 0 起）。"""
+    """组装并裁剪：返回 {system, user, tokens, level, context_mode, budget_tier}。
+
+    `level`/`budget_tier` 为所用裁剪档位（从 0 起）；`context_mode` 为 chapter / span。
+    """
+    context_mode = "span" if snap.get("span") else "chapter"
     system = user = ""
     for idx, lv in enumerate(_LEVELS):
         system, user = _render(persona, snap, positive, dialogue, question, mode, lv)
         used = estimate_tokens(system) + estimate_tokens(user)
         if used <= token_limit:
-            return {"system": system, "user": user, "tokens": used, "level": idx}
+            return {"system": system, "user": user, "tokens": used, "level": idx,
+                    "context_mode": context_mode, "budget_tier": idx}
     # 极端兜底：砍掉正文与对话后仍超限时，硬截断 user（保留人设与问题）
     system, user = _render(persona, snap, positive, [], question, mode, _LEVELS[-1])
     limit_chars = int(max(1000, token_limit * CHARS_PER_TOKEN)) - len(system)
@@ -381,4 +577,5 @@ def build_prompt(persona: str, snap: dict, positive: dict, dialogue: list[dict],
         logger.warning("上下文超预算，已硬截断 user（chapter=%s）", snap.get("chapter_no"))
     used = estimate_tokens(system) + estimate_tokens(user)
     return {"system": system, "user": user, "tokens": used,
-            "level": len(_LEVELS), "truncated": True}
+            "level": len(_LEVELS), "truncated": True,
+            "context_mode": context_mode, "budget_tier": len(_LEVELS)}

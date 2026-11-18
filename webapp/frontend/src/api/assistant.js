@@ -13,3 +13,10 @@ export const sendMessage = (pid, cid, data, requestId = newRequestId()) =>
   })
 export const deleteConversation = (pid, cid) =>
   request.delete(`/projects/${pid}/assistant/conversations/${cid}`)
+
+// R28 段落协同：按 anchor.ch 过滤的历史问答（浮层重开恢复现场）
+export const listAnchorMessages = (pid, cid, params) =>
+  request.get(`/projects/${pid}/assistant/conversations/${cid}/anchor-messages`, { params })
+// R28 应用建议：按 message_id 回读校验后写入正文（source=inline，按写入字数计费）
+export const applyAssistantSuggestion = (pid, no, data) =>
+  request.post(`/projects/${pid}/chapters/${no}/inline/apply-suggestion`, data)

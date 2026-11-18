@@ -11,33 +11,42 @@
                    @select="onSelect" />
     <WritingSidebar :pid="pid" :ch="currentNo" @jump="switchChapter" @open-search="openSearchHit" />
     <div class="right">
-      <div class="tabs">
-        <button class="tab" :class="{ on: tab === 'ai' }" @click="tab = 'ai'">AI 写作</button>
-        <button class="tab" :class="{ on: tab === 'direction' }" @click="tab = 'direction'">
-          走向<span v-if="dirNotes.length" class="tab-badge">{{ dirNotes.length }}</span>
-        </button>
-        <button class="tab" :class="{ on: tab === 'search' }" @click="tab = 'search'">检索</button>
-      </div>
-      <CandidatePanel v-if="tab === 'ai'"
-        :mode="mode" :target-words="targetWords" :candidate-count="candidateCount"
-        :instruction="instruction" :estimate="estimate" :generating="generating"
-        :candidates="candidates" :gen-meta="genMeta" :drafts="drafts"
-        :can-generate="canGenerate" :blocked-reason="blockedReason" :adopting="adoptingId"
-        @update:mode="mode = $event" @update:target-words="onTargetWords"
-        @update:candidate-count="onCandidateCount" @update:instruction="instruction = $event"
-        @generate="generate(mode)" @adopt="adopt" @copy="copyCandidate" @restore="restoreDraft" />
-      <DirectionPanel v-else-if="tab === 'direction'"
-        :stuck-type="dirStuckType" :stuck-text="dirStuckText" :count="dirCount"
-        :generating="dirGenerating" :batch="dirBatch" :notes="dirNotes"
-        :adopting="dirAdoptingId" :can-generate="canGenerate" :blocked-reason="blockedReason"
-        @update:stuck-type="dirStuckType = $event" @update:stuck-text="dirStuckText = $event"
-        @update:count="dirCount = $event" @generate="generateDirections"
-        @adopt="adoptDirection" @use="useDirection" @delete-note="deleteDirNote" />
-      <StorySearch v-else :pid="pid" @open="openSearchHit" />
+      <!-- R28：小墨段落浮层与右栏 tab 互斥（打开时暂隐） -->
+      <AssistantDock v-if="dock.open" :pid="pid" :chapter-no="currentNo"
+        :anchor="{ start: dock.start, end: dock.end }" :paragraph-text="dock.paragraph"
+        :para-index="dock.paraIndex" :version="current?.version || 0"
+        :base-hash="current?.base_hash || ''" :preset="dock.preset"
+        @close="dock.open = false" @applied="onDockApplied" />
+      <template v-else>
+        <div class="tabs">
+          <button class="tab" :class="{ on: tab === 'ai' }" @click="tab = 'ai'">AI 写作</button>
+          <button class="tab" :class="{ on: tab === 'direction' }" @click="tab = 'direction'">
+            走向<span v-if="dirNotes.length" class="tab-badge">{{ dirNotes.length }}</span>
+          </button>
+          <button class="tab" :class="{ on: tab === 'search' }" @click="tab = 'search'">检索</button>
+        </div>
+        <CandidatePanel v-if="tab === 'ai'"
+          :mode="mode" :target-words="targetWords" :candidate-count="candidateCount"
+          :instruction="instruction" :estimate="estimate" :generating="generating"
+          :candidates="candidates" :gen-meta="genMeta" :drafts="drafts"
+          :can-generate="canGenerate" :blocked-reason="blockedReason" :adopting="adoptingId"
+          @update:mode="mode = $event" @update:target-words="onTargetWords"
+          @update:candidate-count="onCandidateCount" @update:instruction="instruction = $event"
+          @generate="generate(mode)" @adopt="adopt" @copy="copyCandidate" @restore="restoreDraft" />
+        <DirectionPanel v-else-if="tab === 'direction'"
+          :stuck-type="dirStuckType" :stuck-text="dirStuckText" :count="dirCount"
+          :generating="dirGenerating" :batch="dirBatch" :notes="dirNotes"
+          :adopting="dirAdoptingId" :can-generate="canGenerate" :blocked-reason="blockedReason"
+          @update:stuck-type="dirStuckType = $event" @update:stuck-text="dirStuckText = $event"
+          @update:count="dirCount = $event" @generate="generateDirections"
+          @adopt="adoptDirection" @use="useDirection" @delete-note="deleteDirNote" />
+        <StorySearch v-else :pid="pid" @open="openSearchHit" />
+      </template>
     </div>
 
     <InlineFloatBar :show="floatBar.show" :x="floatBar.x" :y="floatBar.y"
-                    @rewrite="generate('rewrite')" @expand="generate('expand')" />
+                    @rewrite="generate('rewrite')" @expand="generate('expand')"
+                    @ask="openDockFromSelection" />
 
     <VersionDialog v-model="versionsDialog" :pid="pid" kind="chapter" :chapter-no="currentNo"
                    @changed="reloadCurrent" />
@@ -63,6 +72,7 @@ import InlineFloatBar from '../components/write/InlineFloatBar.vue'
 import StorySearch from '../components/write/StorySearch.vue'
 import WritingSidebar from '../components/write/WritingSidebar.vue'
 import { searchSelection } from '../utils/writingSidebar'
+import AssistantDock from '../components/write/AssistantDock.vue'
 import VersionDialog from '../components/VersionDialog.vue'
 
 const route = useRoute()
@@ -91,6 +101,8 @@ const adoptingId = ref('')
 const selection = ref({ start: 0, end: 0 })
 const floatBar = ref({ show: false, x: 0, y: 0 })
 const genToken = ref('')
+// R28 段落浮层：anchor 为当前段落在正文中的区间（后端按同一偏移渲染段落窗口）
+const dock = ref({ open: false, start: 0, end: 0, paraIndex: 1, paragraph: '', preset: '' })
 
 // R26 剧情走向
 const dirStuckType = ref('')
@@ -131,6 +143,7 @@ async function loadChapter(no) {
     dirBatch.value = null
     dirToken.value = ''
     floatBar.value.show = false
+    dock.value.open = false
     await loadDrafts(no)
     await loadDirNotes(no)
     refreshEstimate()
@@ -190,6 +203,7 @@ onMounted(async () => {
   const target = chapters.value.find(c => c.no === fromQuery)?.no || chapters.value[0]?.no || 0
   currentNo.value = target
   await loadChapter(target)
+  handleIssueJump()
 })
 
 // ---------- 编辑 / 保存 ----------
@@ -425,6 +439,70 @@ async function openSearchHit(hit) {
   // textarea 不支持高亮：定位到命中位置并选中关键词、滚动到可见
   const { offset, end } = searchSelection(hit)
   editorRef.value?.focusAt(offset, end)
+}
+
+// ---------- R28 段落浮层 ----------
+
+/** 把选区扩展到所在自然段（与后端 `context.span_snapshot` 的段落口径一致）。 */
+function paragraphRangeOf(text, start, end) {
+  const body = text || ''
+  const head = body.lastIndexOf('\n\n', Math.max(0, start - 1))
+  const pStart = head < 0 ? 0 : head + 2
+  let pEnd = body.indexOf('\n\n', end)
+  if (pEnd < 0) pEnd = body.length
+  return { start: pStart, end: Math.max(pStart, pEnd) }
+}
+
+function openDock(range, presetText = '') {
+  const body = content.value || ''
+  const start = Math.max(0, Math.min(range.start, body.length))
+  const end = Math.max(start, Math.min(range.end, body.length))
+  if (end <= start) { ElMessage.warning('请先选中一段文字'); return }
+  dock.value = {
+    open: true, start, end,
+    paraIndex: body.slice(0, start).split('\n\n').length,
+    paragraph: body.slice(start, end),
+    preset: presetText,
+  }
+}
+
+function openDockFromSelection() {
+  if (!current.value) return
+  if (dirty.value) { ElMessage.warning('请先保存当前修改，再问小墨'); return }
+  const sel = selection.value
+  if (sel.end <= sel.start) { ElMessage.warning('请先选中一段文字'); return }
+  openDock(paragraphRangeOf(content.value, sel.start, sel.end))
+  floatBar.value.show = false
+}
+
+/** 应用建议后刷新正文/版本（来源是同一个写通道，保留在写作页现场）。 */
+async function onDockApplied() {
+  dock.value.open = false
+  await loadChapter(currentNo.value)
+  await loadChapters()
+}
+
+/** 全书体检跳转：证据文本唯一命中才自动选段；0 处/多处一律提示手动选段（P0-8）。 */
+function handleIssueJump() {
+  const evidence = String(route.query.evidence || '')
+  const issue = String(route.query.issue || '')
+  const advice = String(route.query.advice || '')
+  if (!evidence) return
+  const body = content.value || ''
+  const hits = []
+  let pos = body.indexOf(evidence)
+  while (pos >= 0) { hits.push(pos); pos = body.indexOf(evidence, pos + 1) }
+  if (hits.length !== 1) {
+    ElMessage.info(hits.length
+      ? `证据原文在本章命中 ${hits.length} 处，请手动选段后再问小墨`
+      : '证据原文在当前正文里找不到（可能已修改），请手动选段后再问小墨')
+    return
+  }
+  const range = paragraphRangeOf(body, hits[0], hits[0] + evidence.length)
+  editorRef.value?.focusAt(hits[0])
+  const preset = `这条体检问题怎么改：${issue || '前后不一致'}\n证据：「${evidence}」`
+    + (advice ? `\n已有建议：${advice}` : '')
+  openDock(range, preset)
 }
 
 watch(dirty, (v) => { if (v) { genToken.value = ''; dirToken.value = '' } })

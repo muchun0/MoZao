@@ -107,6 +107,8 @@
             </el-button>
             <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
               @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+            <el-button v-if="it.jump || it.chapter" size="small" text type="primary"
+              @click="askAssistant(it)">问小墨怎么改</el-button>
           </div>
         </article>
         <p v-if="todoMore" class="cp-footnote">还有 {{ todoMore }} 条没列，完整的在「前后对不上」「伏笔回收」里按分类看。</p>
@@ -241,6 +243,8 @@
                   @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
                 <el-button v-if="it.chapter && it.source === 'chapter_quality'" size="small" text type="primary"
                   @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+                <el-button v-if="it.chapter" size="small" text type="primary"
+                  @click="askAssistant(it)">问小墨怎么改</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
@@ -326,7 +330,7 @@ import { staleNoticeOf, isItemStale, staleChaptersOf } from '../../utils/stalene
 import StaleNotice from '../common/StaleNotice.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
-const emit = defineEmits(['locate', 'open-versions'])
+const emit = defineEmits(['locate', 'open-versions', 'ask-assistant'])
 
 const loading = ref(false)
 const overview = ref(null)
@@ -627,6 +631,30 @@ const entityEmptyText = computed(() => (entityQuery.value
 // 章节跳转：只在有真实章号时发事件
 function emitLocate(no) {
   if (no) emit('locate', no)
+}
+
+// R28：取条目里可定位的原文片段（去掉「设定名」前缀），供写作页按子串选段
+function issueEvidence(it) {
+  const rows = it.details || []
+  const pick = rows.find((d) => d.label === '记录原文')
+    || rows.find((d) => d.label === '对照设定') || rows[0]
+  if (!pick || !pick.text) return ''
+  return String(pick.text)
+    .replace(/^「[^」]*」[:：]?/, '')
+    .replace(/^「|」$/g, '')
+    .trim()
+}
+
+// R28：跳写作页问小墨（章 + 证据原文 + 已有建议），定位失败由写作页提示手动选段
+function askAssistant(it) {
+  const ch = it.jump || it.chapter || 0
+  if (!ch) return
+  emit('ask-assistant', {
+    ch,
+    issue: it.title || '',
+    advice: it.advice || '',
+    evidence: issueEvidence(it),
+  })
 }
 
 async function loadOverview() {

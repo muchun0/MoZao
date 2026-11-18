@@ -221,7 +221,8 @@
 
         <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo"
+            @ask-assistant="askAssistantOnIssue" />
         </section>
       </main>
     </div>
@@ -287,7 +288,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun, getGates, approveGate, getGateReview, estimateAgentRun } from '../api/project'
 import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
@@ -321,6 +322,7 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
+const router = useRouter()
 const pid = route.params.id
 const loading = ref(false)
 const project = ref(null)
@@ -828,6 +830,20 @@ function locateChapter(no) {
   const ch = chapters.value.find(c => Number(c.no) === Number(no))
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
+}
+// R28 全书体检「问小墨怎么改」：跳写作页并按证据原文选段（定位失败在写作页提示手动选段）
+function askAssistantOnIssue(payload) {
+  const ch = Number((payload && payload.ch) || 0)
+  if (!ch) return
+  if (!chapters.value.some(c => Number(c.no) === ch)) {
+    ElMessage.warning(`第 ${ch} 章还未生成，暂时不能问小墨`)
+    return
+  }
+  const query = { ch }
+  if (payload.evidence) query.evidence = payload.evidence
+  if (payload.issue) query.issue = payload.issue
+  if (payload.advice) query.advice = payload.advice
+  router.push({ path: `/project/${pid}/write`, query })
 }
 // 世界事实「设定规则」只读投影 → 跳工具中心维护写作铁律（只切页，不触发任何检查/生成）
 function openRulesPanel() {

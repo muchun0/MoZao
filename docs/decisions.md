@@ -523,3 +523,116 @@
   - `_update_state_layer` 只 import `EventStream` 未实例化，`NameError` 被吞，14 章 0 事件、每章 `state_layer` 失败；
   - `_split_scenes` 异常时 `events_list` 未初始化，第 15 章整本中断。
 - **约束**：新增状态消费方一律走 `StateGraph` 契约，禁止各自拼 `book_memory/scenes/events`；改四视图字段必须同步 `version` 计算与接口文档。
+## 2026-11-16 创作阶段审阅门 M0：断点 + 门 1/门 2 + 5 章一批（feat/gate-review-m0）
+
+- **决策**：把「点一次开始就无人值守跑完全流程」改成三段断点——大纲跑完即停（删掉 `runOutline` 里自动链世界观的回调）、世界观跑完即停、正文默认 5 章一批；每段停下渲染 `GateCard`（摘要 + 确定性体检 + 只展最可疑 3 条）让用户通过/编辑/重生成再继续；「一键全部生成」降级为小字逃生舱（预估总额 + 二次确认）。
+- **门与 lock 分离**：`gates.json` 表「用户看过了」，`lock.json` 表「不许 AI 改」，绝不复用 lock 表达审批——两者失效原因不同（改版本 vs 用户解锁），混用会让"审批"变成"锁定"的副作用。
+- **审批绑产物版本**：`approved_version` 存 `v<n>`（`VersionedProduct.selected_version`），版本化关闭的存量项目回退产物文件 sha1 指纹 `h<10位>`；用户编辑（`commit=True,source="user"`）、重生成、切版本三种情况都会让**本门与全部下游门**回 pending 并落盘留痕。这是本需求的地基：上游改了却带着旧审批继续花钱，比没有门更糟。
+- **门 3（章纲对齐）绑大纲版本**：不新造产物（章级 `core_event/character_moves` 本来就在 outline.json），避免第二份章纲快照与大纲版本各自漂移。
+- **判断材料确定性零 LLM**：门 1/门 2/批末统计全部纯函数（缺字段/重名/断档/未归属分卷/缺钩子/世界观空壳/人物档案未覆盖章纲/本批字数与扣费），不扣费不耗时；报告里带 `chapter:N` 锚点供前端跳章。批末扣费读 `version_charge_map` 的既有账本，不另算一份金额。
+- **存量项目豁免（踩坑前置）**：新门禁上线时老书从无 `gates.json`、却已写正文，若直接 409 会把「重生成世界观」锁死。判定为存量项目（无 gates.json 且 `list_chapters()` 非空）时 `guard_agent` 放行 + warning 留痕，门状态仍显示 pending（用户仍可正常点通过）；一旦 gates.json 出现，豁免立即失效。
+- **取舍**：M0 只做断点 + 门 1/门 2 + 分批 + 一键，门 3 与「事件×人物状态」事件链留 M1；事件链方案在 32 本 / 304 章实测后判「前提不成立」，已标「待重定稿」（见 REQ §9）。
+
+## 2026-11-16 验收反馈两处修复：移除门卡「先编辑」+ 事件章号归属（fix/events-chapter-attr）
+
+- **决策 1：门卡片不再给「先编辑」按钮**。用户验收指出按钮无用——编辑器就在卡片下方，编辑随时可做，而 `@edit` 只是 `tab = 'outline'`，卡片本来就渲染在当前 tab，点了是空操作。门 1 动作收敛为「通过 / 重生成」，门 2 为「通过 / 重生成 / 跳过」；`GateCard` 组件保留 edit 能力但不再有人传。
+- **决策 2：事件章号一律等于本章，绝不复用"最新章末快照"的章号**。根因是两条独立的链：
+  - 生成侧：`state_extract_frequency` 默认 3 章抽 1 次，非抽取章 `extract_chapter_state` 无数字时返回 `None` → `chapter_state.json` 长期停在首章；`_update_state_layer` 读这份快照派生事件，章号恒等于首章、同 id 又被去重，后 4 章一条事件不增。
+  - 读取侧：`BookFacts.resolve_at_ch(0)` 逐级早退（`state.json` 的 `last_chapter` 为 0 → 章末账本 = 1），水位定在第 1 章，`to_ch=1` 把 2 章以后的事件全过滤；`_build_events` 还被 `event_stream` 开关挡回 `book_memory.consumed` 旧列表。
+- **修法**：`derive_chapter_events(no, state, chapter)`——账本 `chapter == no` 用本章 facts，否则用**本章 summary** 切句兜底（`inferred=true`），事件章号永远写成 `no`；`write_chapter()` 落盘后单调回写 `state.json` 水位（Web/agent 单章路径此前不写）；`resolve_at_ch` 三源（state / 章末账本 / `chapters` 目录文件名）取最大；`_build_events` 只要 `events.jsonl` 有数据就展示。存量书用 `python -m novel_gen.pipeline.state.events <项目目录>` 补空章事件（append-only、幂等、补完自动失效 `book_facts` 缓存）。
+- **踩坑**：补完事件后时间线仍是 5 条全在首章——先以为是快照缓存（`invalidate_book_facts` 了两次都没用），实测 `EventStream.query(to_ch=5)` 有 13 条、快照里只有 5 条，才定位到 `resolve_at_ch` 把 `at_ch` 定成了 1。**只修生成侧不修读取侧，页面永远看不到新事件**。
+- **遗留**：章末账本仍停在首章（降频 + `None` 不写盘），下一章承接注入的仍是旧 facts；这属"承接账本累积语义"，与事件展示解耦，需单独定稿（facts 是否跨章累积 / 降频是否改按需触发）。
+
+## 2026-11-16 账本承接定稿 B+A：每章抽取 + 已发生事实跨章累积
+
+- **决策（用户拍板）**：`state_extract_frequency` 默认 **5→1（每章抽）**；`facts` 跨章累积。理由是两者解决的是同一件事的两半——B 让账本每章前进（不再停在抽取章），A 让承接块记住"已经发生过什么"（不再只看最近一次抽取的切片）。
+- **代价（明说）**：每章多 1 次章末小抽取（输入≈本章正文 + schema，输出几十 token）。人物状态抽取共用同一开关，也变成每章一次——这对 M1「事件×人物状态」的 before/after 是必需的，不是附带浪费。
+- **实现**：`chapter_state._carry_facts`（旧 facts 在前、新 facts 在后，去重，超 `MAX_CHAPTER_FACTS=30` 丢最旧）；确定性兜底路径不再一律 `return None`——只要老账本有 facts 就写盘，保证 `chapter_state.json` 章号单调前进；`_should_llm_extract` 的 `getattr` 兜底同步 3→1；`character_state._should_llm_extract` 同步。
+- **存量书**：不写 config 迁移（沿用既有口径），需要修复的书显式改 `config.json.state_extract_frequency=1` 后跑 `python -m novel_gen.pipeline.chapter_state <项目目录>`。该入口**内存重放链**（逐章用上一章抽出的账本做 `old_state`）后整本落一次盘：不能逐章走 `write_chapter_state_guarded`，护栏会拿磁盘上已是最新章挡住 1~N-1 章的写入，facts 链会断（实测过：三章各自只合并了首章 facts）。
+- **实测（测试书 5 章，真实 LLM）**：重放后 `chapter_state.json` chapter=5、facts=30（ch1 19→ch2 25→ch3 30，之后按上限截断）、numbers=3；承接块 1038 字；`graph?view=characters` 的 `last_ch` 全部前进到 5。
+- **踩坑**：命令行维护入口不加载 `.env`，第一次跑 5 章全部"LLM 抽取失败降级为确定性"，账本只前进不增长（facts 恒为 5）——维护入口必须在开头 `load_dotenv(<repo>/.env)`，否则会误判"B+A 没生效"。
+- **未做**：`character_states.json` 的存量补抽（同开关同机制，需要时跑 `pipeline.commit_chapter_ledgers(force=True)` 或另开维护入口），本轮只修章末账本。
+
+## 2026-11-16 M1 事件链重定稿为 M1-lite：从「一致性审计」退回「人物连续性」
+
+- **决策（用户口径，原话）**：「对文学性作品来说，这些都是必须要做的吗？墨造的定位是写出好小说，不是不出错的小说」。据此把 M1 的目标从「事件链 + 异常跃变检测」改为「账本差分出的关键变更单」，并砍掉一半检查项。**一致性是地板，不是天花板**：地板低到读者不绊倒，不能高到模型不敢写；账本唯一该干的事是让第 5 章还能写出第 1 章埋下的东西。
+- **做 4 项**：① 账本累积语义（`characters/items/body/time` 承接 `old_state`，仅在明确新值才覆盖、不删键——现状是每章整表重抽，diff 出 17–22 条伪变更）；② 新增 `relations` / `promises` 两类字段（承诺是长篇悬念资产，实测每章 0–2 条且明确，混在 29 条 facts 里不可辨）；③ 伤口生命周期轻版（`body` 保留散文，只加「新伤/恶化/愈合」标记，不做部位结构化）；④ 承接注入由 1038 字整段改为「与本章相关切片」（≤400 字，防模型复述账本、压平文风）。
+- **明确砍 5 项**：全量变更明细、四类异常跃变检测、`numbers` 键值对强约束（降级为按题材开关 `system_ledger_numbers`，默认关）、实体别名全量归一（只做主角 + 关键道具，canonical 表 ≤20 条）、时间锚点结构化三段式（改一句话轻版）。**事件链（REQ §4.4.1 方案 A–E）正式退出门 3 判据**，`events.jsonl` 只服务时间线展示；仅保留方案 D 的「LLM 判增量 + 确定性兜底」作为抽取参考。
+- **门 3 形态（用户已接受）**：每章 2–5 条**变更簇**（人物状态 / 物品流转 / 时间与场景 / 关系承诺各 1 条，同簇明细挂条内）+ 折叠；命运级（死亡、重伤、易主、承诺立下/兑现、关系翻转、跨场景）自动展开必审，首次记录默认折叠。
+- **实测（同测试书 5 章真实 LLM 重放，离线脚本，未改线上代码）**：口径 A（现状直接 diff）17/22 条；口径 B（累积 + 只记明确变更）3/4/5/4/9；**口径 C（累积 + 变更簇）2/3/3/3/4**，落在目标区间，明细 3–9 处；折叠未漏大事（ch4「缆绳不够」、ch5「门开后让阿桑先进」均在明细）。
+- **代价**：不做 before/after 双写、不做独立事件链，门 3 只回答「这章有没有把人写活/写死、有没有欠下什么」；代价是放弃「数字不守恒」「位置瞬移」这类工程级校验——有意为之。
+- **未做**：`chapter_states` 承接补抽、章纲 UI/冲突检查/局部重生成（原 M1 另三行，与事件链无关，可独立推进）。
+
+## 2026-11-17 R24 G0'：Canon 事实图 + 事件三契约（feat/r24-state-graph）
+
+- **决策**：账本从「扁平快照」升级为「节点 + 带证据的边」的派生图，先落 G0'（`state/graph.py` + 事件契约），Plan 图（写前约束）留 P 段。理由：R22 四视图回答得了「现在是什么样」，回答不了「这条关系是第几章哪句话立的」，冲突判定与后续 Plan diff 都需要可回指的边。
+- **无证据不建边（核心约束）**：`_make_edge` 在 `evidence{ch,offset,snippet}` 不全时返回 None，候选计入 `skipped_edges`；一句里出现多物品/多人物（归属歧义）也直接不建。M1 实测 `item_owner` 唯一那条误报正是无证据推断，这条规则是把它压到 0 的机制，不是洁癖。
+- **事件流扩契约但不改 append-only**：id 加 `_r{02}` 重写版本；`batch_id` 随行落盘，整批校验后一次追加（拒一条不影响其余，但写入动作只有一次）；`supersede.json` 侧车记录「旧行被新版替代」，查询时隐藏旧行——**不回写、不删行**，否则「重放 ≡ 旧快照」的验收前提失效。**定位（2026-11-17 后补）**：这三个字段服务的是**门 3 变更簇在用户编辑重写后的失效**，不是事件链复活——M1-lite 已判事件链退出门 3，「事件只服务时间线」的口径不变。当前生产代码没有任何调用方传 `batch_id/revision`，也没有任何代码调 `supersede()`（只有单测），对线上行为零影响，属预留能力；若 P 段门 3 不采用变更簇形态，应连同这三个方法一起删掉，不留死代码。**2026-11-17 更新（方案 A）**：`batch_id` 已删（无消费方）；`revision`/`supersede` 已接线到生产写章——`manager` 每次入账前取 `next_revision(ch)` 递增版本、写完调 `supersede_revision()` 标注旧版；起因是重写章 `seq` 重新计数会让新旧 id 撞车、新事实被 `skipped` 静默丢弃。见「P2 补丁 A」条。
+- **不落盘、不缓存**：全书重建 <30ms（M0 实测同量级），缓存失效逻辑比构建本身贵；图是每次读时派生，源账本变更自动反映。
+- **与 M1-lite 决策的关系**：本轮不实现事件 `delta`、不改 facts 30 条上限（这两项已被 2026-11-16 决策否决/改造）；图的数据源只用现有账本字段，`events.jsonl` 仍只服务时间线展示。
+- **与 M1-lite 三处同向（不是相反方向）**：①M1-lite 新增的 `relations` 字段，本轮把它变成可查的 ally/enemy/mentor 边，提示词同步收口为「对方姓名：描述」；②M1-lite 的「账本累积语义」，本轮优先消费累积式的 `chapter_state.items` 归属表（整表不截断），facts 只做兜底；③图是**只读投影**，没有引入变更审计、跃变检测、数字强约束、别名全量归一、时间锚点结构化——与 M1-lite 砍掉的五项一致。
+- **职责边界（写死，防两套实现）**：**图回答「现在是什么关系、这份关系哪章哪句立的」，门 3 回答「这一章变了什么、要不要人审」**。门 3 的变更簇应以「两章图快照 diff」为判定输入（图有稳定 node id、指纹、证据，diff 天然可回指），不得另建一套差分逻辑；反之图不产出待审项、不写 `gates.json`、不阻断生成。
+- **facts 30 条上限对图的影响（明确保留）**：物品归属走 `items` 累积表，不受上限影响；非物品事实（负债、承诺、约定）只能看最近 30 条，因此图对这些关系的长期记忆弱于物品。是否动上限属独立决策，本轮不动。
+- **开关**：`state_graph_v2` 默认 False，关闭时接口 404、无任何注入变化；与 R22 四视图并存不替代。
+- **实测**：单测 27 条（含接口开/关、体检六类、子图、契约、items 归属表、relations 旧前缀）；state/character/book_facts 回归 115 passed。
+- **端到端（真实书）**：`20261111_233808_M1`（30 章）36 节点 / 13 边（present_at 7、ally 4、enemy 1、mentor 1），构建 4.9ms，指纹两次一致，体检 0 error、3 条 isolated_node(info)；`20261112_010242_M2`（14 章）42 节点 / 5 边（仅 present_at），7 条 facts 因「物品未进设定卡」和「无关系句」而建不出边。
+- **人际边来源（本轮补）**：`character_states.relations` 的原文句（`"苏妄言：信任初步修复"`）按词表分 ally/enemy/mentor，evidence 就是那句话；目标人物不是节点时不建边（计入 skipped）。人物状态里没有 relations 的老书人际边为 0，这是数据依赖而非实现缺陷。
+- **持有者判定（本轮补）**：原「一句多人物直接跳过」会把大量正常事实丢掉，改按动词位置判定——给类动词（交给/递给/还给）取动词后最近的人，取类动词（取出/取得/得到）取动词前最近的人；句内多物品仍直接跳过。仍判不出的计入 `skipped_edges`。
+- **已知缺口（第一轮）：facts 里的物品若没登记进 `world.items`，就没有 item 节点、`holds` 建不出来（M2 书 7 条 facts 全部因此落空）。**第二轮已通过「章末 items 归属表作为主来源」闭合**（归属表的 key 不需要在设定卡里也能建节点），facts 退为兜底来源。
+- **数据源补齐（2026-11-17 第二轮，同分支）**：
+  - `chapter_state["items"]` 归属表接进图（主来源，优先于 facts 句）——这是账本自己写下的结论（`"由顾长卿弹还，陆沉收进铁匣"`），且物品名以归属表 key 为准，**没进设定卡也建节点**（节点来源写 `origin=章末账本`），M2 书 3 条 holds 全部来自这里。
+  - `character_states.relations` 兼容历史「与X：…」前缀（`graph._split_relation` 剥掉 与/和/跟/对/同），M2 书因此从 0 条人际边变成 ally 2 + enemy 1。
+  - 生成链路两处提示词同步收口：`chapter_state` 要求 items 值必须写清持有者姓名（`在陆沉怀中`/`被独眼刘抢走`）；`character_state` 要求 relations 以「对方姓名：描述」开头、禁止「与X：…」（下游按姓名精确匹配）。只对新生成章节生效，老书不追溯。
+  - 持有者判定改按动词类型分开处理：给类（交给/还给/弹还…）取动作之后的人，夺/收类（抢走/收进/收起…）取动作之前的人——M2 的「由顾长卿弹还，陆沉收进铁匣」判给陆沉而不是顾长卿。
+- **对比（同一批数据，改动前 → 改动后）**：M2 书 5 边 → 11 边（holds 3、ally 2、enemy 1、present_at 5），节点 42 → 45（多出 3 个账本物品），构建 6ms，体检 0 error；M1 书不变（13 边，其账本从未存 items/facts，属历史数据缺口，不回溯）。
+- **未做**：Plan 图（`plan_graph.py`/`derive_constraints`/`diff`/`impact`）、`state_graph_v2` 在生成链路注入（本轮只开只读接口）、`factions.parent` 之外的人际边（ally/enemy/mentor 需要设定卡结构化字段，world 现无该字段）。
+
+## 2026-11-17 R24 G1'：时间维 + 主体归一 + 两规则改读图 + impact（feat/r24-state-graph）
+
+- **决策**：G0' 的图只回答「现在」，本章把图升级到「任意章时点」。四件事一起做，因为它们共用同一份边表：时间维（`valid_from_ch`/`valid_to_ch`）、主体归一（别名→标准名）、`death_state`/`item_owner` 两条规则改读图、`impact()` 影响面。
+- **时间维唯一来源是逐章归属表**：`CanonGraph._history()` 读 `scenes.json` 逐章 `state.items` + 最新 `chapter_state`，`_owner_segments()` 压成「持有者变化点」——同一人跨章延续**不新开边**，换人时旧边 `valid_to_ch = 新段起始章`；`build(at_ch=N)` 只保留当章有效的边。没有 `scenes.json` 的书退化为单章快照，行为与 G0' 完全一致（M1 书指纹 `c64f7feca83de440` 未变，可作回归锚点）。
+- **放弃式描述不建边（本轮踩到的真错）**：归属表写「被老陈头砸碎在地」「从陆沉袖口滚落至石地」时，账本只说东西没了、没说谁持有，硬判一个人就是造证据。`_LOST_WORDS`（砸碎/碎裂/销毁/焚毁/丢失/遗失/滚落/掉落/脱手/散落…）命中即跳过该物品本章段，M2 书因此少 2 条假 holds（9 → 7）。
+- **主体归一只认已登记别名**：`_build_alias_index()` 从 `book_memory.canon.terms` 取「别名→标准名」，`_NAME_OK_RE` 过滤句子/书名形态，按「标准名是已知实体优先、别名字短优先」排序并封顶 `MAX_ALIAS=20`。**不做全量文本归一、不从正文猜别名**——这与 M1-lite 砍掉的「别名全量归一」口径一致。别名可用于 `subgraph/impact` 的 seed。
+- **坑：概念层不能占主体归一名额**。第一版把 `terminology` 的 term→canonical 也写进 `alias_map`，导致 40 条术语直接把配额打穿（`aliases=41 > 20`），cap 断言当场失败。改为概念映射单独进 `concept_alias_map`（只影响 concept 节点别名），主体归一表只管人物/物品/地点，`sources.aliases` 从此只计主体别名。
+- **两规则改读图（开关即回退）**：`check_death_state(..., graph=None)` 有图时死亡章只认节点 `attrs.dead_ch`（`_DEAD_RE` 与 `conflict_rules` 同表，两处须同步改）；`check_item_owner(..., graph=None)` 有图时「应该归谁」由该章 holds 边回答，图没覆盖该章就不比（宁漏不误报），object 类事件豁免保留。`book_facts.violation_list` 在 `state_graph_v2` 打开时建图传入，**建图异常降级为 None 并留 logger**——不让图的失败把其余三条规则一起吞掉。
+- **new 体检两类**：`alias_conflict`（同一别称映射到两个标准名，warning）、`overlapping_holds`（同一物品同一时点两个持有者，error，`ok=False`）。后者是时间维派生出的硬矛盾，只在段重叠时才报，不惩罚正常易主。
+- **`impact()` 口径（确定性零 LLM）**：`chapters` = 该实体参与的边里证据章 > `ch` 的章号；`foreshadows` = `due_ch ≥ ch` 的未回收伏笔；`closed_edges` = `ch` 之后被关闭的旧边。不给 `ch` 时按全书看，用于「改这条关系要重看哪几章」。
+- **实测（真实书）**：M2（14 章，8 章有 items）49 节点 / 15 边（holds 7、present_at 5、ally 2、enemy 1），`sources.chapters=8`、`aliases=12`，体检 0 error / 5 info；`at_ch=6` 只回 1 条边（当章有效的 hold），时间维生效。M1（30 章）36 节点 / 13 边，`chapters=22`，指纹与 G0' 相同（无 items → 无时间轴，属数据缺口非缺陷）。`impact(灰光团)` → `chapters=[8]`、5 条未回收伏笔。
+- **性能**：M2 首次建图 212ms（冷读 `scenes.json`），同进程第二次 7ms（OS 缓存）；M1 7ms。读时派生省掉了缓存失效逻辑，但百章量级书要注意首次成本，必要时再上进程内缓存。
+- **单测**：`tests/test_graph_g1.py` 13 条（时间轴关旧边/同主不新开边/放弃式描述不建边/别名并节点/别名封顶/别名撞车/死亡读图/归属读图/无覆盖不比/impact/未知实体/overlap/API impact）；连同 G0' 27 条与 state、character、book_facts 回归共 **127 passed**。
+- **未做**：Plan 图（P0）、约束注入（P1）、`diff` + 编辑接口 + 门 1/门 2 前端（P2）、老书账本回填（需 LLM 重扫正文才有历史 holds 段）、facts 30 条上限调整。
+
+## 2026-11-17 R24 方案 B + P0/P1：items 语义进抽取、Plan 计划图与约束注入（feat/r24-state-graph）
+
+- **决策一（方案 B，用户拍板）**：物品语义（「东西还在不在他手上」）是开放集合，用确定性词表补「砸碎/滚落/交还/被抢」等于把语义判断伪装成字符串匹配。改为**语义判断只在写账本前发生一次**（复用已有的每章一次 LLM 抽取，仅把 items 值从字符串扩成 `{owner,state,evidence}`，约 +200~300 token/章），图与冲突规则仍是纯确定性投影。否决的方案：A 继续扩词表（假阴性永远追不完）、C 建图时 LLM 复核（读接口不可复现/变慢/失败退化成空图，且违反 TECH §7「LLM 只在写入前」）。
+- **决策二（唯一口径）**：`pipeline/item_state.py` 做 items 的唯一读写口径——旧字符串包装成 `state=unknown`（保留 `text`，图侧仍走 `_LOST_WORDS`+正则，**不把旧的「已失去」文本当结构化 unknown 一律跳过**，否则存量书全部丢边）、`held` 无 owner 一律判 `unknown`（没有持有者的 held 等于没说清）。`graph._owner_segments` 与 `conflict_rules.check_item_owner` 改为先 `normalize_item()`，结构化 `lost/unknown` 直接跳过、`held` 采信 owner 并把 evidence 当 snippet。
+- **决策三（Plan 可改、不判冲突）**：`state/plan_graph.py` 只做「写前约束」：`compile_from_outline()` 零 LLM 从大纲确定性命中（人物名出现在 `character_moves`、地点名命中正文段、物品名 + 持有类动词），`source=manual` 的人工约束编译不冲掉；`validate()` 只报不修；`derive_constraints()` 在写章前合并 Plan + Canon 当章 holds + 死亡禁止 + 到期伏笔。Plan 不参与冲突判定，冲突仍只由 Canon + 规则回答。
+- **决策四（must 配额按价值分配）**：每章 must ≤5；**优先级 must_hold > forbidden_present > must_resolve > must_advance > must_present > must_locate**。理由：人物「有没有出场」模型基本不会错，真正会错的是「东西现在在谁手上」「死人又说话了」。为此额外加一条图上的一致性去重：同一目标已有 `must_hold` 时，删掉对应的 `must_present`（省预算、少噪音）。
+- **决策五（合并注入、开关即回退）**：`stages._inject_memory_blocks` 把 Plan 约束块与既有冲突提醒块**同位置合并**（`merge_blocks`：块头去重 + 行级归一化去重 + 合计 ≤300 字符），新开关 `plan_graph` 默认 False，关闭时该块完全不渲染、行为逐字回退；两处构造各自 try/except，Plan 失败不影响冲突提醒，反之亦然。
+- **踩坑 1（legacy 字符串被误当结构化 unknown）**：第一版「结构化 unknown 一律跳过」把存量字符串账本全部判成 unknown，7 个既有测试直接挂。修法：加 `isinstance(raw,str)` 的 legacy 分支，只有显式结构化 unknown 才跳过。
+- **踩坑 2（类名错）**：`constraints_block` 里写成不存在的 `ForeshadowStore`，真实类名是 `ForeshadowLedger`；真实书跑出 ImportError 后才暴露，现已由 logger 留痕降级（读伏笔失败只少 `must_resolve`，不阻塞写章）。
+- **实测（真实书）**：M2 编译 131 条约束 / 1 intent（ch_range 1–30，0 issue），ch8 约束块 59c、ch13 153c（holds 占 must、出场降「建议」、含「第12章到期的伏笔『嵌在岩壁里的灯』必须回收」）；M1 编译 116 条 / 6 intents、0 issue，ch1 27c / ch8 55c / ch13 36c。两书冲突块均 0c（体检 0 violation，属干净数据）。**方案 B 的真实 LLM 抽取已用 DeepSeek 实跑 M2 第13章**：4 个物品全部返回 `{owner,state,evidence}`（如「小结晶/陆沉/held/『陆沉伸手接住……把结晶塞进铁匣，合盖』」），提示词改动可被模型稳定执行。
+- **单测**：`tests/test_plan_graph.py` 13 条（编译枚举/确定性/保留 manual/validate 四类错/派生读 Plan+holds 与有效期/死亡禁止与本章刚死不禁止/`must_resolve` 跳过 resolved/cap 降级/render 预算/merge 去重+预算/版本仅内容变才递增/开关关为空/开有文本）+ `tests/test_item_state.py` 10 条（旧字符串包装/结构化采信/非法 state 回落/label 三态/`_clean_items` 双形态/共享渲染/结构化 lost 不建边/held 建边带证据/unknown 不猜 owner/规则跳过 lost），与既有状态层回归合跑 **118 passed**。
+- **未做**：P2（`diff` + 编辑接口 + impact 打通 + 门 1/门 2 前端）、老书账本回填（B 方案不追溯历史章节）、facts 30 条上限、Plan 的 `intents` 消费（`derive_constraints` 暂不读 intents，P2 才用）。
+
+## 2026-11-17 R24 P2：diff 三档 + 约束卡编辑 + 双向 impact（feat/r24-state-graph）
+
+**决策**
+1. **diff 只比 Plan 与「已写账本」，不判语义**：`missing`（本章 must 未满足，扣 5 分/条、不阻断）、`violation`（命中 `forbidden_present`，`blocking=True`）、`unplanned`（计划外的物品易主/死亡，仅 info 不扣分）；`must_advance` 一律 `unverifiable`。语义问题（「他其实还在」「不算失去」）靠写账本前的 LLM 结构化抽取（方案 B），编码侧只认字段。
+2. **没观察就不判**：本章未写（无 `scenes[...].state`）→ `skipped=no_observation`、全零判定，避免把「还没写」误报成「没做到」。同理，本章只抽到物品、没抽到人物时，人物类约束降 `unverifiable`（带原因）而不是扣分——否则 9 章一类数据缺失会直接 -25。
+3. **Plan 可改、Canon 只增不改**：门 1 手改卡写 `source=manual`（id `cst_ch{N}_m{NN}` 避让编译 id），重编译默认 `keep_manual=true`；删除只动 Plan，不动账本。
+4. **门 2 是提醒不是硬门**：`WorldEditor` 保存 Base 前用 `impact-preview` 拉受影响章，有影响才二次确认；接口不存在（Plan 未开/未编译）直接放行保存，不让提示挡住正常写作。
+5. **前端门 1 用独立 tab「创作图」**，不并入「大纲」：大纲是 prose、约束卡是结构化，混在同一面板会让两种编辑语义互相污染；`visited.plan` 懒挂载，与既有面板同构。
+
+**踩坑**
+- `_name_for_id` 原先按 `partition("_")` 取前缀，拿到的是 `ent` 而不是 `char`，导致编译期 `names` 永远为空、真实书全靠 `text` 兜住；改为按 `ent_{type}_{sha}` 三段解析并从 chars/locs/items 名单反查。
+- 到期伏笔被 `status=resolved` 提前排除，导致「已回收」进不了 satisfied；改为只按 `due_ch<=ch` 纳入，是否满足由 `reveal_ch<=ch` 判断。
+- 真实 M2 复验（重编译 131 约束，8 章有账本状态）：violation/unplanned 全 0，score 0~-10；`天权界墟口` 这类地点判定依赖章内时间/人物文本字面命中，属确定性方案的已知边界，不追求用编码兜语义。
+- `routers/*` 的 `from ..core import *` 不含 `logging`，模块级 `logger = logging.getLogger(__name__)` 会 `NameError`，必须显式 `import logging`。
+
+## 2026-11-17 R24 P2 定稿口径（用户确认）
+
+1. **diff 的 missing 不给「补写提示」**：`diff` 只做「计划 vs 已写」的展示与扣分，不反向生成补写指令、不改稿；补写仍由人决定。
+2. **门 2 允许跳过保存**：`WorldEditor` 的影响确认弹窗确认按钮为「仍然保存」、取消为「先不保存」，点取消即放弃本次保存，不强留。
+3. **老书不回填账本**：历史书（M1/M2 等）不跑 `events`/`chapter_state`/Plan 回填，只在新书与新生成章生效，避免旧书被动改状态。
+4. **`batch_id` 已删、`revision`/`supersede` 已接线（2026-11-17 当轮完成，方案 A）**：生产写章此前只调 `stream.append(rows, ch=chapter, allow_inferred=True)`，没传 `revision` 也没调 `supersede`；重写同一章时 `seq` 从批次位置重新计数，事件 id 与旧记录撞车 → `append` 判 `skipped`，改写后的新事实被静默丢弃。现改为：入账前 `next_revision(ch)` 取本章最大版本 +1，`append(..., revision=rev)`；有写入且 `rev>1` 时调 `supersede_revision(ch, rev)` 把旧版标为被替代（只写侧车、不删不改行）。接口保持 append-only，`all()` 仍可查旧版用于回滚。

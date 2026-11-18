@@ -27,16 +27,20 @@ from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-#: id 规则：ev_ch{章号 2-3 位}_s{场景 2 位}_{章内 3 位序号}
-ID_RE = re.compile(r"^ev_ch(\d{2,3})_s(\d{2})_(\d{3})$")
+#: id 规则：ev_ch{章号 2-3 位}_s{场景 2 位}_{章内 3 位序号}[_r{版本 2 位}]
+#: 重写章用 `_r02` 后缀另立一版（同一 (ch, scene, seq) 的旧版由 supersede.json 标注），
+#: 不用覆盖写——append-only 一旦允许就地改行，"重放 ≡ 旧快照" 的验收前提就没了。
+ID_RE = re.compile(r"^ev_ch(\d{2,3})_s(\d{2})_(\d{3})(?:_r(\d{2}))?$")
 
 #: 事件类型白名单（未登记的 kind 落 state，避免拼错词导致过滤失效）
 KINDS = {"object", "relationship", "state", "foreshadow"}
 
 
-def make_id(ch: int, scene: int, seq: int) -> str:
-    """章内单调递增生成，不依赖全局计数。"""
-    return f"ev_ch{int(ch):02d}_s{int(scene):02d}_{int(seq):03d}"
+def make_id(ch: int, scene: int, seq: int, revision: int = 1) -> str:
+    """章内单调递增生成，不依赖全局计数；revision>1 时加 `_r{02d}` 后缀。"""
+    base = f"ev_ch{int(ch):02d}_s{int(scene):02d}_{int(seq):03d}"
+    rev = int(revision or 1)
+    return base if rev <= 1 else f"{base}_r{rev:02d}"
 
 
 def _as_list(value) -> list:
@@ -67,6 +71,9 @@ class EventStream:
 
     def consumption_path(self):
         return self.store.consumption_path()
+
+    def supersede_path(self):
+        return self.store.supersede_path()
 
     # ---------- 读 ----------
     def _read_raw(self) -> list:
@@ -115,6 +122,10 @@ class EventStream:
               cause: str = "", thread: str = "", limit: int = 0) -> list:
         """按章区间/参与者/因果/线索过滤；limit>0 取最近 limit 条。"""
         rows = self.all()
+        # 被新版本替代的行不再参与查询（侧车为空时零开销，老项目行为不变）
+        sup = self.superseded()
+        if sup:
+            rows = [r for r in rows if str(r.get("id")) not in sup]
         lo = int(from_ch or 0)
         hi = int(to_ch or 0)
         if lo > 0:
@@ -166,7 +177,7 @@ class EventStream:
     # ---------- 写 ----------
     @staticmethod
     def normalize(rec: dict, *, ch: int = 0, scene: int = 0, seq: int = 0,
-                  allow_inferred: bool = False) -> dict:
+                  allow_inferred: bool = False, revision: int = 0) -> dict:
         """校验并补全一条事件；不合法抛 EventError。"""
         if not isinstance(rec, dict):
             raise EventError("事件必须是 dict")
@@ -176,9 +187,10 @@ class EventStream:
         desc = str(rec.get("desc") or "").strip()
         if not desc:
             raise EventError("事件缺描述")
+        rev = int(rec.get("revision") or revision or 1)
         rid = str(rec.get("id") or "").strip()
         if not rid:
-            rid = make_id(chapter, int(rec.get("scene") or scene or 0), int(seq or 1))
+            rid = make_id(chapter, int(rec.get("scene") or scene or 0), int(seq or 1), rev)
         if not ID_RE.match(rid):
             raise EventError(f"事件 id 不合规: {rid}")
         kind = str(rec.get("kind") or "state").strip()
@@ -204,18 +216,27 @@ class EventStream:
             out["threads"] = threads
         if inferred:
             out["inferred"] = True
+        # 重写版本只在有值时落盘：老行保持原样，不因新契约整列变脏
+        if rev > 1:
+            out["revision"] = rev
         return out
 
     def append(self, events: Iterable[dict], *, ch: int = 0, scene: int = 0,
-               allow_inferred: bool = False) -> dict:
-        """追加写入；返回 {written, skipped, rejected}。已存在的 id 跳过并计数。"""
+               allow_inferred: bool = False, revision: int = 0) -> dict:
+        """追加写入；返回 {written, skipped, rejected}。已存在的 id 跳过并计数。
+
+        批次原子性：整批先全部校验、再一次性追加（任一条不合法只拒该条，但
+        **写入动作只有一次**）；调用方核对 `rejected>0` 后自行决定是否整批重来，
+        半截批次不会落盘。
+        """
         existing = {str(r.get("id")) for r in self.all()}
         written = skipped = rejected = 0
         lines: list[str] = []
         for i, rec in enumerate(events or [], start=1):
             try:
                 item = self.normalize(rec, ch=ch, scene=scene, seq=i,
-                                      allow_inferred=allow_inferred)
+                                      allow_inferred=allow_inferred,
+                                      revision=revision)
             except EventError as exc:
                 rejected += 1
                 logger.warning("事件被拒绝：%s（%s）", exc, rec)
@@ -233,6 +254,92 @@ class EventStream:
                 for line in lines:
                     fh.write(line + "\n")
         return {"written": written, "skipped": skipped, "rejected": rejected}
+
+    # ---------- 版本（重写章另立一版） ----------
+    def next_revision(self, ch: int) -> int:
+        """本章下一版版本号：已有最大 revision +1（首写返回 1）。
+
+        重写章必须换版本号，否则 `seq` 从批次位置重新计数会让新旧 id 撞车，
+        新事实会被 append 当成重复静默跳过（账本停在旧版）。
+        """
+        chapter = int(ch or 0)
+        if chapter <= 0:
+            return 1
+        best = 0
+        for r in self._read_raw():
+            if int(r.get("ch") or 0) != chapter:
+                continue
+            try:
+                best = max(best, int(r.get("revision") or 1))
+            except (TypeError, ValueError):
+                continue
+        return best + 1
+
+    def supersede_revision(self, ch: int, revision: int) -> int:
+        """把本章 `revision-1` 版的事件标成被新版替代，返回标注条数。
+
+        只写 `supersede.json` 侧车（不删行、不改行）：`query()` 会隐藏旧版，
+        但 `all()` 仍保留原始行，重放/回滚仍可查。
+        """
+        chapter = int(ch or 0)
+        rev = int(revision or 0)
+        if chapter <= 0 or rev < 2:
+            return 0
+        rows = self._read_raw()
+        old_rev, new_rev = rev - 1, rev
+        new_by_base = {}
+        old_rows = []
+        for r in rows:
+            if int(r.get("ch") or 0) != chapter:
+                continue
+            try:
+                rrev = int(r.get("revision") or 1)
+            except (TypeError, ValueError):
+                continue
+            base = str(r.get("id") or "").split("_r")[0]
+            if rrev == new_rev:
+                new_by_base[base] = str(r.get("id"))
+            elif rrev == old_rev:
+                old_rows.append((base, str(r.get("id"))))
+        pairs = [{"old": old, "new": new_by_base.get(base, ""), "ch": chapter,
+                  "reason": (f"第{chapter}章重写（r{old_rev:02d}→r{new_rev:02d}）"
+                             + ("" if base in new_by_base else "，新版无对应条目"))}
+                 for base, old in old_rows]
+        if not pairs:
+            return 0
+        self.supersede(pairs)
+        return len(pairs)
+
+    # ---------- 版本替代（append-only 的补丁） ----------
+    def superseded(self) -> dict:
+        """旧事件 id → {by, ch}；由 `supersede.json` 侧车承载，不回写事件行。"""
+        try:
+            data = self.store.load_supersede()
+        except Exception:
+            logger.exception("supersede.json 读取失败（按无替代处理）")
+            return {}
+        items = data.get("items") if isinstance(data, dict) else None
+        out = {}
+        if isinstance(items, dict):
+            for old, meta in items.items():
+                if isinstance(meta, dict):
+                    out[str(old)] = {"by": str(meta.get("by") or ""),
+                                     "ch": int(meta.get("ch") or 0)}
+        return out
+
+    def supersede(self, pairs: Iterable[dict]) -> dict:
+        """标注旧事件被新版替代：`[{old, new, ch, reason}]`（写侧车，幂等）。"""
+        items = {k: dict(v) for k, v in self.superseded().items()}
+        for p in (pairs or []):
+            old = str((p or {}).get("old") or "").strip()
+            new = str((p or {}).get("new") or "").strip()
+            # `new` 允许为空：重写后新版条数变少时，旧版多出来的条目也要退场（只隐藏、不删行）
+            if not old:
+                continue
+            items[old] = {"by": new, "ch": int((p or {}).get("ch") or 0),
+                          "reason": str((p or {}).get("reason") or "")}
+        self.store.save_supersede({"version": 1, "items": items})
+        return {"superseded": len(items)}
 
     def mark_consumed(self, event_ids: Iterable[str], ch: int) -> dict:
         """整文件原子覆盖写消费水位（走 store._write_json），返回最新水位条数。"""

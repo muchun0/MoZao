@@ -271,6 +271,8 @@ def _replay_or_expired(store, token: str, uid: int) -> dict:
     item = find_by_gen_id(store, prior.get("gen_id"))
     if item is None:
         raise InlineError(410, "GEN_EXPIRED", "该次生成记录已过期（超过 48 小时），请重新生成")
+    if str(item.get("kind") or "inline") != "inline":
+        raise InlineError(409, "TOKEN_CONFLICT", "该 client_token 已用于剧情走向生成，请换一个")
     return _response(item, replayed=True, balance=_balance(uid))
 
 
@@ -479,7 +481,7 @@ def estimate(store, *, project_id: str, chars: int, candidates: int) -> dict:
 def list_drafts(store, ch_no: int) -> list[dict]:
     """该章 48h 内未采纳、未作废的候选记录（重开面板不重复计费）。"""
     out = []
-    for item in list_for_chapter(store, ch_no):
+    for item in list_for_chapter(store, ch_no, kind="inline"):
         out.append({
             "gen_id": item.get("gen_id"),
             "mode": item.get("mode"),

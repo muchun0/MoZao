@@ -57,7 +57,8 @@ _DEBT_FILE = "debt.json"
 _MAX_ENTRIES = 500          # 账本条目上限（超出按插入顺序淘汰最旧，TECH §4.4.2）
 # R25 基座：inline（内联生成）在生成阶段已按候选合计算过费，采纳产生版本不再二次扣费
 _FREE_SOURCES = {"user", "legacy", "inline"}
-_INLINE_PREFIX = "inline:"
+# 短期明细前缀：内联候选与剧情走向都是「一次性浏览产物」，淘汰优先级低于正文结算
+_SHORT_LIVED_PREFIXES = ("inline:", "branch:")
 _INLINE_RETENTION = 48 * 3600  # inline 明细短期保留窗口（秒），与 inline_drafts TTL 对齐
 _MODE_USER_LLM = "user_llm"
 _MODE_PLATFORM = "platform"
@@ -165,9 +166,9 @@ def _atomic_write_json(path: Path, data: Any) -> None:
 def _evict_entries(entries: dict) -> None:
     """账本超上限时按分档优先级淘汰（R25 基座 §4.5）。
 
-    顺序：① 48h 外的 inline 明细（最旧优先）→ ② 仍超限则淘汰最旧 inline →
-    ③ 最后才按插入顺序淘汰其他条目。这样高频内联不会把正文结算记录挤掉；
-    inline 的幂等由 `inline_drafts.tokens` 承担，删除账本明细不会造成二次扣费。
+    顺序：① 48h 外的 inline/branch 明细（最旧优先）→ ② 仍超限则淘汰最旧短期明细 →
+    ③ 最后才按插入顺序淘汰其他条目。这样高频内联/走向不会把正文结算记录挤掉；
+    短期明细的幂等由 `inline_drafts.tokens` 承担，删除账本明细不会造成二次扣费。
     """
     if len(entries) <= _MAX_ENTRIES:
         return
@@ -176,12 +177,12 @@ def _evict_entries(entries: dict) -> None:
         if len(entries) <= _MAX_ENTRIES:
             return
         entry = entries.get(key) or {}
-        if str(key).startswith(_INLINE_PREFIX) and int(entry.get("ts") or 0) < cutoff:
+        if str(key).startswith(_SHORT_LIVED_PREFIXES) and int(entry.get("ts") or 0) < cutoff:
             entries.pop(key, None)
     for key in list(entries):
         if len(entries) <= _MAX_ENTRIES:
             return
-        if str(key).startswith(_INLINE_PREFIX):
+        if str(key).startswith(_SHORT_LIVED_PREFIXES):
             entries.pop(key, None)
     while len(entries) > _MAX_ENTRIES:
         entries.pop(next(iter(entries)))

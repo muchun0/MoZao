@@ -105,10 +105,16 @@ def find_by_gen_id(store, gen_id: str) -> Optional[dict]:
     return None
 
 
-def list_for_chapter(store, ch_no: int) -> list[dict]:
-    """该章 48h 内、未采纳、未作废的记录（按创建时间倒序）。"""
+def _kind_of(item: dict) -> str:
+    """记录类型：inline（续写/改写）或 branch（剧情走向）；旧记录无 kind 视为 inline。"""
+    return str(item.get("kind") or "inline")
+
+
+def list_for_chapter(store, ch_no: int, kind: str = "inline") -> list[dict]:
+    """该章 48h 内、未采纳、未作废的记录（按创建时间倒序）；按 kind 分流。"""
     alive = [i for i in load_state(store)["items"]
              if int(i.get("ch") or 0) == int(ch_no)
+             and _kind_of(i) == kind
              and not i.get("adopted") and not i.get("invalidated_at")]
     alive.sort(key=lambda i: _parse_iso(i.get("created_at")), reverse=True)
     return alive
@@ -141,14 +147,18 @@ def upsert_generation(store, item: dict) -> tuple[dict, bool]:
         return item, False
 
 
-def invalidate_chapter(store, ch_no: int) -> int:
-    """把该章此前未采纳、未作废的记录标为作废（已计费不退），返回作废条数。"""
+def invalidate_chapter(store, ch_no: int, kind: str = "inline") -> int:
+    """把该章此前未采纳、未作废的记录标为作废（已计费不退），返回作废条数。
+
+    默认只作用于 inline 记录；剧情走向（kind=branch）允许多批共存，不被内联作废。
+    """
     now = time.time()
     changed = 0
     with _project_lock(store.dir):
         state = _prune(_normalize_state(store._read_json(_state_path(store), None)), now)
         for item in state["items"]:
             if (int(item.get("ch") or 0) == int(ch_no)
+                    and _kind_of(item) == kind
                     and not item.get("adopted") and not item.get("invalidated_at")):
                 item["invalidated_at"] = _iso(now)
                 changed += 1

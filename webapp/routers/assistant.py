@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """小墨AI 路由：只做 HTTP 输入输出与鉴权，业务在 webapp/assistant/service.py。"""
+from typing import Optional
+
 from fastapi import Header
 from pydantic import BaseModel, Field
 
@@ -21,6 +23,8 @@ class MessageReq(BaseModel):
     mode: str = "chapter_eval"
     chapter_no: int = 0
     refs: list[str] = []  # 一期预留：引用片段由前端拼进 content，不走结构化
+    # R28：段落锚点 {ch,start,end,text_sha,issue_refs}；不传即整章对话
+    anchor: Optional[dict] = None
 
 
 def _owned_conversation(project_id: str, cid: int) -> dict:
@@ -71,7 +75,20 @@ def send_message(project_id: str, cid: int, req: MessageReq,
     # D1=1A：前端必须携带 Idempotency-Key，服务端按项目+request_id 幂等
     return service.send_message(store, user, conv, req.content, req.mode,
                                 chapter_no=req.chapter_no or None,
-                                request_id=idempotency_key)
+                                request_id=idempotency_key, anchor=req.anchor)
+
+
+@app.get("/api/projects/{project_id}/assistant/conversations/{cid}/anchor-messages")
+def list_anchor_messages(project_id: str, cid: int, ch: int = 0, limit: int = 50,
+                         user: dict = Depends(_require_user)):
+    """R28 段落历史问答：按 `extra.anchor.ch` 过滤（只读，供浮层重开恢复现场）。"""
+    _check_project_access(project_id, user)
+    conv = _owned_conversation(project_id, cid)
+    if int(conv["user_id"]) != int(user["id"]) and not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    if int(ch or 0) <= 0:
+        raise HTTPException(status_code=400, detail="缺少章节号")
+    return {"items": db.list_messages_by_anchor(cid, ch, limit=limit)}
 
 
 @app.delete("/api/projects/{project_id}/assistant/conversations/{cid}")

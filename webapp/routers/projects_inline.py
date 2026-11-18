@@ -49,6 +49,21 @@ def inline_adopt(project_id: str, no: int, req: dict = Body(...),
         _fail(exc)
 
 
+@app.post("/api/projects/{project_id}/chapters/{no}/inline/apply-suggestion")
+def inline_apply_suggestion(project_id: str, no: int, req: dict = Body(...),
+                            user: dict = Depends(_require_user)):
+    """R28 应用小墨建议：按 message_id 回读校验 → 结算 → 基座写通道（source=inline）。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    from ..assistant.inline_apply import ApplyError, apply_suggestion
+    try:
+        return apply_suggestion(store, project_id=project_id, uid=int(user["id"]),
+                                ch_no=no, payload=req or {},
+                                is_admin=bool(user.get("is_admin")))
+    except ApplyError as exc:
+        _fail(exc)
+
+
 @app.get("/api/projects/{project_id}/chapters/{no}/inline/drafts")
 def inline_drafts(project_id: str, no: int, user: dict = Depends(_require_user)):
     """该章 48h 内未采纳候选（重开面板不重复计费）。"""

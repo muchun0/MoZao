@@ -17,6 +17,7 @@ __all__ = [
     "create_conversation", "list_conversations", "get_conversation",
     "delete_conversation", "add_message", "list_messages", "recent_messages",
     "get_message", "update_message_extra", "find_assistant_message_by_request",
+    "list_messages_by_anchor",
 ]
 
 
@@ -189,3 +190,21 @@ def find_assistant_message_by_request(cid: int, request_id: str) -> dict | None:
             (int(cid), request_id),
         ).fetchone()
     return _msg_row(row) if row else None
+
+
+def list_messages_by_anchor(cid: int, ch: int, limit: int = 50) -> list[dict]:
+    """R28 段落历史问答：按 `extra.anchor.ch` 过滤，限定会话，参数化。
+
+    仅用于浮层重开恢复现场；单会话消息量有界，暂不加生成列/索引。
+    """
+    if int(ch or 0) <= 0:
+        return []
+    limit = max(1, min(int(limit), 200))
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=%s "
+            "AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.anchor.ch'))=%s "
+            "ORDER BY id DESC LIMIT %s",
+            (int(cid), str(int(ch)), limit),
+        ).fetchall()
+    return [_msg_row(r) for r in reversed(rows)]

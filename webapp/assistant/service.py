@@ -44,8 +44,9 @@ logger = get_logger("assistant")
 __all__ = ["MODES", "send_message", "retry_pending_billing"]
 
 #: 子功能白名单（UI 显式选择，后端按 mode 走不同输出要求）
-MODES = ("chapter_eval", "revision_advice")
+MODES = ("chapter_eval", "revision_advice", "inline_span")
 MAX_CONTENT = 4000
+MAX_ANCHOR_TEXT = 4000
 DEGRADED_TEXT = "小墨暂时开小差了（模型调用失败），请稍后重试；你的问题已保存。"
 SAFE_TEXT = "这次回答触发了内容安全策略，已拦截。请换个问法或聚焦具体章节问题。"
 
@@ -176,15 +177,57 @@ def _assistant_limits(cfg) -> tuple[int, int, int]:
 
 
 def _build_assistant_context(store, cfg, chapter_no: int | None, mode: str,
-                            text: str, cid: int, turns: int, token_limit: int):
-    """构建小墨AI对话上下文：快照+正向快照+历史+组装 prompt。"""
-    snap = context.snapshot(store, chapter_no, target_words=cfg.chapter_words)
+                            text: str, cid: int, turns: int, token_limit: int,
+                            span: dict | None = None):
+    """构建小墨AI对话上下文：快照+正向快照+历史+组装 prompt（span 走段落渲染分支）。"""
+    snap = context.snapshot(store, chapter_no, target_words=cfg.chapter_words, span=span)
     snap["bible"] = sanitize_system_text(snap.get("bible") or "")
     positive = context.positive_snapshot(store, chapter_no, cfg, snap=snap)
     history = _history(cid, turns)  # 落库前取历史，避免把本次提问算进上下文
     built = context.build_prompt(load_persona(), snap, positive, history,
                                 text, mode, token_limit=token_limit)
     return snap, positive, built, history
+
+
+# ---------------- 段落锚点（R28） ----------------
+
+def _prepare_anchor(store, chapter_no: int, anchor: dict | None) -> dict | None:
+    """校验并规范化段落锚点：只做边界校验，不做裁剪（漂移由 context 标记 stale）。
+
+    Raises:
+        HTTPException 400：锚点格式/章节/区间非法（不调用模型、不扣费）。
+    """
+    if not anchor:
+        return None
+    if not isinstance(anchor, dict):
+        raise HTTPException(status_code=400, detail="锚点格式不正确")
+    try:
+        ch = int(anchor.get("ch") or chapter_no)
+        start, end = int(anchor.get("start")), int(anchor.get("end"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="锚点必须是整数（ch/start/end）")
+    if ch != int(chapter_no):
+        raise HTTPException(status_code=400,
+                            detail=f"锚点章节（第 {ch} 章）与所选章节（第 {chapter_no} 章）不一致")
+    chapter = store.load_chapter(int(chapter_no))
+    if chapter is None:
+        raise HTTPException(status_code=400, detail=f"第 {chapter_no} 章尚未生成")
+    content = context._normalize(chapter.content or "")
+    if not (0 <= start <= end <= len(content)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"锚点越界：0 ≤ start ≤ end ≤ {len(content)}（请刷新正文后重新选段）")
+    if start == end and not content.strip():
+        raise HTTPException(status_code=400, detail="本章正文为空，无法按段落提问")
+    if end - start > MAX_ANCHOR_TEXT:
+        raise HTTPException(status_code=400, detail=f"单次最多针对 {MAX_ANCHOR_TEXT} 字的段落提问")
+    refs = anchor.get("issue_refs") or []
+    if not isinstance(refs, list):
+        refs = []
+    return {"ch": int(chapter_no), "start": start, "end": end,
+            "text_sha": str(anchor.get("text_sha") or ""),
+            "issue_refs": [str(r)[:200] for r in refs[:5]]}
+
 
 
 # ---------------- 计费辅助 ----------------
@@ -261,10 +304,12 @@ def _safe_update_extra(message_id: int, patch: dict) -> None:
 def _payload(msg_id: int, cid: int, content: str, mode: str, chapter_no: int,
              card_list: list, tokens_in: int, tokens_out: int, notice: str,
              *, mode_src: str, degraded: bool = False,
-             user_message_id: int = 0, billing: dict | None = None) -> dict:
-    """统一响应结构：在既有字段基础上追加计费字段（前端按需展示）。"""
+             user_message_id: int = 0, billing: dict | None = None,
+             span_meta: dict | None = None) -> dict:
+    """统一响应结构：在既有字段基础上追加计费字段与 R28 段落锚点字段。"""
     b = billing or {"billing_status": "skipped", "billing_id": 0, "chars": 0,
                     "due": 0.0, "charged": 0.0, "owe": 0.0}
+    meta = span_meta or {}
     return {
         "message_id": int(msg_id), "conversation_id": int(cid), "content": content,
         "mode": mode, "chapter_no": int(chapter_no), "cards": card_list or [],
@@ -279,7 +324,24 @@ def _payload(msg_id: int, cid: int, content: str, mode: str, chapter_no: int,
         "due": float(b.get("due") or 0),
         "charged": float(b.get("charged") or 0),
         "owe": float(b.get("owe") or 0),
+        # R28：段落锚点回执（无锚点时为 None / chapter 模式）
+        "anchor": meta.get("anchor"),
+        "anchor_stale": bool(meta.get("anchor_stale")),
+        "context_mode": meta.get("context_mode") or "chapter",
+        "budget_tier": meta.get("budget_tier"),
     }
+
+
+def _span_meta(anchor: dict | None, built: dict, snap: dict) -> dict:
+    """R28：把锚点、漂移标记与渲染模式汇总为响应/落库一体字段。"""
+    if not anchor:
+        return {"anchor": None, "anchor_stale": False,
+                "context_mode": built.get("context_mode") or "chapter",
+                "budget_tier": built.get("budget_tier")}
+    return {"anchor": anchor,
+            "anchor_stale": bool((snap.get("span") or {}).get("stale")),
+            "context_mode": built.get("context_mode") or "span",
+            "budget_tier": built.get("budget_tier")}
 
 
 def _settle_answer(*, mode_src: str, user: dict, project_id: str, project_title: str,
@@ -410,8 +472,17 @@ def _respond_existing(row: dict) -> dict:
         int(extra.get("token_out") or 0),
         _with_fee_notice(notice, mode_src, billing),
         mode_src=mode_src, user_message_id=int(row.get("user_message_id") or 0),
-        billing=billing,
+        billing=billing, span_meta=_extra_span_meta(extra),
     )
+
+
+def _extra_span_meta(extra: dict) -> dict:
+    """从已存消息 extra 还原 R28 锚点回执（幂等重放/中断恢复时保持一致）。"""
+    extra = extra or {}
+    return {"anchor": extra.get("anchor"),
+            "anchor_stale": bool(extra.get("anchor_stale")),
+            "context_mode": extra.get("context_mode") or "chapter",
+            "budget_tier": extra.get("budget_tier")}
 
 
 def _recover_prior_answer(*, prior: dict, mode_src: str, user: dict, project_id: str,
@@ -431,7 +502,7 @@ def _recover_prior_answer(*, prior: dict, mode_src: str, user: dict, project_id:
             int(extra.get("token_out") or 0),
             _with_fee_notice(notice, mode_src, billing),
             mode_src=mode_src, user_message_id=int(extra.get("user_message_id") or 0),
-            billing=billing,
+            billing=billing, span_meta=_extra_span_meta(extra),
         )
     billing = _settle_answer(
         mode_src=mode_src, user=user, project_id=project_id, project_title=project_title,
@@ -446,7 +517,7 @@ def _recover_prior_answer(*, prior: dict, mode_src: str, user: dict, project_id:
         int(extra.get("token_out") or 0),
         _with_fee_notice(notice, mode_src, billing),
         mode_src=mode_src, user_message_id=int(extra.get("user_message_id") or 0),
-        billing=billing,
+        billing=billing, span_meta=_extra_span_meta(extra),
     )
 
 
@@ -472,10 +543,16 @@ def retry_pending_billing(billing_id: int) -> dict:
 
 
 def send_message(store, user: dict, conversation: dict, content: str, mode: str,
-                 chapter_no: int | None = None, request_id: str | None = None) -> dict:
-    """发一条消息：返回 {message_id, conversation_id, content, mode, chapter_no, 计费字段...}。"""
+                 chapter_no: int | None = None, request_id: str | None = None,
+                 anchor: dict | None = None) -> dict:
+    """发一条消息：返回 {message_id, conversation_id, content, mode, chapter_no, 计费字段...}。
+
+    R28：传 `anchor={ch,start,end,text_sha}` 时按段落窗口组装上下文，
+    锚点随 user/assistant 消息的 `extra.anchor` 落库（JSON 列，无 DDL）。
+    """
     text = _validate(content, mode)
     chapter_no = _resolve_chapter_no(store, chapter_no)
+    anchor = _prepare_anchor(store, chapter_no, anchor)
     cfg = store.load_config()
     # 后台开关以 sys_config 为准（与生成链路一致：老项目快照没有新字段也能生效）
     apply_global_overrides(cfg)
@@ -511,9 +588,12 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
             )
 
     snap, positive, built, history = _build_assistant_context(
-        store, cfg, chapter_no, mode, text, cid, turns, token_limit)
+        store, cfg, chapter_no, mode, text, cid, turns, token_limit, span=anchor)
+    span_meta = _span_meta(anchor, built, snap)
 
     user_extra = {"mode": mode, "chapter_no": chapter_no, "token_in": built["tokens"]}
+    if anchor:
+        user_extra.update({"anchor": anchor, "context_mode": built.get("context_mode")})
     if billing_on:
         user_extra.update({"request_id": rid, "billing_status": "pending"})
     # 先落用户消息（携带 request_id），再调模型：失败重试有稳定锚点
@@ -530,6 +610,7 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
             0, cid, DEGRADED_TEXT, mode, chapter_no, [], built["tokens"], 0,
             "模型调用失败，本条回答为降级提示；本条未计费",
             mode_src=mode_src, degraded=True, user_message_id=user_msg_id,
+            span_meta=span_meta,
         )
 
     if not answer.strip():
@@ -540,6 +621,7 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
             0, cid, DEGRADED_TEXT, mode, chapter_no, [], built["tokens"], 0,
             "模型返回空回答，本条回答为降级提示；本条未计费",
             mode_src=mode_src, degraded=True, user_message_id=user_msg_id,
+            span_meta=span_meta,
         )
 
     blocked = bool(basic_content_check(answer))
@@ -554,7 +636,11 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
         "token_out": context.estimate_tokens(answer),
         "cards": card_list, "citations": [],
         "level": built.get("level", 0), "history": len(history),
+        "context_mode": built.get("context_mode", "chapter"),
+        "budget_tier": built.get("budget_tier"),
     }
+    if anchor:
+        extra.update({"anchor": anchor, "anchor_stale": span_meta["anchor_stale"]})
     if billing_on:
         extra.update({"request_id": rid, "user_message_id": user_msg_id,
                       "billing_status": "skipped" if blocked else "pending"})
@@ -575,8 +661,10 @@ def send_message(store, user: dict, conversation: dict, content: str, mode: str,
 
     notice = _with_fee_notice(_notice(built, snap, positive), mode_src,
                              billing or {"billing_status": "skipped"})
+    if span_meta["anchor_stale"]:
+        notice = (f"原文已变化，建议重新选段后再应用改写；{notice}").strip("；")
     return _payload(
         msg_id, cid, answer, mode, chapter_no, card_list, built["tokens"],
         extra["token_out"], notice, mode_src=mode_src,
-        user_message_id=user_msg_id, billing=billing,
+        user_message_id=user_msg_id, billing=billing, span_meta=span_meta,
     )

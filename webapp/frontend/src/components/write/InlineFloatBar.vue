@@ -1,9 +1,11 @@
 <template>
-  <!-- 选区浮动条：贴近选区尾部，点击后把选区交给父级发起改写/扩写 -->
+  <!-- 选区浮动条：贴近选区尾部，点击后把选区交给父级发起改写/扩写/问小墨 -->
   <div v-if="show" class="float" :style="style">
     <button class="item" @mousedown.prevent="$emit('rewrite')">改写</button>
     <span class="sep">|</span>
     <button class="item" @mousedown.prevent="$emit('expand')">扩写</button>
+    <span class="sep">|</span>
+    <button class="item ask" @mousedown.prevent="$emit('ask')">问小墨</button>
   </div>
 </template>
 
@@ -15,10 +17,10 @@ const props = defineProps({
   x: { type: Number, default: 0 },
   y: { type: Number, default: 0 },
 })
-defineEmits(['rewrite', 'expand'])
+defineEmits(['rewrite', 'expand', 'ask'])
 
 const style = computed(() => {
-  const w = 132
+  const w = 186
   const left = Math.min(Math.max(8, props.x - w / 2), window.innerWidth - w - 8)
   const top = Math.min(Math.max(8, props.y), window.innerHeight - 56)
   return { left: `${left}px`, top: `${top}px`, width: `${w}px` }

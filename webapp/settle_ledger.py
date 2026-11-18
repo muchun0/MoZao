@@ -47,6 +47,7 @@ __all__ = [
     "should_stop_now",
     "snapshot_chapter_versions",
     "version_charge_map",
+    "rollback_entry",
 ]
 
 logger = get_logger("settle_ledger")
@@ -490,6 +491,62 @@ def _record_debt(store, entry_key: str, words: int, due: float, charged: float) 
 
 
 # ---------- 版本金额反查（阶段 1C：版本弹窗展示每版计费字数与金额，TECH §10.2） ----------
+
+def rollback_entry(store, entry_key: str) -> bool:
+    """撤销一条刚写入的结算条目并退回已扣金额（产物写入失败时的同步兜底）。
+
+    仅在「结算成功 → 产物写入失败」的窗口内由调用方使用；不做返佣回收
+    （已发返佣只留 CRITICAL 日志供人工处理），也不用于常规退款。
+    """
+    ledger = load_ledger(store)
+    entries = ledger.get("entries") or {}
+    entry = entries.pop(str(entry_key), None)
+    if not isinstance(entry, dict):
+        return False
+    words = int(entry.get("words") or 0)
+    charged = round_money(float(entry.get("charged") or 0.0))
+    due = round_money(float(entry.get("due") or 0.0))
+    ledger["entries"] = entries
+    ledger["ai_words_total"] = max(0, int(ledger.get("ai_words_total") or 0) - words)
+    ledger["billed_price"] = round_money(
+        max(0.0, float(ledger.get("billed_price") or 0.0) - charged))
+    try:
+        _write_ledger(store, ledger)
+    except Exception:
+        logger.exception("结算条目回滚落盘失败（需人工核对）: entry=%s", entry_key)
+        return False
+    uid = entry.get("uid")
+    if uid is not None and charged > 0:
+        try:
+            db.change_balance(int(uid), charged, f"写入失败回滚 {entry_key}：退回 {charged:.2f} 元")
+        except Exception:
+            logger.critical("结算回滚退款失败（需人工处理）: entry=%s uid=%s amount=%.2f",
+                            entry_key, uid, charged)
+    if due > charged:
+        _remove_debt(store, entry_key)
+    logger.warning("结算条目已回滚: project=%s entry=%s words=%d charged=%.2f",
+                   store.dir.name, entry_key, words, charged)
+    return True
+
+
+def _remove_debt(store, entry_key: str) -> None:
+    """回滚时一并撤掉同条目欠费记录（避免用户为未落盘内容还挂欠费）。"""
+    p = store.dir / _DEBT_FILE
+    if not p.exists():
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            return
+        items = [it for it in (data.get("entries") or [])
+                 if str((it or {}).get("entry") or "") != str(entry_key)]
+        owe = round_money(sum(float((it or {}).get("due") or 0)
+                              - float((it or {}).get("charged") or 0) for it in items))
+        data.update({"entries": items, "owe": max(0.0, owe)})
+        _atomic_write_json(p, data)
+    except Exception:
+        logger.exception("回滚欠费记录失败（需人工核对）: entry=%s", entry_key)
+
 
 def version_charge_map(store, kind: str, key: str) -> dict[int, dict]:
     """按版本号反查结算金额：{v: {charged, due, mode}}。

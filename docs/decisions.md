@@ -657,3 +657,24 @@
 - `GET /chapters/{no}` 增补 `version/base_hash/source/summary_stale` 只读字段，向后兼容；写作页生成前若本地有未保存修改直接拦截，保证锚点偏移与服务器正文一致。
 
 **单测**：`tests/test_inline_writing.py` 32 条（P0：规范化/精确拼接/版本语义/自动选分不覆盖/守卫/结算免扣/账本分档淘汰/token 幂等与作废/生成计费一次/空候选与合规不计费/BYOK 0 元留审计/采纳不二次扣费/切版本后 409/**越权 403/资金合计对账/并发采纳仅 1 个版本/并发同 token 单飞**；P1：检索正文与设定、控制字符拒绝、审计关联）。
+
+## 2026-11-18 R28 小墨AI内联段落协同：段落锚点渲染 + 应用到正文（feat/r28-assistant-inline）
+
+**决策**
+1. **不新增写通路，不做 R1 回退**：应用小墨建议只走基座 `apply_inline_text(source=inline)`，删除「R25 未排期时复用 `apply_issue_rewrite`」方案——R1 必须从 `review.json` 按 `type/evidence` 解析真实 issue，自由建议无对应项会恒定 422。
+2. **计费两笔账各归其位**：产生正文版本走 `settle.json` v2（`kind=inline`，幂等键 `apply:<client_token>`），纯问答继续走 `assistant_billing`；不新增第二计费路径，也不互相抵扣。版本 `source=inline` 已在 R25 免扣集合内，因此不会二次扣费。
+3. **段落锚点是 `snapshot()` 的渲染分支**：`context.snapshot(span=)` 增 `<paragraph_context>`（段落原文 + 前后段窗口 + 命中 issue），正文预算按档位 1/3 折算并收敛到 600–2400 字；结构表述统一为「3 层结构 + 4 档裁剪」。命中 issue 用 evidence 子串定位、多处取离锚点最近，定位不到只给类型/改法（不阻断回答）。
+4. **锚点随消息落库，历史查询用 JSON 过滤**：`messages.extra.anchor` 存 `{ch,start,end,text_sha,issue_refs}`；`GET .../anchor-messages?ch=` 用 `JSON_UNQUOTE(JSON_EXTRACT(extra,'$.anchor.ch'))` 参数化过滤（不加生成列/索引，单会话消息量有界）。
+5. **漂移只提示不阻断**：`text_sha` 不一致或越界（收敛到正文长度）标 `anchor_stale` 并在 notice 提示重新选段；`ch` 与所选章节不一致、区间非法才 400（不调模型、不扣费）。
+6. **应用建议的校验顺序**：message_id 回读（会话归属 / 角色 assistant / 文本是消息子串 / 锚点一致）→ 单段与长度校验 → 版本+哈希预检 → 余额与结算 → 写盘；`edited=true` 或文本不一致一律 `MESSAGE_MISMATCH`，不做"用户改过的建议也照写"。
+7. **同令牌幂等与回滚**：同 token 同文本直接重放（不写盘不扣费），不同文本 409 `TOKEN_REUSED`；结算在写盘之前，写盘失败调 `settle_ledger.rollback_entry` 删条目、退回已扣金额并撤销同条目欠费，正文保持原样。
+8. **前端收敛在挂载点**：新增 `components/write/AssistantDock.vue`，打开时取代右栏 AI/检索 tab（互斥）；`InlineFloatBar` 增「问小墨」，选区自动扩展到所在自然段；全书体检每条目增「问小墨怎么改」，证据唯一命中才自动选段，0/多处提示手动选段（P0-8）。
+
+**踩坑 / 边界**
+- `ProjectStore.create` 的目录名带日期，测试里用 `store.dir.name` 作为 project_id，不能写死。
+- 消息 `extra.anchor` 是 JSON 列，MySQL 里 `JSON_EXTRACT` 返回数值，比较时统一 `JSON_UNQUOTE` + 字符串参数。
+- 返佣已在扣费时发出，回滚只退用户余额；已发返佣不回收，留 CRITICAL 日志供人工处理（仅发生在写盘失败窗口）。
+- 跨段写入同时校验两处：原文区间不得含 `\n\n`，建议文本本身也不得含 `\n\n`。
+- 应用后锚点偏移会随字数变化失效，写作页应用成功即收起浮层并重载章节，避免继续用旧锚点再应用。
+
+**单测**：`tests/test_assistant_inline.py` 16 条（P0：段落窗口/零宽扩段/evidence 最近命中与定位失败/span 渲染不注入整章/预算折算/漂移标记/锚点越界 400/锚点落库/单段写入与单次计费/同 token 重放不双扣/令牌复用 409/编辑与文本不一致拒绝且不扣费/跨段 400/版本漂移 409/越权 403/写盘失败回滚账本与余额；P1：BYOK 0 元仍留审计）。

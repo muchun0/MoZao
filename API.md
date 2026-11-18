@@ -134,9 +134,17 @@
 | POST | /api/projects/{id}/chapters/{no}/inline/adopt | 是 | 人工采纳候选：按记录 anchor 落一个新版本（`source=inline`），**不二次计费**。body：`gen_id`、`candidate_id`、`base_version`、`base_hash`、`client_token`；版本/哈希漂移返回 409 且候选保留 |
 | GET | /api/projects/{id}/chapters/{no}/inline/drafts | 是 | 该章 48h 内未采纳、未作废候选（重开面板不重复计费） |
 | GET | /api/projects/{id}/chapters/{no}/inline/estimate?chars=&candidates= | 是 | 触发前只读预估（字数/金额），不扣费、不调模型 |
+| POST | /api/projects/{id}/chapters/{no}/inline/apply-suggestion | 是 | **R28 应用小墨建议**：body `conversation_id`、`message_id`、`anchor{start,end}`、`text`、`base_version`、`base_hash`、`client_token`、`edited`。按 `message_id` 回读校验（归属/角色/文本一致/锚点一致）→ 单段校验 → `settle.json kind=inline`（`apply:<client_token>`）→ `apply_inline_text(source=inline)`。同 token 同文本重放不双扣；同 token 不同文本 409 `TOKEN_REUSED`；写盘失败回滚账本与扣费 |
 | GET | /api/projects/{id}/search?q=&limit=&offset=&scope= | 是 | 只读全文检索（R28/R29 共用）：`scope=body/settings/all`，`q` 2–40 字，片段前后 40 字，返回 `items/scanned_chars/truncated/elapsed_ms` |
 
-> 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` 等。
+> 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `STALE_BASE` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` / `MESSAGE_MISMATCH` / `CROSS_PARAGRAPH` / `TOKEN_REUSED` / `WRITE_FAILED` 等。
+
+### 小墨AI 段落协同（R28）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/assistant/conversations/{cid}/messages | 是 | 发消息（既有）。R28 增 `anchor{ch,start,end,text_sha,issue_refs}`：按段落窗口组装上下文（`context_mode=span`），锚点随消息 `extra.anchor` 落库；响应增 `anchor/anchor_stale/context_mode/budget_tier` |
+| GET | /api/projects/{id}/assistant/conversations/{cid}/anchor-messages?ch=&limit= | 是 | 按 `extra.anchor.ch` 过滤的本章段落问答历史（只读，浮层重开恢复现场） |
 
 ### 生成控制
 

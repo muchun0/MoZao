@@ -85,6 +85,8 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "conflict_guard", False, "确定性冲突前置（REQ-R21 M1）：五类规则写前判定，命中时在补偿块之后、硬区之前注入「冲突提醒」；False=不注入（M0 行为）"),
     FeatureFlag("memory", "timeline_view", False, "时间线只读视图（REQ-R21 M1）：/book-facts 的事件/线索/时间线/冲突查询接口；False=查询接口 404（M0 行为）"),
     FeatureFlag("memory", "state_graph", False, "状态图谱只读服务（REQ-R22 M2）：/book-facts/graph 一次返回「版本+来源+四视图（世界事实/角色认知/发展线/可能分支）」，生成链路与外部消费者共用同一契约；False=接口 404，消费方走 M1 分散查询（完全回退）"),
+    FeatureFlag("memory", "state_graph_v2", False, "每书 Canon 事实图（REQ-R24 G0'）：节点+带证据的边、八类体检、子图检索、时点视图与 impact（/book-facts/canon-graph）；派生层只读、不落盘、无证据不建边；True 时 death_state/item_owner 两条冲突规则改读图；False=接口 404，行为完全回退 R22 四视图"),
+    FeatureFlag("memory", "plan_graph", False, "每书 Plan 计划图（REQ-R24 P0/P1）：由大纲确定性编译分章约束（`plan_graph.json`），写前按 Base+Plan+Canon 派生 `<chapter_constraints>` 块并与冲突提醒合并去重（合计 ≤300 字符、must 每章 ≤5 条，超出降 should）；False=完全不渲染，行为逐字回退"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
@@ -392,6 +394,8 @@ class NovelConfig:
     conflict_guard: bool = feature_default("conflict_guard")                           # 确定性冲突前置（REQ-R21 M1）：五规则写前提醒
     timeline_view: bool = feature_default("timeline_view")                             # 时间线只读接口（REQ-R21 M1）
     state_graph: bool = feature_default("state_graph")                                 # 状态图谱只读服务（REQ-R22 M2）
+    state_graph_v2: bool = feature_default("state_graph_v2")                           # Canon 事实图 G0'（REQ-R24）
+    plan_graph: bool = feature_default("plan_graph")                                   # Plan 计划图 + 约束注入（REQ-R24 P1）
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）

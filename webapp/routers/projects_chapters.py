@@ -753,6 +753,46 @@ def get_book_facts_timeline(project_id: str, view: str = "chapter", at_ch: int =
             "stale": bool(snap.get("stale")), "degraded": bool(facts.degraded)}
 
 
+@app.get("/api/projects/{project_id}/book-facts/canon-graph")
+def get_book_facts_canon_graph(project_id: str, view: str = "all", seed: str = "",
+                               depth: int = 1, rel: str = "", at_ch: int = 0,
+                               user: dict = Depends(_require_user)):
+    """REQ-R24 G0'：每书 Canon 事实图（节点 + 带证据的边）。
+
+    view=all 返回整图（含 sources/skipped_edges/fingerprint）；view=validate 返回
+    体检结论；view=entity 按 seed（节点 id、名称或已登记别名）取单节点与相邻边；
+    view=subgraph 从 seed 按 rel（默认 holds/part_of）扩散 depth 跳；
+    view=impact（G1'）按 seed 回答「改这个实体影响哪些章、哪些伏笔」。
+    开关 state_graph_v2 关闭时 404——与 R22 四视图并存，不互相替代。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph_v2")
+    from novel_gen.pipeline.state.graph import (EDGE_RELS, SUBGRAPH_RELS,
+                                                CanonGraph)
+    g = CanonGraph(store, cfg)
+    view = (view or "all").strip()
+    if view not in ("all", "validate", "entity", "subgraph", "impact"):
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 all/validate/entity/subgraph/impact）")
+    if view == "validate":
+        return g.validate(at_ch=at_ch)
+    if view == "all":
+        graph = g.build(at_ch=at_ch)
+        return {"version": g.fingerprint(graph), "graph": graph}
+    if not seed.strip():
+        raise HTTPException(status_code=400, detail="view=entity/subgraph/impact 需要 seed")
+    if view == "impact":
+        return g.impact(entity=seed, ch=int(at_ch or 0), at_ch=at_ch)
+    if view == "entity":
+        rels = tuple(r for r in (rel or "").split(",") if r in EDGE_RELS) or SUBGRAPH_RELS
+        return g.subgraph(seed=seed, depth=1, rels=rels, at_ch=at_ch)
+    rels = tuple(r for r in (rel or "").split(",") if r in EDGE_RELS) or SUBGRAPH_RELS
+    return g.subgraph(seed=seed, depth=max(1, min(int(depth or 1), 3)),
+                      rels=rels, at_ch=at_ch)
+
+
 @app.get("/api/projects/{project_id}/book-facts/graph")
 def get_book_facts_graph(project_id: str, view: str = "all", at_ch: int = 0,
                          kind: str = "", participant: str = "", status: str = "",

@@ -214,8 +214,8 @@
 <script setup>
 // 世界观编辑面板：数据自治（自行加载/保存），父组件通过 reload() 在生成完成后触发刷新。
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { getWorld, saveWorld } from '../../api/novel'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getWorld, saveWorld, previewPlanImpact } from '../../api/novel'
 import CharacterGraph from './CharacterGraph.vue'
 import MechanismEditor from './MechanismEditor.vue'
 import { TYPE_TITLES, hasMechanism, resolveTypes } from './mechanism'
@@ -312,9 +312,65 @@ function removeCharacter(index) {
   }
 }
 
+// 门 2 需求：找出这次编辑动到的实体名（只算实体，纯文本字段不触发确认）。
+// 口径：按名称对齐，序列化后不同即算改动；新增/删除也算。
+function changedEntityNames() {
+    const before = world.value || {}
+    const after = worldDraft.value || {}
+    const names = []
+    const pairs = [
+        ['characters', 'name'],
+        ['locations', 'name'],
+        ['enemies', 'name'],
+        ['factions', 'name'],
+        ['items', 'name'],
+    ]
+    for (const [field, key] of pairs) {
+        const oldList = Array.isArray(before[field]) ? before[field] : []
+        const newList = Array.isArray(after[field]) ? after[field] : []
+        const oldMap = new Map(oldList.map((x) => [x?.[key], JSON.stringify(x)]))
+        for (const x of newList) {
+            const name = x?.[key]
+            if (!name) continue
+            if (oldMap.get(name) !== JSON.stringify(x)) names.push(name)
+        }
+        for (const name of oldMap.keys()) {
+            if (name && !newList.some((x) => x?.[key] === name)) names.push(name)
+        }
+    }
+    return [...new Set(names)]
+}
+
+async function confirmBaseImpact() {
+    const entities = changedEntityNames()
+    if (!entities.length) return true
+    try {
+        const res = await previewPlanImpact(props.pid, entities)
+        const chapters = res?.chapters || []
+        if (!chapters.length) return true
+        try {
+            await ElMessageBox.confirm(
+                `这次修改涉及 ${entities.length} 个实体，会影响 ${chapters.length} 章：第${chapters.join('、')}章。` +
+                '这些章的计划约束和已写事实会和新的设定不一致，保存后需要重看这些章。',
+                '保存前影响确认',
+                { type: 'warning', confirmButtonText: '仍然保存', cancelButtonText: '先不保存' },
+            )
+            return true
+        } catch {
+            return false // 用户选择「先不保存」
+        }
+    } catch {
+        // Plan 未开启 / 未编译 / 接口异常：不阻断保存（门 2 是提醒，不是硬门）
+        return true
+    }
+}
+
 async function saveWorldDraft() {
   worldSaving.value = true
   try {
+    // 门 2：改 Base（设定基线）前先出影响面。Plan 侧 + Canon 侧一起答，
+    // 有受影响章就二次确认；接口不可用（未开 Plan / 未编译）不阻断保存。
+    if (!(await confirmBaseImpact())) return
     pruneMechanismDraft(worldDraft.value)
     const res = await saveWorld(props.pid, worldDraft.value)
     world.value = res

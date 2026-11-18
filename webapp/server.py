@@ -25,7 +25,7 @@ from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       # /chapters/{no} 会先吃掉 /chapters/quality-overview、/chapters/staleness
                       projects_quality, projects_staleness, projects_chapters,
                       projects_world, projects_generation, projects_versions,
-                      projects_consistency,
+                      projects_consistency, projects_plan,
                       # REQ-创作阶段审阅门 M0：门状态查询/通过/体检材料
                       projects_gates)  # noqa: F401  触发路由注册
 

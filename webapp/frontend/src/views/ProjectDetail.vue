@@ -174,6 +174,11 @@
           <OutlineEditor v-if="outlineReady || hadOutline" :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
         </section>
 
+        <!-- 创作图（门 1）：分章约束卡。Plan 层（可改）与账本（Canon，只增不改）分开 -->
+        <section v-if="visited.plan" v-show="tab === 'plan'">
+          <PlanGraphPanel :pid="pid" :chapter-count="chapters.length" />
+        </section>
+
         <!-- 世界观 -->
         <section v-if="visited.world" v-show="tab === 'world'">
           <!-- 门 2：世界观审阅（含"受影响章纲清单"反向提示） -->
@@ -298,6 +303,7 @@ import WorldEditor from '../components/world/WorldEditor.vue'
 import AssistantPanel from '../components/assistant/AssistantPanel.vue'
 import AgentPanel from '../components/agent/AgentPanel.vue'
 import ProjectSideNav from '../components/project/ProjectSideNav.vue'
+import PlanGraphPanel from '../components/project/PlanGraphPanel.vue'
 import ConsistencyPanel from '../components/consistency/ConsistencyPanel.vue'
 import FactsTimelinePanel from '../components/facts/FactsTimelinePanel.vue'
 import StateGraphPanel from '../components/facts/StateGraphPanel.vue'

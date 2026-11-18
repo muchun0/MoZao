@@ -23,13 +23,14 @@ LLM 抽取失败时降级：确定性正则抓「次数/进度/剩余…：N」�
 """
 from __future__ import annotations
 
+from .item_state import label as _item_label
+
 import logging
 import re
 
 logger = logging.getLogger(__name__)
 
-#: 确定性兜底：抓正文中的机制数字面板行（如「今日可死次数：3」「累计进度：98%」）。
-#: 后缀只保留通用机制词（次数/进度/剩余/累积/状态/数值），书级字段名（如《万墟之上》
+#: 确定性兜底：抓正文中的机制数字面板行（如「今日可死次数：3」「累计进度：98%」）。#: 后缀只保留通用机制词（次数/进度/剩余/累积/状态/数值），书级字段名（如《万墟之上》
 #: 的「蚀痕/蚀化」）由调用方从设定账本派生的字段注册表动态注入（mechanism_field_registry
 #: + registry 驱动的提取层），代码层不预置任何单书机制词。
 _PANEL_RE = re.compile(
@@ -73,19 +74,53 @@ def extract_scene_state(llm, text: str) -> dict | None:
         return {"numbers": nums} if nums else None
 
 
+def _clean_items(items: dict) -> dict:
+    """把抽取返回的 items 收成标准形态（REQ-R24 方案 B）。
+
+    兼容两种输入：模型按新契约给对象（`owner/state/evidence`）→ 原样保留三个键；
+    模型仍给旧字符串 → 保留字符串（图/规则层按旧路径解析）。空 key 一律丢弃。
+    """
+    out: dict = {}
+    for k, v in items.items():
+        key = str(k or "").strip()
+        if not key:
+            continue
+        if isinstance(v, dict):
+            owner = str(v.get("owner") or "").strip()
+            state = str(v.get("state") or "").strip().lower()
+            if state not in ("held", "lost", "unknown"):
+                state = "held" if owner else "unknown"
+            if state == "held" and not owner:
+                state = "unknown"   # 没有持有者的 held 等于没说清
+            out[key] = {
+                "owner": owner,
+                "state": state,
+                "evidence": str(v.get("evidence") or "").strip(),
+            }
+        elif str(v).strip():
+            out[key] = str(v).strip()
+    return out
+
+
 def _llm_scene_extract(llm, text: str) -> dict:
     system = (
         "你是小说场景状态记录员。根据场景正文，抽取「已达成且后续场景必须延续」的状态："
         "机制数字（按本书机制卡声明的数值/进度，如'剩余次数：2'）、人物生死、物品归属、时间锚点、"
         "主角身体状态（伤口位置/知觉范围/服饰损坏，如'左臂肘部以下无知觉''衣袖焦黑'）。\n"
         '只输出合法 JSON：{"numbers":["剩余次数：2"],"characters":{"同伴":"已死"},'
-        '"items":{"旧包袱":"被路人抢走"},"time":"同日午后，城郊旧巷",'
+        '"items":{"旧包袱":{"owner":"甲","state":"held","evidence":"甲把旧包袱背到肩上"}},'
+        '"time":"同日午后，城郊旧巷",'
         '"body":["左臂肘部以下无知觉","衣袖焦黑翻卷"]}。\n'
         "规则：只写正文明确呈现的状态；重伤、被抢等不可逆重大事件必须记录；"
+        "items 的每个值必须是对象：owner 写当前持有者姓名（判不出留空字符串），"
+        "state 取 held（仍持有）/ lost（已失去：被抢、被毁、砸碎、丢失、脱手落地、"
+        "交出去以后再没拿回）/ unknown（正文没写清），"
+        "evidence 抄正文里能支撑这个判断的短句（≤30 字）；"
+        "物品已不在任何人手上时 state=lost、owner 留空，不要写「归属不明」充数；"
         "身体状态必须写清部位与范围（'肘部以下'而非笼统'受伤'）；"
         "数字必须是正文出现的准确写法；无某项给空对象/空数组；只输出 JSON。"
     )
-    data = llm.chat_json(system, f"场景正文：\n{text}", temperature=0.3, max_tokens=400)
+    data = llm.chat_json(system, f"场景正文：\n{text}", temperature=0.3, max_tokens=450)
     if not isinstance(data, dict):
         raise ValueError("场景状态抽取返回非对象")
     out: dict = {}
@@ -97,7 +132,7 @@ def _llm_scene_extract(llm, text: str) -> dict:
         out["characters"] = {str(k): str(v) for k, v in chars.items() if str(k).strip()}
     items = data.get("items")
     if isinstance(items, dict):
-        out["items"] = {str(k): str(v) for k, v in items.items() if str(k).strip()}
+        out["items"] = _clean_items(items)
     body = data.get("body")
     if isinstance(body, list):
         out["body"] = [str(x) for x in body if str(x).strip()]
@@ -146,7 +181,7 @@ def format_scene_state(acc: dict) -> str:
         lines.append("人物生死：" + "；".join(f"{k}（{v}）" for k, v in chars.items()))
     items = acc.get("items") or {}
     if items:
-        lines.append("物品归属：" + "；".join(f"{k}（{v}）" for k, v in items.items()))
+        lines.append("物品归属：" + "；".join(f"{k}（{_item_label(v)}）" for k, v in items.items()))
     body = acc.get("body") or []
     if body:
         lines.append("主角身体状态：" + "；".join(str(x) for x in body) +
@@ -249,7 +284,7 @@ def _llm_chapter_extract(llm, chapter, no: int) -> dict:
         "状态清单，供下一章续写时承接。\n"
         '只输出合法 JSON：{"numbers":["剩余次数：1","累积进度：3/10"],'
         '"characters":{"同伴":"已死（死在旧巷尽头）"},'
-        '"items":{"旧包袱":"被路人抢走"},'
+        '"items":{"旧包袱":{"owner":"甲","state":"held","evidence":"甲把旧包袱背到肩上"}},'
         '"time":"第9天，夜间，城外坡底",'
         '"facts":["过河钱由同伴垫付，主角欠同伴"],'
         '"body":["左臂肘部以下无知觉","左臂衣袖焦黑"],'
@@ -258,6 +293,11 @@ def _llm_chapter_extract(llm, chapter, no: int) -> dict:
         '"rule_events":[{"rule_id":"r2","action":"broken","instance":"旧城区公寓",'
         '"detail":"角色利用漏洞打破该规则"}]}。\n'
         "规则：只写正文明确呈现的状态；重伤、被抢、负债等不可逆重大事件必须记录；"
+        "items 的每个值必须是对象：owner 写章末仍在手上的持有者姓名（判不出留空字符串），"
+        "state 取 held（章末仍持有）/ lost（章末已失去：被抢、被毁、砸碎、丢失、脱手落地、"
+        "交出去后再没拿回）/ unknown（正文没写清），"
+        "evidence 抄正文里能支撑该判断的短句（≤30 字，不要改写）；"
+        "物品已不在任何人手上时 state=lost、owner 留空，不要用「归属不明」充数；"
         "身体状态写清部位与范围（伤口/知觉/服饰）；数字必须是正文出现的准确写法；"
         "rules_active 只填本章结束时仍然生效的条款编号；rule_events 记录本章内条款被"
         "打破/解除/新揭示的事件（action 取 broken/resolved/discovered）；"
@@ -279,7 +319,7 @@ def _llm_chapter_extract(llm, chapter, no: int) -> dict:
         out["characters"] = {str(k): str(v) for k, v in chars.items() if str(k).strip()}
     items = data.get("items")
     if isinstance(items, dict):
-        out["items"] = {str(k): str(v) for k, v in items.items() if str(k).strip()}
+        out["items"] = _clean_items(items)
     body = data.get("body")
     if isinstance(body, list):
         out["body"] = [str(x) for x in body if str(x).strip()]
@@ -331,7 +371,7 @@ def format_chapter_state(state: dict) -> str:
         lines.append("人物状态：" + "；".join(f"{k}（{v}）" for k, v in chars.items()))
     items = state.get("items") or {}
     if items:
-        lines.append("物品归属：" + "；".join(f"{k}（{v}）" for k, v in items.items()))
+        lines.append("物品归属：" + "；".join(f"{k}（{_item_label(v)}）" for k, v in items.items()))
     if state.get("time"):
         lines.append(f"时间锚点：{state['time']}")
     facts = state.get("facts") or []

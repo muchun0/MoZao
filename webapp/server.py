@@ -29,7 +29,9 @@ from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       # REQ-创作阶段审阅门 M0：门状态查询/通过/体检材料
                       projects_gates,
                       # R25：内联写作生成/采纳/草稿/预估 + 只读全文检索
-                      projects_inline)  # noqa: F401  触发路由注册
+                      projects_inline,
+                      # R27：分步确认式生成流（阶段编排 / 确认卡 / 模式切换）
+                      projects_flow)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

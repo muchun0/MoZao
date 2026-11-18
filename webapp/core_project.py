@@ -55,6 +55,7 @@ def _cfg_to_dict(cfg: NovelConfig) -> dict:
         "anti_similarity": cfg.anti_similarity,
         "character_depth": cfg.character_depth,
         "confirm": cfg.confirm,
+        "generation_mode": getattr(cfg, "generation_mode", "") or "",
         "memory_window": cfg.memory_window,
         "mode": cfg.mode,
         "expand_input": cfg.expand_input,

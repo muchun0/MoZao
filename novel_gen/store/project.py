@@ -33,6 +33,19 @@ from .schemas import Chapter, Outline, ProjectState, World
 logger = logging.getLogger(__name__)
 
 
+def _normalize_generation_mode(value) -> str:
+    """分步确认模式归一（R27）：只认 auto/stepwise，其余（含历史脏值）归一为空=未设置。
+
+    空值语义是「项目未显式设置」，由编排层按新书/老项目给默认值；这里不猜默认值。
+    """
+    text = str(value or "").strip().lower()
+    if text in ("auto", "stepwise"):
+        return text
+    if text:
+        logger.warning("generation_mode 非法值已归一为空: %r", value)
+    return ""
+
+
 def _safe_name(name: str) -> str:
     """把标题清洗成合法的 ASCII 目录名片段（避免项目 ID 含中文导致 URL 编码问题）。
     只保留 ASCII 字母数字；无可保留字符时用标题 hash 兜底。"""
@@ -92,6 +105,7 @@ class ProjectStore:
             "plot_direction": cfg.plot_direction,
             "forbidden": list(cfg.forbidden),
             "confirm": cfg.confirm,
+            "generation_mode": getattr(cfg, "generation_mode", "") or "",
             "mode": cfg.mode,
             "expand_input": cfg.expand_input,
             "content_type": cfg.content_type,
@@ -159,6 +173,7 @@ class ProjectStore:
             "plot_direction": d.get("plot_direction", ""),
             "forbidden": [str(x) for x in (d.get("forbidden") or [])],
             "confirm": bool(d.get("confirm", False)),
+            "generation_mode": _normalize_generation_mode(d.get("generation_mode")),
             "mode": d.get("mode", "auto"),
             "expand_input": d.get("expand_input", ""),
             "content_type": d.get("content_type", ""),

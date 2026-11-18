@@ -356,7 +356,8 @@ class NovelConfig:
     anti_similarity: bool = True                                  # 防同质化：常驻System提示词，拒绝套路/人物内在矛盾/有代价/只展示不叙述（固化开启）
     character_depth: bool = True                                  # 人物立体化：角色卡一致性 + 选择代价 + 生活体感细节 + 出场标签/对话辨识度（固化开启）
     fanqie_style: bool = feature_default("fanqie_style")         # 番茄节奏：黄金三章开篇纪律 + 爽点四环节 + 章末断章 + 移动端排版 + 轻量世界观/力量体系
-    confirm: bool = False           # True：每阶段生成后暂停等待确认；False：自动推进
+    confirm: bool = False           # 历史字段（R27 起废弃，不参与编排；保留读写兼容旧配置）
+    generation_mode: str = ""       # R27 分步确认：""=未设置 / auto / stepwise（项目级显式设置优先）
     # ---- memory：记忆与长文一致性（P0-1/P0-2，默认值见 FEATURE_FLAGS）----
     memory_window: int = feature_default("memory_window")        # 生成当前章时回填最近 N 章摘要，控制上下文成本
     stale_gate: bool = feature_default("stale_gate")             # 生成前章节一致性门禁（档3）：False=守卫直接放行

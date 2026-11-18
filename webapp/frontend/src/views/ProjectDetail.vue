@@ -39,6 +39,9 @@
       </template>
     </GenerationProgress>
 
+    <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
+    <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
+
     <!-- 主体：左侧栏导航 + 工作区 -->
     <div class="pd-body">
       <ProjectSideNav v-model="tab" :chapter-count="chapters.length" @update:model-value="navTouched = true" />
@@ -313,6 +316,8 @@ import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'
 import GateCard from '../components/common/GateCard.vue'
+// R27：分步确认式生成流（步骤条 + 当前阶段确认卡；状态由后端 generation_stage.json 唯一权威）
+import GenerationFlow from '../components/flow/GenerationFlow.vue'
 // 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
 import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {
@@ -833,6 +838,14 @@ function locateChapter(no) {
 function openRulesPanel() {
   navTouched.value = true
   tab.value = 'tools'
+}
+
+// R27 确认卡「打开编辑器」：只切页，不触发任何生成/计费
+function openFlowStage(stage) {
+  navTouched.value = true
+  if (stage === 'outline') tab.value = 'outline'
+  else if (stage === 'world') tab.value = 'world'
+  else tab.value = 'agent'
 }
 
 function startEdit() {

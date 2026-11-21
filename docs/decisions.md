@@ -730,3 +730,19 @@
 - 顺带修复 `gates._product_version` 引用不存在的 `VersionedProduct.head_path`（存量无版本索引项目会因此永远 400），改为按存储约定读 `<kind>.json`。
 
 **单测**：`tests/test_generation_flow.py` 18 条（模式优先级/启动即暂停/刷新不重发/错误 digest 409/双击幂等/编辑后必须刷新/重生成再次起 run/force 二次确认/402 停当前阶段（含首次启动 402）/失败不自动重试/侧写恢复不误判/Agent 面板对账/auto 推进/expand 不支持/未鉴权 401/损坏可重建）；`pytest -m p0` 106 passed + 2 skipped，全量 1768 passed。
+
+## 2026-11-21 R31 平台消费从火山方舟切到 DeepSeek
+
+**背景**：平台代付（未配 BYOK）的生成此前默认走火山方舟 Ark 接入点（`doubao` / `ep-20261108190349-55bnh`，Key `ARK_API_KEY`），而 README/WIKI 长期写的是「默认 Provider=deepseek」，代码与文档不一致。按用户决策，平台消费统一改走 DeepSeek。
+
+**决策**
+- 默认落点改两处：`novel_gen/config.py` 的 `DEFAULT_LLM_PROVIDER=deepseek`、`DEFAULT_LLM_MODEL=deepseek-flash`，以及 `webapp/core_models.py` 的 `LLMReq` 默认；只影响新项目与未显式配置 model 的项目。
+- 模型名取 `deepseek-flash`：与 `llm/capabilities.py` 能力档案的档案默认一致，且 2026-11-12 M1 真实验收样本已用该模型跑通 30 章，不引入未验证模型。
+- 存量项目用 `tools/switch_llm_provider.py` 幂等迁移 `config.json` 的 `llm.provider/model`（`doubao`/`ark` → `deepseek`）；Ark 默认 base_url 清空以回落档案默认，用户自填端点保留；`mock` 与其它 provider 不动；原子写 + `config.json.bak.pre-r31` 备份。回滚同一条命令：`--to doubao --model ep-20261108190349-55bnh --force`。
+- BYOK 不受影响：用户在「模型配置」自带的 Key 存在 `users.llm_*`，运行时覆盖项目配置且平台不扣费，因此迁移不碰用户库配置。
+- 平台内部功能（大纲解析/拆书/小墨AI）本就走 `PLATFORM_LLM_PROVIDER`（默认 deepseek），本次不重复改动。
+- 不做「缺 Key 自动换家」：隐式换厂商会掩盖配置错误，缺 Key 仍按 `validate_llm_config` 显式报 400。
+
+**取舍**：迁移只改 provider/model/base_url 三个字段，其余配置逐字保留（避免整份 config 重写引入字段漂移）；`config.json` 里 provider 已为 deepseek 但 model 为空的项目不强制写死模型名——空值在 `_apply_provider_defaults` 时即回落 `deepseek-flash`，少改动即少风险。
+
+**单测**：`tests/test_default_llm_provider.py` 7 条（默认值、DeepSeek 端点/Key 补齐、LLMReq 默认、Ark→DeepSeek 判定、Ark base_url 清空且自定义端点保留、mock/他家跳过与幂等、写盘+备份+二次运行跳过）。

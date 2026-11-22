@@ -81,10 +81,17 @@ def resolve_handover(project_id: str, handover_id: str, req: ResolveReq,
 
     resumed = False
     task_id = str(data.get("task_id") or "")
+    from .. import supervisor_service
+    if req.action == "repair" and supervisor_service.mode_of(cfg) == "on":
+        out = supervisor_service.repair_after_handover(store, user, handover_id)
+        return {"handover": data, "resumed": True, "repair": out}
     if task_id:
         state = task_state.load_state(store, task_id)
         if state is not None and state.get("state") == task_state.PENDING_REVIEW:
-            if req.action == "approve":
+            if req.action == "approve" and supervisor_service.mode_of(cfg) == "on":
+                out = supervisor_service.resume(store, user, task_id)
+                resumed = bool(out.get("started"))
+            elif req.action == "approve":
                 out = generate_service.resume_pending_run(store, task_id, user)
                 resumed = bool(out.get("resumed"))
             elif req.action == "abort":

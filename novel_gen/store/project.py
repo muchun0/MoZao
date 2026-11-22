@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 项目存储层：把一次「写书任务」落盘为一个目录，实现断点续传与成果沉淀。
 
@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -67,6 +68,7 @@ class ProjectStore:
         self.chapters_dir = self.dir / "chapters"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
+        self._review_lock = threading.RLock()
 
     # ---------- 创建 / 打开 ----------
     @classmethod
@@ -420,6 +422,35 @@ class ProjectStore:
         """读 review.json（质检逐章结果）；缺失/损坏返回 []（交接判定降级）。"""
         data = self._read_json(self.review_path(), None)
         return data if isinstance(data, list) else []
+
+    def save_review_chapter(self, chapter_no: int, record: dict, *,
+                            merge: bool = False) -> None:
+        """review.json 单一写点（REQ-R32）：质检/改稿/读者审校都走这里。
+
+        - merge=False：整条替换该章记录（质检/改稿的既有语义）；
+        - merge=True：把 record 合并进该章记录（读者审校追加 issues/追更欲）。
+        读-改-写全程加锁 + 原子写，避免并发覆盖。
+        """
+        with self._review_lock:
+            existing = self.load_review()
+            idx = next((i for i, r in enumerate(existing)
+                        if int(r.get("chapter", 0)) == int(chapter_no)), None)
+            if merge and idx is not None:
+                rec = dict(existing[idx])
+                for k, v in record.items():
+                    if k == "issues" and isinstance(v, list):
+                        rec["issues"] = list(rec.get("issues") or []) + list(v)
+                    else:
+                        rec[k] = v
+                existing[idx] = rec
+            else:
+                existing = [r for r in existing
+                            if int(r.get("chapter", 0)) != int(chapter_no)]
+                existing.append(dict(record))
+            self._write_json(self.review_path(), existing)
+
+    def review_lock(self) -> "threading.RLock":
+        return self._review_lock
 
     def runs_dir(self) -> Path:
         return self.dir / "runs"

@@ -36,6 +36,7 @@ from novel_gen.pipeline import task_snapshot
 from novel_gen.pipeline import task_state
 from novel_gen.store.run_context import RunContext
 from novel_gen.store import run_context as run_files
+from novel_gen.store.schemas import Chapter
 from novel_gen.store.wordcount import count_words
 
 from . import agent_prompts
@@ -80,6 +81,8 @@ class AgentRunReq(BaseModel):
     """POST /agent-runs 请求体（§4.1）。"""
 
     agent: str = Field(..., min_length=1)
+    # REQ-R32：外部派发必须显式声明角色（off 模式不强制，保持旧客户端兼容）
+    role: str = ""
     params: dict = Field(default_factory=dict)
     user_prompt: str = ""
     skill_ids: list[int] = Field(default_factory=list)
@@ -437,33 +440,73 @@ def _baseline_refs(manifest: dict) -> list:
     return refs
 
 
-def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
-    """统一入口：守卫 → 占槽 → task.json → 起线程 → 202 返回体。"""
+def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict,
+                    internal: dict | None = None) -> dict:
+    """统一入口：守卫 → 占槽 → task.json → 起线程 → 202 返回体。
+
+    `internal` 非空 = Supervisor 内部派发（REQ-R32）：
+    {"node": "chapter:3", "role": "writer", "attempt": 1, "action": "write|review|repair",
+     "task_id": "..."}。内部派发跳过每日上限与外部一致性门禁，params 由编排层规整，
+    但仍过白名单/余额/锁定与技能限额。
+    """
     from . import core  # 延迟 import：避免循环引用
 
     uid = db.project_owner(store.dir.name)
     mode = resolve_billing_mode(uid)
     guard_balance(mode, uid)
     guard_agent_product(req.agent)
-    params = guard_params(req.agent, req.params)
+    if internal:
+        params = dict(req.params or {})
+        params.update({"_internal": True, "_node": str(internal.get("node") or ""),
+                       "_role": str(internal.get("role") or ""),
+                       "_attempt": int(internal.get("attempt") or 0),
+                       "_action": str(internal.get("action") or "")})
+        if internal.get("task_id"):
+            params["_task_id"] = str(internal["task_id"])
+        from novel_gen.pipeline import roles as role_contract
+        try:
+            role_contract.validate_dispatch(
+                str(internal.get("role") or ""), req.agent,
+                str(internal.get("node") or ""), str(internal.get("action") or ""),
+                internal=True)
+        except role_contract.RoleContractError as exc:
+            raise HTTPException(status_code=400, detail=f"内部派发契约不满足：{exc}") from exc
+    else:
+        params = guard_params(req.agent, req.params)
+        cfg0 = store.load_config()
+        if str(getattr(cfg0, "supervisor_mode", "off")) in ("on", "shadow"):
+            # R32 F2：非法 role↔agent↔node 入口 400，不静默改派；
+            # 老客户端没带 role 时按 agent 推断（仍走同一套角色契约校验）。
+            from novel_gen.pipeline import roles as role_contract
+            node = {"researcher": "stage:research", "architect.outline": "stage:outline",
+                    "architect.world": "stage:world", "writer.chapter": "stage:chapters",
+                    "architect.volume": "stage:outline"}.get(req.agent, "")
+            role = str(req.role or "") or role_contract.infer_role(req.agent)
+            try:
+                role_contract.validate_dispatch(role, req.agent, node)
+            except role_contract.RoleContractError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            req.role = role
     # REQ-创作阶段审阅门 M0：世界门前置（门 1 必须已通过）——在占槽/计费之前拒绝
     gates.guard_agent(store, req.agent)
     guard_locked(store, req.agent, params)
     guard_user_chapter(store, req.agent, params)
     # 档3：章节一致性门禁——必须在计费/占槽之前（被拦截的请求不占槽、不产生任何扣费）
-    verdict = stale_guard.guard_staleness(
-        store, params, cfg=store.load_config(), agent=req.agent,
-        allow_inconsistent=bool(req.allow_inconsistent))
-    if verdict.get("blocked"):
-        raise HTTPException(status_code=409, detail=verdict.get("detail") or {})
-    if verdict.get("unstable_chapters"):
-        # 已知不一致继续：标记本次 run，供记忆标注与 upstream.unstable 落痕
-        params["_allow_inconsistent"] = True
-        params["_stale_chapters"] = list(verdict["unstable_chapters"])
+    if not internal:
+        verdict = stale_guard.guard_staleness(
+            store, params, cfg=store.load_config(), agent=req.agent,
+            allow_inconsistent=bool(req.allow_inconsistent))
+        if verdict.get("blocked"):
+            raise HTTPException(status_code=409, detail=verdict.get("detail") or {})
+        if verdict.get("unstable_chapters"):
+            # 已知不一致继续：标记本次 run，供记忆标注与 upstream.unstable 落痕
+            params["_allow_inconsistent"] = True
+            params["_stale_chapters"] = list(verdict["unstable_chapters"])
     guard_skill_limits(req.skill_ids)
-    _check_daily_run_limit(store)  # P2-F2：单项目每日上限（0=不限）
+    if not internal:
+        _check_daily_run_limit(store)  # P2-F2：单项目每日上限（0=不限）
 
-    task_id = uuid.uuid4().hex[:12]
+    task_id = str((internal or {}).get("task_id") or uuid.uuid4().hex[:12])
     run_id = uuid.uuid4().hex
     handle = core._acquire_slot(store.dir.name)
     cfg = store.load_config()
@@ -471,7 +514,9 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
     try:
         core._mark_task(store, "agent_run", task_id=task_id, agent=req.agent,
                         params=params, run_id=run_id, user_prompt=req.user_prompt,
-                        skill_ids=list(req.skill_ids))
+                        skill_ids=list(req.skill_ids),
+                        node=str((internal or {}).get("node") or ""),
+                        role=str((internal or {}).get("role") or req.role or ""))
         if state_on:
             manifest = task_contract.build_manifest(
                 store, task_id, req.agent, params,
@@ -486,11 +531,12 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
                 in_refs=_baseline_refs(manifest),
                 model=manifest.get("model", ""),
                 switches=task_snapshot.switches_of(cfg),
-                extra={"agent": req.agent, "scope": manifest.get("scope")})
+                extra={"agent": req.agent, "scope": manifest.get("scope"),
+                       "node": params.get("_node", ""), "role": params.get("_role", "")})
         t = threading.Thread(
             target=_run_agent_task,
             args=(store, handle, req.agent, params, req.user_prompt,
-                  tuple(req.skill_ids), task_id, run_id),
+                  tuple(req.skill_ids), task_id, run_id, internal),
             daemon=True)
         handle.thread = t
         handle.task_id = task_id
@@ -499,8 +545,9 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
         core._release_slot(store.dir.name)
         core._clear_task(store)
         raise
-    logger.info("agent run 启动: project=%s agent=%s task=%s run=%s",
-                store.dir.name, req.agent, task_id, run_id)
+    logger.info("agent run 启动: project=%s agent=%s task=%s run=%s node=%s role=%s",
+                store.dir.name, req.agent, task_id, run_id,
+                params.get("_node", ""), params.get("_role", ""))
     return {
         "started": True,
         "task_id": task_id,
@@ -508,6 +555,8 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict) -> dict:
         "agent": req.agent,
         "billing_mode": mode,
         "estimated_price": _estimated_price(req.agent, params, store, mode),
+        "node_id": params.get("_node", ""),
+        "role": params.get("_role", ""),
     }
 
 
@@ -584,6 +633,7 @@ def get_agent_run(store: ProjectStore, task_id: str) -> dict:
                             1) if meta.get("started_at") else 0.0
             common = {"task_id": task_id, "agent": meta.get("agent", ""),
                       "run_id": meta.get("run_id", ""),
+                      "node_id": meta.get("node", ""), "role": meta.get("role", ""),
                       "started_at": meta.get("started_at"),
                       "progress": {**progress, "elapsed": elapsed}}
             state = task_state.load_state(store, task_id)
@@ -607,6 +657,7 @@ def get_agent_run(store: ProjectStore, task_id: str) -> dict:
         "status": status,
         "agent": run.get("agent", ""),
         "run_id": run.get("run_id", ""),
+        "node_id": run.get("node", ""), "role": run.get("role", ""),
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
         "outputs": run.get("outputs") or [],
@@ -770,7 +821,8 @@ def _sink_research_safe(store: ProjectStore) -> None:
 
 
 def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
-                    user_prompt: str, skill_ids: tuple, task_id: str, run_id: str) -> None:
+                    user_prompt: str, skill_ids: tuple, task_id: str, run_id: str,
+                    internal_meta: dict | None = None) -> None:
     """run 生命周期：begin_run → 分发执行 → 收尾结算 → 侧写留痕 → 清任务释放槽。"""
     from . import core  # 延迟 import：避免循环引用
 
@@ -780,12 +832,26 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
     outputs: list[dict] = []
     entries: list[dict] = []
     prompt_version, prompt_sha256 = "", ""
+    node_id = str((internal_meta or {}).get("node") or params.get("_node") or "")
+    role = str((internal_meta or {}).get("role") or params.get("_role") or "")
+    attempt = int((internal_meta or {}).get("attempt") or params.get("_attempt") or 0)
     ctx = RunContext(run_id=run_id, agent=agent, skill_ids=tuple(skill_ids),
-                     user_prompt=user_prompt, task_id=task_id)
+                     user_prompt=user_prompt, task_id=task_id,
+                     node_id=node_id, role=role, attempt=attempt)
     store.begin_run(ctx)
     cfg = None
+    plan = None
+    guard_obj = None
     try:
         cfg = store.load_config()
+        # R32：内部派发沿用项目级预算（LLM 调用/Token 跨 run 累计），off 时保持原行为
+        if (internal_meta or params.get("_internal")) and str(
+                getattr(cfg, "supervisor_mode", "off")) in ("on", "shadow"):
+            try:
+                from novel_gen.pipeline import orchestration as orch
+                plan = orch.load_plan(store)
+            except Exception:
+                plan = None
         uid = db.project_owner(project_id)
         mode = settle_ledger.billing_mode_of(_has_user_llm(uid))
         # 统一预运行注入：风格锚 + 用户记忆（旧路径 core._run_outline_only/_run_generation 原有逻辑）
@@ -793,6 +859,11 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         # 人设 + user_prompt 注入（内存态，不落盘；sanitize 属阶段 4）
         prompt_text, prompt_version, prompt_sha256 = agent_prompts.get_prompt_meta(store, agent)
         pipeline = core._open_pipeline(store, trace_id=trace_id)
+        guard_obj = getattr(pipeline, "guard", None)
+        if plan and guard_obj is not None:
+            b = plan.get("budget") or {}
+            guard_obj.loop_count = int(b.get("llm_calls", 0) or 0)
+            guard_obj.total_tokens = int(b.get("tokens", 0) or 0)
         # 完整人设注入到 role_prompt（persona_override，system 开头）；user_prompt 属用户可写
         # 内容，拼入前先 sanitize 剥离注入话术（人设保存时已清洗，此处清洗单次补充指令）。
         persona_parts: list[str] = [prompt_text]
@@ -805,7 +876,14 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         pipeline.cfg.skill_prompt_append = _build_skill_append(skill_ids)
         billing = {"mode": mode, "project_id": project_id}
 
-        if agent == "researcher":
+        action = str((internal_meta or {}).get("action") or params.get("_action") or "")
+        if action == "repair":
+            _exec_repair(store, pipeline, params, billing, outputs, entries)
+        elif action == "review":
+            _exec_review(store, pipeline, params)
+        elif action == "loremaster":
+            _exec_loremaster(store, pipeline, params)
+        elif agent == "researcher":
             _exec_researcher(store, pipeline, handle)
         elif agent == "architect.outline":
             _exec_outline(store, pipeline, handle, billing, outputs, entries)
@@ -828,6 +906,18 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         store.end_run()
         if getattr(handle, "pending_review", False):
             status = "pending_review"
+        # R32：内部派发把项目级 LLM/Token 预算回写计划（绝对量，避免并发累加错账）
+        if plan and guard_obj is not None:
+            try:
+                from novel_gen.pipeline import orchestration as orch
+                with orch.lock_for(store):
+                    plan = orch.load_plan(store) or plan
+                    b = plan.setdefault("budget", {})
+                    b["llm_calls"] = int(getattr(guard_obj, "loop_count", 0) or 0)
+                    b["tokens"] = int(getattr(guard_obj, "total_tokens", 0) or 0)
+                    orch.save_plan(store, plan)
+            except Exception:
+                logger.exception("项目级预算回写失败（降级）: project=%s", project_id)
         _write_run_sidecar(store, ctx, status, params, prompt_version, prompt_sha256,
                            trace_id, outputs, entries, handle)
         _finish_task_state(store, task_id, status, ctx, cfg, outputs)
@@ -841,7 +931,8 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
         # 不影响本次 run 已完成的结算与收尾）
         try:
             from . import generation_flow
-            generation_flow.on_run_finished(store, agent, run_id, status)
+            generation_flow.on_run_finished(store, agent, run_id, status,
+                                            node_id=node_id, role=role)
         except Exception:
             logger.exception("分步流程状态同步失败（降级）: project=%s agent=%s",
                              project_id, agent)
@@ -886,6 +977,9 @@ def _write_run_sidecar(store: ProjectStore, ctx: RunContext, status: str, params
             "task_id": ctx.task_id,
             "project_id": store.dir.name,
             "agent": ctx.agent,
+            "node_id": ctx.node_id,
+            "role": ctx.role,
+            "attempt": ctx.attempt,
             "started_at": ctx.started_at,
             "finished_at": time.time(),
             "status": status,
@@ -1200,6 +1294,96 @@ def _generate_one_chapter(store, pipeline, outline, research, no: int, total: in
     return created
 
 
+def _record_role_invocations(store: ProjectStore, no: int, task_id: str = "") -> None:
+    """章后确定性记录角色产出（REQ-R32 §8.3）：writer/reviewer/loremaster 各一条。"""
+    from novel_gen.pipeline import orchestration as orch
+    try:
+        ch = store.load_chapter(no)
+        if ch is None:
+            return
+        digest = orch.artifact_digest({"ch": no, "content": ch.content or ""})
+        orch.record_role_invocation(store, node_id=f"chapter:{no}", role="writer",
+                                    status="ok", digest=digest, task_id=task_id, words=len(ch.content or ""))
+        review = next((r for r in store.load_review() if int(r.get("chapter", 0)) == int(no)), None)
+        if review is not None:
+            qc = review.get("quality_check") or {}
+            orch.record_role_invocation(
+                store, node_id=f"chapter:{no}", role="reviewer",
+                status="ok" if qc.get("passed") else "failed",
+                digest=orch.artifact_digest(qc), task_id=task_id)
+        commit = store.load_chapter_commit() or {}
+        if str(no) in (commit.get("chapters") or {}):
+            orch.record_role_invocation(store, node_id=f"chapter:{no}", role="loremaster",
+                                        status="ok", task_id=task_id)
+    except Exception:
+        logger.exception("角色产出记录失败（降级）: project=%s ch=%s", store.dir.name, no)
+
+
+def _exec_review(store: ProjectStore, pipeline, params: dict) -> None:
+    """审校编辑内部步（REQ-R32）：只跑质检并落 review.json，不改正文。"""
+    no = int(params.get("ch_no") or params.get("_chapters", [0])[0] or 0)
+    outline = store.load_outline()
+    chapter = store.load_chapter(no) if no else None
+    if outline is None or chapter is None or no < 1 or no > len(outline.chapters):
+        raise HTTPException(status_code=400, detail=f"审校节点缺少章节：{no}")
+    plan = outline.chapters[no - 1]
+    cfg = store.load_config()
+    from novel_gen.pipeline.quality import QualityChecker
+    qc = QualityChecker(cfg, pipeline.llm, store, trace=pipeline.trace, guard=pipeline.guard,
+                        memory=pipeline.memory)
+    result = qc.check(no, plan.title, plan.goal, chapter.content, chapter.summary,
+                      core_event=getattr(plan, "core_event", "") or "")
+    qc.persist_review(no, result, strict=True)
+
+
+def _exec_loremaster(store: ProjectStore, pipeline, params: dict) -> None:
+    """设定管理员内部步（REQ-R32）：把章后账本收敛为一次统一提交。"""
+    no = int(params.get("ch_no") or params.get("_chapters", [0])[0] or 0)
+    if no < 1 or store.load_chapter(no) is None:
+        raise HTTPException(status_code=400, detail=f"账本节点缺少章节：{no}")
+    pipeline._commit_after_chapter(no, silent=True)
+
+
+def _exec_repair(store: ProjectStore, pipeline, params: dict, billing: dict,
+                 outputs: list[dict], entries: list[dict]) -> None:
+    """有界修复内部步（REQ-R32 F5）：复用 ChapterReviser 定点改稿 + 复检 + 结算。
+
+    修复范围由服务端确定性派生（review.json），不接受客户端传入的自由文本。
+    """
+    from novel_gen.pipeline.reviser import ChapterReviser
+    from novel_gen.pipeline import supervisor as sup
+    no = int(params.get("ch_no") or params.get("_chapters", [0])[0] or 0)
+    outline = store.load_outline()
+    chapter = store.load_chapter(no) if no else None
+    if outline is None or chapter is None or no < 1 or no > len(outline.chapters):
+        raise HTTPException(status_code=400, detail=f"修复节点缺少章节：{no}")
+    plan = outline.chapters[no - 1]
+    review = next((r for r in store.load_review() if int(r.get("chapter", 0)) == no), {})
+    cfg = store.load_config()
+    focus = params.get("_repair_focus") or sup.repair_scope_text(review)
+    reviser = ChapterReviser(cfg, pipeline.llm, store, role_prompt=pipeline.cfg.persona_override or "")
+    prev = settle_ledger.snapshot_chapter_versions(store, no)
+    revised = reviser.fix(no, plan.title, plan.goal, chapter.content or "",
+                          focus=focus, silent=False)
+    if revised and revised != (chapter.content or ""):
+        store.save_chapter(
+            Chapter(no=no, title=plan.title, content=revised,
+                    summary=chapter.summary, goal=plan.goal),
+            source="rewrite", label="r32:repair")
+        results = settle_ledger.settle_chapter_versions(
+            store, no, prev, mode=billing["mode"], project_id=billing["project_id"])
+        _record_chapter_feedback(store, no, results, outputs, entries)
+        pipeline.commit_chapter_ledgers(no, source="r32_repair")
+    # 复检并落 review.json（通过与否交给 Supervisor 决策）
+    from novel_gen.pipeline.quality import QualityChecker
+    qc = QualityChecker(cfg, pipeline.llm, store, trace=pipeline.trace, guard=pipeline.guard,
+                        memory=pipeline.memory)
+    result = qc.check(no, plan.title, plan.goal, revised or chapter.content or "",
+                      chapter.summary, core_event=getattr(plan, "core_event", "") or "")
+    qc.persist_review(no, result, strict=True)
+    _record_role_invocations(store, no, str(params.get("_task_id") or ""))
+
+
 def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing: dict,
                    outputs: list[dict], entries: list[dict]) -> None:
     """章节：按 scope 循环（快照版本 → 写章 → 结算新增版本），章末判停止/余额。
@@ -1281,6 +1465,7 @@ def _exec_chapters(store: ProjectStore, pipeline, handle, params: dict, billing:
                                         unstable=unstable,
                                         task_id=task_id if state_on else "")
         written.add(no)
+        _record_role_invocations(store, no, task_id)
         _update_task_progress(store, chapters_total=total,
                               chapters_done=len(done | written), current_chapter=no,
                               task_total=len(numbers), task_done=len(written))

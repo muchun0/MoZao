@@ -2468,15 +2468,7 @@ class QualityChecker:
         strict=True（单章重检）时写盘失败必须显式抛出，禁止把空结果当成质检通过。
         """
         try:
-            path = self.store.dir / "review.json"
-            existing = []
-            if path.exists():
-                try:
-                    existing = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    existing = []
-            existing = [r for r in existing if int(r.get("chapter", 0)) != chapter_no]
-            existing.append({
+            self.store.save_review_chapter(chapter_no, {
                 "chapter": chapter_no,
                 "issues": issues,
                 "auto_revised": bool(auto_revised),
@@ -2489,8 +2481,6 @@ class QualityChecker:
                     "checked_at": time.time(),
                 },
             })
-            # 原子写（临时文件 + os.replace），避免进程中断留下半截 review.json
-            self.store._write_json(path, existing)
         except Exception:
             if strict:
                 raise

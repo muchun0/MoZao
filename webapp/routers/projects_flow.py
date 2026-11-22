@@ -25,6 +25,19 @@ class FlowModeReq(BaseModel):
     mode: str = Field(..., min_length=1)
 
 
+@app.get("/api/projects/{project_id}/supervisor")
+def get_project_supervisor(project_id: str, with_card: int = 0,
+                           user: dict = Depends(_require_user)):
+    """REQ-R32：固化编排只读观测（计划/游标/预算/决策日志/角色台账/下一步）。
+
+    off 模式返回 supported=false（前端隐藏面板）；不写盘、不扣费。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    from .. import supervisor_service
+    return supervisor_service.get_supervisor(store, with_card=bool(with_card))
+
+
 @app.get("/api/projects/{project_id}/generation/flow")
 def get_generation_flow(project_id: str, with_card: int = 1,
                         user: dict = Depends(_require_user)):

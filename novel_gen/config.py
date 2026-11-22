@@ -107,6 +107,21 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
     FeatureFlag("writing", "auto_rewrite_rounds", 0, "章节质检未通过时自动整章重写的最大轮数（0=不自动重写：一次操作只产1个版本、只扣1份钱；重写已收费，需要自动多稿时调高）"),
     FeatureFlag("writing", "task_state_machine", False, "任务状态机与快照（REQ-R30 M0）：每次 Agent run 建 runs/<task_id>/state.json + snapshot.json，task.json 降级为进度投影；False=完全回退（不建状态/快照，task.json 行为逐字不变）"),
+    FeatureFlag("writing", "supervisor_mode", "off",
+                "固化 Supervisor 编排（REQ-R32 / R30-M2）：off=旧流程逐字不变；shadow=只计算与记录不生效；on=生效。"
+                "on 需同时满足 task_state_machine=true、handover_v1=true、agent_guard.quality_check=true、"
+                "auto_rewrite_rounds=0，否则启动即 400"),
+    FeatureFlag("writing", "supervisor_max_steps", 0,
+                "Supervisor 任务级步数上限（REQ-R32）：0=按章节数动态 max(200, 10+5×章节数)，硬上限 5000；"
+                "正数=显式硬上限；超限停止并转人工"),
+    FeatureFlag("writing", "supervisor_daily_run_limit", 30,
+                "Supervisor 外部客户端每日派发上限（REQ-R32 Q5）：内部派发不计入，外部 HTTP 入口维持 30/日；0=不限"),
+    FeatureFlag("review", "supervisor_repair_rounds", 1,
+                "Supervisor 每章自动修复上限（REQ-R32）：0=不自动修；超限发 repair_exhausted 转人工"),
+    FeatureFlag("review", "supervisor_max_repairs", 3,
+                "Supervisor 单任务累计修复上限（REQ-R32，跨章累计）：与 AgentGuard 项目级预算取交集"),
+    FeatureFlag("review", "supervisor_shadow_log", True,
+                "shadow 期写 shadow_decisions.jsonl（REQ-R32）：上限 1000 行；False=不写影子决策日志"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
     FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
@@ -438,6 +453,12 @@ class NovelConfig:
     rule_consistency_check: bool = feature_default("rule_consistency_check")  # 规则条款一致性 LLM 校验（REQ-通用机制类型适配）：仅 rule_set 类型启用
     rule_consistency_every: int = feature_default("rule_consistency_every")   # 规则一致性降频：普通模式每 N 章 1 次（高质量模式不受此限）
     handover_v1: bool = feature_default("handover_v1")                       # 人机交接工单（REQ-R30 M1）：硬红线/低置信/预算/暂停 → 工单 + pending_review
+    supervisor_mode: str = feature_default("supervisor_mode")                # 固化 Supervisor（REQ-R32）：off/shadow/on
+    supervisor_repair_rounds: int = feature_default("supervisor_repair_rounds")  # 每章自动修复上限
+    supervisor_max_steps: int = feature_default("supervisor_max_steps")      # 任务级步数上限（0=动态）
+    supervisor_max_repairs: int = feature_default("supervisor_max_repairs")  # 单任务累计修复上限
+    supervisor_daily_run_limit: int = feature_default("supervisor_daily_run_limit")  # 外部每日派发上限
+    supervisor_shadow_log: bool = feature_default("supervisor_shadow_log")   # shadow 决策日志
     handover_sample_rate: int = feature_default("handover_sample_rate")      # 低置信抽检比例（%）：mid 按稳定哈希抽样进人工审阅
     handover_low_confidence_count: int = feature_default("handover_low_confidence_count")  # low_confidence 判定：单章中改/小改 ≥N
     targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）

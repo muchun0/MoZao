@@ -41,6 +41,8 @@
 
     <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
     <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
+    <!-- R32 固化编排：只读计划条（off 不渲染，shadow 标注只记录不生效） -->
+    <SupervisorPlanBar :pid="pid" />
 
     <!-- 主体：左侧栏导航 + 工作区 -->
     <div class="pd-body">
@@ -319,6 +321,8 @@ import GenerationProgress from '../components/common/GenerationProgress.vue'
 import GateCard from '../components/common/GateCard.vue'
 // R27：分步确认式生成流（步骤条 + 当前阶段确认卡；状态由后端 generation_stage.json 唯一权威）
 import GenerationFlow from '../components/flow/GenerationFlow.vue'
+// R32：固化 Supervisor 只读计划条（GET /projects/{id}/supervisor）
+import SupervisorPlanBar from '../components/flow/SupervisorPlanBar.vue'
 // 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
 import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {

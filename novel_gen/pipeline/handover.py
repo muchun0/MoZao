@@ -22,9 +22,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TRIGGERS = ("rule_hit", "low_confidence", "proposal", "budget", "human_stop")
+TRIGGERS = ("rule_hit", "low_confidence", "proposal", "budget", "human_stop",
+            "repair_exhausted")
 SEVERITY = {"rule_hit": "high", "low_confidence": "mid", "proposal": "mid",
-            "budget": "high", "human_stop": "mid"}
+            "budget": "high", "human_stop": "mid", "repair_exhausted": "mid"}
 
 # 硬红线关键词：与质检 issue 的 type 对齐（level=大改 才计入）
 HARD_KEYWORDS = ("合规", "违禁", "设定冲突", "规则冲突", "自相矛盾", "事件重复")
@@ -34,7 +35,7 @@ RESOLVED = "resolved"
 CLOSED = "closed"
 AUTO_PASSED = "auto_passed"
 
-OPTIONS = ["approve", "reject", "revise", "abort"]
+OPTIONS = ["approve", "reject", "revise", "abort", "repair"]
 
 
 # ---------- 路径与审计 ----------
@@ -227,6 +228,19 @@ def create_human_stop_handover(store, task_id: str, chapter_no: int,
     return h
 
 
+def create_repair_exhausted_handover(store, task_id: str, chapter_no: int,
+                                     reason: str = "", snapshot_ref: str = "") -> dict:
+    """修复预算耗尽（REQ-R32 F5）：同章修复达上限仍不通过 → blocking 转人工。"""
+    h, _ = create_handover(
+        store, task_id=task_id, trigger="repair_exhausted", severity="high", blocking=True,
+        evidence={"issue_ids": [], "rule": "repair_exhausted",
+                  "quote": {"ch": int(chapter_no), "offset": 0,
+                            "snippet": reason or "自动修复达上限，需人工处理"}},
+        snapshot_ref=snapshot_ref,
+        dedupe_key=f"repair_exhausted:{task_id}:{chapter_no}")
+    return h
+
+
 # ---------- 读取 / 处理 ----------
 
 def _index_rows(store) -> list[dict]:
@@ -318,7 +332,7 @@ def resolve(store, hid: str, action: str, *, by: str = "", reason: str = "") -> 
     if data.get("status") not in (OPEN, AUTO_PASSED):
         raise ValueError(f"工单已处理: {data.get('status')}")
     now = time.time()
-    data["status"] = RESOLVED if action in ("approve", "revise") else CLOSED
+    data["status"] = RESOLVED if action in ("approve", "revise", "repair") else CLOSED
     data["resolution"] = action
     data["resolved_at"] = now
     data["resolved_by"] = str(by or "")

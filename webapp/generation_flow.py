@@ -359,6 +359,10 @@ def get_flow(store, with_card: bool = True) -> dict:
     cfg = store.load_config()
     if not supported(store, cfg):
         return {"supported": False, "mode": None, "mode_source": "unsupported", "flow": None}
+    # R32：Supervisor 模式由固化编排独占（计划为权威，旧 flow 文件降级为投影）
+    from . import supervisor_service
+    if supervisor_service.mode_for(store) in ("on", "shadow"):
+        return supervisor_service.public_flow(store, with_card=with_card)
     mode, source = resolve_mode(store, cfg)
     with _lock(store):
         flow, corrupt = read_flow(store)
@@ -479,6 +483,15 @@ def _record_idempotent(flow: dict, key: str, result: dict) -> None:
 def start_flow(store, user: dict, mode: str | None = None) -> dict:
     """POST /flow/start：建流程并起首阶段（已存在流程 → 幂等返回现状）。"""
     cfg = store.load_config()
+    from . import supervisor_service
+    if supervisor_service.mode_for(store) in ("on", "shadow"):
+        _assert_supported(store, cfg)
+        resolved, _source = resolve_mode(store, cfg)
+        if mode in ("auto", "stepwise"):
+            resolved = mode
+            _write_mode(store, mode)
+        supervisor_service.start(store, user, mode=resolved, source="start_flow")
+        return get_flow(store, with_card=True)
     _assert_supported(store, cfg)
     resolved, source = resolve_mode(store, cfg)
     if mode in ("auto", "stepwise"):
@@ -511,6 +524,13 @@ def confirm(store, user: dict, stage_key: str, action: str, digest: str,
             client_token: str = "", force: bool = False) -> dict:
     """POST /flow/confirm：continue / regenerate / skip / back_outline，带 digest 与幂等键。"""
     cfg = store.load_config()
+    from . import supervisor_service
+    if supervisor_service.mode_for(store) in ("on", "shadow"):
+        if stage_key not in STAGE_KEYS:
+            raise HTTPException(status_code=400, detail={"code": "BAD_STAGE", "message": "未知阶段"})
+        result = supervisor_service.confirm(store, user, stage_key, action, digest,
+                                            idempotency_key=client_token)
+        return {**result, "flow": get_flow(store, with_card=True)["flow"]}
     _assert_supported(store, cfg)
     if stage_key not in STAGE_KEYS:
         raise HTTPException(status_code=400, detail={"code": "BAD_STAGE", "message": "未知阶段"})
@@ -641,6 +661,11 @@ def abort(store, user: dict) -> dict:
     """POST /flow/abort：停止当前 run 并把阶段显式置 stopped（run 侧写随后覆盖）。"""
     from . import core
 
+    cfg = store.load_config()
+    from . import supervisor_service
+    if supervisor_service.mode_for(store) in ("on", "shadow"):
+        supervisor_service.abort(store, user)
+        return get_flow(store, with_card=True)
     with _lock(store):
         flow, corrupt = read_flow(store)
         if not flow or corrupt:
@@ -660,7 +685,25 @@ def abort(store, user: dict) -> dict:
 
 # ---------- run 结束钩子（唯一主链路接线） ----------
 
-def on_run_finished(store, agent: str, run_id: str, status: str) -> None:
+def on_run_finished(store, agent: str, run_id: str, status: str,
+                    node_id: str = "", role: str = "") -> None:
+    """run 收尾钩子（REQ-R32）：off → 旧流程；shadow → 旧流程 + 影子决策；on → Supervisor。"""
+    from . import supervisor_service
+    smode = supervisor_service.mode_for(store)
+    if smode == "on":
+        supervisor_service.on_run_finished(store, agent, run_id, status,
+                                           node_id=node_id, role=role)
+        return
+    _legacy_on_run_finished(store, agent, run_id, status)
+    if smode == "shadow":
+        try:
+            supervisor_service.on_run_finished(store, agent, run_id, status,
+                                               node_id=node_id, role=role)
+        except Exception:
+            logger.exception("shadow 决策失败（不影响旧流程）: project=%s", store.dir.name)
+
+
+def _legacy_on_run_finished(store, agent: str, run_id: str, status: str) -> None:
     """run 收尾同步 flow：置 done/failed/stopped；auto 模式下推进下一阶段。
 
     无 flow 文件立即返回（老项目零副作用）；任何异常只留日志，不影响 run 已完成的收尾。

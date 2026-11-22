@@ -638,6 +638,9 @@ def set_mode(store, user: dict, mode: str) -> dict:
         raise HTTPException(status_code=400, detail={"code": "BAD_MODE", "message": "模式只能是 auto/stepwise"})
     cfg = store.load_config()
     _assert_supported(store, cfg)
+    from . import supervisor_service
+    if supervisor_service.mode_for(store) in ("on", "shadow"):
+        return supervisor_service.set_mode(store, user, mode)
     _write_mode(store, mode)
     with _lock(store):
         flow, corrupt = read_flow(store)

@@ -85,13 +85,15 @@ def resolve_handover(project_id: str, handover_id: str, req: ResolveReq,
     if req.action == "repair" and supervisor_service.mode_of(cfg) == "on":
         out = supervisor_service.repair_after_handover(store, user, handover_id)
         return {"handover": data, "resumed": True, "repair": out}
+    if req.action == "approve" and supervisor_service.mode_of(cfg) == "on":
+        # 放行＝人工接受当前稿后继续编排。这里不能依赖 task.json 还在：
+        # run 收尾会删 manifest，一旦 manifest 不在，原来的分支会把放行变成空操作。
+        out = supervisor_service.accept_after_handover(store, user, data)
+        return {"handover": data, "resumed": bool(out.get("started") or out.get("action"))}
     if task_id:
         state = task_state.load_state(store, task_id)
         if state is not None and state.get("state") == task_state.PENDING_REVIEW:
-            if req.action == "approve" and supervisor_service.mode_of(cfg) == "on":
-                out = supervisor_service.resume(store, user, task_id)
-                resumed = bool(out.get("started"))
-            elif req.action == "approve":
+            if req.action == "approve":
                 out = generate_service.resume_pending_run(store, task_id, user)
                 resumed = bool(out.get("resumed"))
             elif req.action == "abort":

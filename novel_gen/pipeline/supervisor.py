@@ -39,8 +39,8 @@ def _stage_action(plan: dict, stage: dict, mode: str) -> Action:
     node = f"stage:{key}"
     if key == "chapters":
         return Action("run", node, role, agent, "chapter", {}, "stage_ready", "", key)
-    if mode == "stepwise" and stage.get("status") == "pending" and key != "research":
-        return Action("confirm", node, role, agent, "", {}, "stepwise_confirm_required", "", key)
+    # 分步确认的暂停点在「阶段产物完成后」（见 decide_after_run），起跑前不再二次确认：
+    # 否则 pending 阶段永远停在 confirm，永远不会有产物可审。
     return Action("run", node, role, agent, "", {"stage": key}, "stage_pending", "", key)
 
 
@@ -108,7 +108,9 @@ def next_action(plan: dict, ctx: dict) -> Action:
         chapter_st["status"] = "running"
         cc = plan["chapter_cycle"]
         cc["from"] = max(1, int(cc.get("current") or 1))
-        return _next_chapter_write(plan, int(cc.get("current") or 1), "chapter_loop_start")
+        # 阶段状态可能是历史遗留的 pending（如放行工单/切模式时）：统一交给
+        # chapter_action 按产物判续推，避免把已完成章按「开跑」重写一遍。
+        return chapter_action(plan, ctx, total)
     if chapter_st.get("status") == "failed":
         return Action("fail", "stage:chapters", "writer", "writer.chapter", "", {},
                       "chapters_failed", "", "chapters")
@@ -141,6 +143,10 @@ def chapter_action(plan: dict, ctx: dict, total: int) -> Action:
                       {"chapters": [no], "action": "review"}, "review_missing", "")
 
     passed = ctx.get("review_passed")
+    if rec.get("human_accepted"):
+        # 人工放行「修复已耗尽」的章：接受当前稿，流程必须往前走，
+        # 否则只会原地再转一次人工（真跑多次修复均无改善）。
+        passed = True
     if passed is None:
         passed, _ = (True, {})
     if not passed:
@@ -151,12 +157,61 @@ def chapter_action(plan: dict, ctx: dict, total: int) -> Action:
         return Action("repair", f"chapter:{no}", "writer", "writer.chapter", "repair",
                       {"chapters": [no]}, "quality_gate_fail", "")
 
-    # 通过：进入下一章（ledger_commit 已在写章 run 内完成）
+    # 通过：进入下一章（ledger_commit 已在写章 run 内完成）；
+    # 已写且质检通过的章直接跳过——产物是唯一权威，放行/重启后不能重写已有章。
     orch.advance_chapter(plan, total)
-    nxt = int(plan["chapter_cycle"].get("current") or 1)
-    if nxt > total or plan.get("status") == "done":
-        return Action("done", "", "", "", "", {}, "all_chapters_done")
-    return _next_chapter_write(plan, nxt, "chapter_advance")
+    store = ctx.get("store")
+    while True:
+        nxt = int(plan["chapter_cycle"].get("current") or 1)
+        if nxt > total or plan.get("status") == "done":
+            return Action("done", "", "", "", "", {}, "all_chapters_done")
+        if _chapter_artifact_done(store, nxt, quality_impl) or \
+                ((plan.get("chapters") or {}).get(str(nxt)) or {}).get("human_accepted"):
+            orch.advance_chapter(plan, total)
+            continue
+        if quality_impl and _chapter_reviewed_failed(store, nxt):
+            # 已写但质检没过：走修复，不能整章重写（会白扔一次钱且丢掉已写的正文）
+            rec = (plan.get("chapters") or {}).get(str(nxt)) or {}
+            rec.update(status="running", step="repair")
+            plan["cursor"] = {"node_id": f"chapter:{nxt}", "chapter": nxt, "step": "repair"}
+            plan["chapter_cycle"]["current"] = nxt
+            plan["chapter_cycle"]["current_step"] = "repair"
+            ok, why = repair_capacity(plan, nxt)
+            if not ok:
+                return Action("fail", f"chapter:{nxt}", "writer", "writer.chapter", "", {},
+                              f"repair_exhausted:{why}", "")
+            return Action("repair", f"chapter:{nxt}", "writer", "writer.chapter", "repair",
+                          {"chapters": [nxt]}, "quality_gate_fail", "")
+        return _next_chapter_write(plan, nxt, "chapter_advance")
+
+
+def _chapter_reviewed_failed(store, no: int) -> bool:
+    if store is None:
+        return False
+    try:
+        rec = next((r for r in (store.load_review() or [])
+                    if int(r.get("chapter") or 0) == no), None)
+        return bool(rec) and not bool((rec.get("quality_check") or {}).get("passed", True))
+    except Exception:
+        return False
+
+
+def _chapter_artifact_done(store, no: int, quality_impl: bool) -> bool:
+    """正文在盘且质检通过即视为该章已完成（只读判断，不写产物）。"""
+    if store is None:
+        return False
+    try:
+        if not store.chapter_path(no).exists():
+            return False
+        if not quality_impl:
+            return True
+        rec = next((r for r in (store.load_review() or [])
+                    if int(r.get("chapter") or 0) == no), None)
+        if rec is None:
+            return False
+        return bool((rec.get("quality_check") or {}).get("passed", True))
+    except Exception:
+        return False
 
 
 def repair_scope_text(review: dict) -> str:

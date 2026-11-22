@@ -114,10 +114,16 @@ def _resume_interrupted_tasks() -> None:
         try:
             meta = json.loads(tf.read_text(encoding="utf-8"))
             kind = meta.get("kind", "")
+            state = str(meta.get("state") or "").strip().lower()
             if meta.get("wait_human"):
                 # R30：待人工任务不自动重拾（保留 task.json 供体检页展示，放行由 API 触发）
                 logger.info("启动重拾跳过（等待人工处理）: project=%s task=%s",
                             project_id, meta.get("task_id", ""))
+                continue
+            if state in ("done", "failed", "aborted", "stopped"):
+                # 已收尾任务的 manifest 残留（如工单放行后显式置 DONE）不该再跑一遍
+                logger.info("启动重拾跳过（任务已结束）: project=%s task=%s state=%s",
+                            project_id, meta.get("task_id", ""), state)
                 continue
             store = ProjectStore.open(d)
             handle = _RunHandle()

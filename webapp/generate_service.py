@@ -533,6 +533,17 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict,
                 switches=task_snapshot.switches_of(cfg),
                 extra={"agent": req.agent, "scope": manifest.get("scope"),
                        "node": params.get("_node", ""), "role": params.get("_role", "")})
+        # 进度阶段按 agent 先落一次，避免首屏把章节 run 显示成「正在生成大纲」
+        try:
+            _update_task_progress(store, phase={
+                "writer.chapter": "chapter",
+                "architect.outline": "outline",
+                "architect.world": "world",
+                "architect.volume": "volume",
+            }.get(req.agent, "outline"))
+        except Exception:
+            logger.exception("初始进度阶段写入失败（降级）: project=%s agent=%s",
+                             store.dir.name, req.agent)
         t = threading.Thread(
             target=_run_agent_task,
             args=(store, handle, req.agent, params, req.user_prompt,

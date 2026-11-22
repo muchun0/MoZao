@@ -276,9 +276,11 @@ def test_supervisor_get_on_mode_readonly(tmp_path):
     assert not orch.plan_path(store).exists()
     data = sv.get_supervisor(store)
     assert data["supported"] is True
-    assert data["next_action"]["kind"] in ("run", "confirm")
+    # 未启动不虚构计划：避免前端把「未开始」误显示成「运行中/等待确认」
+    assert data["plan"] is None
+    assert data["next_action"] is None
+    assert data["flow"] is None
     assert not orch.plan_path(store).exists()  # GET 不落盘
-    assert data["flow"]["stages"][0]["key"] == "research"
 
 
 def test_shadow_start_does_not_run(tmp_path):
@@ -292,3 +294,383 @@ def test_shadow_start_does_not_run(tmp_path):
     out = sv.start(store, {"username": "张阅"}, mode="auto")
     assert out["supported"] is True and out["started"] is False
     assert not orch.plan_path(store).exists()
+
+
+def _on_store(tmp_path, chapters: int = 3) -> ProjectStore:
+    store = _store(tmp_path, chapters=chapters)
+    cfg = store.load_config()
+    cfg.supervisor_mode = "on"
+    cfg.task_state_machine = True
+    cfg.handover_v1 = True
+    cfg.agent_guard.quality_check = True
+    cfg.auto_rewrite_rounds = 0
+    store.save_config(cfg)
+    return store
+
+
+def test_stepwise_start_runs_outline_before_confirm(tmp_path, monkeypatch):
+    """分步启动必须先产出大纲（跑 run），不能停在无产物的 confirm 死循环。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    store.outline_path().unlink()  # 真空项目：尚无大纲产物
+    calls: list[str] = []
+
+    def fake_run(store_, req, user, internal=None):
+        calls.append(req.agent)
+        return {"run_id": "run-1", "task_id": "t-1"}
+
+    monkeypatch.setattr(generate_service, "start_agent_run", fake_run)
+    out = sv.start(store, {"username": "张阅"}, mode="stepwise")
+    assert out["next_action"]["kind"] == "run"
+    assert out["next_action"]["node_id"] == "stage:outline"
+    assert calls == ["architect.outline"]
+    plan = orch.load_plan(store)
+    assert (orch.stage_by_key(plan, "outline") or {}).get("status") == "running"
+
+
+def test_stepwise_projection_has_confirm_card(tmp_path):
+    """大纲落盘后，分步计划要在旧流程条投影里给出可点的确认卡。"""
+    from webapp import supervisor_service as sv
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="stepwise")
+    st = orch.stage_by_key(plan, "outline")
+    st["status"] = "done"
+    orch.save_plan(store, plan)
+    flow = sv.project_in_memory(store, plan, cfg)
+    assert flow["cards"] and flow["cards"][0]["stage"] == "outline"
+    assert "continue" in flow["cards"][0]["actions"]
+
+
+def test_stepwise_no_card_while_outline_running(tmp_path):
+    """大纲还在跑时不能提前弹「正文确认卡」（否则出现全书 0 章的假卡）。"""
+    from webapp import supervisor_service as sv
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="stepwise")
+    orch.stage_by_key(plan, "outline")["status"] = "running"
+    orch.save_plan(store, plan)
+    flow = sv.project_in_memory(store, plan, cfg)
+    assert flow["cards"] == []
+
+
+def test_on_run_finished_real_decision_chain(tmp_path, monkeypatch):
+    """真实回调链：run 结束 → 决策落盘 → 分步确认卡 → 确认后派发下一阶段。
+
+    这里不 mock orch.add_decision，专门防「参数签名写错把回调打断」这类真实运行才暴露的问题。
+    """
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="stepwise")
+    orch.stage_by_key(plan, "outline")["status"] = "running"
+    orch.save_plan(store, plan)
+    out = sv.on_run_finished(store, "architect.outline", "run-1", "ok",
+                             node_id="stage:outline", role="planner")
+    assert out["handled"] is True and out["mode"] == "on"
+    plan = orch.load_plan(store)
+    assert (orch.stage_by_key(plan, "outline") or {}).get("status") == "done"
+    assert plan["decisions"][-1]["kind"] in ("decision", "run_finished")
+    assert (plan.get("last_error") or {}).get("code") != "run_finished"
+    flow = sv.project_in_memory(store, plan, cfg)
+    assert flow["cards"] and flow["cards"][0]["stage"] == "outline"
+
+    calls: list[str] = []
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda store_, req, user, internal=None:
+                        calls.append(req.agent) or {"run_id": "r2", "task_id": "t2"})
+    sv.confirm(store, {"username": "张阅"}, "outline", "continue",
+               digest=(orch.stage_by_key(plan, "outline") or {}).get("digest", ""))
+    assert calls == ["architect.world"]
+
+
+def test_set_mode_auto_advances_after_confirm(tmp_path, monkeypatch):
+    """on 模式切全自动要立即推进下一阶段（切模式不能只是写个字段）。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="stepwise")
+    orch.stage_by_key(plan, "outline")["status"] = "done"
+    orch.save_plan(store, plan)
+    calls: list[str] = []
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda store_, req, user, internal=None:
+                        calls.append(req.agent) or {"run_id": "r", "task_id": "t"})
+    out = sv.set_mode(store, {"username": "张阅"}, "auto")
+    assert out["mode"] == "auto"
+    assert calls == ["architect.world"]
+
+
+def test_active_run_ignores_finished_task_manifest(tmp_path):
+    """task.json 在待审/收尾后仍会保留，不能因此把计划永远判成 active_run。"""
+    from webapp import supervisor_service as sv
+
+    store = _on_store(tmp_path)
+    task = Path(store.dir) / "task.json"
+    assert sv._active_run(store) is False  # 无 manifest 无线程
+    store._write_json(task, {"task_id": "t1", "state": "running", "wait_human": False})
+    assert sv._active_run(store) is True
+    store._write_json(task, {"task_id": "t1", "state": "pending_review", "wait_human": True})
+    assert sv._active_run(store) is False
+    store._write_json(task, {"task_id": "t1", "state": "done"})
+    assert sv._active_run(store) is False
+
+
+def test_chapter_advance_skips_already_satisfied_chapter(tmp_path, monkeypatch):
+    """产物即权威：已写且质检通过的章不再重写（放行/续跑不能重复花钱）。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "pending"
+    for no in (1, 2, 3):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    plan["chapters"] = {"1": {"status": "done", "step": "done"},
+                        "2": {"status": "running", "step": "write"}}
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 2, "current_step": "write"})
+    plan["cursor"] = {"node_id": "chapter:2", "chapter": 2, "step": "write"}
+    orch.save_plan(store, plan)
+    store._write_json(Path(store.dir) / "task.json", {"task_id": "r32_ch2", "state": "done"})
+
+    calls: list = []
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda *a, **kw: calls.append(a) or {"run_id": "r", "task_id": "t"})
+    out = sv.resume(store, {"username": "张阅"}, "r32_ch2")
+    assert out["started"] is False
+    assert calls == []
+    plan = orch.load_plan(store)
+    assert plan["status"] == "done"
+
+
+def test_sync_chapters_keeps_running_when_review_failed(tmp_path):
+    """章节审过了但没过门：不能因为「产物在盘」就投影成 done。"""
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for no in (1, 2):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    store._write_json(store.chapter_path(3), {"no": 3, "title": "第3章", "content": "正文"})
+    store.save_review_chapter(3, {"chapter": 3, "quality_check": {"passed": False}})
+    orch.sync_chapters(store, plan, cfg)
+    assert plan["status"] != "done"
+    assert plan["chapters"]["3"]["status"] == "running"
+    assert plan["chapters"]["3"]["step"] == "repair"
+
+
+def test_supervisor_read_reconciles_blocked(tmp_path):
+    """有阻塞工单又没在跑时，读接口要把计划收敛成 blocked，不能一直显示运行中。"""
+    from webapp import supervisor_service as sv
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    plan["status"] = "running"
+    orch.save_plan(store, plan)
+    handover.create_handover(store, task_id="r32_x", trigger="repair_exhausted",
+                             severity="high", blocking=True, evidence={},
+                             dedupe_key="ch:3:repair:limit")
+    sv.get_supervisor(store)
+    disk = orch.load_plan(store)
+    assert disk["status"] == "blocked"
+
+
+def test_dispatch_fail_persists_blocked(tmp_path, monkeypatch):
+    """转人工必须落盘：否则刷新后计划还显示「运行中」。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    orch.save_plan(store, plan)
+    action = sv.sup.Action(kind="fail", node_id="chapter:3", reason_code="repair_exhausted:chapter_repair_limit")
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda *a, **kw: {"run_id": "r", "task_id": "t"})
+    sv._dispatch(store, plan, action, {"username": "张阅"}, cfg)
+    disk = orch.load_plan(store)
+    assert disk["status"] == "blocked"
+    assert (disk.get("last_error") or {}).get("code").startswith("repair_exhausted")
+
+
+def test_approve_repair_exhausted_accepts_chapter(tmp_path, monkeypatch):
+    """修复耗尽工单点放行 = 人工接受当前稿，必须推进到下一章/收尾，不能原地再转人工。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "running"
+    for no in (1, 2):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    store._write_json(store.chapter_path(3), {"no": 3, "title": "第3章", "content": "正文"})
+    store.save_review_chapter(3, {"chapter": 3, "quality_check": {"passed": False}})
+    plan["chapters"] = {"1": {"status": "done", "step": "done"},
+                        "2": {"status": "done", "step": "done"},
+                        "3": {"status": "running", "step": "repair",
+                              "attempts": 1, "repairs_used": 1}}
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 3, "current_step": "repair"})
+    plan["cursor"] = {"node_id": "chapter:3", "chapter": 3, "step": "repair"}
+    plan["status"] = "blocked"
+    orch.save_plan(store, plan)
+    h = handover.create_repair_exhausted_handover(store, "r32_x", 3, "自动修复达上限")
+
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda *a, **kw: {"run_id": "r", "task_id": "t"})
+    res = handover.resolve(store, h["handover_id"], "approve", by="admin")
+    out = sv.accept_after_handover(store, {"username": "张阅"}, res)
+    assert "started" in out
+    plan = orch.load_plan(store)
+    assert plan["chapters"]["3"]["human_accepted"] is True
+    action = sv.sup.next_action(plan, sv.build_ctx(store, plan, cfg))
+    assert action.kind == "done"
+
+
+def test_chapter_advance_repairs_instead_of_rewriting(tmp_path):
+    """已写但质检没过：续跑应派修复，而不是整章重写。"""
+    from webapp import supervisor_service as sv
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "running"
+    for no in (1, 2):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    store._write_json(store.chapter_path(3), {"no": 3, "title": "第3章", "content": "正文"})
+    store.save_review_chapter(3, {"chapter": 3, "quality_check": {"passed": False}})
+    plan["chapters"] = {"1": {"status": "done", "step": "done"},
+                        "2": {"status": "running", "step": "write"}}
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 2, "current_step": "write"})
+    plan["cursor"] = {"node_id": "chapter:2", "chapter": 2, "step": "write"}
+    orch.save_plan(store, plan)
+    action = sv.sup.next_action(plan, sv.build_ctx(store, plan, cfg))
+    assert action.kind == "repair" and action.node_id == "chapter:3"
+    assert action.reason_code == "quality_gate_fail"
+
+
+def test_sync_chapters_keeps_running_with_blocking_handover(tmp_path):
+    """有阻塞工单时不能投影成「全流程已完成」，否则用户看不到还没放行。"""
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for no in (1, 2, 3):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    handover.create_handover(store, task_id="r32_x", trigger="rule_hit", severity="high",
+                             blocking=True, evidence={}, dedupe_key="ch:3:rule:test")
+    orch.sync_chapters(store, plan, cfg)
+    assert plan["status"] != "done"
+    assert (orch.stage_by_key(plan, "chapters") or {}).get("status") == "running"
+
+
+def test_on_run_finished_attributes_direct_chapter_run(tmp_path, monkeypatch):
+    """页面直跑的章节 run（无 node）要按产物记到真实章号，不能记到旧游标章。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "running"
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 2, "current_step": "write"})
+    plan["cursor"] = {"node_id": "chapter:2", "chapter": 2, "step": "write"}
+    orch.save_plan(store, plan)
+    for no in (1, 2, 3):
+        store._write_json(store.chapter_path(no), {"no": no, "title": f"第{no}章", "content": "正文"})
+        store.save_review_chapter(no, {"chapter": no, "quality_check": {"passed": True}})
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda *a, **kw: {"run_id": "r", "task_id": "t"})
+    out = sv.on_run_finished(store, "writer.chapter", "run-direct", "ok")
+    assert out["handled"] is True
+    plan = orch.load_plan(store)
+    assert any(d.get("node") == "chapter:3" for d in plan["decisions"])
+
+
+def test_handover_approve_continues_after_stale_manifest(tmp_path, monkeypatch):
+    """放行工单后按产物续跑：验收「放行完就卡住不动」这类真实链路缺陷。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "pending"
+    plan["chapters"] = {
+        "1": {"status": "done", "step": "done"},
+        "2": {"status": "running", "step": "write", "task_id": "r32_ch2"},
+        "3": {"status": "pending", "step": "plan_chapter"},
+    }
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 2,
+                                  "current_step": "write"})
+    plan["cursor"] = {"node_id": "chapter:2", "chapter": 2, "step": "write"}
+    orch.save_plan(store, plan)
+    # 第 2 章正文 + 质检都已落盘（工单只是抽检点，不是未完成）
+    store._write_json(store.chapter_path(2), {"no": 2, "title": "第2章", "content": "正文"})
+    store.save_review_chapter(2, {"chapter": 2, "quality_check": {"passed": True}})
+    store._write_json(Path(store.dir) / "task.json",
+                      {"task_id": "r32_ch2", "state": "done"})
+
+    calls: list[str] = []
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda store_, req, user, internal=None:
+                        calls.append((req.agent, req.params.get("ch_no"))
+                                     ) or {"run_id": "r3", "task_id": "t3"})
+    out = sv.resume(store, {"username": "张阅"}, "r32_ch2")
+    assert out["started"] is True
+    assert calls == [("writer.chapter", 3)]
+    plan = orch.load_plan(store)
+    assert plan["chapter_cycle"]["current"] == 3
+    assert (plan.get("cursor") or {}).get("node_id") == "chapter:3"
+
+
+def test_dispatch_repair_counts_and_stops(tmp_path, monkeypatch):
+    """派修复必须计数：否则质检一直不过就会无限重派，每轮都是真实扣费。"""
+    from webapp import supervisor_service as sv, generate_service
+
+    store = _on_store(tmp_path)
+    cfg = store.load_config()
+    cfg.supervisor_max_repairs = 3
+    store.save_config(cfg)
+    plan = orch.build_plan(store, cfg, mode="auto")
+    for key in ("outline", "world"):
+        orch.stage_by_key(plan, key)["status"] = "done"
+    orch.stage_by_key(plan, "chapters")["status"] = "running"
+    store._write_json(store.chapter_path(3), {"no": 3, "title": "第3章", "content": "正文"})
+    store.save_review_chapter(3, {"chapter": 3, "quality_check": {"passed": False}})
+    plan["chapters"] = {"1": {"status": "done", "step": "done"},
+                        "2": {"status": "done", "step": "done"},
+                        "3": {"status": "running", "step": "review",
+                              "attempts": 1, "repairs_used": 0}}
+    plan["chapter_cycle"].update({"from": 1, "to": 3, "current": 3, "current_step": "review"})
+    plan["cursor"] = {"node_id": "chapter:3", "chapter": 3, "step": "review"}
+
+    review = {"chapter": 3, "quality_check": {"passed": False}}
+    action = sv.sup.decide_after_run(plan, "chapter:3", "writer", "ok", cfg, review, [])
+    assert action.kind == "repair"
+
+    monkeypatch.setattr(generate_service, "start_agent_run",
+                        lambda *a, **kw: {"run_id": "r", "task_id": "t"})
+    sv._dispatch(store, plan, action, {"username": "张阅"}, cfg)
+    assert plan["budget"]["repairs_used"] == 1
+    assert int(plan["chapters"]["3"]["repairs_used"]) == 1
+
+    # 同一章再失败一次：已达 per_chapter 上限，转失败/工单，不再烧钱
+    again = sv.sup.decide_after_run(plan, "chapter:3", "writer", "ok", cfg, review, [])
+    assert again.kind == "fail" and again.reason_code.startswith("repair_exhausted")
+

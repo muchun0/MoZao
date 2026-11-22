@@ -231,12 +231,22 @@ def sync_chapters(store, plan: dict, cfg) -> dict:
             "status": "pending", "step": "plan_chapter",
             "attempts": 0, "repairs_used": 0, "last_issue": "",
         })
-        if not exists:
+        if rec.get("human_accepted"):
+            # 人工放行过（接受当前稿）：产物存在即视为完成，不再回落到修复
+            rec["status"] = "done"
+            rec["step"] = "done"
+        elif not exists:
             rec["status"] = "pending"
             rec["step"] = "plan_chapter"
         elif qc_impl and not _review_has(store, no):
             rec["status"] = "running"
             rec["step"] = "review"
+        elif qc_impl and not _review_passed(store, no)[0] and \
+                rec.get("status") not in ("failed", "blocked"):
+            # 已审但没过门：产物「存在」不等于「合格」，不能宣告 done，
+            # 否则计划会在读路径上自动变成全书完成（修复还没收敛）。
+            rec["status"] = "running"
+            rec["step"] = "repair"
         elif rec.get("status") not in ("done", "failed", "blocked"):
             rec["status"] = "done"
             rec["step"] = "done"
@@ -244,6 +254,17 @@ def sync_chapters(store, plan: dict, cfg) -> dict:
             first_incomplete = no
 
     if first_incomplete == 0:
+        # 有阻塞工单/待人工时不能宣告完成：用户还没放行，读起来会是「全流程已完成」的假象
+        try:
+            from . import handover as _ho
+            if _ho.pending_count(store, blocking_only=True) > 0:
+                _stage_by_key(plan, "chapters")["status"] = "running"
+                plan["chapter_cycle"]["current"] = total
+                plan["chapter_cycle"]["current_step"] = "next"
+                plan["cursor"] = {"node_id": f"chapter:{total}", "chapter": total, "step": "next"}
+                return plan
+        except Exception:
+            pass
         _stage_by_key(plan, "chapters")["status"] = "done"
         plan["status"] = "done"
         plan["chapter_cycle"]["current"] = total

@@ -730,3 +730,24 @@
 - 顺带修复 `gates._product_version` 引用不存在的 `VersionedProduct.head_path`（存量无版本索引项目会因此永远 400），改为按存储约定读 `<kind>.json`。
 
 **单测**：`tests/test_generation_flow.py` 18 条（模式优先级/启动即暂停/刷新不重发/错误 digest 409/双击幂等/编辑后必须刷新/重生成再次起 run/force 二次确认/402 停当前阶段（含首次启动 402）/失败不自动重试/侧写恢复不误判/Agent 面板对账/auto 推进/expand 不支持/未鉴权 401/损坏可重建）；`pytest -m p0` 106 passed + 2 skipped，全量 1768 passed。
+
+## 2026-11-22 R30 人机协作编排底座 M0/M1（feat/r30-orchestration-handover）
+
+**决策**
+1. **`runs/<task_id>/state.json` 是任务语义唯一权威**：`task.json` 降级为前端进度投影，只写 `progress/state/wait_human`；非法流转写 `state_rejections.jsonl` 并抛错，不静默改状态。落盘全部走 `store._write_json`（tmp + `os.replace`），进程内按项目 RLock 串行。
+2. **状态机固定六态**：`queued→running→pending_review|done|failed|aborted`；`pending_review→running`（人工放行）或 `aborted`（终止）；`done/failed→queued` 仅供重跑，`aborted` 终态不再自动流转。
+3. **待审任务不自动重拾**：`task.json.wait_human=true`，`core_runtime._resume_interrupted_tasks` 跳过；放行只走 `POST /agent-runs/{task_id}/resume`，沿用 task_id、新 run_id，`params._chapters=remaining`，先占槽再改状态，异常回退 `pending_review`。
+4. **只跑剩余章、不重复结算**：`pending_review` 记录 `resume.remaining_chapters`（本次范围里未完成的章）；续跑跳过已完成章，因此版本不新增、`settle.json` 不产生重复条目（P0-4 端到端已验证）。
+5. **快照 `snapshot.json` 上限 500 步**：保留 `step-1 run_start` + 最近 499 步；每步记 `in_refs/out_refs/model/14 个关键开关/elapsed_ms/degraded`，工单证据用 `runs/<task_id>/snapshot.json#step-N` 引用，不复制正文。
+6. **交接工单五类触发器**：`rule_hit`（大改 + 合规/违禁/设定冲突/规则冲突/自相矛盾/事件重复关键词）、`low_confidence`（中改/小改 ≥N 或证据不足，按 task_id+章号 md5 稳定抽检 N%，未抽中 `auto_passed` 但全量留痕）、`budget`、`human_stop`、`proposal`（提案走 proposals/ 目录）。去重键 `ch:{ch}:rule:{rule}` / `budget:task:{id}` / `human_stop:{task}:{ch}`，同键未关闭复用。
+7. **账本提案未合并绝不生效**：新增/未登记人物物品先落 `proposals/<id>.json`（单章 ≤5 人物 / ≤8 物品），不影响 world/outline 与 Memory 上下文；合并走 `save_world/save_outline(commit=True, source="user")` 提交新版本并自动 stale 相关章，驳回只标状态 + 审计。
+8. **开关默认全关、关闭完全回退**：`task_state_machine`（writing）、`handover_v1`/`handover_sample_rate=20`/`handover_low_confidence_count=3`（review）、`ledger_proposal`（memory）；关闭时不建 state/快照/工单/提案，`task.json` 行为与旧链路一致（端到端已覆盖）。`handover` 依赖状态机，`task_id` 仅在 state 存在时下传，避免孤立工单。
+9. **人工入口收敛到全书体检页**：交接工单与提案并入「待处理」清单（同 dedupe_key 与既有冲突卡合并，不重复刷屏），支持放行/驳回/终止/合并；Agent 面板轮询识别 `pending_review`，不再当失败。
+
+**踩坑 / 边界**
+- 快照最初只按 `task_id` 记录，开关全关但 `task.json` 仍带 task_id 时会误建 `runs/`；改为仅 `state_on` 时下传 task_id。
+- `resolve` 允许处理 `auto_passed` 工单（人工补审），但只有 `open + blocking` 才会让任务停在待审。
+- 放行关闭阻塞工单与状态流转在同一条路径；线程启动失败必须回退 `pending_review` 并释放槽，避免任务卡在 running。
+- 交接判定/提案检测任何异常只降级留日志，绝不影响已完成的写章、结算与扣费。
+
+**单测**：`tests/test_r30_task_state.py`（6）、`tests/test_r30_handover_proposal.py`（7，含路由越权/开关 404/放行与合并）、`tests/test_r30_e2e_smoke.py`（2，端到端撞单→待审→放行只写剩余章且账本逐字不变；三开关全关走旧链路）；全量 `pytest -q` 1826 passed，前端 `npm run build` 通过。

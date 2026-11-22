@@ -274,6 +274,11 @@ def _apply_run_status(st: dict, run: dict) -> None:
             st["status"] = "confirmed" if st["key"] == "chapters" else "done"
     elif status == "stopped":
         st["status"] = "stopped"
+    elif status == "pending_review":
+        # R30：任务停在交接点，等人工放行；flow 按 stopped 记录，放行后再次收尾覆盖
+        st["status"] = "stopped"
+        st["last_error"] = {"code": "pending_review",
+                            "message": "任务停在交接点，待人工处理（全书体检页）"}
     else:
         st["status"] = "failed"
         st["last_error"] = {"code": "run_failed",

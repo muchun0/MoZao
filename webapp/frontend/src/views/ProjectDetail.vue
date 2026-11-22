@@ -225,7 +225,7 @@
         <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
           <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo"
-            @ask-assistant="askAssistantOnIssue" />
+            @ask-assistant="askAssistantOnIssue" @changed="loadAll" />
         </section>
       </main>
     </div>

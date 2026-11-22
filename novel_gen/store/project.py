@@ -412,6 +412,27 @@ class ProjectStore:
     def save_editor_review(self, review_dict: dict) -> None:
         self._write_json(self.editor_review_path(), review_dict)
 
+    # ---------- R30 编排产物路径（只读消费 + 交接工单/提案落盘） ----------
+    def review_path(self) -> Path:
+        return self.dir / "review.json"
+
+    def load_review(self) -> list:
+        """读 review.json（质检逐章结果）；缺失/损坏返回 []（交接判定降级）。"""
+        data = self._read_json(self.review_path(), None)
+        return data if isinstance(data, list) else []
+
+    def runs_dir(self) -> Path:
+        return self.dir / "runs"
+
+    def handovers_dir(self) -> Path:
+        return self.dir / "handovers"
+
+    def proposals_dir(self) -> Path:
+        return self.dir / "proposals"
+
+    def ledger_audit_path(self) -> Path:
+        return self.dir / "ledger_audit.jsonl"
+
     def load_editor_review(self) -> Optional[dict]:
         return self._read_json(self.editor_review_path(), None)
 

@@ -35,7 +35,9 @@ from .routers import (system, auth, me, skills, admin, style_roles, teardowns,
                       # R29：写作侧栏只读聚合（章计划/出场人物/本章伏笔/五态计数）
                       projects_writing,
                       # R27：分步确认式生成流（阶段编排 / 确认卡 / 模式切换）
-                      projects_flow)  # noqa: F401  触发路由注册
+                      projects_flow,
+                      # R30：人机协作编排（交接工单 / 暂停放行 / 账本提案）
+                      projects_handovers)  # noqa: F401  触发路由注册
 
 # ---------- 静态前端（同源部署时） ----------
 class _NoCacheStaticFiles(StaticFiles):

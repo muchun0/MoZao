@@ -87,6 +87,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("memory", "state_graph", False, "状态图谱只读服务（REQ-R22 M2）：/book-facts/graph 一次返回「版本+来源+四视图（世界事实/角色认知/发展线/可能分支）」，生成链路与外部消费者共用同一契约；False=接口 404，消费方走 M1 分散查询（完全回退）"),
     FeatureFlag("memory", "state_graph_v2", False, "每书 Canon 事实图（REQ-R24 G0'）：节点+带证据的边、八类体检、子图检索、时点视图与 impact（/book-facts/canon-graph）；派生层只读、不落盘、无证据不建边；True 时 death_state/item_owner 两条冲突规则改读图；False=接口 404，行为完全回退 R22 四视图"),
     FeatureFlag("memory", "plan_graph", False, "每书 Plan 计划图（REQ-R24 P0/P1）：由大纲确定性编译分章约束（`plan_graph.json`），写前按 Base+Plan+Canon 派生 `<chapter_constraints>` 块并与冲突提醒合并去重（合计 ≤300 字符、must 每章 ≤5 条，超出降 should）；False=完全不渲染，行为逐字回退"),
+    FeatureFlag("memory", "ledger_proposal", False, "账本提案审批（REQ-R30 M1）：模型写章时新增的人物/物品先落 proposals/ 提案，未合并绝不进 world/注入上下文；True=生成提案并开放合并/驳回接口；False=不产生提案，world 仍由生成链路直写"),
     # ---- writing：正文生成质量 ----
     FeatureFlag("writing", "style_reanchor_every", 5, "周期轻量再锚定（超长篇攻坚 S2.2）：每 N 章把本作高分片段(book_memory goods)作为滚动风格锚注入 system 前段，治文风/语感漂移；0=关闭"),
     FeatureFlag("writing", "style_anchor_rolling", True, "滚动风格锚（超长篇攻坚 S2.2）：用 book_memory goods 最近高分片段做滚动风格源（每章每次生成都可用，周期性注入由 style_reanchor_every 控制）；False=关闭"),
@@ -105,6 +106,7 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("writing", "personal_style_anchor", False, "个人旧稿文风锚（REQ-双锚风格锚定 + 超长篇攻坚 S2.1）：有 user_edited 人工修订章节时抽取其风格注入（弱约束）；默认关闭（个人锚无条件注入会引入作者风格但可能放大模板化表达，需显式开启）"),
     FeatureFlag("writing", "payoff_quota", True, "爽点配额（REQ-reader-ledger）：按题材 A/B 校验章级节奏（爽文 3 章小爽/10 章大爽/15 章里程碑），近窗口未达成则注入写章提示（软约束不阻断）"),
     FeatureFlag("writing", "auto_rewrite_rounds", 0, "章节质检未通过时自动整章重写的最大轮数（0=不自动重写：一次操作只产1个版本、只扣1份钱；重写已收费，需要自动多稿时调高）"),
+    FeatureFlag("writing", "task_state_machine", False, "任务状态机与快照（REQ-R30 M0）：每次 Agent run 建 runs/<task_id>/state.json + snapshot.json，task.json 降级为进度投影；False=完全回退（不建状态/快照，task.json 行为逐字不变）"),
     # ---- review：审校质检 ----
     FeatureFlag("review", "ai_taste_check", True, "AI 痕迹量化检测：成文后按确定性规则给分，低于阈值扣分产出 issue（P1-4）"),
     FeatureFlag("review", "ai_taste_threshold", 60, "AI 痕迹分阈值（0-100），低于则触发扣分（P1-4）"),
@@ -115,6 +117,9 @@ FEATURE_FLAGS: list[FeatureFlag] = [
     FeatureFlag("review", "consistency_llm_every", 3, "章内矛盾 LLM 自检降频（REQ-章内自洽与机制账本·扩展）：普通模式每 N 章抽 1 次（1=每章；高质量模式不受此限）"),
     FeatureFlag("review", "rule_consistency_check", True, "规则条款一致性 LLM 校验（REQ-通用机制类型适配）：含规则集（rule_set）的书每章对照当前生效规则检查矛盾/私增/跨副本串场；False=关闭返回空问题；失败降级不阻塞"),
     FeatureFlag("review", "rule_consistency_every", 1, "规则一致性校验降频（REQ-通用机制类型适配）：普通模式每 N 章检查 1 次（1=每章；高质量模式不受此限）"),
+    FeatureFlag("review", "handover_v1", False, "人机交接工单（REQ-R30 M1）：硬红线/低置信/预算/人工暂停在编排层生成工单，blocking 工单让任务停在 pending_review；False=不产生工单、不暂停，完全回退"),
+    FeatureFlag("review", "handover_sample_rate", 20, "低置信抽检比例（REQ-R30 M1）：mid 级问题按 task_id+章号稳定哈希抽 N% 进人工审阅，未抽中自动放行但全量留痕；0=不抽检（全部自动放行）"),
+    FeatureFlag("review", "handover_low_confidence_count", 3, "低置信判定阈值（REQ-R30 M1）：单章中改/小改问题数 ≥N 判 low_confidence（默认 3）；0=关闭该判定"),
     FeatureFlag("review", "targeted_rewrite", True, "定点重写（REQ-token优化 P1-4）：质检触发重写时只重写问题段落窗口，不整章重出；无定位点退回复核回整章"),
     FeatureFlag("review", "verify_combined", True, "一致性校验合并（REQ-token优化 P1-5）：每 N 章一次调用输出一致性/读者/编辑三类结果，替代 3 连调用"),
     FeatureFlag("review", "verify_every", 5, "一致性校验触发频率（REQ-token优化 P1-5）：每 N 章一次（原每 3 章）"),
@@ -397,6 +402,7 @@ class NovelConfig:
     state_graph: bool = feature_default("state_graph")                                 # 状态图谱只读服务（REQ-R22 M2）
     state_graph_v2: bool = feature_default("state_graph_v2")                           # Canon 事实图 G0'（REQ-R24）
     plan_graph: bool = feature_default("plan_graph")                                   # Plan 计划图 + 约束注入（REQ-R24 P1）
+    ledger_proposal: bool = feature_default("ledger_proposal")                         # 账本提案审批（REQ-R30 M1）：模型新增设定先落提案，未合并不生效
     # ---- 模式选择 ----
     mode: str = "auto"              # auto=现有工作流（调研→大纲→人物→逐章）；expand=AI扩写（用用户提供的大纲/简要内容直接扩写）
     expand_input: str = ""          # 扩写模式的输入：用户提供的大纲/简要内容（mode=expand 时必填）
@@ -421,6 +427,7 @@ class NovelConfig:
     personal_style_anchor: bool = feature_default("personal_style_anchor")  # 个人旧稿文风锚：有 user_edited 章则抽取其风格注入（S2.1 默认关）
     payoff_quota: bool = feature_default("payoff_quota")                    # 爽点配额：按题材校验章级节奏，未达成注入写章提示（REQ-reader-ledger）
     auto_rewrite_rounds: int = feature_default("auto_rewrite_rounds")       # 章节质检未通过自动整章重写最大轮数（0=不自动重写，一次一版）
+    task_state_machine: bool = feature_default("task_state_machine")         # 任务状态机与快照（REQ-R30 M0）：state.json 为唯一权威，task.json 仅投影
     ai_taste_check: bool = feature_default("ai_taste_check")        # AI 痕迹量化检测开关（P1-4）
     ai_taste_threshold: int = feature_default("ai_taste_threshold") # AI 痕迹分阈值（P1-4）
     final_review: bool = feature_default("final_review")             # 全书终审：整本书写完后的终审编辑（高质量模式默认开启；P2-2）
@@ -430,6 +437,9 @@ class NovelConfig:
     consistency_llm_every: int = feature_default("consistency_llm_every")   # 章内矛盾 LLM 自检降频：普通模式每 N 章 1 次（REQ-章内自洽与机制账本·扩展）
     rule_consistency_check: bool = feature_default("rule_consistency_check")  # 规则条款一致性 LLM 校验（REQ-通用机制类型适配）：仅 rule_set 类型启用
     rule_consistency_every: int = feature_default("rule_consistency_every")   # 规则一致性降频：普通模式每 N 章 1 次（高质量模式不受此限）
+    handover_v1: bool = feature_default("handover_v1")                       # 人机交接工单（REQ-R30 M1）：硬红线/低置信/预算/暂停 → 工单 + pending_review
+    handover_sample_rate: int = feature_default("handover_sample_rate")      # 低置信抽检比例（%）：mid 按稳定哈希抽样进人工审阅
+    handover_low_confidence_count: int = feature_default("handover_low_confidence_count")  # low_confidence 判定：单章中改/小改 ≥N
     targeted_rewrite: bool = feature_default("targeted_rewrite")     # 定点重写（REQ-token优化 P1-4）
     verify_combined: bool = feature_default("verify_combined")       # 一致性校验合并（REQ-token优化 P1-5）
     verify_every: int = feature_default("verify_every")              # 一致性校验频率：每 N 章一次（REQ-token优化 P1-5）

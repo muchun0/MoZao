@@ -114,6 +114,11 @@ def _resume_interrupted_tasks() -> None:
         try:
             meta = json.loads(tf.read_text(encoding="utf-8"))
             kind = meta.get("kind", "")
+            if meta.get("wait_human"):
+                # R30：待人工任务不自动重拾（保留 task.json 供体检页展示，放行由 API 触发）
+                logger.info("启动重拾跳过（等待人工处理）: project=%s task=%s",
+                            project_id, meta.get("task_id", ""))
+                continue
             store = ProjectStore.open(d)
             handle = _RunHandle()
             with _LOCK:

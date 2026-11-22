@@ -52,6 +52,12 @@ class ChapterReviser:
             logger.warning("改稿失败（保留原版）: 第%d章 %s", chapter_no, e)
             return content
 
+    def fix(self, chapter_no: int, chapter_title: str, chapter_goal: str,
+            content: str, focus: str = "", silent: bool = False) -> str:
+        """Supervisor 有界修复入口：把确定性修复范围拼进章节目标，复用四步改稿。"""
+        goal = f"{focus}\n\n【原章节目标】\n{chapter_goal}" if focus else chapter_goal
+        return self.revise(chapter_no, chapter_title, goal, content, silent=silent)
+
     def _revise_impl(self, chapter_no, chapter_title, chapter_goal, content, silent):
         # 步骤1：通读定位
         sys_l, user_l = revise_locate_prompt(
@@ -145,23 +151,18 @@ class ChapterReviser:
             return {"issues": []}
 
     def _save_review(self, chapter_no, issues, original, revised):
-        """保存改稿记录到 review.json。"""
-        path = self.store.dir / "review.json"
-        existing = []
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                existing = []
-        existing = [r for r in existing if int(r.get("chapter", 0)) != chapter_no]
-        existing.append({
-            "chapter": chapter_no,
-            "issues": issues,
-            "auto_revised": original != revised,
-            "original_words": len(original),
-            "revised_words": len(revised),
-        })
-        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        """保存改稿记录到 review.json（统一走 store 单一写点，原子写）。"""
+        try:
+            self.store.save_review_chapter(chapter_no, {
+                "chapter": chapter_no,
+                "issues": issues,
+                "auto_revised": original != revised,
+                "original_words": len(original),
+                "revised_words": len(revised),
+            })
+        except Exception:
+            logger.warning("改稿记录写入 review.json 失败（降级继续）: chapter=%s", chapter_no,
+                           exc_info=True)
 
 
 class ReaderReviewer:
@@ -225,24 +226,15 @@ class ReaderReviewer:
             return {"issues": []}
 
     def _merge_reader_review(self, chapter_no, issues, hook_score, feeling):
-        """把读者审校结果合并进 review.json 同一章记录。"""
-        path = self.store.dir / "review.json"
-        existing = []
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                existing = []
-        # 找该章记录
-        rec = next((r for r in existing if int(r.get("chapter", 0)) == chapter_no), None)
-        if rec is None:
-            rec = {"chapter": chapter_no, "issues": [], "auto_revised": False}
-            existing.append(rec)
-        # 追加读者 issues
-        rec.setdefault("issues", []).extend(issues)
-        # 追更欲和感受
-        if hook_score:
-            rec["reader_hook_score"] = hook_score
-        if feeling:
-            rec["reader_feeling"] = feeling
-        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        """把读者审校结果合并进 review.json 同一章记录（统一走 store 单一写点）。"""
+        try:
+            self.store.save_review_chapter(chapter_no, {
+                "chapter": chapter_no,
+                "issues": issues,
+                "auto_revised": False,
+                "reader_hook_score": hook_score or None,
+                "reader_feeling": feeling or None,
+            }, merge=True)
+        except Exception:
+            logger.warning("读者审校写入 review.json 失败（降级继续）: chapter=%s", chapter_no,
+                           exc_info=True)

@@ -89,6 +89,35 @@ def _audit_chapter_versions(store: ProjectStore, entries: dict) -> list[str]:
     return missing
 
 
+def _audit_inline_versions(store: ProjectStore, entries: dict) -> list[str]:
+    """R25：内联采纳版本按 `label=inline:adopt:<gen_id>` 关联 `inline:<gen_id>:v*` 条目。
+
+    内联在生成阶段已计费（kind=inline），采纳版本本身不再产生条目，
+    因此不能套用章节版本的 `chapter:N:vV` 覆盖率；这里只做抽样关联，缺关联只告警。
+    """
+    missing: list[str] = []
+    total = 0
+    for no, rec in (store.load_chapter_versions() or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        for h in rec.get("history") or []:
+            if not isinstance(h, dict) or h.get("source") != "inline":
+                continue
+            label = str(h.get("label") or "")
+            gen_id = label.split("inline:adopt:", 1)[1] if label.startswith("inline:adopt:") else ""
+            if not gen_id:
+                continue
+            total += 1
+            if not any(str(k).startswith(f"inline:{gen_id}:") for k in entries):
+                missing.append(f"chapter:{no}:v{h.get('v')}←{gen_id}")
+    if missing:
+        _issue(f"内联采纳版本缺计费关联 {len(missing)}/{total} 条（只告警，不补扣）："
+               f"{', '.join(missing[:10])}" + (" …" if len(missing) > 10 else ""))
+    else:
+        _ok(f"内联采纳版本计费关联 {total} 条完整")
+    return missing
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="结算三方对账：账本 / 项目累计金额 / 章节版本覆盖率")
     ap.add_argument("--project", required=True, help="项目 ID（projects 目录下的项目目录名）")
@@ -112,6 +141,7 @@ def main() -> int:
     problems += _audit_ledger(ledger)
     problems += _audit_project_price(args.project, billed)
     problems += _audit_chapter_versions(store, ledger.get("entries") or {})
+    problems += _audit_inline_versions(store, ledger.get("entries") or {})
     if ledger.get("legacy_billed_price"):
         print(f"  … 含 v1 迁移基线 legacy_billed_price={float(ledger['legacy_billed_price']):.2f} 元"
               "（迁移不重扣，仅展示）")

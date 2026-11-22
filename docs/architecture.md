@@ -110,7 +110,14 @@
 | `core_generate.py` | **生成线程**：注入 `_inject_teardown_material`（P0-3 拆书库回流）/`_inject_teardown_style_anchor`（REQ-双锚）/`_inject_user_memory`（用户级记忆库）+ `_distill_user_memory`；后台线程 `_run_generation`（含 start_from 从第 N 章重生成）/`_run_outline_only`/`_run_batch`/`_research_needed`；被测试补丁 helper 经 `from . import core` 延迟解析保留 monkeypatch 接缝 |
 | `user_memory.py` | **用户级记忆库服务（跨书创作偏好继承）**：`UserMemoryService` 读写 `users/<uid>/user_memory.json`（偏好画像 preferences/跨书纪律 disciplines/个人文风锚 style_anchors/stats），`record_project_signals`（新书显式输入，按项目幂等）、`record_edits`（人工修订跨书锚，上限 30）、`distill`（书级 pitfalls/taste 蒸馏，全量重算式幂等）、`build_snapshot`（题材匹配过滤+上限裁剪→注入快照）、`summary/clear`；全部写路径零额外 LLM |
 | `config_overrides.py` | **全局开关覆盖注入（REQ-后台开关管理）**：`apply_global_overrides(cfg)` 把 `sys_config` 实时值合并进 `NovelConfig`（顶层字段 + agent_guard 标量 + scene_limits），DB 异常回退快照/默认并 logger 留痕；生成链路（`core._open_pipeline`）与小墨AI 对话（`assistant/service.py`）共用，避免同一逻辑两处维护 |
-| `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装四层上下文：system 人设+Bible / 层2 事实块 / 层3 对话窗口 / 层4 提问；按 token 预算固定档位裁剪）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 组装 → LLM → 失败降级 → 输出合规 → 落库） |
+| `inline_service.py` | **R25 内联写作服务（2026-11-18）**：生成 → 人工采纳两段式。生成 = 校验锚点/版本指纹 → `Memory.build_context` 组装上下文 → LLM 出候选 → 确定性校验（空/解释性/相似度>0.9）→ **按候选合计字数写 `settle.json kind=inline`（唯一计费点）** → 落 `inline_drafts.json`；采纳 = 校验记录/作废/过期 → `apply_inline_text` 一次事务内落版本，**不二次计费**。同 token 单飞（进程内事件）+ 项目内联并发 2 + 用户日频控；`_flag` 读 `sys_config`（未配行取默认） |
+| `inline_prompt.py` | **R25 上下文与提示词（纯函数为主）**：复用 `Memory.build_context`（3 层 + 4 档）与风格锚/个人锚，超预算只截尾部；`parse_candidates` 过滤空串、解释性前缀、高相似度重复 |
+| `branch_service.py` | **R26 剧情走向候选服务（2026-11-18）**：生成 = 校验卡点枚举 → 组装「未回收伏笔 / 章末承诺 / 本章及后一章大纲」→ LLM 出 3~5 个方向 → 严格 JSON 解析（剥围栏，不做正则截取）→ **`branches_billing_enabled` 开启时按候选合计字数写 `settle.json kind=branch`（默认关闭）** → 落 `inline_drafts.json`（`kind=branch`，多批共存）；采纳 = 自然键 `(gen_id,item_id)` 幂等写入 `continue_drafts.json` v2，**不改正文、不落版本、不二次计费**；`client_token` 幂等复用 `inline_drafts.tokens` |
+| `branch_prompt.py` | **R26 走向候选上下文与提示词（纯函数为主）**：伏笔 Top-5（`build_foreshadow` 同口径）、承诺台账（`pending_commitments` 最近 3 章）、本章+后一章大纲节点；Memory 上下文独立 6000 字预算；`parse_directions` 校验 `source_tag` 枚举与方向去重 |
+| `generation_flow.py` | **R27 分步确认式生成流（2026-11-18，唯一状态源 `projects/<id>/generation_stage.json`）**：阶段 `research/outline/world/volume/chapters`；`get_flow` 只读 + run 侧写/digest 对账；`start_flow`/`confirm`/`set_mode`/`abort`；产物 digest=canonical JSON sha1（正文取分卷+章计划摘要，不读正文）；`confirm` 复用 `start_agent_run` 起 run（不新增生成通路），确认大纲/世界观时同步通过对应审阅门；幂等键 `(flow_id,stage,action,digest)` 落文件，项目级写锁串行化；`on_run_finished` 是生成主链路唯一新增钩子（无 flow 立即返回、异常只留日志），auto 模式在其后推进下一阶段。`task.json` 仍只表示当前 run，不承担编排状态。卡片渲染在 `generation_flow_cards.py`、共享阶段定义在 `generation_flow_defs.py` |
+| `search_service.py` | **只读全文检索（R25 交付，R28/R29 共用）**：逐章 `iter_chapter_texts()` 流式扫描，正文/设定双 scope，前后 40 字片段，2000 万字或 3 秒上限（`truncated`），只读零计费；`search_enabled` 开关 |
+| `writing_context.py` | **R29 写作侧栏只读聚合（2026-11-18）**：`build_writing_context(store, ch)` 一次返回当前章计划（`ChapterPlan.to_dict()`，字段名 `character_moves`）、按章计划文本名称命中的出场人物（≤12）、本章相关伏笔（`due_soon/overdue` 或 `reveal_ch==ch`）与五态计数；伏笔状态复用 `consistency_report.build_foreshadow`（ReaderLedger 唯一源），`reveal_in` 后端计算；`reader_ledger` 关闭、无大纲/世界观时降级空结构；零 LLM、零写盘、不计费 |
+| `assistant/` | **小墨AI（REQ-小墨AI 一期）**：`prompt.py`（读取 `novel_gen/pipeline/agents/prompts/assistant.md`，mtime 缓存 + 降级）、`context.py`（只读项目产物组装 3 层结构 + 4 档裁剪：system 人设+Bible / chapter_context 事实块+正文 / dialogue+提问。**R28** `snapshot(span=)` 增段落渲染分支：`<paragraph_context>` = 段落原文 + 前后段窗口 + 命中 issue，正文预算按档位 1/3 折算 600–2400 字，不再注入整章；`build_prompt` 回传 `context_mode/budget_tier`）、`cards.py`（确定性卡片：质检扣分/问题清单/版本对比/正向实测，正向指标与阈值全部取自 `pipeline/ai_taste.py` 常量）、`service.py`（会话编排：输入三闸 → 锚点校验 → 组装 → LLM → 失败降级 → 输出合规 → 落库；R28 锚点随消息 `extra.anchor` 落库、响应带 `anchor_stale/context_mode/budget_tier`）、`inline_apply.py`（**R28 应用到正文**：message_id 回读校验 → 单段/跨段校验 → `settle.json kind=inline` 幂等结算 → 基座 `apply_inline_text(source=inline)`；写盘失败回滚账本与扣费） |
 | `routers/` | 按域拆分路由（见 2.4） |
 | `db/` | MySQL 数据层包：`base.py`（连接池/事务/表结构/init_schema+seed_defaults，含 style_roles.reference_text、skills 系列表 applicable_stages 与统一表 `skills` 幂等迁移、**小墨AI `conversations`/`messages` 建表**）、`users.py`（用户/返佣/认证/余额）、`projects.py`（项目归属/退款）、`skills.py`（技能/市场，统一读写 `skills` 表，platform/user/market 三源 + applicable_stages/version 透传）、`style_roles.py`（风格角色，reference_text 透传，挂载技能经 `skills` 表解析）、`teardowns.py`（拆书库）、`assistant.py`（小墨AI 会话/消息：会话 CRUD、消息追加与分页、最近 N 轮查询）、`traces.py`（agent_trace 全链路快照：MysqlTraceSink 落库 + 按 trace/project/user 查询 + P2-4 `_aggregate_quality`/`quality_report` 质量聚合报表）、**`config.py`（后台开关管理：FEATURE_FLAGS 注册表 → `sys_config` 表种子同步 + `sys_config_log` 审计 + 类型转换/列表/更新，SQL 唯一入口）**；`__init__.py` 统一 re-export，调用方 `from webapp import db` 不变 |
 | `secret_encrypt.py` | BYOK Key 加密（Fernet，密文前缀 `enc:v1:`） |
@@ -139,6 +146,9 @@
 | `projects_versions.py` | 产物版本 | **阶段1C**：outline/world 版本列表（含每版计费金额）/选择版本 select/select-impact 影响面/两版评审 `GET .../versions/review`（审校+评审两视角评论，零 LLM，评价口径在 `pipeline/version_review.py`）（4）；chapter 版本在 projects_chapters |
 | `projects_consistency.py` | 全书体检 | **R2（2026-11-04）只读**：overview / coverage / foreshadow / conflicts / entities / mentions（6）；零 LLM、零写盘，业务全在 `novel_gen/pipeline/consistency_report.py`，落盘信号复用 reader_ledger 状态机、check_projection、verify_issues 与章节版本质检 |
 | `projects_staleness.py` | 章节上游过期标记 | **档1（2026-11-09）只读**：`GET /api/projects/{id}/chapters/staleness`；判定全在 `novel_gen/pipeline/chapter_staleness.py`（读时比对版本库 upstream，不落盘、零 LLM），须先于 chapters 注册；**档2（2026-11-09）** 同接口返回 `prev_rewrites` 与 `stale_causes=[prev_chapter]`（前文重写成因，与大纲/世界观成因分开） |
+| `projects_inline.py` | **R25 内联写作 + 全文检索（2026-11-18）** | 生成 `POST /chapters/{no}/inline/generate`、采纳 `POST .../adopt`、草稿 `GET .../drafts`、预估 `GET .../estimate`（只读）；检索 `GET /api/projects/{id}/search`（R28/R29 共用，只读）。仅做鉴权/参数/异常→HTTP 映射，业务在 inline_service / search_service |
+| `projects_branches.py` | **R26 剧情走向候选 + 写作便签（2026-11-18）** | 生成 `POST /chapters/{no}/branches/generate`、采纳为便签 `POST .../adopt`、便签列表 `GET .../notes`、删除单条 `DELETE .../notes/{draft_id}`；只做鉴权/参数/异常→HTTP，业务在 `branch_service` |
+| `projects_writing.py` | **R29 写作侧栏只读聚合（2026-11-18）** | `GET /api/projects/{id}/writing-context?ch=N`：当前章计划/出场人物/本章伏笔/五态计数；只做鉴权、项目权限与 `ch` 校验（非法 400 `BAD_CHAPTER`），业务在 `webapp/writing_context.py`，不写盘、不计费 |
 | `admin.py` | 站长后台 | 用户/代理/项目/退款/流水/日志/系统参数 + `GET /api/admin/quality-report` 质量报表（P2-4）+ **`GET/PUT /api/admin/config` 生成引擎开关管理（100 开关，key 白名单+类型/范围/select 枚举校验+审计）** |
 | `assistant.py` | 小墨AI | 项目内写作对话（REQ-小墨AI 一期）：会话创建/列表/详情（含消息分页）/发消息/删除 5 条；全部走 `_require_user` + `_check_project_access` + 会话归属校验；发消息同步返回回复与确定性卡片 |
 
@@ -148,11 +158,11 @@
 
 | 目录 | 职责 |
 |---|---|
-| `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools/assistant` 按域分文件 |
-| `router/index.js` | 路由表（登录/书案/详情/后台） |
+| `api/` | 请求封装：`request.js`（axios + token 注入）、`auth/novel/project/admin/tools/assistant/inline/branches/writing` 按域分文件（`inline.js`：R25 生成/采纳/草稿/预估/检索 + `normalizeText`/`contentHash`/`newClientToken`；`branches.js`：R26 走向生成/采纳便签/便签读取删除；`writing.js`：R29 `writing-context` 只读聚合） |
+| `router/index.js` | 路由表（登录/书案/详情/**写作页 `project/:id/write`**/后台） |
 | `stores/` | Pinia：`auth.js`（登录态）、`project.js`（当前项目） |
-| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器；**新增「小墨AI」tab**） `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab：按 memory/writing/review/guard/assistant 分组渲染 100 个生成引擎开关（switch/input-number/select/input），保存即全局生效**） |
-| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`assistant/AssistantPanel`（小墨AI 会话列表+消息区+模式/章节切换+定位跳章）、`assistant/AssistantCard`（确定性卡片渲染）、`layouts/MainLayout` |
+| `views/` | 页面：`Login` `ProjectList`（书案） `ProjectDetail`（沉浸阅读+编辑器；**新增「小墨AI」tab**） **`WritePage`（R25 独立写作页：左章节目录 / 中 textarea 正文内核 / 右「AI 写作 / 走向 / 检索」三 tab；R29 在编辑器与右侧面板之间挂只读参考侧栏）** `Admin`（9 板块后台，含 P2-4 质量报表 tab：得分分布/问题类型/弃书风险/阶段成本；**REQ-后台开关管理「系统设置」tab：按 memory/writing/review/guard/assistant 分组渲染 100 个生成引擎开关（switch/input-number/select/input），保存即全局生效**） |
+| `components/` | `RechargeDialog` 充值、`LlmSettingsDialog` BYOK、`tools/ToolsPanel` 工具面板（风格角色管理 + P2-1 参考文风字段 + P2-2 全书终审块 + 旧三分支续写入口）、`outline/OutlineEditor` 三级大纲、`world/CharacterGraph` 人物关系、`assistant/AssistantPanel`（小墨AI 会话列表+消息区+模式/章节切换+定位跳章）、`assistant/AssistantCard`（确定性卡片渲染）、**`write/ChapterRail` `WritingEditor` `InlineFloatBar` `CandidatePanel` `StorySearch`（R25 基座组件契约，后续 R26/R28/R29 挂载复用）**、**`write/DirectionPanel`（R26 走向候选：卡点/方向数/走向卡/按此写/存便签/便签墙）**、**`write/WritingSidebar` + `write/sidebar/*`（R29 只读参考侧栏：本章/大纲/人物/伏笔/设定/搜索六页签，收起窄条、拖宽、localStorage 记忆、<1200px 覆盖抽屉、临期/逾期角标）**、`layouts/MainLayout` |
 | `style.css` | 全局样式（深夜书房 × AI 工坊视觉语言） |
 
 ## 3. 核心类与接口（改代码先看这里）
@@ -213,6 +223,7 @@
 | 结果自校验（模块4） | 每章保存前 QualityChecker（字数/重复/合规确定性规则 + 读者视角 LLM）→ 1 次自动重写 → 仍不通过标记 review.json + trace；**2026-10-28 词表换LLM 批次二**：机制面板结算事件锚点判定可 LLM 语义化（`llm_semantic_panel_anchor` 默认开，判两处面板数字间是否真实结算，失败回退锚点正则，issue 保持小改） | 减少人工返工；异常降级不阻塞 |
 | 全局并发信号量 | `_GEN_SEMAPHORE = Semaphore(3)` | 防过载 |
 | 全局开关覆盖（后台管理） | `FEATURE_FLAGS` 注册表 = 默认值唯一事实来源；启动初始化 `seed_defaults` 幂等同步进 `sys_config`（新增开关自动入表）；`_open_pipeline` 内 `_apply_global_overrides` 以表为准内存态覆盖 cfg（顶层/agent_guard/scene_limits），**config.json 项目快照不迁移不改写**；DB 异常降级走快照/默认并留痕 | 运行时开关收敛到管理后台、以表中数据为准；新增开关历史项目零迁移统一生效（用户核心动机） |
+| 小墨段落协同（R28） | 问答按 `mode=inline_span` + `anchor{ch,start,end,text_sha}` 走段落渲染分支（3 层结构不变、4 档裁剪按 1/3 折算），锚点落 `messages.extra.anchor`；`text_sha`/越界只标 `stale` 不阻断；应用建议走「回读校验 → 单段校验 → `settle.json kind=inline` → `apply_inline_text(source=inline)`」，与 R25 采纳共用写通道，纯问答仍走 `assistant_billing` | 两笔账各自独立、不互相抵扣；避免把整章正文塞进每轮问答；保证「看到的就是能落盘的」与幂等不双扣 |
 
 ## 6. 部署架构
 

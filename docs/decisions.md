@@ -637,3 +637,117 @@
 2. **门 2 允许跳过保存**：`WorldEditor` 的影响确认弹窗确认按钮为「仍然保存」、取消为「先不保存」，点取消即放弃本次保存，不强留。
 3. **老书不回填账本**：历史书（M1/M2 等）不跑 `events`/`chapter_state`/Plan 回填，只在新书与新生成章生效，避免旧书被动改状态。
 4. **`batch_id` 已删、`revision`/`supersede` 已接线（2026-11-17 当轮完成，方案 A）**：生产写章此前只调 `stream.append(rows, ch=chapter, allow_inferred=True)`，没传 `revision` 也没调 `supersede`；重写同一章时 `seq` 从批次位置重新计数，事件 id 与旧记录撞车 → `append` 判 `skipped`，改写后的新事实被静默丢弃。现改为：入账前 `next_revision(ch)` 取本章最大版本 +1，`append(..., revision=rev)`；有写入且 `rev>1` 时调 `supersede_revision(ch, rev)` 把旧版标为被替代（只写侧车、不删不改行）。接口保持 append-only，`all()` 仍可查旧版用于回滚。
+
+## 2026-11-18 R25 内联写作基座：独立写作页 + `source=inline` + 生成即计费（feat/r25-inline-writing）
+
+**决策**
+1. **载体是独立写作页，不是加宽弹窗**：原 800px 阅读弹窗保留只读，新增 `/project/:id/write`。写作页 = 左章节目录 + 中 textarea 内核 + 右 AI/检索；`WritingEditor` 用镜像 div 计算 caret 坐标给浮动条定位，组件契约（`ChapterRail`/`WritingEditor`/`InlineFloatBar`/`CandidatePanel`/`StorySearch`）供 R26/R28/R29 挂载复用。
+2. **`source` 新增 `inline`，五处消费方统一口径**：版本 `user_managed` 置真（阻止自动选分覆盖，单一判定点 `_commit_new`）；手写守卫三处只认 `source in {user, inline}`，统一常量 `_PROTECTED_SOURCES`；个人风格锚与 good 账本**不计入**（AI 文本不能学成用户文风）；版本展示单独标签「内联采纳」；结算免扣集合 `{user, legacy, inline}`。采纳不走 `edit_chapter`（避免 `user_edited`/风格锚/good 账本三处副作用）。
+3. **正文写动作计费归口 `settle.json` v2**：生成阶段 `settle_product(kind="inline", key=gen_id)` 按候选合计 AI 字数计费，未采纳也计费；采纳阶段只落版本、不二次计费。不写 `assistant_billing`，避免返佣口径污染。
+4. **锚点用版本指纹**：`base_version`（selected，无索引按 0）+ `base_hash`（`sha1:` + sha1(normalize(text))）双校验，任一漂移返回 409 且候选保留；`normalize` 只做 CRLF/CR → LF，前后端同函数口径。
+5. **幂等与账本解耦**：`inline_drafts.json` 的 `tokens`（48h TTL）承担 `client_token → gen_id` 重放，独立于 items 50 条与结算账本 500 条淘汰；items 被挤出但 token 在 → 410 让用户重新生成，不重复扣费。
+6. **账本淘汰分档**：① 48h 外 `inline:*` 最旧优先 → ② 仍超限淘汰最旧 inline → ③ 最后才按插入顺序淘汰其他。保证连续 600 次内联后正文结算条目仍完整（P0）。
+7. **开关**：`editor_inline_enabled` 未在 `sys_config` 配行时按开启处理（本批随写作页上线，后台显式 false 关闭）；`inline_candidates_default=2`、`inline_daily_limit=200`（用户级，汇总其项目当日 `inline:*` 条目近似统计）、`search_enabled` 默认开。
+
+**踩坑 / 边界**
+- 同 token 并发靠进程内事件单飞（与既有 `_RUNS` 的单进程假设一致）；跨进程部署需换分布式锁，当前部署形态不涉及。
+- 采纳的「读当前版本 → 校验哈希 → 提交」必须在同一把项目锁内完成：首版只锁了写入，两个标签页并发采纳会各自基于旧版本追加出两个新版本（并发测试暴露），现 `apply_inline_text` 全程持 `versioned._project_lock`（RLock，与 commit 重入）。
+- 同章新生成只在**新批次成功落盘后**作废旧批，避免新生成失败时把用户已付费的旧候选一并作废。
+- 采纳后的摘要不重算，只置 `summary_stale`（精确重算摘要需额外 LLM，超出 R25 范围）。
+- `GET /chapters/{no}` 增补 `version/base_hash/source/summary_stale` 只读字段，向后兼容；写作页生成前若本地有未保存修改直接拦截，保证锚点偏移与服务器正文一致。
+
+**单测**：`tests/test_inline_writing.py` 32 条（P0：规范化/精确拼接/版本语义/自动选分不覆盖/守卫/结算免扣/账本分档淘汰/token 幂等与作废/生成计费一次/空候选与合规不计费/BYOK 0 元留审计/采纳不二次扣费/切版本后 409/**越权 403/资金合计对账/并发采纳仅 1 个版本/并发同 token 单飞**；P1：检索正文与设定、控制字符拒绝、审计关联）。
+
+## 2026-11-18 R26 剧情走向候选面板：新接口 + `kind=branch` + 便签 v2（feat/r26-plot-directions）
+
+**决策**
+1. **新接口而非原地升级**：新增 `POST /chapters/{no}/branches/generate|adopt` + 便签 `GET/DELETE .../branches/notes`；旧 `/continue-branches` + `/apply-branch` 双轨期冻结且**始终免费**，`branches_billing_enabled` 只作用于新接口，存量用户不会被动开始付费。
+2. **前置修复 `apply_branch` 假成功**：写盘失败由「吞异常仍返回 `saved=True`」改为 500 `DRAFT_WRITE_FAILED`（红线 12）；测试 `test_apply_branch_write_failure_returns_error` 锁死。
+3. **计费归口 `kind=branch`**：生成阶段 `settle_product(kind="branch", key=gen_id)` 按候选合计字数结算一次；开关 `branches_billing_enabled` 默认 False（首周灰度），关闭时 `charged=0` 且不写账本，但 `client_token` 幂等保留。采纳便签不二次计费；「按此写」进入 R25 后按 `kind=inline` 口径单独计费，落版本时 `source=inline` 仍免扣（不产生第二套流水）。
+4. **便签 v2 多便签**：`continue_drafts.json` 升级为 `{version:2, chapters:{no:{items[],_evicted[]}}}`；稳定 `draft_id`、每章 10 条上限、文件 ≤2MB 全局淘汰、`(gen_id,item_id)` 自然键去重（判定在项目锁内，保证并发只落一张）；旧单槽结构读时迁移并原子写回，未知字段保留 `_legacy`。旧 `save_continue_draft` 升级为追加，旧入口「记录草稿」不再覆盖第一张。
+5. **生成记录复用 `inline_drafts.json` 但按 `kind` 分流**：走向记录 `kind=branch` 与内联共用 `tokens` 幂等表；`list_for_chapter`/`invalidate_chapter` 加 kind 参数（默认 inline，行为不变），走向多批共存、不被内联新批次作废。
+6. **输出契约 3~5 条**：`direction`(≤10 字) + `summary`(2~3 句) + `source_tag`(五枚举) + `tags`；解析先剥 ``` 围栏再 `json.loads`（不做正则截取）；`source_tag` 非法回落 `pacing`，方向去重；服务端不硬校验「至少 1 条非 pacing」，由前端提示「本批偏通用」+ P1 人工抽检。
+7. **上下文三块**：未回收伏笔 Top-5（`build_foreshadow` 同口径）、章末承诺最近 3 章（`pending_commitments`）、本章+后一章大纲节点；任一块缺失只省略该块，不阻塞；Memory 上下文独立 6000 字预算。
+
+**踩坑 / 边界**
+- 走向候选 `stuck_text` 只在 `custom` 时读取，其他枚举忽略并 `logger.info`；无效枚举 400 且不调模型。
+- 账本淘汰新增 `branch:` 前缀，与 `inline:` 同属短期明细，优先于正文结算条目被淘汰；幂等由 `inline_drafts.tokens` 承担，删明细不会二次扣费。
+- 旧入口测试 `test_old_continue_branches_contract_and_free` 同时锁定「字段不变」与「不产生结算条目」。
+- 前端「按此写」只预填 R25 指令并切回 AI 面板，**不自动触发生成**，避免意外扣费；「换一批」按上一批 `billing` 状态给不同二次确认文案。
+
+**单测**：`tests/test_plot_directions.py` 19 条（P0：3~5 字段契约/`kind=branch` 一次计费与 token 重放/空输出与余额不足不计费/BYOK 0 元审计/非法卡点 400/便签采纳不扣费与自然键幂等/并发采纳仅 1 张/便签删除 404/旧单槽迁移 v2/旧入口冻结且免费/`apply_branch` 写盘失败 500/adopt 写盘失败 500/越权 403/三批资金对账；P1：卡点上下文注入/三块缺失降级/便签 10 条上限淘汰）。前端 `webapp/frontend/tests/direction.test.mjs` 6 条（来源标签/卡点枚举/指令拼接与 500 字截断/偏通用判定）。
+
+## 2026-11-18 R29 写作参考侧栏：只读聚合 + 挂写作页（feat/r29-writing-sidebar）
+
+**背景**：REQ-R29 v0.1 评审（2026-11-18 REVIEW-R25-R29 §3.5）阻断 1 条——"复用 mentions/实体索引做全文搜索"不成立；并要求修正 `character_moves`/`setting_cards` 数据源表述、把"短暂高亮"改成可实现的定位方式、补写作态载体前提与 R23 独立交付路径。
+
+**决策**
+1. **搜索复用 R25 基座 `/search`**：任意关键词检索走 `search_service.search_project`（正文/设定双 scope、分页、超时截断），不再用 `/consistency/entities`（仅 world 实体名且会被 `MAX_INDEX_ENTITIES` 截断）与 `/consistency/mentions`（必须传实体 `name`）。
+2. **"高亮"改为"选中 + 滚动可见"**：textarea 无法真正高亮，命中后切章 → `focusAt(offset, offset+q.length)`（`setSelectionRange`）→ 按字符比例滚动；`StorySearch` 的 `open` 事件回传 `q` 用于计算选区长度。
+3. **新增 1 个只读聚合接口 `GET /writing-context?ch=N`**（`webapp/writing_context.py` + `routers/projects_writing.py`）：① 章计划字段以 `ChapterPlan.to_dict()` 为准（`character_moves` 而非 `moves`）；② 出场人物按章计划文本名称直判（≥2 字，≤12）；③ 本章相关伏笔筛 `due_soon/overdue` 或 `reveal_ch==ch`，并在 `at_ch=N` 下统计五态计数；④ `reveal_in` 由后端算（0=本章到期，负数=逾期），前端不推导。整接口零 LLM、零写盘、不计费。
+4. **`setting_cards` 不当接口用**：它是 world 落盘后的构建期索引（供记忆注入裁剪），没有按章只读入口；侧栏「本章」不读它，改由 `writing-context` 直接读 outline+world 匹配。
+5. **`GET /world` 只增只读字段**：补 `terminology[]` 与 `items[]` 供「设定」页签速查（原序列化遗漏，前端无接口可读）；只增键、不改既有语义，PUT 仍增量接收。
+6. **挂载点与降级**：侧栏挂在 R25 独立写作页，位于编辑器与右侧 AI 面板之间；收起 40px、展开 320px（260–480 可拖宽），展开/宽度/页签写 localStorage；`<1200px` 变覆盖式抽屉 + 遮罩。`search_enabled` 关闭 → 搜索页签 403 提示；`reader_ledger` 关闭 → 伏笔空 + `available.foreshadow=false`；无大纲/世界观 → 空态，不 500。
+7. **R23 独立交付**：侧栏不新增全局入口、不依赖入口收敛结果，R23 未落地也能独立上线。
+
+**单测**：`tests/test_writing_context.py` 8 条（章计划字段/人物匹配/本章伏笔与五态计数/切章口径/`reader_ledger` 关闭降级/空项目/非法章号/调用前后零写盘/越权 403/400 映射）；前端 `webapp/frontend/tests/writingSidebar.test.mjs` 8 条（宽度收敛/状态记忆回退/切章请求参数/角标/窄屏阈值/距回收文案/命中选区）。
+
+## 2026-11-18 R28 小墨AI内联段落协同：段落锚点渲染 + 应用到正文（feat/r28-assistant-inline）
+
+**决策**
+1. **不新增写通路，不做 R1 回退**：应用小墨建议只走基座 `apply_inline_text(source=inline)`，删除「R25 未排期时复用 `apply_issue_rewrite`」方案——R1 必须从 `review.json` 按 `type/evidence` 解析真实 issue，自由建议无对应项会恒定 422。
+2. **计费两笔账各归其位**：产生正文版本走 `settle.json` v2（`kind=inline`，幂等键 `apply:<client_token>`），纯问答继续走 `assistant_billing`；不新增第二计费路径，也不互相抵扣。版本 `source=inline` 已在 R25 免扣集合内，因此不会二次扣费。
+3. **段落锚点是 `snapshot()` 的渲染分支**：`context.snapshot(span=)` 增 `<paragraph_context>`（段落原文 + 前后段窗口 + 命中 issue），正文预算按档位 1/3 折算并收敛到 600–2400 字；结构表述统一为「3 层结构 + 4 档裁剪」。命中 issue 用 evidence 子串定位、多处取离锚点最近，定位不到只给类型/改法（不阻断回答）。
+4. **锚点随消息落库，历史查询用 JSON 过滤**：`messages.extra.anchor` 存 `{ch,start,end,text_sha,issue_refs}`；`GET .../anchor-messages?ch=` 用 `JSON_UNQUOTE(JSON_EXTRACT(extra,'$.anchor.ch'))` 参数化过滤（不加生成列/索引，单会话消息量有界）。
+5. **漂移只提示不阻断**：`text_sha` 不一致或越界（收敛到正文长度）标 `anchor_stale` 并在 notice 提示重新选段；`ch` 与所选章节不一致、区间非法才 400（不调模型、不扣费）。
+6. **应用建议的校验顺序**：message_id 回读（会话归属 / 角色 assistant / 文本是消息子串 / 锚点一致）→ 单段与长度校验 → 版本+哈希预检 → 余额与结算 → 写盘；`edited=true` 或文本不一致一律 `MESSAGE_MISMATCH`，不做"用户改过的建议也照写"。
+7. **同令牌幂等与回滚**：同 token 同文本直接重放（不写盘不扣费），不同文本 409 `TOKEN_REUSED`；结算在写盘之前，写盘失败调 `settle_ledger.rollback_entry` 删条目、退回已扣金额并撤销同条目欠费，正文保持原样。
+8. **前端收敛在挂载点**：新增 `components/write/AssistantDock.vue`，打开时取代右栏 AI/检索 tab（互斥）；`InlineFloatBar` 增「问小墨」，选区自动扩展到所在自然段；全书体检每条目增「问小墨怎么改」，证据唯一命中才自动选段，0/多处提示手动选段（P0-8）。
+
+**踩坑 / 边界**
+- `ProjectStore.create` 的目录名带日期，测试里用 `store.dir.name` 作为 project_id，不能写死。
+- 消息 `extra.anchor` 是 JSON 列，MySQL 里 `JSON_EXTRACT` 返回数值，比较时统一 `JSON_UNQUOTE` + 字符串参数。
+- 返佣已在扣费时发出，回滚只退用户余额；已发返佣不回收，留 CRITICAL 日志供人工处理（仅发生在写盘失败窗口）。
+- 跨段写入同时校验两处：原文区间不得含 `\n\n`，建议文本本身也不得含 `\n\n`。
+- 应用后锚点偏移会随字数变化失效，写作页应用成功即收起浮层并重载章节，避免继续用旧锚点再应用。
+
+**单测**：`tests/test_assistant_inline.py` 16 条（P0：段落窗口/零宽扩段/evidence 最近命中与定位失败/span 渲染不注入整章/预算折算/漂移标记/锚点越界 400/锚点落库/单段写入与单次计费/同 token 重放不双扣/令牌复用 409/编辑与文本不一致拒绝且不扣费/跨段 400/版本漂移 409/越权 403/写盘失败回滚账本与余额；P1：BYOK 0 元仍留审计）。
+## 2026-11-18 R27 分步确认式生成流：编排状态独立于 task.json
+
+**背景**：应变「大纲很好，直接生成世界观」的断链问题，需要阶段间可持久化暂停点。原 `task.json` 在 run 结束即删，无法承载编排状态；前端 `confirm` 字段从未被生成链路读取。
+
+**决策**：
+- 新增项目级 `generation_stage.json` 作为唯一权威源（`stage/status/run_id/version/updated_at/idempotency`），`task.json` 只表示当前 run 是否在跑。阶段固定五项 `research/outline/world/volume/chapters`。
+- 生成通路零新增：`confirm`/auto 推进全部复用 `generate_service.start_agent_run`，计费口径、幂等基线、占槽与停止语义不变；`start_agent_run` 返回值仅**新增** `run_id` 字段。
+- 正文阶段「确认开始」= `scope=all`（等价既有「一键全部」，但必须先看确认卡与预估），成功后直接 `confirmed`；M0 的每批 5 章入口保留。
+- 卷纲阶段显式登记为 `skipped + reason=merged_into_outline`：现状大纲一次产分卷与章计划，不新增逐卷自动跑（避免第二条编排与额外扣费），大纲卡展示卷/章数。
+- 模式优先级：项目显式 `generation_mode` > 老项目（有 run 侧写或已写正文）默认 auto > 新书默认 stepwise；`expand` 项目返回 `supported=false`。
+- 分步确认即「用户看过」：确认大纲/世界观时同步 `gates.approve`，失败原样 409，不吞、不强行起 run。
+- 失败与资金：起 run 前失败（402/409/429）回滚阶段状态并落盘、不扣费；run 失败/中断不自动重试；「放弃本步重生成」= 新版本 = 再次扣费，UI 展示预估并二次确认；停止保留已完成章。
+- 恢复只认 `agent_runs/<run_id>.json` 侧写 + 产物 digest 对账，绝不因「run 不存在」判失败；关页/重启后刷新仍回到同一张确认卡。
+- 主链路唯一新增接线：`_run_agent_task` 的 finally 末尾调用 `generation_flow.on_run_finished`（无 flow 立即返回、异常只留日志，不影响结算与收尾）；auto 推进发生在此钩子之后。
+- 前端新增 `GenerationFlow.vue` + `StageConfirmCard.vue`，`ProjectDetail.vue` 只加一行挂载与一个切页函数，降低并行冲突面。
+- 顺带修复 `gates._product_version` 引用不存在的 `VersionedProduct.head_path`（存量无版本索引项目会因此永远 400），改为按存储约定读 `<kind>.json`。
+
+**单测**：`tests/test_generation_flow.py` 18 条（模式优先级/启动即暂停/刷新不重发/错误 digest 409/双击幂等/编辑后必须刷新/重生成再次起 run/force 二次确认/402 停当前阶段（含首次启动 402）/失败不自动重试/侧写恢复不误判/Agent 面板对账/auto 推进/expand 不支持/未鉴权 401/损坏可重建）；`pytest -m p0` 106 passed + 2 skipped，全量 1768 passed。
+
+## 2026-11-22 R30 人机协作编排底座 M0/M1（feat/r30-orchestration-handover）
+
+**决策**
+1. **`runs/<task_id>/state.json` 是任务语义唯一权威**：`task.json` 降级为前端进度投影，只写 `progress/state/wait_human`；非法流转写 `state_rejections.jsonl` 并抛错，不静默改状态。落盘全部走 `store._write_json`（tmp + `os.replace`），进程内按项目 RLock 串行。
+2. **状态机固定六态**：`queued→running→pending_review|done|failed|aborted`；`pending_review→running`（人工放行）或 `aborted`（终止）；`done/failed→queued` 仅供重跑，`aborted` 终态不再自动流转。
+3. **待审任务不自动重拾**：`task.json.wait_human=true`，`core_runtime._resume_interrupted_tasks` 跳过；放行只走 `POST /agent-runs/{task_id}/resume`，沿用 task_id、新 run_id，`params._chapters=remaining`，先占槽再改状态，异常回退 `pending_review`。
+4. **只跑剩余章、不重复结算**：`pending_review` 记录 `resume.remaining_chapters`（本次范围里未完成的章）；续跑跳过已完成章，因此版本不新增、`settle.json` 不产生重复条目（P0-4 端到端已验证）。
+5. **快照 `snapshot.json` 上限 500 步**：保留 `step-1 run_start` + 最近 499 步；每步记 `in_refs/out_refs/model/14 个关键开关/elapsed_ms/degraded`，工单证据用 `runs/<task_id>/snapshot.json#step-N` 引用，不复制正文。
+6. **交接工单五类触发器**：`rule_hit`（大改 + 合规/违禁/设定冲突/规则冲突/自相矛盾/事件重复关键词）、`low_confidence`（中改/小改 ≥N 或证据不足，按 task_id+章号 md5 稳定抽检 N%，未抽中 `auto_passed` 但全量留痕）、`budget`、`human_stop`、`proposal`（提案走 proposals/ 目录）。去重键 `ch:{ch}:rule:{rule}` / `budget:task:{id}` / `human_stop:{task}:{ch}`，同键未关闭复用。
+7. **账本提案未合并绝不生效**：新增/未登记人物物品先落 `proposals/<id>.json`（单章 ≤5 人物 / ≤8 物品），不影响 world/outline 与 Memory 上下文；合并走 `save_world/save_outline(commit=True, source="user")` 提交新版本并自动 stale 相关章，驳回只标状态 + 审计。
+8. **开关默认全关、关闭完全回退**：`task_state_machine`（writing）、`handover_v1`/`handover_sample_rate=20`/`handover_low_confidence_count=3`（review）、`ledger_proposal`（memory）；关闭时不建 state/快照/工单/提案，`task.json` 行为与旧链路一致（端到端已覆盖）。`handover` 依赖状态机，`task_id` 仅在 state 存在时下传，避免孤立工单。
+9. **人工入口收敛到全书体检页**：交接工单与提案并入「待处理」清单（同 dedupe_key 与既有冲突卡合并，不重复刷屏），支持放行/驳回/终止/合并；Agent 面板轮询识别 `pending_review`，不再当失败。
+
+**踩坑 / 边界**
+- 快照最初只按 `task_id` 记录，开关全关但 `task.json` 仍带 task_id 时会误建 `runs/`；改为仅 `state_on` 时下传 task_id。
+- `resolve` 允许处理 `auto_passed` 工单（人工补审），但只有 `open + blocking` 才会让任务停在待审。
+- 放行关闭阻塞工单与状态流转在同一条路径；线程启动失败必须回退 `pending_review` 并释放槽，避免任务卡在 running。
+- 交接判定/提案检测任何异常只降级留日志，绝不影响已完成的写章、结算与扣费。
+
+**单测**：`tests/test_r30_task_state.py`（6）、`tests/test_r30_handover_proposal.py`（7，含路由越权/开关 404/放行与合并）、`tests/test_r30_e2e_smoke.py`（2，端到端撞单→待审→放行只写剩余章且账本逐字不变；三开关全关走旧链路）；全量 `pytest -q` 1826 passed，前端 `npm run build` 通过。

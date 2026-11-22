@@ -54,6 +54,9 @@ class RunContext:
     skill_ids: tuple[int, ...] = ()
     user_prompt: str = ""
     task_id: str = ""
+    node_id: str = ""       # R32：Supervisor 节点（stage:xxx / chapter:N）
+    role: str = ""          # R32：执行角色
+    attempt: int = 0        # R32：步内重试序号
     started_at: float = field(default_factory=time.time)
 
 

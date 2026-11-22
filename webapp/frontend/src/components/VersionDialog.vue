@@ -179,7 +179,7 @@ const tipText = computed(() => props.kind === 'chapter'
   : '每次重生成都会追加新版本、保留旧版；带「快照」「导入前备份」标签的版本是历史保存点，同样可「采用此版本」还原。选择某个版本＝把它设为当前生效版本，不会删除已生成正文。勾选两个版本可看【审校 + 评审】两视角评论（本版多了什么、缺了什么、要不要从另一版补回）。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
 
 function sourceText(src) {
-  return { ai: 'AI生成', user: '人工编辑', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
+  return { ai: 'AI生成', user: '人工编辑', inline: '内联采纳', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
 }
 function fmtVerTime(ts) {
   if (!ts) return ''

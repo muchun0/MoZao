@@ -39,6 +39,11 @@
       </template>
     </GenerationProgress>
 
+    <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
+    <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
+    <!-- R32 固化编排：只读计划条（off 不渲染，shadow 标注只记录不生效） -->
+    <SupervisorPlanBar :pid="pid" @plan-state="onPlanState" />
+
     <!-- 主体：左侧栏导航 + 工作区 -->
     <div class="pd-body">
       <ProjectSideNav v-model="tab" :chapter-count="chapters.length" @update:model-value="navTouched = true" />
@@ -56,6 +61,7 @@
             <el-button v-if="nextUnwritten" type="primary" size="small" :disabled="genRunning" @click="startGen">
               写第 {{ nextUnwritten }}–{{ batchEnd }} 章（每批 {{ BATCH_SIZE }} 章）
             </el-button>
+            <el-tag v-else-if="planNeedsHuman" size="small" type="warning" effect="plain">待处理：去「全书体检」</el-tag>
             <el-tag v-else size="small" type="success" effect="plain">全部章节已写完</el-tag>
             <el-button v-if="nextUnwritten" link size="small" class="ch-gen-all" :disabled="genRunning"
                        title="不经过审阅门，一次写完；会显示预估总额并二次确认"
@@ -221,7 +227,8 @@
 
         <!-- 全书体检：检查记录只读汇总（覆盖 / 伏笔 / 冲突 / 人物·设定索引） -->
         <section v-if="visited.health" v-show="tab === 'health'">
-          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo" />
+          <ConsistencyPanel :pid="pid" @locate="locateChapter" @open-versions="openVersionsByNo"
+            @ask-assistant="askAssistantOnIssue" @changed="loadAll" />
         </section>
       </main>
     </div>
@@ -247,6 +254,8 @@
               <el-button @click="fontSize = Math.max(14, fontSize - 2)" title="缩小字体">A-</el-button>
               <el-button @click="fontSize = Math.min(24, fontSize + 2)" title="放大字体">A+</el-button>
             </el-button-group>
+            <el-button v-if="currentCh" size="small" type="primary"
+                       @click="$router.push(`/project/${pid}/write?ch=${currentCh.no}`)">写作页</el-button>
             <el-button v-if="!editing" size="small" type="primary" @click="startEdit">编辑</el-button>
             <template v-else>
               <el-button size="small" @click="cancelEdit">取消</el-button>
@@ -285,7 +294,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, h } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getProject, cancelGenerate, getStatus, downloadProject, getAgentRun, getGates, approveGate, getGateReview, estimateAgentRun } from '../api/project'
 import { getChapters, getChapterQualityOverview, getChapterStaleness, getOutline, getWorld, getChapter, updateChapterContent, getLock, setLock, importOutline, expandSelection, appealChapterIssue } from '../api/novel'
 import {
@@ -311,6 +320,10 @@ import VersionDialog from '../components/VersionDialog.vue'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import GenerationProgress from '../components/common/GenerationProgress.vue'
 import GateCard from '../components/common/GateCard.vue'
+// R27：分步确认式生成流（步骤条 + 当前阶段确认卡；状态由后端 generation_stage.json 唯一权威）
+import GenerationFlow from '../components/flow/GenerationFlow.vue'
+// R32：固化 Supervisor 只读计划条（GET /projects/{id}/supervisor）
+import SupervisorPlanBar from '../components/flow/SupervisorPlanBar.vue'
 // 档3：409 stale_gate 的二次确认弹窗（复用 StaleNotice 视觉）
 import StaleGateDialog from '../components/common/StaleGateDialog.vue'
 import {
@@ -319,6 +332,7 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
+const router = useRouter()
 const pid = route.params.id
 const loading = ref(false)
 const project = ref(null)
@@ -463,7 +477,17 @@ const resumable = computed(() =>
 const genTotal = ref(0)
 const genDoneCount = ref(0)
 const totalWords = computed(() => chapters.value.reduce((sum, c) => sum + (c.words || 0), 0))
+// 后端计划的真实状态（由 SupervisorPlanBar 的只读轮询带回来）
+const planState = ref({ status: '', nextKind: '', reason: '' })
+const planNeedsHuman = computed(() =>
+  planState.value.status === 'blocked'
+  || planState.value.nextKind === 'blocked'
+  || planState.value.nextKind === 'fail')
+function onPlanState(s) {
+  planState.value = s || {}
+}
 const bookStatus = computed(() => {
+  if (planNeedsHuman.value) return { text: '待处理', type: 'warning' }
   if (genRunning.value) return { text: '生成中', type: 'warning' }
   const total = genTotal.value
   const done = genDoneCount.value
@@ -777,9 +801,11 @@ async function refreshAfterGen(quiet = false) {
     genDoneCount.value = chapters.value.length
     await loadStaleness()
     outlineReloadKey.value++
-    loadSnapshots()
+    // R23 P1：大纲快照已并入版本库，刷新由版本弹窗打开时自行拉取，这里不再单独刷新快照列表
     if (!quiet) ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
+    // 降级必留痕：编程错误（如未定义标识符）不能被静默降级成一句提示
+    console.error('[ProjectDetail] 生成后数据刷新失败:', e)
     ElMessage.error('数据刷新失败，请手动刷新页面')
   }
 }
@@ -827,10 +853,32 @@ function locateChapter(no) {
   if (ch) { tab.value = 'chapters'; openChapter(ch) }
   else ElMessage.warning(`第 ${no} 章还未生成`)
 }
+// R28 全书体检「问小墨怎么改」：跳写作页并按证据原文选段（定位失败在写作页提示手动选段）
+function askAssistantOnIssue(payload) {
+  const ch = Number((payload && payload.ch) || 0)
+  if (!ch) return
+  if (!chapters.value.some(c => Number(c.no) === ch)) {
+    ElMessage.warning(`第 ${ch} 章还未生成，暂时不能问小墨`)
+    return
+  }
+  const query = { ch }
+  if (payload.evidence) query.evidence = payload.evidence
+  if (payload.issue) query.issue = payload.issue
+  if (payload.advice) query.advice = payload.advice
+  router.push({ path: `/project/${pid}/write`, query })
+}
 // 世界事实「设定规则」只读投影 → 跳工具中心维护写作铁律（只切页，不触发任何检查/生成）
 function openRulesPanel() {
   navTouched.value = true
   tab.value = 'tools'
+}
+
+// R27 确认卡「打开编辑器」：只切页，不触发任何生成/计费
+function openFlowStage(stage) {
+  navTouched.value = true
+  if (stage === 'outline') tab.value = 'outline'
+  else if (stage === 'world') tab.value = 'world'
+  else tab.value = 'agent'
 }
 
 function startEdit() {
@@ -947,7 +995,6 @@ async function doRegenOutline() {
     ElMessage.success('已开始重生成大纲')
     beginGenUI('正在重生成大纲…')
     startPolling()
-    loadSnapshots()
   } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
 async function doRegenWorld() {

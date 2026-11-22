@@ -385,6 +385,9 @@ async function poll() {
       }
     } else if (body.status === 'stopped') {
       ElMessage.warning(body.error || '已停止（已完成部分保留）')
+    } else if (body.status === 'pending_review') {
+      // R30：任务停在交接点，不按失败处理；入口收敛到全书体检「待处理」
+      ElMessage.warning('任务停在交接点，已完成的章节已保存并结算。请到「全书体检 · 待处理」放行或终止。')
     } else {
       ElMessage.error(body.error || '运行失败')
     }

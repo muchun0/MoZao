@@ -4,19 +4,19 @@
          门 1 的 diff 只是把「计划 vs 已写」摆出来，不阻断、不自动改稿。 -->
     <div class="panel-toolbar">
       <div class="panel-toolbar-left">
-        <el-tag v-if="version" size="small" effect="plain">Plan v{{ version }}</el-tag>
-        <el-tag v-if="!ready" size="small" type="info" effect="plain">未编译</el-tag>
-        <span class="plan-hint">每章最多 5 条 must；改完立即生效，下一次生成本章时注入</span>
+        <el-tag v-if="version" size="small" effect="plain">分章计划 v{{ version }}</el-tag>
+        <el-tag v-if="!ready" size="small" type="info" effect="plain">尚未生成</el-tag>
+        <span class="plan-hint">每章最多 5 条「必须发生」；改完立即生效，下一次生成本章时生效</span>
       </div>
       <div class="panel-toolbar-right">
         <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
-        <el-button size="small" :loading="compiling" @click="compile">从大纲重编译</el-button>
-        <el-button size="small" :loading="validating" @click="runValidate">校验</el-button>
+        <el-button size="small" :loading="compiling" @click="compile">按大纲重新生成</el-button>
+        <el-button size="small" :loading="validating" @click="runValidate">检查结构</el-button>
       </div>
     </div>
 
-    <el-empty v-if="!ready && !loading" description="这本书还没有 Plan。从大纲编译一份，再用约束卡改计划">
-      <el-button type="primary" :loading="compiling" @click="compile">从大纲编译 Plan</el-button>
+    <el-empty v-if="!ready && !loading" description="还没有分章计划。按大纲生成一份后，可逐章编辑「必须发生 / 禁止发生」">
+      <el-button type="primary" :loading="compiling" @click="compile">生成分章计划</el-button>
     </el-empty>
 
     <template v-else>
@@ -78,7 +78,7 @@
               无法核实 {{ diff.counts.unverifiable }}
             </el-tag>
           </template>
-          <el-tag v-else size="small" type="info" effect="plain">本章还没有可用的账本状态，无法对比</el-tag>
+          <el-tag v-else size="small" type="info" effect="plain">本章还没有人物状态记录，无法对比</el-tag>
         </div>
         <ul v-if="diff.violation.length" class="plan-diff-list danger">
           <li v-for="(v, i) in diff.violation" :key="`v${i}`">禁止项冲突：{{ v.detail }}</li>
@@ -193,7 +193,7 @@ const chapterOptions = computed(() => {
 })
 
 function strengthLabel(s) {
-  return { must: 'must', should: 'should', hint: 'hint' }[s] || s
+  return { must: '必须', should: '应当', hint: '提示' }[s] || s
 }
 function strengthType(s) {
   return { must: 'danger', should: 'warning', hint: 'info' }[s] || 'info'
@@ -218,7 +218,7 @@ async function reload() {
       cards.value = []
       return
     }
-    ElMessage.error(e?.response?.data?.detail || '读取 Plan 失败')
+    ElMessage.error(e?.response?.data?.detail || '读取分章计划失败')
   } finally {
     loading.value = false
   }

@@ -74,7 +74,7 @@
         <el-input v-model="draft" type="textarea" :rows="3" maxlength="4000" show-word-limit
                   :placeholder="placeholder" @keydown.ctrl.enter.prevent="submit" />
         <div class="send-row">
-          <span class="hint">Ctrl+Enter 发送 · 按回答字数计费（3 元/万字）· 自备 Key 不扣费</span>
+          <span class="hint">Ctrl+Enter 发送 · 单次提问最多 4000 字 · 按回答字数计费（3 元/万字）· 自备 Key 不扣费</span>
           <el-button type="primary" :loading="sending" :disabled="!chapters.length || !draft.trim()"
                      @click="submit">发送</el-button>
         </div>

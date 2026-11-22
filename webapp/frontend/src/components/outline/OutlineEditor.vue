@@ -8,12 +8,12 @@
           <el-button size="small" type="primary" @click="saveOutline" :loading="saving">保存</el-button>
         </div>
       </template>
-      <el-input v-model="outlineTitle" placeholder="书名/总纲标题" size="small" style="margin-bottom:8px" />
+      <el-input v-model="outlineTitle" placeholder="总纲标题（只用于标识，不会重复写进下方正文）" size="small" style="margin-bottom:8px" />
       <el-input v-model="outlineIntro" type="textarea" :rows="3" placeholder="全书核心设定、主线方向、核心冲突" />
     </el-card>
 
     <div class="outline-toolbar">
-      <span class="muted">共{{ volumes.length }}卷 / {{ chapters.length }}章</span>
+      <span class="muted">共{{ volumes.length }}卷 / {{ chapters.length }}章{{ volumes.length ? '' : '（不建分卷也能直接生成，章节顺序不受影响）' }}</span>
       <el-button size="small" @click="addVolume">+ 分卷</el-button>
     </div>
 
@@ -63,6 +63,7 @@
         <div class="vol-head">
           <span class="vol-label">未分配章节</span>
           <el-button size="small" link type="primary" @click="addChapterToVolume(0)">+ 章节</el-button>
+          <span class="muted vol-hint">可直接生成；要分卷就把章节卡片拖到上方卷里，或点「+ 分卷」后拖入</span>
         </div>
       </el-card>
       <draggable :model-value="unassignedChapters" item-key="no" class="ol-list" :animation="200" group="chapters"
@@ -120,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import draggable from 'vuedraggable'
 import { getOutline, saveOutline as saveOutlineApi,
          getOutlineCandidates, applyOutlineCandidate } from '../../api/novel'
@@ -130,7 +131,11 @@ import { runAgent, errorDetail } from '../../utils/agentRunClient'
 import { Rank } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-const props = defineProps({ pid: String })
+const props = defineProps({
+  pid: String,
+  // 目标章数：新增章节超出时二次确认，避免与目标不一致却无提示
+  targetChapters: { type: Number, default: 0 },
+})
 const emit = defineEmits(['saved', 'open-versions'])
 
 const outlineTitle = ref('')
@@ -180,8 +185,17 @@ const unassignedChapters = computed(() => chapters.value.filter(c => !c.volume_n
 onMounted(async () => {
   try {
     const r = await getOutline(props.pid)
-    outlineTitle.value = r.title || ''
-    outlineIntro.value = r.intro || ''
+    outlineTitle.value = (r.title || '').trim()
+    // 导入/旧数据常把标题重复写在总纲正文第一行，这里只显示一次
+    let intro = r.intro || ''
+    const lines = intro.split('\n')
+    while (lines.length && !lines[0].trim()) lines.shift()
+    while (lines.length) {
+      const head = lines[0].trim().replace(/^#+\s*/, '')
+      if (outlineTitle.value && (head === outlineTitle.value || head === `《${outlineTitle.value}》`)) lines.shift()
+      else break
+    }
+    outlineIntro.value = lines.join('\n').trim()
     volumes.value = (r.volumes || []).map((v, vi) => ({
       no: v.no || vi+1, name: v.name || '', intro: v.intro || '',
       main_conflict: v.main_conflict || '', character_growth: v.character_growth || '',
@@ -254,12 +268,24 @@ async function removeVolume(vi) {
   ElMessage.success('已删除分卷，请点保存生效')
 }
 
-function addChapterToVolume(vno) {
+async function addChapterToVolume(vno) {
+  const target = Number(props.targetChapters || 0)
+  if (target && chapters.value.length >= target) {
+    try {
+      await ElMessageBox.confirm(
+        `当前已有 ${chapters.value.length} 章，已达目标 ${target} 章。继续新增会让总章数超出目标，确定新增？`,
+        '超出目标章数', { type: 'warning', confirmButtonText: '仍然新增' })
+    } catch { return }
+  }
   chapters.value.push({
     no: chapters.value.length + 1, title: '', goal: '', core_event: '',
     conflict: '', character_moves: '', foreshadowing: '', emotion: '', transition: '', tag: '',
     volume_no: vno,
   })
+  // 新增后滚动到新章节，避免「点了 + 章节但看不到新卡片」
+  await nextTick()
+  const items = document.querySelectorAll('.ol-list .ol-item, .ol-list .el-card')
+  items[items.length - 1]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 function removeChapter(el) {
@@ -301,7 +327,8 @@ async function saveOutline() {
 .vol-section { margin-bottom: 14px; }
 .vol-card { background: #fafbfc; margin-bottom: 8px; }
 .vol-card.unassigned { background: #f5f7fa; }
-.vol-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.vol-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.vol-hint { font-size: 12px; }
 .vol-label { font-size: 14px; font-weight: 600; color: #232f55; }
 .vol-fields { display: flex; flex-direction: column; gap: 6px; }
 .chapters-footer { display: flex; justify-content: center; margin: 16px 0; padding-top: 12px; border-top: 1px solid #ebeef5; }

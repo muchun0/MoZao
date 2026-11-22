@@ -7,9 +7,11 @@
     </el-alert>
     <el-form :model="form" label-width="90px" size="default">
       <el-form-item label="服务商">
-        <el-select v-model="form.provider" style="width:100%" @change="onProviderChange">
-          <el-option v-for="p in providers" :key="p.value" :label="p.label" :value="p.value" />
-        </el-select>
+        <el-radio-group v-model="form.provider" class="llm-providers" @change="onProviderChange">
+          <el-radio v-for="p in providers" :key="p.value" :value="p.value" border size="small">
+            {{ p.label }}
+          </el-radio>
+        </el-radio-group>
       </el-form-item>
       <el-form-item label="API Key">
         <el-input v-model="form.api_key" type="password" show-password placeholder="sk-..." />
@@ -62,7 +64,30 @@ const FALLBACK_PROVIDERS = [
   { value: 'custom', label: '自定义 OpenAI 兼容', supports_thinking: true },
 ]
 
-defineExpose({ open: () => { visible.value = true } })
+async function loadConfig() {
+  try {
+    const r = await getMyLlm()
+    if (r.providers?.length) providers.value = r.providers
+    form.value = {
+      provider: r.provider || 'deepseek',
+      api_key: r.api_key || '',
+      base_url: r.base_url || '',
+      model: r.model || '',
+      thinking: r.thinking || 'auto',
+    }
+  } catch (e) {
+    // 读取失败保留表单默认值并明确提示，避免用户以为「打开就是空的」
+    ElMessage.warning(e?.response?.data?.detail || '读取当前模型配置失败，可重新填写后保存')
+  }
+  testResult.value = null
+}
+
+// 每次打开都重新拉取：配置可能在别处改动，只在挂载时加载一次会显示旧值
+defineExpose({
+  open: () => { visible.value = true; loadConfig() },
+})
+
+onMounted(loadConfig)
 
 const visible = ref(false)
 const saving = ref(false)
@@ -81,15 +106,7 @@ const baseUrlPlaceholder = computed(() => {
 })
 
 onMounted(async () => {
-  try {
-    const r = await getMyLlm()
-    if (r.providers?.length) providers.value = r.providers
-    form.value.provider = r.provider || 'deepseek'
-    form.value.api_key = r.api_key || ''
-    form.value.base_url = r.base_url || ''
-    form.value.model = r.model || ''
-    form.value.thinking = r.thinking || 'auto'
-  } catch {}
+  await loadConfig()
 })
 
 function onProviderChange() {
@@ -124,3 +141,8 @@ async function onSave() {
   }
 }
 </script>
+
+<style scoped>
+.llm-providers { display: flex; flex-wrap: wrap; gap: 6px; }
+.llm-providers :deep(.el-radio) { margin-right: 0; }
+</style>

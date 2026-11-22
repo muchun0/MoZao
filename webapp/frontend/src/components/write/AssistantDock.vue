@@ -44,7 +44,7 @@
                 placeholder="问这一段的写法、矛盾或改法（回答按字数计费）"
                 @keydown.ctrl.enter.prevent="ask()" />
       <div class="dk-foot">
-        <span class="dk-hint">问答按回答字数计费 · 应用到正文另按写入字数计费</span>
+        <span class="dk-hint">单次提问最多 4000 字 · 按回答字数计费 · 应用到正文另按写入字数计费</span>
         <el-button type="primary" size="small" :loading="sending"
                    :disabled="!anchorReady || !draft.trim()" @click="ask()">发送</el-button>
       </div>

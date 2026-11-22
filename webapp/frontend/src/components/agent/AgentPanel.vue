@@ -19,6 +19,7 @@
             <span class="rail-version">{{ versionShort(a.key) }}</span>
           </span>
           <span class="rail-desc">{{ a.desc }}</span>
+          <span class="rail-stage">{{ a.stage }}</span>
           <span v-if="isRunningAgent(a.key)" class="rail-running">
             <span class="pulse" />运行中
           </span>
@@ -60,6 +61,7 @@
             </div>
           </header>
           <p class="stage-desc">{{ currentAgent.desc }}</p>
+          <p class="stage-meta">适用阶段：{{ currentAgent.stage }} · 计费：平台模式按实际生成字数（3 元/万字），自备 Key 不扣平台余额</p>
 
           <!-- writer.chapter 参数：scope 三态（§4.1 params schema） -->
           <div v-if="currentAgent.key === 'writer.chapter'" class="stage-field">
@@ -80,7 +82,9 @@
               <span>章 至</span>
               <el-input-number v-model="toCh" :min="fromCh" size="small" controls-position="right" />
               <span>章</span>
-              <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">到末尾</el-checkbox>
+            </div>
+            <div v-if="chapterScope === 'range'" class="field-aux">
+              <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">一直写到当前最后一章（到末尾）</el-checkbox>
             </div>
           </div>
 
@@ -180,6 +184,7 @@ import SkillPicker from './SkillPicker.vue'
 import StaleGateDialog from '../common/StaleGateDialog.vue'
 import MarkdownIt from 'markdown-it'
 import { applyAgentProgress } from '../../composables/useGenerationProgress'
+import { errorDetail } from '../../utils/agentRun'
 
 // 人设 Markdown 预览：html=false 转义原始 HTML（防 XSS），linkify 自动识别链接
 const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
@@ -193,11 +198,11 @@ const props = defineProps({
 const emit = defineEmits(['changed', 'recharge', 'started'])
 
 const AGENTS = [
-  { key: 'researcher', name: '题材调研', desc: '联网调研题材共性，产出写作建议与参考资料' },
-  { key: 'architect.outline', name: '大纲架构', desc: '设计/重生成全书大纲（结构、节奏、冲突递进）' },
-  { key: 'architect.world', name: '世界观架构', desc: '构建/重生成世界观、人物卡与伏笔体系' },
-  { key: 'architect.volume', name: '卷纲架构', desc: '重写指定分卷的简介与章规划' },
-  { key: 'writer.chapter', name: '章节写手', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
+  { key: 'researcher', name: '题材调研', stage: '建书后、写大纲前', desc: '联网调研题材共性，产出写作建议与参考资料（按次计费）' },
+  { key: 'architect.outline', name: '大纲架构', stage: '大纲阶段', desc: '设计/重生成全书大纲（结构、节奏、冲突递进）' },
+  { key: 'architect.world', name: '世界观架构', stage: '大纲通过后', desc: '构建/重生成世界观、人物卡与伏笔体系' },
+  { key: 'architect.volume', name: '卷纲架构', stage: '已有分卷时', desc: '重写指定分卷的简介与章规划' },
+  { key: 'writer.chapter', name: '章节写手', stage: '大纲+世界观就绪后', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
 ]
 
 // ---------- 角色选择（默认聚焦章节写手：正文生成是项目详情页的主操作） ----------
@@ -347,7 +352,8 @@ async function startRun(agent) {
     const d = e?.response?.data?.detail
     // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
     if (!staleGateRef.value?.open(props.pid, d, payload, (body) => onRunStarted(agent, body))) {
-      ElMessage.error(typeof d === 'string' ? d : (d?.message || '启动失败'))
+      // P1-10：后端 detail 可能是对象或已是原始异常文本，统一转成作者能看懂的一句话
+      ElMessage.error(errorDetail(e, '启动失败'))
     }
   }
 }
@@ -589,6 +595,7 @@ onBeforeUnmount(() => {
   line-height: 1.4;
   color: var(--muted);
 }
+.rail-stage { font-size: 11px; color: #8a93a6; margin-top: 2px; }
 .rail-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
 
 /* ---------- 计费环境：常驻左栏底部，替代原先横贯顶部的告警条 ---------- */
@@ -622,7 +629,9 @@ onBeforeUnmount(() => {
 .stage-title h3 { font-family: var(--serif); font-size: 19px; font-weight: 600; }
 .stage-head-actions { display: flex; align-items: center; gap: 10px; }
 .stage-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
-.stage-desc { max-width: 620px; margin: 6px 0 22px; font-size: 13px; color: var(--ink-soft); }
+.stage-desc { max-width: 620px; margin: 6px 0 6px; font-size: 13px; color: var(--ink-soft); }
+.stage-meta { max-width: 680px; margin: 0 0 22px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.field-aux { margin-top: 8px; }
 .stage-field { margin-bottom: 18px; }
 .field-label { margin-bottom: 7px; font-size: 12px; color: var(--muted); }
 .field-optional { margin-left: 6px; font-size: 11px; color: #b9bdc9; }

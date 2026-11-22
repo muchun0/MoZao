@@ -188,7 +188,7 @@
           </article>
           <p class="cp-footnote">
             <template v-if="hiddenViews.length">
-              另有 {{ hiddenViews.length }} 项系统内部账本只做自检，界面上不展开，也不用你维护。
+              另有 {{ hiddenViews.length }} 项系统内部记录只做自检，界面上不展开，也不用你维护。
             </template>
             <template v-else>上面只列你能看到内容的记录。</template>
           </p>

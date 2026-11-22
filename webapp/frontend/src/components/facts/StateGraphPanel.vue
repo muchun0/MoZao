@@ -2,7 +2,7 @@
   <div class="sg">
     <FactsPanelHead
       title="世界事实"
-      sub="只读投影：人物、当前状态、地点、事件，以及设定规则（术语 / 纪律 / 机制口径 / 不变量与禁用词）。伏笔与冲突的检查结论在「全书体检」，按章事件流在「时间线」。"
+      sub="只读展示：人物、当前状态、地点、事件，以及设定规则（术语 / 纪律 / 机制口径 / 不能违反的设定与禁用词）。伏笔与冲突的检查结论在「全书体检」，按章事件流在「时间线」。"
       :loading="loading"
       @refresh="reload"
     />
@@ -14,7 +14,7 @@
     <template v-else>
       <!-- 内部账本版本号不再对作者展示；只在上游改动后视图可能落后时提示一次 -->
       <div v-if="meta && meta.sources?.stale" class="sg-meta">
-        <span class="sg-tag warn">上游设定已更新，视图可能落后</span>
+        <span class="sg-tag warn">上游设定已更新，这里可能不是最新</span>
       </div>
 
       <nav class="sg-tabs">

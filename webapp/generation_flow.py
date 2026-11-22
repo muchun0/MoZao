@@ -106,15 +106,28 @@ def supported(store, cfg=None) -> bool:
 
 
 def _is_legacy(store) -> bool:
-    """老项目判定：存在历史 run 侧写或已写章节（决定默认模式，不改任何数据）。"""
+    """老项目判定：有成功的历史 run，或已有章节正文（决定默认模式，不改任何数据）。
+
+    只看「失败/中断的 run」不算老项目：新书第一次生成失败后，如果按文件名判定，
+    默认模式会从 stepwise 翻成 auto，造成新书突然「全自动跑到底」。
+    """
     runs = Path(store.dir) / "agent_runs"
     try:
-        if runs.is_dir() and any(p.suffix == ".json" for p in runs.iterdir()):
-            return True
+        if runs.is_dir():
+            import json
+            for p in runs.iterdir():
+                if p.suffix != ".json":
+                    continue
+                try:
+                    meta = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if str(meta.get("status") or "") == "ok" and (meta.get("outputs") or []):
+                    return True
     except OSError:
         pass
     try:
-        return bool(store.list_chapters())
+        return any((c.content or "").strip() for c in store.list_chapters())
     except Exception:
         logger.exception("老项目判定失败，按新项目处理: project=%s", store.dir.name)
         return False

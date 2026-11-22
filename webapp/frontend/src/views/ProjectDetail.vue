@@ -20,15 +20,21 @@
           <el-button :disabled="genRunning" :loading="exporting">导出 ▾</el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="txt">TXT 文本</el-dropdown-item>
-              <el-dropdown-item command="epub">EPUB 电子书</el-dropdown-item>
-              <el-dropdown-item command="docx">DOCX Word</el-dropdown-item>
-              <el-dropdown-item command="md">Markdown</el-dropdown-item>
+              <el-dropdown-item command="txt"><b>TXT 文本</b><span class="exp-desc">纯文本、最快，不调用模型，适合投稿/存档</span></el-dropdown-item>
+              <el-dropdown-item command="epub"><b>EPUB 电子书</b><span class="exp-desc">手机/阅读器打开，需要一次模型排版</span></el-dropdown-item>
+              <el-dropdown-item command="docx"><b>DOCX Word</b><span class="exp-desc">Word 版式，适合打印与编辑</span></el-dropdown-item>
+              <el-dropdown-item command="md"><b>Markdown</b><span class="exp-desc">带章节结构的纯文本，不调用模型</span></el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-tooltip v-else content="生成或手写至少一章正文后即可导出 TXT / EPUB / DOCX / Markdown" placement="bottom">
+          <span><el-button disabled>导出 ▾</el-button></span>
+        </el-tooltip>
+        <span v-if="chapters.length" class="pd-export-hint">TXT / Markdown 直接由已保存正文生成，不消耗模型</span>
       </div>
     </header>
+
+    <p class="pd-guide">推荐顺序：大纲页生成或导入大纲 → 审阅通过 → 世界观页生成 → 通过 → 章节页开始写正文。Agent 页可单独运行任一角色；不确定时按上方步骤条走。</p>
 
     <!-- 生成中横幅：全项目唯一的进度指示组件（统一进度条 + 阶段文案 + 取消/继续），
          各阶段共用，不再出现第二个进度条；状态/进度/文案由 useGenerationProgress 统一驱动 -->
@@ -38,6 +44,20 @@
         <el-button v-else-if="resumable" type="primary" size="small" @click="startGen">继续生成</el-button>
       </template>
     </GenerationProgress>
+
+    <!-- 生成失败横幅：轮询结束后仍常驻，不再只弹一次 toast 就消失 -->
+    <div v-if="genFailMsg" class="gen-fail" role="alert">
+      <div class="gen-fail-main">
+        <strong>上次生成没有完成</strong>
+        <p class="gen-fail-text">{{ genFailMsg }}</p>
+        <p class="gen-fail-hint">已生成并保存的章节不会丢失；可以重试，或到 Agent 页查看这次运行的详细记录。</p>
+      </div>
+      <div class="gen-fail-actions">
+        <el-button size="small" @click="tab = 'agent'">查看运行记录</el-button>
+        <el-button size="small" type="primary" :loading="genRunning" @click="retryAfterFail">重试</el-button>
+        <el-button size="small" text @click="genFailMsg = ''">关闭</el-button>
+      </div>
+    </div>
 
     <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
     <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
@@ -52,14 +72,14 @@
         <!-- 章节 -->
         <section v-if="visited.chapters" v-show="tab === 'chapters'">
           <!-- 门 4 批末卡片：本批字数/质检合格率/扣费；继续下一批或结束 -->
-          <GateCard v-if="batchCard" title="本批已完成" status="batch" status-label="批末"
+          <GateCard v-if="batchCard && !genFailMsg" title="本批已完成" status="batch" status-label="批末"
             :summary="batchCard.summary" :checks="batchCard.checks" :actions="['continue', 'finish']"
             hint="批量运行期间正文只读；要继续先点「继续下一批」"
             @continue="startGen" @finish="batchCard = null" @locate="locateAnchor" />
           <!-- 正文入口：默认一批 5 章，批末自动停；「一键全部」是小字逃生舱（二次确认+预估） -->
           <div v-if="outlineReady" class="ch-gen-bar">
             <el-button v-if="nextUnwritten" type="primary" size="small" :disabled="genRunning" @click="startGen">
-              写第 {{ nextUnwritten }}–{{ batchEnd }} 章（每批 {{ BATCH_SIZE }} 章）
+              写第 {{ nextUnwritten }}–{{ batchEnd }} 章（本批 {{ batchEnd - nextUnwritten + 1 }} 章）
             </el-button>
             <el-tag v-else-if="planNeedsHuman" size="small" type="warning" effect="plain">待处理：去「全书体检」</el-tag>
             <el-tag v-else size="small" type="success" effect="plain">全部章节已写完</el-tag>
@@ -87,17 +107,22 @@
             </div>
           </div>
           <!-- 档1/档2 过期提示：读时推导，只提示不阻断；两种成因分开说，点章号直接跳章 -->
-          <div v-if="staleHint || prevRewriteHint || staleUnknownHint" class="ch-stale-bar">
+          <div v-if="staleHint || prevRewriteHint" class="ch-stale-bar">
             <el-tag v-if="staleHint" size="small" type="warning" effect="plain">上游已更新</el-tag>
             <span v-if="staleHint" class="ch-stale-text">{{ staleHint }}</span>
             <el-tag v-if="prevRewriteHint" size="small" type="danger" effect="plain">前文已重写</el-tag>
             <span v-if="prevRewriteHint" class="ch-stale-text">{{ prevRewriteHint }}</span>
-            <span v-if="staleUnknownHint" class="ch-stale-sub">{{ staleUnknownHint }}</span>
             <span v-if="staleHint || prevRewriteHint" class="ch-stale-jumps">
               <el-button v-for="n in staleJumpChapters.slice(0, 6)" :key="n" size="small" link type="warning"
                          @click="jumpToStale(n)">第{{ n }}章</el-button>
               <span v-if="staleJumpChapters.length > 6" class="ch-stale-sub">…</span>
             </span>
+          </div>
+          <div v-if="!chapters.length && !genRunning" class="ch-empty">
+            <h3>还没有章节</h3>
+            <p>先确认大纲与世界观，再生成第 1 章。生成过程中正文只读，写完一批会停下让你检查。</p>
+            <el-button type="primary" @click="tab = 'agent'">去生成第 1 章</el-button>
+            <el-button v-if="!outlineReady" @click="tab = 'outline'">先看大纲</el-button>
           </div>
           <div v-if="chapters.length" class="ch-list">
             <div v-for="g in displayGroups" :key="g.key" class="ch-group">
@@ -177,7 +202,8 @@
             <el-button type="primary" @click="runWorld">生成世界观（按字数计费）</el-button>
             <span class="gate-next-hint">也可以先跳过：直接去 Agent 页写正文，世界观缺失会降低一致性</span>
           </div>
-          <OutlineEditor v-if="outlineReady || hadOutline" :key="outlineReloadKey" :pid="pid" @saved="loadAll" @open-versions="openProductVersions('outline')" />
+          <OutlineEditor v-if="outlineReady || hadOutline" :key="outlineReloadKey" :pid="pid"
+                         :target-chapters="genTotal" @saved="loadAll" @open-versions="openProductVersions('outline')" />
         </section>
 
         <!-- 创作图（门 1）：分章约束卡。Plan 层（可改）与账本（Canon，只增不改）分开 -->
@@ -197,7 +223,8 @@
             @approve="approveGateNow('world')" @skip="skipWorldGate"
             @regen="doRegenWorld" @locate="locateAnchor" />
           <WorldEditor ref="worldEditorRef" :pid="pid" :lock="lock"
-            @toggle-lock="toggleLock" @open-versions="openProductVersions" @regen-world="doRegenWorld" />
+            @toggle-lock="toggleLock" @open-versions="openProductVersions" @regen-world="doRegenWorld"
+            @open-tab="tab = $event" />
         </section>
 
         <!-- 小墨AI -->
@@ -278,6 +305,7 @@
 
     <el-dialog v-model="importVisible" title="导入大纲" width="560px">
       <p class="import-hint">将用你的新内容覆盖当前大纲（覆盖前自动备份上一版，可在「版本」弹窗里还原）。AI 不会改写你的内容。</p>
+      <p class="import-hint">按「第X章 标题」分章：一行一个章节标题，标题下写本章梗概；分卷用「第一卷」这类标题。没有正文的标题也会保留为待写章节。</p>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <input type="file" ref="importFileInput" accept=".txt,.md,.docx" @change="onImportFilePick" />
         <span class="muted" style="font-size:12px">.txt / .md / .docx，≤5MB</span>
@@ -355,6 +383,10 @@ const gates = ref({})
 const gateReviews = reactive({})
 const gateBusy = ref('')
 const batchCard = ref(null)
+// P0-1：生成失败的常驻提示（失败后不得再渲染「本批已完成」）
+const genFailMsg = ref('')
+const lastFailed = ref(false)
+const lastRunPayload = ref(null)
 const worldReady = ref(false)
 const gateOf = (g) => gates.value?.[g] || { status: 'pending', current_version: null, approved_version: null }
 const gateApproved = (g) => gateOf(g).status === 'approved'
@@ -577,12 +609,7 @@ const staleHint = computed(() => {
     .join('、')
   return `${ranges}可能已过期${causes ? `，因为${causes}` : ''}`
 })
-const staleUnknownHint = computed(() => {
-  const s = staleness.value && staleness.value.summary
-  return s && s.unknown_count
-    ? `另有 ${s.unknown_count} 章缺少生成时的上游版本记录，无法判断是否过期`
-    : ''
-})
+// 手写章节没有上游版本记录属于正常情况，不再作为警告横条常驻（避免与质检空态语义重叠）
 // 档2「前文重写」提示：与上游大纲/世界观成因分开说，如「第3章已重写（v1→v2），影响第4–6章」
 const prevRewriteHint = computed(() => {
   const s = staleness.value && staleness.value.summary
@@ -777,19 +804,25 @@ function startPolling(onDone, quiet = false) {
         clearInterval(pollTimer)
         // 生成结束后全量刷新大纲/世界观/章节/锁，否则切到对应面板仍是旧空数据
         if (s.error) {
+          // P0-1：失败必须常驻可见，不能只弹一次 toast 就消失成「本批已完成」
+          genFailMsg.value = s.error
+          lastFailed.value = true
+          reset()
           if (!quiet) ElMessage.error('生成失败：' + s.error)
-        } else {
-          // 可选链式回调（如大纲完成后自动生成世界观）：返回 true 表示已接管后续流程，跳过默认刷新
-          const chained = onDone ? await onDone(s) : false
-          if (!chained) await refreshAfterGen(quiet)
+          await refreshAfterGen(true, { silentSuccess: true })
+          return
         }
+        lastFailed.value = false
+        // 可选链式回调（如大纲完成后自动生成世界观）：返回 true 表示已接管后续流程，跳过默认刷新
+        const chained = onDone ? await onDone(s) : false
+        if (!chained) await refreshAfterGen(quiet)
       }
     } catch {}
   }, 3000)
 }
 
 // 生成完成后的静默刷新：不弹全屏 loading，只重拉数据并强制重挂大纲编辑器
-async function refreshAfterGen(quiet = false) {
+async function refreshAfterGen(quiet = false, opts = {}) {
   try {
     outline.value = await getOutline(pid)
     hadOutline.value = hadOutline.value || !!(outline.value?.chapters?.length)
@@ -802,7 +835,7 @@ async function refreshAfterGen(quiet = false) {
     await loadStaleness()
     outlineReloadKey.value++
     // R23 P1：大纲快照已并入版本库，刷新由版本弹窗打开时自行拉取，这里不再单独刷新快照列表
-    if (!quiet) ElMessage.success('任务已完成，数据已刷新')
+    if (!quiet && !opts.silentSuccess) ElMessage.success('任务已完成，数据已刷新')
   } catch (e) {
     // 降级必留痕：编程错误（如未定义标识符）不能被静默降级成一句提示
     console.error('[ProjectDetail] 生成后数据刷新失败:', e)
@@ -1015,6 +1048,9 @@ async function startGen() {
   try {
     await runAgent(pid, payload)
     batchCard.value = null
+    genFailMsg.value = ''
+    lastFailed.value = false
+    lastRunPayload.value = payload
     ElMessage.success(`已开始写第 ${from}–${to} 章，本批结束会停下`)
     beginGenUI('正在写本批章节…')
     startPolling(async () => { await buildBatchCard(from, to); return false })
@@ -1028,11 +1064,39 @@ async function startGen() {
 
 // 批末材料：本批字数 / 质检合格率 / 扣费（后端确定性汇总，零 LLM）
 async function buildBatchCard(from, to) {
+  // P0-2：本批实际 0 章落盘时不渲染「本批已完成」，交由失败提示说明
+  const written = chapters.value.filter(c => Number(c.no) >= from && Number(c.no) <= to && (c.words || c.status === 'done'))
+  if (!written.length) {
+    if (!genFailMsg.value) genFailMsg.value = `第 ${from}–${to} 章没有写出任何正文，请查看 Agent 页的运行记录后重试`
+    lastFailed.value = true
+    batchCard.value = null
+    return
+  }
   try {
     const r = await getGateReview(pid, 'batch', { from_ch: from, to_ch: to })
     batchCard.value = { from, to, summary: r.summary || [], checks: r.checks || [] }
     tab.value = 'chapters'
   } catch { /* 批末统计失败不影响正文已落盘 */ }
+}
+
+// 失败后重试：沿用上次的区间参数；没有任何运行记录时回到 Agent 页由用户选择
+async function retryAfterFail() {
+  const payload = lastRunPayload.value
+  if (!payload) { tab.value = 'agent'; return }
+  try {
+    await runAgent(pid, payload)
+    genFailMsg.value = ''
+    lastFailed.value = false
+    batchCard.value = null
+    beginGenUI('正在重试…')
+    startPolling(async () => {
+      if (lastFailed.value) return false
+      const p = payload.params || {}
+      if (p.from_ch) await buildBatchCard(p.from_ch, p.to_ch)
+      return false
+    })
+    ElMessage.success('已重新开始')
+  } catch (e) { ElMessage.error(errorDetail(e, '重试失败')) }
 }
 
 // 「一键全部生成」：小字逃生舱，二次确认 + 预估总额，跳过全部门
@@ -1181,7 +1245,9 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .pd-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--card-line); margin-bottom: 16px; }
 .pd-title { font-size: 24px; font-weight: 600; letter-spacing: .01em; line-height: 1.2; }
 .pd-meta { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; font-variant-numeric: tabular-nums; }
-.pd-head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.pd-head-actions { display: flex; gap: 12px; align-items: center; flex-shrink: 0; }
+.pd-guide { margin: -4px 0 14px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+@media (max-width: 720px) { .pd-guide { display: none; } }
 
 /* ===== 生成中横幅：全宽，仅生成/出错时出现 ===== */
 .gen-banner {
@@ -1203,6 +1269,19 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .gen-status { font-size: 13px; color: #909399; }
 .gen-error { display: inline-block; font-size: 13px; color: #f56c6c; word-break: break-all; flex: 1; }
 .gen-error-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ch-empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+.ch-empty h3 { font-family: var(--serif); font-size: 20px; margin: 0 0 8px; color: var(--ink); }
+.ch-empty p { font-size: 13px; line-height: 1.8; margin: 0 auto 16px; max-width: 560px; }
+.pd-export-hint { font-size: 11px; color: var(--muted); max-width: 180px; line-height: 1.5; }
+.gen-fail {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 16px; padding: 12px 16px; border-radius: 8px;
+  background: #fef2f2; border: 1px solid #fecaca;
+}
+.gen-fail-main { min-width: 0; }
+.gen-fail-text { margin: 4px 0 2px; font-size: 13px; color: #b91c1c; word-break: break-word; line-height: 1.6; }
+.gen-fail-hint { margin: 0; font-size: 12px; color: #7f1d1d; line-height: 1.6; }
+.gen-fail-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 /* ===== 主体：左侧栏 + 工作区 ===== */
 .pd-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0 28px; align-items: start; }
@@ -1244,8 +1323,8 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-score { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .ch-issue-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ch-words { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
-.ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; pointer-events: auto; }
+.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: .55; pointer-events: auto; transition: opacity .15s ease; }
+.ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; }
 /* 触屏设备无 hover，操作常驻 */
 @media (hover: none) { .ch-actions { opacity: 1; pointer-events: auto; } }
 
@@ -1302,4 +1381,8 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
   .pulse { animation: none; }
   .ch-item, .ch-actions { transition: none; }
 }
+</style>
+
+<style>
+.el-dropdown-menu__item .exp-desc { display: block; font-size: 11px; color: #909399; margin-top: 2px; line-height: 1.4; }
 </style>

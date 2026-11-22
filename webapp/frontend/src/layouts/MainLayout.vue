@@ -75,7 +75,10 @@ function onCommand(cmd) {
   color: #f5efdc;
   box-shadow: 0 3px 8px rgba(201,162,39,.4);
 }
-.right { display: flex; align-items: center; gap: 16px; }
+.right { display: flex; align-items: center; gap: 4px; }
+/* 深色顶栏上的文字按钮默认用深色字，几乎看不见：统一提亮并保证 hover 可辨识 */
+.right :deep(.el-button.is-text) { color: rgba(240, 236, 220, .84); }
+.right :deep(.el-button.is-text:hover) { color: #f0e2b6; background: rgba(255, 255, 255, .06); }
 .footer {
   padding: 14px 0 20px;
   text-align: center;

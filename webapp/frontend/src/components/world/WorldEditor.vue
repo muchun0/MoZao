@@ -9,14 +9,21 @@
       <div class="world-edit-head">
         <h4 style="margin:0">世界观设定</h4>
         <div>
-          <el-button size="small" type="primary" link @click="$emit('open-versions', 'world')">世界观版本</el-button>
-          <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
-            {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
-          </el-button>
+          <el-tooltip content="查看/还原世界观历史版本" placement="bottom">
+            <el-button size="small" type="primary" link @click="$emit('open-versions', 'world')">世界观版本</el-button>
+          </el-tooltip>
+          <el-tooltip :content="isWorldLocked ? '已加锁：重生成世界观时不会覆盖当前内容，点击解锁' : '加锁：重生成世界观时保留当前内容不被覆盖'" placement="bottom">
+            <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
+              {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
+            </el-button>
+          </el-tooltip>
+          <el-tooltip content="按当前大纲调用 AI 生成/重生成世界观；只在你点击后执行" placement="bottom">
+            <el-button size="small" @click="$emit('regen-world')">AI 生成</el-button>
+          </el-tooltip>
+          <el-button size="small" link @click="toggleAllCollapse">{{ allOpen ? '收起全部' : '展开全部' }}</el-button>
           <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
         </div>
       </div>
-
       <!-- 人物关系图谱（全宽） -->
       <CharacterGraph v-if="world.characters?.length" :characters="worldDraft.characters" />
 
@@ -26,7 +33,8 @@
         <!-- 左栏：世界观文本 -->
         <div class="world-text-section">
           <div class="section-title">世界设定</div>
-          <el-input v-model="worldDraft.world_view" type="textarea" :rows="8" placeholder="描述这个世界的规则、时代背景、核心矛盾、势力格局……" class="world-textarea" />
+          <el-input v-model="worldDraft.world_view" type="textarea" :rows="8" placeholder="世界规则 / 时代背景 / 势力格局…" class="world-textarea" />
+          <div class="field-help">建议写清：力量或规则体系、时代与地理、主要势力及核心矛盾。AI 会把它当作强约束，正文不得违背。</div>
         </div>
 
         <!-- 右栏：人物列表（紧凑列表，点击切换选中） -->
@@ -117,7 +125,7 @@
 
       <!-- ===== 事前设计卡（折叠收起，默认不展开） ===== -->
       <div class="world-collapse-wrap">
-        <el-collapse class="world-collapse">
+        <el-collapse v-model="collActive" class="world-collapse">
         <el-collapse-item :title="`生物图鉴（${worldDraft.enemies?.length || 0}）`" name="enemies">
           <div class="world-edit-head">
             <el-button size="small" @click="worldDraft.enemies.push({ name:'', form:'', senses:'', behavior:'', kill:'', tier:'' })">+ 添加怪物</el-button>
@@ -205,8 +213,14 @@
       </div>
     </template>
     <el-empty v-else-if="loaded">
-      <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
-      <el-button type="primary" @click="$emit('regen-world')">重生成世界观</el-button>
+      <template #description>
+        <div class="world-empty-desc">
+          <p>这本书还没有世界观设定。</p>
+          <p>生成后会得到世界规则、人物卡、势力与事前设计卡；也可以先手动填写。</p>
+        </div>
+      </template>
+      <el-button type="primary" @click="$emit('regen-world')">生成世界观</el-button>
+      <el-button @click="$emit('open-tab', 'outline')">先看大纲</el-button>
     </el-empty>
   </div>
 </template>
@@ -226,6 +240,14 @@ const props = defineProps({
   // 锁状态（父组件持有的单一权威源），结构：{ world_view: bool, character: { name: bool } }
   lock: { type: Object, default: () => ({}) },
 })
+// 折叠卡默认收起；顶部提供「展开全部」便于总览，避免逐张点开
+const collActive = ref([])
+const allOpen = ref(false)
+const ALL_PANELS = ['enemies', 'locations', 'factions', 'mechanism', 'clock', 'taboos']
+function toggleAllCollapse() {
+  allOpen.value = !allOpen.value
+  collActive.value = allOpen.value ? [...ALL_PANELS] : []
+}
 const emit = defineEmits(['toggle-lock', 'open-versions', 'regen-world'])
 
 const loaded = ref(false)
@@ -444,6 +466,7 @@ defineExpose({ reload })
   min-height: 180px;
   line-height: 1.8;
 }
+.field-help { margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 
 /* 人物列表 */
 .char-list-section {

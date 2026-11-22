@@ -42,7 +42,7 @@
     <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
     <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
     <!-- R32 固化编排：只读计划条（off 不渲染，shadow 标注只记录不生效） -->
-    <SupervisorPlanBar :pid="pid" />
+    <SupervisorPlanBar :pid="pid" @plan-state="onPlanState" />
 
     <!-- 主体：左侧栏导航 + 工作区 -->
     <div class="pd-body">
@@ -61,6 +61,7 @@
             <el-button v-if="nextUnwritten" type="primary" size="small" :disabled="genRunning" @click="startGen">
               写第 {{ nextUnwritten }}–{{ batchEnd }} 章（每批 {{ BATCH_SIZE }} 章）
             </el-button>
+            <el-tag v-else-if="planNeedsHuman" size="small" type="warning" effect="plain">待处理：去「全书体检」</el-tag>
             <el-tag v-else size="small" type="success" effect="plain">全部章节已写完</el-tag>
             <el-button v-if="nextUnwritten" link size="small" class="ch-gen-all" :disabled="genRunning"
                        title="不经过审阅门，一次写完；会显示预估总额并二次确认"
@@ -476,7 +477,17 @@ const resumable = computed(() =>
 const genTotal = ref(0)
 const genDoneCount = ref(0)
 const totalWords = computed(() => chapters.value.reduce((sum, c) => sum + (c.words || 0), 0))
+// 后端计划的真实状态（由 SupervisorPlanBar 的只读轮询带回来）
+const planState = ref({ status: '', nextKind: '', reason: '' })
+const planNeedsHuman = computed(() =>
+  planState.value.status === 'blocked'
+  || planState.value.nextKind === 'blocked'
+  || planState.value.nextKind === 'fail')
+function onPlanState(s) {
+  planState.value = s || {}
+}
 const bookStatus = computed(() => {
+  if (planNeedsHuman.value) return { text: '待处理', type: 'warning' }
   if (genRunning.value) return { text: '生成中', type: 'warning' }
   const total = genTotal.value
   const done = genDoneCount.value

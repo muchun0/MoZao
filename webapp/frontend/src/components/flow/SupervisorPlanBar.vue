@@ -60,6 +60,7 @@ import { getSupervisor } from '../../api/supervisor'
 const props = defineProps({
   pid: { type: String, required: true },
 })
+const emit = defineEmits(['plan-state'])
 
 const data = ref(null)
 const open = ref(false)
@@ -68,7 +69,7 @@ const timer = ref(null)
 const supported = computed(() => !!data.value?.supported)
 const shadow = computed(() => data.value?.mode === 'shadow')
 const plan = computed(() => data.value?.plan || null)
-const visible = computed(() => supported.value && !!plan.value)
+const visible = computed(() => supported.value)
 const stages = computed(() => plan.value?.stages || [])
 const decisions = computed(() => plan.value?.decisions || [])
 const recentDecisions = computed(() => decisions.value.slice(-20).reverse())
@@ -98,6 +99,7 @@ const roleLabel = (role) => roleLabels[role] || role || '—'
 const modeLabel = computed(() => modeLabels[data.value?.mode] || data.value?.mode || '')
 
 const statusText = computed(() => {
+  if (!plan.value) return '未开始'
   const s = plan.value?.status
   return planStatusMap[s] || s || '—'
 })
@@ -132,6 +134,7 @@ const budgetText = computed(() => {
 })
 
 const stopText = computed(() => {
+  if (!plan.value) return '尚未启动生成，启动后显示计划与决策'
   const a = next.value
   if (!a) return ''
   const kind = a.kind
@@ -146,7 +149,7 @@ const stopText = computed(() => {
 
 function reasonLabel(code) {
   const map = {
-    pending_review: '有待审工单', handover_blocking: '有阻塞工单',
+    pending_review: '有待审工单（去「全书体检」处理）', handover_blocking: '有阻塞工单（去「全书体检」处理）',
     active_run: '有 run 在执行', stopped: '已停止',
     budget_steps: '步数预算用尽', budget_repairs: '修复预算用尽',
     repair_exhausted: '修复已达上限', chapter_repair_limit: '本章修复次数用尽',
@@ -166,6 +169,12 @@ async function load() {
   try {
     const res = await getSupervisor(props.pid)
     data.value = res
+    // 顶栏状态徽章要与计划真实状态一致（否则会出现「已完成」+「已暂停」并存）
+    emit('plan-state', {
+      status: res?.plan?.status || '',
+      nextKind: res?.next_action?.kind || '',
+      reason: res?.next_action?.reason_code || '',
+    })
   } catch {
     // 只读观测失败不打断页面
   }
@@ -173,7 +182,7 @@ async function load() {
 
 onMounted(() => {
   load()
-  timer.value = setInterval(load, 10000)
+  timer.value = setInterval(load, 5000)
 })
 onBeforeUnmount(() => {
   if (timer.value) clearInterval(timer.value)

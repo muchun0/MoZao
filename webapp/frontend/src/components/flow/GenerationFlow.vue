@@ -28,10 +28,14 @@
       <StageConfirmCard v-if="card" :card="card" :busy="busy"
                         @continue="onContinue" @regenerate="onRegenerate"
                         @edit="onEdit" @back-outline="onBackOutline" />
-      <div v-else-if="runningStage" class="gf-tip">
+      <div v-else-if="runningStage && flow.plan_status === 'running' && flow.active_run" class="gf-tip">
         正在执行「{{ runningStage.label }}」…完成后会停在这里等你确认
       </div>
-      <div v-else class="gf-tip">全流程已完成，可导出成书。</div>
+      <div v-else-if="runningStage && flow.plan_status === 'running'" class="gf-tip">
+        「{{ runningStage.label }}」下一步待继续，点下方「一键全部生成」接着跑。
+      </div>
+      <div v-else-if="flow.plan_status === 'done'" class="gf-tip">全流程已完成，可导出成书。</div>
+      <div v-else class="gf-tip">计划已暂停（{{ planStatusText }}），处理阻塞或调整模式后可继续。</div>
     </template>
   </section>
 </template>
@@ -61,6 +65,12 @@ const stages = computed(() => flow.value?.stages || [])
 const card = computed(() => (flow.value?.cards || [])[0] || null)
 const runningStage = computed(() => stages.value.find((s) => s.status === 'running') || null)
 const visible = computed(() => !!data.value && (supported.value || mode.value === 'stepwise'))
+const planStatusText = computed(() => {
+  const map = { planning: '规划中', running: '运行中', waiting: '等待中', blocked: '已阻塞',
+    stopped: '已停止', failed: '失败', aborted: '已终止' }
+  const s = flow.value?.plan_status
+  return map[s] || s || '未知'
+})
 
 const stepTitle = (s) => {
   const map = {

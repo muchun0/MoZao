@@ -58,6 +58,17 @@ def _safe_name(name: str) -> str:
     return cleaned or "novel"
 
 
+def _display_name(name: str) -> str:
+    """下载文件名用的展示名：保留中文书名，只替换文件系统非法字符。
+
+    project_id 仍用 ASCII 的 _safe_name（URL/目录兼容），导出与下载用这个，
+    避免作者看到「20261122_xxx_ab12cd」这种时间戳文件名。
+    """
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", (name or "").strip())
+    cleaned = re.sub(r"_{2,}", "_", cleaned).strip(" ._")
+    return cleaned[:60] or "novel"
+
+
 # REQ-章节版本化：每章正文版本上限，超出淘汰最旧（HEAD/当前选中版本永不被淘汰）。
 _CHAPTER_VERSION_LIMIT = 15
 

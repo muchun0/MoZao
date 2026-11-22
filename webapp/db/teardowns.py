@@ -99,12 +99,27 @@ def list_teardowns(genre: str = "", q: str = "", page: int = 1, page_size: int =
 
 
 def list_teardown_genres() -> list[dict]:
-    """题材聚合：返回 [{genre, count}]，按 count 降序（筛选 chips 用）。"""
+    """题材聚合：返回 [{genre, count}]，按 count 降序（筛选 chips 用）。
+
+    脏数据拦截：单条且极短（≤4 字）又不在标准题材表里的标签（如误把作品名/人名
+    当题材）不进筛选栏；条目本身仍可在「全部」里看到，避免无意义 chip 干扰。
+    """
+    from novel_gen.config import GENRES
+    known = set(GENRES) | {"通用"}
     with _connect() as conn:
         rows = conn.execute(
             "SELECT genre, COUNT(*) AS count FROM book_teardown WHERE status=1 "
             "GROUP BY genre ORDER BY count DESC, genre ASC").fetchall()
-        return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        g = (r["genre"] or "").strip()
+        n = int(r["count"] or 0)
+        if not g:
+            continue
+        if len(g) <= 4 and n <= 1 and g not in known:
+            continue
+        out.append({"genre": g, "count": n})
+    return out
 
 
 def get_teardown(td_id: int, inc_view: bool = False) -> Optional[dict]:

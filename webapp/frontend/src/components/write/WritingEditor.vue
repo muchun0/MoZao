@@ -134,11 +134,13 @@ defineExpose({ getCursor, focusAt })
   padding: 10px 20px; border-bottom: 1px solid var(--card-line); background: var(--card);
 }
 .ed-left, .ed-right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ed-left { flex: 1 1 auto; overflow: hidden; }
+.ed-right { flex: 0 0 auto; }
 .ed-title {
   font-family: var(--serif); font-size: 16px; color: var(--ink);
-  max-width: 36vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ed-words { color: var(--muted); font-size: 12px; }
+.ed-words { color: var(--muted); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .ed-dirty { color: var(--gold-deep); font-size: 12px; }
 .kbd { font-size: 10px; opacity: .65; margin-left: 4px; }
 .ed-wrap { position: relative; flex: 1; min-height: 0; background: var(--paper); }
@@ -146,8 +148,14 @@ defineExpose({ getCursor, focusAt })
   width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; outline: none;
   padding: 32px 48px 80px; background: transparent; color: var(--ink);
   font-family: var(--serif); font-size: 17px; line-height: 2; letter-spacing: .3px;
+  text-indent: 2em;
 }
 .ed-area:disabled { opacity: .6; }
+@media (max-width: 1280px) {
+  .ed-area { padding: 24px 28px 64px; }
+  .ed-title { font-size: 14px; }
+  .kbd { display: none; }
+}
 .ed-loading {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); font-size: 13px; background: rgba(246,243,234,.6);

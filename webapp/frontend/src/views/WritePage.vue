@@ -48,6 +48,16 @@
                     @rewrite="generate('rewrite')" @expand="generate('expand')"
                     @ask="openDockFromSelection" />
 
+    <!-- 空书兜底：没有章节时给出去处，避免停在一张空白编辑器上 -->
+    <div v-if="!chapters.length && !loadingChapter" class="wp-empty">
+      <h3 class="wp-empty-title">这本书还没有章节</h3>
+      <p class="wp-empty-text">先在项目页生成大纲并开始写正文，写好第一章后就能在这里逐章修改、让 AI 续写。</p>
+      <div class="wp-empty-actions">
+        <el-button @click="$router.push(`/project/${pid}`)">回项目页</el-button>
+        <el-button type="primary" @click="$router.push(`/project/${pid}`)">去生成大纲 / 正文</el-button>
+      </div>
+    </div>
+
     <VersionDialog v-model="versionsDialog" :pid="pid" kind="chapter" :chapter-no="currentNo"
                    @changed="reloadCurrent" />
   </div>
@@ -515,7 +525,18 @@ watch(dirty, (v) => { if (v) { genToken.value = ''; dirToken.value = '' } })
   overflow: hidden; background: var(--paper); box-shadow: var(--shadow);
   position: relative;
 }
-.right { width: 360px; flex: 0 0 360px; display: flex; flex-direction: column; background: var(--card); border-left: 1px solid var(--card-line); }
+.right {
+  width: 340px; flex: 0 1 340px; min-width: 300px; max-width: 380px;
+  display: flex; flex-direction: column; background: var(--card); border-left: 1px solid var(--card-line);
+}
+.wp-empty {
+  position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; text-align: center;
+  background: var(--paper); padding: 24px;
+}
+.wp-empty-title { font-family: var(--serif); font-size: 22px; margin: 0; }
+.wp-empty-text { max-width: 520px; color: var(--muted); font-size: 13px; line-height: 1.8; margin: 0; }
+.wp-empty-actions { display: flex; gap: 10px; margin-top: 6px; }
 .tabs { display: flex; border-bottom: 1px solid var(--card-line); }
 .tab {
   flex: 1; border: 0; background: transparent; padding: 10px 0; cursor: pointer;
@@ -526,5 +547,16 @@ watch(dirty, (v) => { if (v) { genToken.value = ''; dirToken.value = '' } })
   display: inline-block; min-width: 15px; margin-left: 3px; padding: 0 4px;
   border-radius: 8px; background: var(--gold-soft); color: var(--gold-deep);
   font-size: 10px; line-height: 15px; text-align: center;
+}
+/* 中窄屏：压缩左右固定宽度，保证正文编辑区不被挤成一条 */
+@media (max-width: 1280px) {
+  :deep(.rail) { width: 180px; flex-basis: 180px; }
+  .right { flex-basis: 300px; min-width: 280px; width: 300px; }
+}
+/* 再窄：章节目录收起（章节切换回项目页），保住正文与 AI 面板 */
+@media (max-width: 1080px) {
+  :deep(.rail) { display: none; }
+  .right { flex-basis: 280px; width: 280px; min-width: 260px; }
+  :deep(.ed-area) { padding: 24px 24px 64px; }
 }
 </style>

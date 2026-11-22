@@ -15,7 +15,7 @@
     <template v-else>
       <!-- 内部账本版本号不再对作者展示；只在上游改动后视图可能落后时提示一次 -->
       <div v-if="meta && meta.sources?.stale" class="tl-meta">
-        <span class="tl-tag warn">上游设定已更新，视图可能落后</span>
+        <span class="tl-tag warn">上游设定已更新，这里可能不是最新</span>
       </div>
 
       <!-- 一级页签 + 视图形态 + 筛选 -->

@@ -3,16 +3,12 @@
   <div v-if="open && narrow" class="ws-mask" @click="collapse" />
   <aside class="ws" :class="{ open, narrow, overlay: open && narrow }"
          :style="open ? { width: `${width}px` } : null">
-    <!-- 收起态：竖向页签条 -->
+    <!-- 收起态：只留一个入口，点开后再在顶部选页签；不再把 6 个页签压成竖排单字 -->
     <nav v-if="!open" class="rail">
-      <button v-for="t in SIDEBAR_TABS" :key="t.key" class="rail-btn"
-              :title="t.label" @click="expand(t.key)">
-        {{ t.short }}
-        <span v-if="t.key === 'foreshadow' && badgeTotal" class="dot" :class="badgeClass">
-          {{ badgeTotal }}
-        </span>
+      <button class="rail-btn rail-open" title="展开参考侧栏（本章上下文 / 大纲 / 人物 / 伏笔 / 设定 / 检索）" @click="expand()">
+        参
+        <span v-if="badgeTotal" class="dot" :class="badgeClass">{{ badgeTotal }}</span>
       </button>
-      <button class="rail-btn rail-fold" title="展开参考侧栏" @click="expand()">‹</button>
     </nav>
 
     <template v-else>
@@ -24,7 +20,7 @@
             {{ badgeTotal }}
           </span>
         </button>
-        <button class="ws-fold" title="收起侧栏" @click="collapse">›</button>
+        <button class="ws-fold" title="收起参考侧栏，恢复 AI 写作面板" @click="collapse">收起</button>
       </header>
 
       <div class="ws-body">
@@ -186,8 +182,8 @@ onUnmounted(() => {
 }
 .ws-tab.on { color: var(--indigo); font-weight: 600; box-shadow: inset 0 -2px 0 var(--indigo); }
 .ws-fold {
-  width: 22px; border: 0; background: transparent; color: var(--muted);
-  cursor: pointer; font-size: 13px;
+  flex: 0 0 auto; border: 0; background: transparent; color: var(--indigo);
+  cursor: pointer; font-size: 12px; padding: 0 8px; white-space: nowrap;
 }
 .ws-body { flex: 1; min-height: 0; overflow: hidden; }
 .ws-body :deep(.panel) { height: 100%; overflow-y: auto; padding: 12px; box-sizing: border-box; }

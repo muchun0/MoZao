@@ -40,6 +40,7 @@ from novel_gen.store.schemas import Chapter
 from novel_gen.store.wordcount import count_words
 
 from . import agent_prompts
+from .error_text import sanitize_error
 from . import db
 from . import gates
 from . import settle_ledger
@@ -509,6 +510,14 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict,
     task_id = str((internal or {}).get("task_id") or uuid.uuid4().hex[:12])
     run_id = uuid.uuid4().hex
     handle = core._acquire_slot(store.dir.name)
+    # P0-1：新一轮开始前清掉上一次失败残留，否则前端会一直显示旧错误、并把新运行当失败
+    try:
+        st = store.load_state()
+        if st.error:
+            st.error = ""
+            store.save_state(st)
+    except Exception:
+        logger.exception("清理上次失败状态失败（降级）: project=%s", store.dir.name)
     cfg = store.load_config()
     state_on = bool(getattr(cfg, "task_state_machine", False))
     try:
@@ -673,7 +682,7 @@ def get_agent_run(store: ProjectStore, task_id: str) -> dict:
         "finished_at": run.get("finished_at"),
         "outputs": run.get("outputs") or [],
         "billing": run.get("billing") or {},
-        "error": run.get("error", ""),
+        "error": sanitize_error(run.get("error", ""), ""),
     }
 
 
@@ -910,11 +919,29 @@ def _run_agent_task(store: ProjectStore, handle, agent: str, params: dict,
             status = "stopped"
     except Exception as exc:  # noqa: BLE001 — 线程内必须兜底，状态落 failed
         status = "failed"
-        handle.error = f"{type(exc).__name__}: {exc}"
+        # P0-1：错误必须同时落 handle（本次运行）与 state.json（运行结束后仍可见），
+        # 且对外只给脱敏后的一句话，不把异常类名 / provider / api_key 暴露给作者。
+        msg = sanitize_error(exc, "生成没有完成，请重试（已写好的章节不会丢失）")
+        handle.error = msg
+        try:
+            st = store.load_state()
+            st.error = msg
+            store.save_state(st)
+        except Exception:
+            logger.exception("失败状态落盘失败（降级，仍保留 handle.error）: project=%s", project_id)
         logger.exception("agent run 失败: project=%s agent=%s task=%s",
                          project_id, agent, task_id)
     finally:
         store.end_run()
+        if status in ("ok", "stopped", "pending_review"):
+            # 成功/手动停止不算失败：清掉历史错误，避免下一批仍显示红字
+            try:
+                st = store.load_state()
+                if st.error:
+                    st.error = ""
+                    store.save_state(st)
+            except Exception:
+                logger.exception("清理历史错误状态失败（降级）: project=%s", project_id)
         if getattr(handle, "pending_review", False):
             status = "pending_review"
         # R32：内部派发把项目级 LLM/Token 预算回写计划（绝对量，避免并发累加错账）
@@ -1009,7 +1036,7 @@ def _write_run_sidecar(store: ProjectStore, ctx: RunContext, status: str, params
                         "entries": entries, "wasted_words": 0},
             "outputs": outputs,
             "compliance_rejected": False,
-            "error": getattr(handle, "error", None) or "",
+            "error": sanitize_error(getattr(handle, "error", None), ""),
         })
     except Exception:
         logger.exception("run 侧写落盘失败: project=%s run=%s", store.dir.name, ctx.run_id)

@@ -295,14 +295,15 @@ SEARCH_PROVIDER_DEFAULTS: dict[str, dict] = {
 
 
 # 平台默认 provider 与默认模型（新项目/新配置的落点；换 provider 时见 _apply_provider_defaults）
-DEFAULT_LLM_PROVIDER = "doubao"
-DEFAULT_LLM_MODEL = "ep-20261108190349-55bnh"
+# 2026-11-21 REQ-R31：平台消费从火山方舟（doubao / Ark 接入点）切到 DeepSeek。
+DEFAULT_LLM_PROVIDER = "deepseek"
+DEFAULT_LLM_MODEL = "deepseek-flash"
 
 
 @dataclass
 class LLMConfig:
-    provider: str = DEFAULT_LLM_PROVIDER   # 默认走火山方舟（Ark 接入点）；deepseek / openai / zhipu / qwen / moonshot / custom / mock 可按需切换
-    model: str = DEFAULT_LLM_MODEL         # 默认 Ark 接入点；留空则取能力档案默认模型（custom 必填）
+    provider: str = DEFAULT_LLM_PROVIDER   # 默认走 DeepSeek；doubao / openai / zhipu / qwen / moonshot / custom / mock 可按需切换
+    model: str = DEFAULT_LLM_MODEL         # 默认 deepseek-flash；留空则取能力档案默认模型（custom 必填）
     api_key: str = ""               # 留空则读环境变量（custom 无 env_key，需显式提供）
     base_url: str = ""              # 留空则取能力档案的默认地址（custom 必填）
     temperature: float = 0.8        # 生成随机度：大纲/人物偏低，正文偏高
@@ -544,7 +545,7 @@ def _apply_provider_defaults(llm: LLMConfig) -> LLMConfig:
 
     - provider 先归一（大小写/别名），避免 `DeepSeek` 绕过能力档案。
     - 平台默认模型只属于默认 provider：切到别的 provider 时视为未填，回落该
-      provider 的档案默认（custom 保持为空由校验报错），避免把 Ark 接入点带到别家端点。
+      provider 的档案默认（custom 保持为空由校验报错），避免把默认模型名带到别家端点。
     - custom 不提供任何默认 base_url/model：缺失保持为空，由 validate_llm_config
       显式报错，绝不静默回落到 api.openai.com。
     """

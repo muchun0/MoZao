@@ -3,7 +3,7 @@
     <header class="gate-head">
       <span class="gate-title">{{ title }}</span>
       <el-tag v-if="statusLabel" size="small" :type="tagType" effect="light">{{ statusLabel }}</el-tag>
-      <span v-if="hint" class="gate-hint">{{ hint }}</span>
+      <span v-if="hint" class="gate-hint" :title="hint">{{ hint }}</span>
     </header>
 
     <!-- 摘要：只给判断用的几个数字，不铺全量内容 -->
@@ -14,8 +14,16 @@
       </div>
     </div>
 
+    <!-- 已通过：提示默认收起，留档可查，避免通过后仍占屏 -->
+    <div v-if="passed && checks.length" class="gate-archived">
+      <span>已通过 · 提示 {{ checks.length }} 条已留档</span>
+      <el-button link size="small" type="primary" @click="showPassedChecks = !showPassedChecks">
+        {{ showPassedChecks ? '收起提示' : '查看提示' }}
+      </el-button>
+    </div>
+
     <!-- 提示：默认只展开最可疑的 maxChecks 条，其余折叠为"还有 N 条" -->
-    <div class="gate-checks">
+    <div v-if="!passed || showPassedChecks" class="gate-checks">
       <div v-if="!checks.length" class="gate-ok">未发现明显问题</div>
       <div v-for="c in visibleChecks" :key="c.key" class="gate-check" :class="`lv-${c.level || 'warn'}`">
         <span class="gate-dot" />
@@ -60,9 +68,12 @@ const props = defineProps({
 defineEmits(['approve', 'edit', 'regen', 'skip', 'locate', 'continue', 'finish'])
 
 const expanded = ref(false)
+const showPassedChecks = ref(false)
 // 门切换（大纲门 → 世界观门）时重置折叠态，避免沿用上张卡片的展开状态
-watch(() => props.title, () => { expanded.value = false })
+watch(() => props.title, () => { expanded.value = false; showPassedChecks.value = false })
+watch(() => props.status, () => { showPassedChecks.value = false })
 
+const passed = computed(() => props.status === 'approved' || props.status === 'skipped')
 const tagType = computed(() => {
   if (props.status === 'approved') return 'success'
   if (props.status === 'skipped') return 'warning'
@@ -72,7 +83,8 @@ const tagType = computed(() => {
 const normalized = computed(() => props.checks.map((c, i) => ({ ...c, key: `${i}-${c.title || ''}` })))
 const visibleChecks = computed(() =>
   expanded.value ? normalized.value : normalized.value.slice(0, props.maxChecks))
-const hiddenCount = computed(() => Math.max(0, normalized.value.length - visibleChecks.value.length))
+// 折叠按钮的计数必须基于总条数，否则展开后按钮会自己消失、无法收起
+const hiddenCount = computed(() => Math.max(0, normalized.value.length - props.maxChecks))
 </script>
 
 <style scoped>
@@ -88,7 +100,8 @@ const hiddenCount = computed(() => Math.max(0, normalized.value.length - visible
 .gate-batch { border-left: 3px solid var(--el-color-info); }
 .gate-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .gate-title { font-weight: 600; font-size: 14px; }
-.gate-hint { color: var(--el-text-color-secondary); font-size: 12px; }
+.gate-hint { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; white-space: normal; word-break: break-word; }
+.gate-archived { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: var(--el-text-color-secondary); }
 .gate-summary { display: flex; gap: 24px; margin: 10px 0 6px; flex-wrap: wrap; }
 .gate-stat { display: flex; flex-direction: column; }
 .gate-stat-value { font-size: 15px; font-weight: 600; }

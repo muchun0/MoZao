@@ -28,22 +28,61 @@
             </el-alert>
           </el-col>
         </el-row>
+
+        <el-row :gutter="16" style="margin-top:16px">
+          <el-col :span="14">
+            <el-card>
+              <template #header>
+                <div class="ov-head">
+                  <b>最近作品</b>
+                  <el-button link type="primary" @click="$router.push('/projects')">全部作品</el-button>
+                </div>
+              </template>
+              <div v-if="recentProjects.length" class="ov-list">
+                <div v-for="p in recentProjects" :key="p.id" class="ov-row" @click="$router.push(`/project/${p.id}/write`)">
+                  <span class="ov-name">{{ p.title }}</span>
+                  <span class="muted">{{ p.chapter_count || 0 }} 章 · {{ fmtTime(p.updated_at || p.created_at) }}</span>
+                </div>
+              </div>
+              <div v-else class="muted" style="padding:8px 0">还没有作品，去书架新建一本。</div>
+            </el-card>
+          </el-col>
+          <el-col :span="10">
+            <el-card>
+              <template #header>
+                <div class="ov-head">
+                  <b>最近账务</b>
+                  <el-button link type="primary" @click="tab = 'account'">查看账单</el-button>
+                </div>
+              </template>
+              <div v-if="recentBills.length" class="ov-list">
+                <div v-for="b in recentBills" :key="b.key" class="ov-row">
+                  <span>{{ b.label }}</span>
+                  <span class="muted">{{ b.time ? fmtTime(b.time) : '' }}</span>
+                </div>
+              </div>
+              <div v-else class="muted" style="padding:8px 0">暂无充值或退款记录。</div>
+            </el-card>
+          </el-col>
+        </el-row>
       </el-tab-pane>
 
       <!-- ============ 账户与账单 ============ -->
       <el-tab-pane label="账户与账单" name="account">
         <el-row :gutter="16" style="margin-bottom:12px">
           <el-col :span="6"><el-card class="stat-card"><div class="stat-val">¥{{ (me.balance ?? 0).toFixed(2) }}</div><div class="stat-label">余额</div></el-card></el-col>
-          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">¥{{ (refundable ?? 0).toFixed(2) }}</div><div class="stat-label">可退金额（仅充值部分）</div></el-card></el-col>
+          <el-col :span="6"><el-card class="stat-card"><div class="stat-val">¥{{ (refundable ?? 0).toFixed(2) }}</div><div class="stat-label">可退金额 <span class="stat-sub">仅充值部分，赠金/返佣不可退</span></div></el-card></el-col>
           <el-col :span="12" style="display:flex;align-items:center;gap:10px">
             <el-button type="primary" @click="rechargeRef.open()">充值</el-button>
-            <el-button @click="refundDialog = true">申请退款</el-button>
+            <el-tooltip :disabled="(refundable || 0) > 0" content="当前没有可退金额（只退充值部分，赠金/返佣不可退）" placement="top">
+              <span><el-button :disabled="(refundable || 0) <= 0" @click="openRefund">申请退款</el-button></span>
+            </el-tooltip>
           </el-col>
         </el-row>
 
         <el-card style="margin-bottom:12px">
           <template #header><b>充值流水</b></template>
-          <el-table :data="recharges" stripe size="small">
+          <el-table :data="recharges" stripe size="small" empty-text="还没有充值记录">
             <el-table-column prop="amount" label="金额" width="120">
               <template #default="{ row }">¥{{ row.amount.toFixed(2) }}</template>
             </el-table-column>
@@ -52,12 +91,11 @@
               <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
             </el-table-column>
           </el-table>
-          <div v-if="!recharges.length" class="muted" style="padding:12px 0">暂无充值记录</div>
         </el-card>
 
         <el-card>
           <template #header><b>我的退款申请</b></template>
-          <el-table :data="refundRequests" stripe size="small">
+          <el-table :data="refundRequests" stripe size="small" empty-text="还没有退款申请">
             <el-table-column prop="amount" label="金额" width="120">
               <template #default="{ row }">¥{{ row.amount.toFixed(2) }}</template>
             </el-table-column>
@@ -67,7 +105,6 @@
               <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
             </el-table-column>
           </el-table>
-          <div v-if="!refundRequests.length" class="muted" style="padding:12px 0">暂无退款申请</div>
         </el-card>
       </el-tab-pane>
 
@@ -83,9 +120,6 @@
             <span>邀请链接：<span class="link">{{ inviteLink }}</span></span>
             <el-button size="small" @click="copyInviteLink">复制链接</el-button>
           </div>
-          <div class="ref-row">
-            <span>推广链接格式：<span class="link">https://mozao.click/?invite={{ referral.invite_code || '' }}</span></span>
-          </div>
           <el-alert v-if="!me.referrer_id" type="warning" :closable="false" style="margin-top:10px">
             你还没有绑定上级。输入邀请码可绑定（仅一次）：
             <el-input v-model="inviteInput" placeholder="上级邀请码" size="small" style="width:220px;margin:0 8px" />
@@ -98,19 +132,18 @@
           <el-col :span="12">
             <el-card>
               <template #header><b>我的下级（{{ referral.downline_count ?? 0 }}）</b></template>
-              <el-table :data="referral.downline || []" stripe size="small">
+              <el-table :data="referral.downline || []" stripe size="small" empty-text="还没有下级">
                 <el-table-column prop="username" label="用户" />
                 <el-table-column prop="created_at" label="时间" width="180">
                   <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
                 </el-table-column>
               </el-table>
-              <div v-if="!(referral.downline || []).length" class="muted" style="padding:12px 0">暂无下级</div>
             </el-card>
           </el-col>
           <el-col :span="12">
             <el-card>
               <template #header><b>返佣明细</b></template>
-              <el-table :data="referral.commissions || []" stripe size="small">
+              <el-table :data="referral.commissions || []" stripe size="small" empty-text="还没有返佣记录">
                 <el-table-column prop="amount" label="金额" width="100">
                   <template #default="{ row }">¥{{ row.amount.toFixed(2) }}</template>
                 </el-table-column>
@@ -120,7 +153,6 @@
                   <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
                 </el-table-column>
               </el-table>
-              <div v-if="!(referral.commissions || []).length" class="muted" style="padding:12px 0">暂无返佣记录</div>
             </el-card>
           </el-col>
         </el-row>
@@ -174,6 +206,7 @@
               <div class="muted" style="font-size:12px">{{ s.description }}</div>
               <div class="muted" style="font-size:12px">角色：{{ roleLabel(s) }} · 适用阶段：{{ stageLabel(s) }}</div>
             </div>
+            <el-button size="small" link type="primary" @click="tab = 'style'">去挂载</el-button>
           </div>
           <div v-if="!platformSkills.length" class="muted" style="padding:12px 0">暂无平台技能</div>
         </el-card>
@@ -215,7 +248,7 @@
               <div v-else class="muted" style="font-size:12px">未挂载技能</div>
             </div>
             <span v-if="r.user_id" style="display:flex;gap:6px">
-              <el-button size="small" link type="primary" @click="openRoleDlg(r)">编辑</el-button>
+              <el-button size="small" link type="primary" @click="openRoleDlg(r)">挂载 / 编辑</el-button>
               <el-button size="small" link type="danger" @click="delRole(r)">删</el-button>
             </span>
           </div>
@@ -299,7 +332,7 @@
     <el-dialog v-model="refundDialog" title="申请退款" width="480px" append-to-body>
       <el-form :model="refundForm" label-width="80px">
         <el-form-item label="退款金额">
-          <el-input-number v-model="refundForm.amount" :min="1" :max="refundable || undefined" />
+          <el-input-number v-model="refundForm.amount" :min="0.01" :max="refundable || 0.01" :precision="2" />
         </el-form-item>
         <el-form-item label="退款原因">
           <el-input v-model="refundForm.reason" type="textarea" :rows="3" placeholder="请说明退款原因" />
@@ -324,6 +357,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as meApi from '../api/me'
 import * as toolsApi from '../api/tools'
+import { listProjects } from '../api/project'
 import RechargeDialog from '../components/RechargeDialog.vue'
 import LlmSettingsDialog from '../components/LlmSettingsDialog.vue'
 
@@ -338,6 +372,25 @@ const inviteLink = computed(() => `https://mozao.click/?invite=${referral.value.
 
 const rechargeRef = ref(null)
 const llmRef = ref(null)
+const recentProjects = ref([])
+const recentBills = computed(() => {
+  const items = []
+  for (const r of (recharges.value || []).slice(0, 3)) {
+    items.push({ key: `rc-${r.id ?? r.created_at}`, label: `充值 ¥${(r.amount || 0).toFixed(2)}`, time: r.created_at })
+  }
+  for (const r of (refundRequests.value || []).slice(0, 3)) {
+    items.push({ key: `rf-${r.id ?? r.created_at}`, label: `退款申请 ¥${(r.amount || 0).toFixed(2)}（${r.status || '处理中'}）`, time: r.created_at })
+  }
+  return items.sort((a, b) => (b.time || 0) - (a.time || 0)).slice(0, 4)
+})
+
+async function loadRecentProjects() {
+  try {
+    const r = await listProjects({ page: 1, page_size: 4 })
+    const list = r.projects || r.items || []
+    recentProjects.value = list.slice(0, 4)
+  } catch {}
+}
 
 async function loadMe() {
   try { const r = await meApi.getMe(); me.value = r.user || r || {} } catch {}
@@ -382,8 +435,20 @@ async function doBindReferrer() {
 
 const refundDialog = ref(false)
 const refundForm = ref({ amount: 0, reason: '' })
+function openRefund() {
+  if ((refundable.value || 0) <= 0) { ElMessage.warning('当前没有可退金额（只退充值部分，赠金/返佣不可退）'); return }
+  // 默认填满可退金额，避免默认 1 元与“可退 0 元”矛盾
+  refundForm.value = { amount: Number(refundable.value.toFixed(2)), reason: '' }
+  refundDialog.value = true
+}
 async function doSubmitRefund() {
-  if (!refundForm.value.amount || !refundForm.value.reason.trim()) { ElMessage.warning('请填写金额和原因'); return }
+  const amount = Number(refundForm.value.amount || 0)
+  if (!amount) { ElMessage.warning('请填写退款金额'); return }
+  if (!refundForm.value.reason.trim()) { ElMessage.warning('请填写退款原因'); return }
+  if (amount > (refundable.value || 0)) {
+    ElMessage.warning(`退款金额超过可退上限 ¥${(refundable.value || 0).toFixed(2)}（仅充值部分，赠金/返佣不可退）`)
+    return
+  }
   try {
     await meApi.submitRefund(refundForm.value)
     ElMessage.success('退款申请已提交，请等待站长处理')
@@ -510,7 +575,7 @@ async function delRole(r) {
 }
 
 onMounted(() => {
-  loadMe(); loadAccount(); loadReferral(); loadMySkills(); loadMarket(); loadStyleRoles(); loadPlatformSkills()
+  loadMe(); loadAccount(); loadReferral(); loadMySkills(); loadMarket(); loadStyleRoles(); loadPlatformSkills(); loadRecentProjects()
 })
 </script>
 
@@ -526,8 +591,15 @@ onMounted(() => {
 .stat-card { text-align: center; }
 .stat-val { font-size: 22px; font-weight: 700; color: #303133; }
 .stat-label { font-size: 12px; color: #909399; margin-top: 4px; }
+.stat-sub { display: block; font-size: 12px; color: #7a8699; margin-top: 2px; }
 .muted { color: #909399; font-size: 13px; }
 .fs-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 13px; border-bottom: 1px solid #f2f3f5; }
 .ref-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 14px; }
+.ov-head { display: flex; align-items: center; justify-content: space-between; }
+.ov-list { display: flex; flex-direction: column; }
+.ov-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid #f2f3f5; font-size: 13px; cursor: default; }
+.ov-row:last-child { border-bottom: none; }
+.ov-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-row[data-clickable] { cursor: pointer; }
 .link { color: #409eff; }
 </style>

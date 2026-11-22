@@ -9,11 +9,12 @@
       </div>
       <div class="gf-mode">
         <span class="gf-mode-label">生成方式</span>
-        <el-radio-group :model-value="mode" size="small" :disabled="busy || !supported"
+        <el-radio-group v-if="mode" :model-value="mode" size="small" :disabled="busy || !supported"
                         @update:model-value="changeMode">
           <el-radio-button value="stepwise">分步确认</el-radio-button>
           <el-radio-button value="auto">全自动</el-radio-button>
         </el-radio-group>
+        <span v-else class="gf-mode-label">读取中…</span>
       </div>
     </header>
 
@@ -59,7 +60,7 @@ let timer = null
 let lastStatus = ''
 
 const supported = computed(() => !!data.value?.supported)
-const mode = computed(() => data.value?.mode || 'auto')
+const mode = computed(() => data.value?.mode || '')
 const flow = computed(() => data.value?.flow || null)
 const stages = computed(() => flow.value?.stages || [])
 const card = computed(() => (flow.value?.cards || [])[0] || null)

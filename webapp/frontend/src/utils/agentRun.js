@@ -34,9 +34,17 @@ export class BalanceError extends Error {
 // 统一错误文案取值：后端 detail 可能是字符串或 {message}，本地错误带 detail
 export function errorDetail(e, fallback = '启动失败') {
   const d = e?.response?.data?.detail
-  if (typeof d === 'string' && d) return d
-  if (d && typeof d.message === 'string' && d.message) return d.message
-  return e?.detail || e?.message || fallback
+  let text = ''
+  if (typeof d === 'string' && d) text = d
+  else if (d && typeof d.message === 'string' && d.message) text = d.message
+  else text = e?.detail || e?.message || ''
+  if (!text) return fallback
+  // 原始异常对作者没有意义：只留第一行，并抹掉技术标记；涉及密钥的统统改成可操作提示
+  const first = String(text).split('\n')[0]
+  if (/api[_-]?key|provider|base_url|traceback|exception|stack/i.test(first)) {
+    return '模型服务调用失败：请到「个人中心 → 模型配置」检查服务商与 Key，或改用平台默认模型后重试'
+  }
+  return first.replace(/^(HTTPException|Exception|Error)[:：]\s*/i, '').slice(0, 300) || fallback
 }
 
 // 发起前预检：预估失败不阻断启动（后端仍会做最终校验），余额读取失败同样不阻断

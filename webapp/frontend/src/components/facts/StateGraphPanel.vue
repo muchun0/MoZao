@@ -1,20 +1,20 @@
 <template>
   <div class="sg">
     <FactsPanelHead
-      title="世界事实"
-      sub="只读投影：人物、当前状态、地点、事件，以及设定规则（术语 / 纪律 / 机制口径 / 不变量与禁用词）。伏笔与冲突的检查结论在「全书体检」，按章事件流在「时间线」。"
+      title="人物设定"
+      sub="只读展示：人物、当前状态、地点、事件，以及设定规则（术语 / 纪律 / 机制口径 / 不能违反的设定与禁用词）。伏笔与冲突的检查结论在「全书体检」，按章事件流在「剧情时间线」。"
       :loading="loading"
       @refresh="reload"
     />
 
-    <el-empty v-if="off" description="世界事实未启用（后台开关 state_graph 关闭）">
+    <el-empty v-if="off" description="人物设定未启用（后台开关 state_graph 关闭）">
       <p class="sg-tip">后台「开关管理」打开 state_graph 后回到这里刷新即可，无需重新生成。</p>
     </el-empty>
 
     <template v-else>
       <!-- 内部账本版本号不再对作者展示；只在上游改动后视图可能落后时提示一次 -->
       <div v-if="meta && meta.sources?.stale" class="sg-meta">
-        <span class="sg-tag warn">上游设定已更新，视图可能落后</span>
+        <span class="sg-tag warn">上游设定已更新，这里可能不是最新</span>
       </div>
 
       <nav class="sg-tabs">
@@ -95,7 +95,7 @@
       <section v-show="view === 'event'" class="sg-card">
         <header class="sg-card-head">
           <h4 class="sg-h4">事件</h4>
-          <span class="sg-count">{{ events.length }} 条 · 按章倒序；要看按章顺序的流水与「发展方向」，去「时间线」</span>
+          <span class="sg-count">{{ events.length }} 条 · 按章倒序；要看按章顺序的流水与「发展方向」，去「剧情时间线」</span>
         </header>
         <div v-if="eventGroups.length" class="sg-events">
           <div v-for="g in eventGroups" :key="g.ch" class="sg-event-group">

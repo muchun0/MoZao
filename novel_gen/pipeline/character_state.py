@@ -70,8 +70,10 @@ def _llm_extract(llm, cfg, world, chapter, no: int, names: list[str]) -> list[di
         "你是小说人物状态管理员。根据给定章节正文，更新出场人物的当前状态。"
         '只输出合法 JSON：{"updated":[{"name":"人物名","location":"当前位置",'
         '"body":"身体状态（无变化写“无明显变化”）","emotion":"情绪状态",'
-        '"relations":["与某人的关系变化：..."],"new_info":["本章新获得的信息/线索"],'
-        '"goal":"当前目标"}]}。未出场或状态无变化的人物不要输出。只输出 JSON。'
+        '"relations":["苏妄言：信任初步修复，她要求下次先告知"],"new_info":["本章新获得的信息/线索"],'
+        '"goal":"当前目标"}]}。未出场或状态无变化的人物不要输出。'
+        "relations 每条必须以「对方人物姓名」开头、冒号后才是关系变化，"
+        "不要写成「与苏妄言：…」（下游按姓名精确匹配，带介词会找不到人）。只输出 JSON。"
     )
     char_lines = [
         f"{c.name}（{c.role}）——{c.desc}" for c in (world.characters or []) if c.name in names

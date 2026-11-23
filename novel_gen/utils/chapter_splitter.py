@@ -22,11 +22,20 @@ _DIGIT_ONLY = re.compile(r"^\s*\d{1,3}\s*$")
 # 防误判：正文行以"第N章"等字样开头但明显是叙述（后面紧跟长句）——v1 不处理，靠预览确认兜底
 
 
+_MD_PREFIX = re.compile(r"^\s*#{1,6}\s*")
+_BOLD_WRAP = re.compile(r"^\s*(\*\*|__)(.+?)\1\s*$")
+
+
 def _match_head(line: str):
-    """命中返回整行（去空白）作为标题；否则 None。"""
+    """命中返回整行（去 Markdown 前缀与加粗标记）作为标题；否则 None。"""
     s = line.strip()
     if not s:
         return None
+    # Markdown 标题（## 第1章 雨夜）与整行加粗（**第1章 雨夜**）都算章节标题
+    s = _MD_PREFIX.sub("", s).strip()
+    m = _BOLD_WRAP.match(s)
+    if m:
+        s = m.group(2).strip()
     if _CN_HEAD.match(s) or _EN_HEAD.match(s):
         return s
     if not _DIGIT_ONLY.match(s) and _DIGIT_HEAD.match(s):
@@ -57,7 +66,9 @@ def split_chapters(text: str) -> list[dict]:
         else:
             cur_lines.append(line)
     flush()
-    chapters = [c for c in chapters if c["content"].strip()]
+    # 只有标题没有正文的章节也要保留：导入大纲时这是「待写章节」，丢弃会导致
+    # 「上传了大纲却只识别出一半章节」；仅剔除标题与正文都为空的占位。
+    chapters = [c for c in chapters if c["title"].strip() or c["content"].strip()]
     if not chapters:
         return [{"title": "", "content": text.strip()}]
     return chapters

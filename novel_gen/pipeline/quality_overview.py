@@ -159,10 +159,10 @@ def build_quality_overview(store) -> dict:
     if not numbers:
         data_gaps.append("还没有章节正文，暂无质量可比较")
     elif not scored:
-        data_gaps.append("本书暂无章节质检记录（历史章可能生成于质检上线前），无法比较章节质量")
+        data_gaps.append("暂无章节质检记录（手写章节不参与质检），暂时无法比较章节质量")
     elif unscored_count:
         data_gaps.append(
-            f"{unscored_count} 章没有质检记录（历史章可能生成于质检上线前），未参与最差比较")
+            f"{unscored_count} 章没有质检记录（手写章节不参与质检），未参与最差比较")
 
     worst = None
     if scored:

@@ -97,7 +97,7 @@
         <el-card class="tool-card">
           <template #header><b>质量校验</b></template>
           <p class="tool-use">适用于：手动抽查一次设定/逻辑/合规，不落库</p>
-          <p class="muted">临时自检设定一致性/剧情逻辑/合规，结果不写入章节质检记录；逐章改稿建议见「章节 → 版本」弹窗。</p>
+          <p class="muted">临时自检设定一致性/剧情逻辑/合规，结果不写入章节质检记录；逐章修改建议见「章节 → 版本」弹窗。</p>
           <el-space wrap>
             <el-button size="small" @click="runVerify('consistency', '设定一致性')">设定一致性</el-button>
             <el-button size="small" @click="runVerify('logic', '剧情逻辑')">剧情逻辑</el-button>
@@ -137,7 +137,7 @@
         <el-card class="tool-card">
           <template #header><b>三分支续写</b></template>
           <p class="tool-use">适用于：想知道下一章还能往哪写</p>
-          <p class="muted">基于末章结尾生成 3 个方向（冲突升级/埋伏笔/转折）的续写候选，选一条复制使用</p>
+          <p class="muted">基于末章结尾生成 3 个方向（冲突升级/埋伏笔/转折）的续写备选，选一条复制使用</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <el-input-number v-model="branchNo" :min="1" size="small" controls-position="right" style="width:90px" />
             <el-button size="small" type="primary" @click="runBranches" :loading="branchLoading">生成3个分支</el-button>

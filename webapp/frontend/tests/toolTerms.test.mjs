@@ -10,7 +10,7 @@ import {
 test('工具页三组顺序固定：质量中心 → 参考与候选 → 资产与约束', () => {
   assert.deepEqual(TOOL_SECTIONS.map((s) => s.key), ['quality', 'reference', 'asset'])
   assert.equal(TOOL_SECTIONS[0].title, '质量中心')
-  assert.equal(TOOL_SECTIONS[1].title, '参考与候选')
+  assert.equal(TOOL_SECTIONS[1].title, '参考与备选')
   assert.equal(TOOL_SECTIONS[2].title, '资产与约束')
   // 每组都要有职责说明，避免只剩标题
   TOOL_SECTIONS.forEach((s) => assert.match(s.hint, /。$/))

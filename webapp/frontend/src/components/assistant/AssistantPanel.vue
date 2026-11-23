@@ -21,7 +21,7 @@
       <div class="msg-toolbar">
         <el-radio-group v-model="mode" size="small">
           <el-radio-button value="chapter_eval">章节评估</el-radio-button>
-          <el-radio-button value="revision_advice">改稿建议</el-radio-button>
+          <el-radio-button value="revision_advice">修改建议</el-radio-button>
         </el-radio-group>
         <el-select v-model="chapterNo" size="small" placeholder="选择章节" class="ch-select">
           <el-option v-for="c in chapters" :key="c.no" :value="c.no"
@@ -74,7 +74,7 @@
         <el-input v-model="draft" type="textarea" :rows="3" maxlength="4000" show-word-limit
                   :placeholder="placeholder" @keydown.ctrl.enter.prevent="submit" />
         <div class="send-row">
-          <span class="hint">Ctrl+Enter 发送 · 按回答字数计费（3 元/万字）· 自备 Key 不扣费</span>
+          <span class="hint">Ctrl+Enter 发送 · 单次提问最多 4000 字 · 按回答字数计费（3 元/万字）· 自备 Key 不扣费</span>
           <el-button type="primary" :loading="sending" :disabled="!chapters.length || !draft.trim()"
                      @click="submit">发送</el-button>
         </div>
@@ -177,7 +177,7 @@ async function newConversation() {
   try {
     const ch = chapterNo.value ? `第${chapterNo.value}章 · ` : ''
     const res = await createConversation(props.projectId, {
-      title: ch + (mode.value === 'chapter_eval' ? '章节评估' : '改稿建议'),
+      title: ch + (mode.value === 'chapter_eval' ? '章节评估' : '修改建议'),
       mode: mode.value,
     })
     await reloadConversations()

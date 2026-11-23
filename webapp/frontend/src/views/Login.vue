@@ -14,6 +14,7 @@
               <el-input v-model="loginForm.password" type="password" placeholder="密码" show-password />
             </el-form-item>
             <el-button type="primary" native-type="submit" :loading="loading" class="btn-block">登录</el-button>
+            <p v-if="loginError" class="login-err" role="alert">{{ loginError }}</p>
           </el-form>
         </el-tab-pane>
 
@@ -63,7 +64,7 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, onUnmounted, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { sendCode as sendCodeApi, resetPassword, register } from '../api/auth'
@@ -79,6 +80,7 @@ let timer = null
 const loginForm = ref({ username: '', password: '' })
 const regForm = ref({ username: '', email: '', password: '', code: '' })
 const resetForm = ref({ email: '', code: '', password: '' })
+const loginError = ref('')
 
 function startCooldown() {
   cooldown.value = 60
@@ -90,13 +92,21 @@ function startCooldown() {
 
 onUnmounted(() => clearInterval(timer))
 
+// 已登录还停留在登录页通常是旧标签页/回退：直接回书架，避免误以为掉登录
+onMounted(() => {
+  if (auth.user && auth.token) router.replace('/')
+})
+
 async function doLogin() {
   loading.value = true
+  loginError.value = ''
   try {
     await auth.login(loginForm.value)
     router.push('/')
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '登录失败')
+    const msg = e.response?.data?.detail || (e.response?.status === 401 ? '用户名或密码不正确' : '登录失败，请稍后重试')
+    loginError.value = msg
+    ElMessage.error(msg)
   } finally { loading.value = false }
 }
 
@@ -104,8 +114,16 @@ async function doRegister() {
   loading.value = true
   try {
     await register(regForm.value)
-    ElMessage.success('注册成功，请登录')
-    tab.value = 'login'
+    // 注册后直接登录，不用作者再输一遍密码；失败才回登录页并保留用户名
+    try {
+      await auth.login({ username: regForm.value.username, password: regForm.value.password })
+      ElMessage.success('注册成功，已自动登录')
+      router.push('/')
+    } catch {
+      loginForm.value.username = regForm.value.username
+      ElMessage.success('注册成功，请用刚设置的密码登录')
+      tab.value = 'login'
+    }
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '注册失败')
   } finally { loading.value = false }
@@ -115,7 +133,7 @@ async function sendCode() {
   if (!regForm.value.email) { ElMessage.warning('请先输入邮箱'); return }
   try {
     await sendCodeApi({ email: regForm.value.email, type: 'register' })
-    ElMessage.success('验证码已发送')
+    ElMessage.success(`验证码已发送至 ${regForm.value.email}，10 分钟内有效`)
     startCooldown()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '发送失败')
@@ -126,7 +144,7 @@ async function sendResetCode() {
   if (!resetForm.value.email) { ElMessage.warning('请先输入邮箱'); return }
   try {
     await sendCodeApi({ email: resetForm.value.email, type: 'reset' })
-    ElMessage.success('验证码已发送')
+    ElMessage.success(`验证码已发送至 ${resetForm.value.email}，10 分钟内有效`)
     startCooldown()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '发送失败')
@@ -205,6 +223,7 @@ async function doReset() {
 }
 .links { display: flex; justify-content: space-between; margin-top: 12px; }
 .btn-block { width: 100%; }
+.login-err { margin: 8px 0 0; font-size: 12px; color: #f56c6c; line-height: 1.6; }
 .login-icp { position: fixed; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 12px; color: rgba(255,255,255,.45); text-decoration: none; }
 .login-icp:hover { color: rgba(201,162,39,.9); }
 .login-note {

@@ -44,24 +44,31 @@ const ICONS = {
   health: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-5 4 10 2-5h8"/><circle cx="12" cy="12" r="0" /><path d="M9 3h6"/></svg>`,
   facts: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>`,
   graph: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 7.2 10.8 16M15.8 7.2 13.2 16M8.5 6h7"/></svg>`,
+  plan: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M3 10h18"/><circle cx="14" cy="15" r="1.6"/></svg>`,
 }
 
 const groups = computed(() => [
   {
-    label: '内容',
+    label: '写作主线',
     items: [
       { key: 'chapters', name: '章节', icon: ICONS.chapters, badge: props.chapterCount || '' },
       { key: 'outline', name: '大纲', icon: ICONS.outline },
       { key: 'world', name: '世界观', icon: ICONS.world },
-      { key: 'facts', name: '时间线', icon: ICONS.facts },
-      { key: 'graph', name: '世界事实', icon: ICONS.graph },
+    ],
+  },
+  {
+    label: '更多设定',
+    items: [
+      { key: 'plan', name: '章节规划', icon: ICONS.plan },
+      { key: 'facts', name: '剧情时间线', icon: ICONS.facts },
+      { key: 'graph', name: '人物设定', icon: ICONS.graph },
     ],
   },
   {
     label: '智能',
     items: [
       { key: 'assistant', name: '小墨AI', icon: ICONS.assistant },
-      { key: 'agent', name: 'Agent', icon: ICONS.agent },
+      { key: 'agent', name: '创作角色', icon: ICONS.agent },
       { key: 'health', name: '全书体检', icon: ICONS.health },
       { key: 'tools', name: TOOL_TAB_NAME, icon: ICONS.tools },
     ],

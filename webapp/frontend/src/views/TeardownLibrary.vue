@@ -7,7 +7,7 @@
       <el-button type="primary" style="margin-left:auto" @click="openAnalyze">+ 拆解爆款作品</el-button>
     </div>
     <p class="hint">
-      项目调研的题材共性会自动沉淀（同题材合并更新）；你也可以粘贴/上传看到的爆款作品文本，由 AI 拆解入库。内容来自生成前的联网调研、内置知识库与手动拆解。
+      项目「题材调研」会自动沉淀到这里；也可以粘贴/上传爆款文本，由 AI 拆解入库。来源：联网调研、内置知识库、手动拆解。
     </p>
 
     <el-radio-group v-model="genre" size="small" class="genres" @change="reload">
@@ -27,10 +27,13 @@
         <div class="tsummary">{{ t.summary || '暂无摘要' }}</div>
         <div class="tfoot">
           <span>浏览 {{ t.view_count }}</span>
-          <span>{{ fmtTime(t.updated_at) }}</span>
+          <span class="tmore">查看详情 ›</span>
         </div>
       </el-card>
-      <el-empty v-if="!loading && !items.length" description="暂无拆书条目，生成项目完成调研后会自动沉淀" />
+      <el-empty v-if="!loading && !items.length" description="还没有拆书条目">
+        <p class="empty-hint">项目完成「题材调研」后会自动沉淀到这里；也可以先新建一本小说跑一次调研。</p>
+        <el-button type="primary" @click="$router.push('/projects')">去书架新建</el-button>
+      </el-empty>
     </div>
 
     <el-pagination
@@ -300,19 +303,26 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.empty-hint { font-size: 12px; color: #909399; margin: 0 0 12px; line-height: 1.7; }
 .toolbar { display: flex; align-items: center; gap: 12px; }
 .title { margin: 0; font-size: 20px; font-weight: 700; color: #1f2d3d; }
 .hint { color: #7a8699; font-size: 13px; margin: 6px 0 12px; }
 .genres { margin-bottom: 14px; flex-wrap: wrap; }
+/* 超长题材标签会撑爆整行：限制单枚宽度，完整内容用 title 悬浮查看 */
+.genres :deep(.el-radio-button__inner) {
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+}
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.tcard { cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.tcard { cursor: pointer; transition: transform .15s, box-shadow .15s; min-height: 190px; display: flex; flex-direction: column; }
 .tcard:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,.1); }
+.tcard :deep(.el-card__body) { display: flex; flex-direction: column; flex: 1; }
 .thead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .tgenre { background: #f2e8c9; color: #8a6d1e; font-size: 12px; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
 .tsrc { font-size: 12px; color: #9aa5b5; }
 .ttitle { font-size: 15px; font-weight: 700; color: #1f2d3d; margin-bottom: 6px; }
 .tsummary { font-size: 13px; color: #5f6b7a; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 39px; }
-.tfoot { display: flex; justify-content: space-between; font-size: 12px; color: #9aa5b5; margin-top: 10px; }
+.tfoot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #9aa5b5; margin-top: auto; padding-top: 10px; }
+.tmore { color: #3d6fe0; }
 .detail { font-size: 14px; }
 .dsec { margin-bottom: 16px; }
 .dlabel { font-weight: 700; color: #8a6d1e; margin-bottom: 6px; font-size: 13px; }
@@ -320,7 +330,7 @@ onMounted(() => {
 .dlist { margin: 0; padding-left: 18px; color: #3d4a5c; line-height: 1.8; }
 .dlist.avoid li { color: #a03a3a; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { background: #eef2f8; color: #3d5a86; font-size: 12px; padding: 3px 10px; border-radius: 10px; }
+.chip { background: #eef2f8; color: #3d5a86; font-size: 12px; padding: 3px 10px; border-radius: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dmeta { color: #9aa5b5; font-size: 12px; border-top: 1px solid #eef1f5; padding-top: 10px; }
 .dsec.highlight { background: #f7f2e4; border: 1px solid #eadfbe; border-radius: 8px; padding: 10px 12px; }
 .dtext.quote { border-left: 3px solid #e3c55d; padding: 6px 10px; margin-bottom: 8px; background: #faf8f1; color: #5f6b7a; }

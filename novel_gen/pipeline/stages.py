@@ -588,16 +588,26 @@ class ChapterWriter:
         except Exception:
             logger.exception("分卷卡注入失败（降级跳过）")
 
-        # REQ-R21 M1：确定性冲突提醒（位置：补偿块之后、硬区之前；不命中不产生文本）
+        # REQ-R21 M1 冲突提醒 + REQ-R24 P1 Plan 约束：同位置、合并渲染去重、合计 ≤300 字符
+        _cg_block, _pl_block = "", ""
         if getattr(self.cfg, "conflict_guard", False):
             try:
                 from .book_facts import BookFacts
                 _cg_block = BookFacts(self.store, self.cfg).render_violation_block(
-                    at_ch=chapter_no, limit=5)
-                if _cg_block:
-                    memory_context = (memory_context + "\n\n" if memory_context else "") + _cg_block
+                    at_ch=chapter_no, limit=5) or ""
             except Exception:
                 logger.exception("冲突提醒注入失败（降级为不注入，不阻塞写章）")
+        if getattr(self.cfg, "plan_graph", False):
+            try:
+                from .state.plan_graph import constraints_block
+                _pl_block = constraints_block(self.store, self.cfg, chapter_no) or ""
+            except Exception:
+                logger.exception("Plan 约束块构造失败（降级为不注入，不阻塞写章）")
+        if _cg_block or _pl_block:
+            from .state.plan_graph import BLOCK_BUDGET, merge_blocks
+            _cm_block = merge_blocks(_pl_block, _cg_block, budget=BLOCK_BUDGET)
+            if _cm_block:
+                memory_context = (memory_context + "\n\n" if memory_context else "") + _cm_block
 
         # REQ-R20 M0：单一只读状态视图（book_facts）——替换 L1.5/L1.6/读者账本/canon 四处账本块
         _bf_on = bool(getattr(self.cfg, "book_facts", False))

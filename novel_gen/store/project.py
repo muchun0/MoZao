@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 项目存储层：把一次「写书任务」落盘为一个目录，实现断点续传与成果沉淀。
 
@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -31,6 +32,19 @@ from ..utils.paths import get_output_dir
 from .schemas import Chapter, Outline, ProjectState, World
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_generation_mode(value) -> str:
+    """分步确认模式归一（R27）：只认 auto/stepwise，其余（含历史脏值）归一为空=未设置。
+
+    空值语义是「项目未显式设置」，由编排层按新书/老项目给默认值；这里不猜默认值。
+    """
+    text = str(value or "").strip().lower()
+    if text in ("auto", "stepwise"):
+        return text
+    if text:
+        logger.warning("generation_mode 非法值已归一为空: %r", value)
+    return ""
 
 
 def _safe_name(name: str) -> str:
@@ -44,6 +58,17 @@ def _safe_name(name: str) -> str:
     return cleaned or "novel"
 
 
+def _display_name(name: str) -> str:
+    """下载文件名用的展示名：保留中文书名，只替换文件系统非法字符。
+
+    project_id 仍用 ASCII 的 _safe_name（URL/目录兼容），导出与下载用这个，
+    避免作者看到「20261122_xxx_ab12cd」这种时间戳文件名。
+    """
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", (name or "").strip())
+    cleaned = re.sub(r"_{2,}", "_", cleaned).strip(" ._")
+    return cleaned[:60] or "novel"
+
+
 # REQ-章节版本化：每章正文版本上限，超出淘汰最旧（HEAD/当前选中版本永不被淘汰）。
 _CHAPTER_VERSION_LIMIT = 15
 
@@ -54,6 +79,7 @@ class ProjectStore:
         self.chapters_dir = self.dir / "chapters"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
+        self._review_lock = threading.RLock()
 
     # ---------- 创建 / 打开 ----------
     @classmethod
@@ -92,6 +118,7 @@ class ProjectStore:
             "plot_direction": cfg.plot_direction,
             "forbidden": list(cfg.forbidden),
             "confirm": cfg.confirm,
+            "generation_mode": getattr(cfg, "generation_mode", "") or "",
             "mode": cfg.mode,
             "expand_input": cfg.expand_input,
             "content_type": cfg.content_type,
@@ -159,6 +186,7 @@ class ProjectStore:
             "plot_direction": d.get("plot_direction", ""),
             "forbidden": [str(x) for x in (d.get("forbidden") or [])],
             "confirm": bool(d.get("confirm", False)),
+            "generation_mode": _normalize_generation_mode(d.get("generation_mode")),
             "mode": d.get("mode", "auto"),
             "expand_input": d.get("expand_input", ""),
             "content_type": d.get("content_type", ""),
@@ -397,6 +425,56 @@ class ProjectStore:
     def save_editor_review(self, review_dict: dict) -> None:
         self._write_json(self.editor_review_path(), review_dict)
 
+    # ---------- R30 编排产物路径（只读消费 + 交接工单/提案落盘） ----------
+    def review_path(self) -> Path:
+        return self.dir / "review.json"
+
+    def load_review(self) -> list:
+        """读 review.json（质检逐章结果）；缺失/损坏返回 []（交接判定降级）。"""
+        data = self._read_json(self.review_path(), None)
+        return data if isinstance(data, list) else []
+
+    def save_review_chapter(self, chapter_no: int, record: dict, *,
+                            merge: bool = False) -> None:
+        """review.json 单一写点（REQ-R32）：质检/改稿/读者审校都走这里。
+
+        - merge=False：整条替换该章记录（质检/改稿的既有语义）；
+        - merge=True：把 record 合并进该章记录（读者审校追加 issues/追更欲）。
+        读-改-写全程加锁 + 原子写，避免并发覆盖。
+        """
+        with self._review_lock:
+            existing = self.load_review()
+            idx = next((i for i, r in enumerate(existing)
+                        if int(r.get("chapter", 0)) == int(chapter_no)), None)
+            if merge and idx is not None:
+                rec = dict(existing[idx])
+                for k, v in record.items():
+                    if k == "issues" and isinstance(v, list):
+                        rec["issues"] = list(rec.get("issues") or []) + list(v)
+                    else:
+                        rec[k] = v
+                existing[idx] = rec
+            else:
+                existing = [r for r in existing
+                            if int(r.get("chapter", 0)) != int(chapter_no)]
+                existing.append(dict(record))
+            self._write_json(self.review_path(), existing)
+
+    def review_lock(self) -> "threading.RLock":
+        return self._review_lock
+
+    def runs_dir(self) -> Path:
+        return self.dir / "runs"
+
+    def handovers_dir(self) -> Path:
+        return self.dir / "handovers"
+
+    def proposals_dir(self) -> Path:
+        return self.dir / "proposals"
+
+    def ledger_audit_path(self) -> Path:
+        return self.dir / "ledger_audit.jsonl"
+
     def load_editor_review(self) -> Optional[dict]:
         return self._read_json(self.editor_review_path(), None)
 
@@ -469,7 +547,8 @@ class ProjectStore:
                      quality: Optional[dict] = None,
                      promote: bool = True,
                      prev_chapters: Optional[list] = None,
-                     unstable: bool = False) -> Optional[int]:
+                     unstable: bool = False,
+                     label: str = "") -> Optional[int]:
         """章节正文版本化保存（REQ-章节版本化 + TECH-Agent用户化与版本化 阶段1A）。
 
         `versioned_product=True`（默认）→ 委托 `store/versioned.py` 的 `VersionedProduct`
@@ -481,6 +560,7 @@ class ProjectStore:
         避免把已有的依赖元数据抹掉；存量章无记录则保持缺失（判定为 unknown）。
         档3：`unstable=True` 表示本章是在"已知前文不一致"下生成的，写入
         `upstream.unstable`（同文件同权威源，无新账本）。
+        `label`：版本用途标签（R25 内联采纳记 `inline:adopt:<gen_id>`，供审计按 gen_id 关联）。
         """
         if self.versioned_enabled():
             if prev_chapters is None:
@@ -495,7 +575,7 @@ class ProjectStore:
                 str(chapter.no), chapter.to_dict(),
                 source=source or getattr(chapter, "source", "ai") or "ai",
                 quality=quality, promote=promote, limit=version_limit,
-                upstream=upstream or None)
+                upstream=upstream or None, label=label)
         return self._save_chapter_legacy(chapter, source=source, version_limit=version_limit,
                                          quality=quality, promote=promote)
 
@@ -572,8 +652,8 @@ class ProjectStore:
         else:
             rec = {"versions": versions, "selected": rec.get("selected"), "history": history,
                    "user_managed": bool(rec.get("user_managed"))}
-        # 人工编辑 → 标记用户已管理（此后自动选分不再覆盖）
-        if src == "user":
+        # 人工编辑 / 内联采纳 → 标记用户已管理（此后自动选分不再覆盖）
+        if src in ("user", "inline"):
             rec["user_managed"] = True
 
         # 版本上限淘汰最旧（跳过 selected，永不淘汰 HEAD）
@@ -876,6 +956,18 @@ class ProjectStore:
         self._write_json(self.consumption_path(), data)
         self.invalidate_book_facts()
 
+    def supersede_path(self) -> Path:
+        return self.dir / "supersede.json"
+
+    def load_supersede(self) -> dict:
+        """事件版本替代记录（append-only 的补丁：旧 id → 新 id，不回写事件行）。"""
+        d = self._read_json(self.supersede_path(), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_supersede(self, data: dict) -> None:
+        self._write_json(self.supersede_path(), data)
+        self.invalidate_book_facts()
+
     def foreshadowing_path(self) -> Path:
         return self.dir / "foreshadowing.json"
 
@@ -893,6 +985,18 @@ class ProjectStore:
 
     def save_reconcile_report(self, data: dict) -> None:
         self._write_json(self.reconcile_report_path(), data)
+
+    # ---------- Plan 计划图（REQ-R24 P0/P1；与 Canon 分文件，可改 vs 只追加） ----------
+    def plan_graph_path(self) -> Path:
+        return self.dir / "plan_graph.json"
+
+    def load_plan_graph(self) -> Optional[dict]:
+        d = self._read_json(self.plan_graph_path(), None)
+        return d if isinstance(d, dict) else None
+
+    def save_plan_graph(self, data: dict) -> None:
+        """整文件原子覆盖（Plan 是可改的，版本号由 plan_graph.save 递增）。"""
+        self._write_json(self.plan_graph_path(), data)
 
 
     # ---------- 用户级记忆快照（跨书创作偏好继承；webapp 写 / novel_gen 读） ----------
@@ -1163,19 +1267,30 @@ class ProjectStore:
         )
         os.replace(tmp, path)
 
-    # ---------- 三分支续写草稿（三期 F3，预览模式不写正文章节） ----------
+    # ---------- 写作便签（三期 F3 草稿 / R26 v2 多便签，预览模式不写正文章节） ----------
     def continue_drafts_path(self) -> Path:
         return self.dir / "continue_drafts.json"
 
     def load_continue_drafts(self) -> dict:
-        d = self._read_json(self.continue_drafts_path(), {})
-        return d if isinstance(d, dict) else {}
+        """返回 v2 结构 `{version, chapters}`（旧单槽结构读时迁移）。"""
+        from . import continue_drafts
+        return continue_drafts.load(self)
 
     def save_continue_draft(self, chapter_no: int, draft: dict) -> None:
-        """记录用户选用的分支续写草稿（按章幂等；默认不写 chapters/*.json）。"""
-        data = self.load_continue_drafts()
-        data[str(chapter_no)] = dict(draft or {})
-        self._write_json(self.continue_drafts_path(), data)
+        """追加一张写作便签（旧单槽写入升级为 v2 多便签，默认不写 chapters/*.json）。"""
+        from . import continue_drafts
+        draft = dict(draft or {})
+        note = {
+            "direction": draft.get("direction") or draft.get("label") or "",
+            "summary": draft.get("preview") or "",
+            "source_tag": draft.get("source_tag") or "",
+            "tags": draft.get("tags") or [],
+            "origin": draft.get("origin") or "tools",
+        }
+        if draft.get("applied_at"):
+            note["created_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(draft["applied_at"])))
+        continue_drafts.add_note(self, chapter_no, note)
 
     # ---------- 全书终审（P2-2） ----------
     def final_review_path(self) -> Path:

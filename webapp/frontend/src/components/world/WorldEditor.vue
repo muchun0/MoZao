@@ -9,14 +9,24 @@
       <div class="world-edit-head">
         <h4 style="margin:0">世界观设定</h4>
         <div>
-          <el-button size="small" type="primary" link @click="$emit('open-versions', 'world')">世界观版本</el-button>
-          <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
-            {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
-          </el-button>
+          <el-tooltip content="查看/还原世界观历史版本" placement="bottom">
+            <el-button size="small" type="primary" link @click="$emit('open-versions', 'world')">世界观版本</el-button>
+          </el-tooltip>
+          <el-tooltip :content="isWorldLocked ? '已加锁：重生成世界观时不会覆盖当前内容，点击解锁' : '加锁：重生成世界观时保留当前内容不被覆盖'" placement="bottom">
+            <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link
+                       :aria-label="isWorldLocked ? '取消世界观锁定' : '锁定世界观（重生成时不覆盖）'"
+                       :title="isWorldLocked ? '已加锁，点击解锁' : '加锁：重生成时不覆盖当前世界观'"
+                       @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
+              {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
+            </el-button>
+          </el-tooltip>
+          <el-tooltip content="按当前大纲调用 AI 生成/重生成世界观；只在你点击后执行" placement="bottom">
+            <el-button size="small" @click="$emit('regen-world', { firstTime: isWorldEmpty })">AI 生成</el-button>
+          </el-tooltip>
+          <el-button size="small" link @click="toggleAllCollapse">{{ allOpen ? '收起全部' : '展开全部' }}</el-button>
           <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
         </div>
       </div>
-
       <!-- 人物关系图谱（全宽） -->
       <CharacterGraph v-if="world.characters?.length" :characters="worldDraft.characters" />
 
@@ -26,7 +36,8 @@
         <!-- 左栏：世界观文本 -->
         <div class="world-text-section">
           <div class="section-title">世界设定</div>
-          <el-input v-model="worldDraft.world_view" type="textarea" :rows="8" placeholder="描述这个世界的规则、时代背景、核心矛盾、势力格局……" class="world-textarea" />
+          <el-input v-model="worldDraft.world_view" type="textarea" :rows="8" placeholder="世界规则 / 时代背景 / 势力格局…" class="world-textarea" />
+          <div class="field-help">建议写清：力量或规则体系、时代与地理、主要势力及核心矛盾。AI 会把它当作强约束，正文不得违背。</div>
         </div>
 
         <!-- 右栏：人物列表（紧凑列表，点击切换选中） -->
@@ -117,7 +128,7 @@
 
       <!-- ===== 事前设计卡（折叠收起，默认不展开） ===== -->
       <div class="world-collapse-wrap">
-        <el-collapse class="world-collapse">
+        <el-collapse v-model="collActive" class="world-collapse">
         <el-collapse-item :title="`生物图鉴（${worldDraft.enemies?.length || 0}）`" name="enemies">
           <div class="world-edit-head">
             <el-button size="small" @click="worldDraft.enemies.push({ name:'', form:'', senses:'', behavior:'', kill:'', tier:'' })">+ 添加怪物</el-button>
@@ -205,8 +216,14 @@
       </div>
     </template>
     <el-empty v-else-if="loaded">
-      <template #description><span>暂无人物设定。可点下方按钮手动重生成（仅在你确认后执行，不会自动生成）</span></template>
-      <el-button type="primary" @click="$emit('regen-world')">重生成世界观</el-button>
+      <template #description>
+        <div class="world-empty-desc">
+          <p>这本书还没有世界观设定。</p>
+          <p>生成后会得到世界规则、人物卡、势力与事前设计卡；也可以先手动填写。</p>
+        </div>
+      </template>
+      <el-button type="primary" @click="$emit('regen-world')">生成世界观</el-button>
+      <el-button @click="$emit('open-tab', 'outline')">先看大纲</el-button>
     </el-empty>
   </div>
 </template>
@@ -214,8 +231,8 @@
 <script setup>
 // 世界观编辑面板：数据自治（自行加载/保存），父组件通过 reload() 在生成完成后触发刷新。
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { getWorld, saveWorld } from '../../api/novel'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getWorld, saveWorld, previewPlanImpact } from '../../api/novel'
 import CharacterGraph from './CharacterGraph.vue'
 import MechanismEditor from './MechanismEditor.vue'
 import { TYPE_TITLES, hasMechanism, resolveTypes } from './mechanism'
@@ -226,6 +243,14 @@ const props = defineProps({
   // 锁状态（父组件持有的单一权威源），结构：{ world_view: bool, character: { name: bool } }
   lock: { type: Object, default: () => ({}) },
 })
+// 折叠卡默认收起；顶部提供「展开全部」便于总览，避免逐张点开
+const collActive = ref([])
+const allOpen = ref(false)
+const ALL_PANELS = ['enemies', 'locations', 'factions', 'mechanism', 'clock', 'taboos']
+function toggleAllCollapse() {
+  allOpen.value = !allOpen.value
+  collActive.value = allOpen.value ? [...ALL_PANELS] : []
+}
 const emit = defineEmits(['toggle-lock', 'open-versions', 'regen-world'])
 
 const loaded = ref(false)
@@ -242,6 +267,11 @@ const selectedCharIndex = ref(0)
 
 const isWorldLocked = computed(() => !!props.lock.world_view)
 const isCharLocked = (name) => !!(props.lock.character || {})[name]
+// 首次生成（没有任何世界设定/人物）不弹「重生成会覆盖」，措辞按实际状态给
+const isWorldEmpty = computed(() => {
+  const w = worldDraft.value || {}
+  return !String(w.world_view || '').trim() && !(w.characters || []).length
+})
 
 // 机制区块是否显示 + 标题：resolve_types 得到 none（且无机制说明文本）时整块不出现
 const mechVisible = computed(() => hasMechanism(worldDraft.value))
@@ -312,9 +342,65 @@ function removeCharacter(index) {
   }
 }
 
+// 门 2 需求：找出这次编辑动到的实体名（只算实体，纯文本字段不触发确认）。
+// 口径：按名称对齐，序列化后不同即算改动；新增/删除也算。
+function changedEntityNames() {
+    const before = world.value || {}
+    const after = worldDraft.value || {}
+    const names = []
+    const pairs = [
+        ['characters', 'name'],
+        ['locations', 'name'],
+        ['enemies', 'name'],
+        ['factions', 'name'],
+        ['items', 'name'],
+    ]
+    for (const [field, key] of pairs) {
+        const oldList = Array.isArray(before[field]) ? before[field] : []
+        const newList = Array.isArray(after[field]) ? after[field] : []
+        const oldMap = new Map(oldList.map((x) => [x?.[key], JSON.stringify(x)]))
+        for (const x of newList) {
+            const name = x?.[key]
+            if (!name) continue
+            if (oldMap.get(name) !== JSON.stringify(x)) names.push(name)
+        }
+        for (const name of oldMap.keys()) {
+            if (name && !newList.some((x) => x?.[key] === name)) names.push(name)
+        }
+    }
+    return [...new Set(names)]
+}
+
+async function confirmBaseImpact() {
+    const entities = changedEntityNames()
+    if (!entities.length) return true
+    try {
+        const res = await previewPlanImpact(props.pid, entities)
+        const chapters = res?.chapters || []
+        if (!chapters.length) return true
+        try {
+            await ElMessageBox.confirm(
+                `这次修改涉及 ${entities.length} 个实体，会影响 ${chapters.length} 章：第${chapters.join('、')}章。` +
+                '这些章的计划约束和已写事实会和新的设定不一致，保存后需要重看这些章。',
+                '保存前影响确认',
+                { type: 'warning', confirmButtonText: '仍然保存', cancelButtonText: '先不保存' },
+            )
+            return true
+        } catch {
+            return false // 用户选择「先不保存」
+        }
+    } catch {
+        // Plan 未开启 / 未编译 / 接口异常：不阻断保存（门 2 是提醒，不是硬门）
+        return true
+    }
+}
+
 async function saveWorldDraft() {
   worldSaving.value = true
   try {
+    // 门 2：改 Base（设定基线）前先出影响面。Plan 侧 + Canon 侧一起答，
+    // 有受影响章就二次确认；接口不可用（未开 Plan / 未编译）不阻断保存。
+    if (!(await confirmBaseImpact())) return
     pruneMechanismDraft(worldDraft.value)
     const res = await saveWorld(props.pid, worldDraft.value)
     world.value = res
@@ -388,6 +474,7 @@ defineExpose({ reload })
   min-height: 180px;
   line-height: 1.8;
 }
+.field-help { margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 
 /* 人物列表 */
 .char-list-section {

@@ -194,7 +194,9 @@ export function applyStatus(d) {
   if (d.agent) state.agent = d.agent
 
   const p = (d.progress && typeof d.progress === 'object') ? d.progress : {}
-  const phase = p.phase || (d.state && d.state.phase) || ''
+  // P1-2：运行中已有真实阶段（task.json / Agent 进度）时，不再用旧状态机的 state.phase 覆盖；
+  // 只有在两者都没有时才回退到 state.phase，避免「正在写正文」被显示成「正在生成大纲」
+  const phase = p.phase || state.phase || (d.state && d.state.phase) || ''
   if (phase) setPhase(phase)
 
   if (d.running) {

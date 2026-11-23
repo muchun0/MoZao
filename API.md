@@ -126,6 +126,47 @@
 | POST | /api/projects/{id}/expand-selection | 是 | 扩写选中片段 |
 | POST | /api/projects/{id}/chapters/{no}/issues/rewrite | 是 | 按单条改稿建议局部改写（只改命中段落，新增版本并设为当前，按版本字数计费） |
 
+### 内联写作（R25）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/chapters/{no}/inline/generate | 是 | 生成内联候选（续写/改写/扩写）。body：`mode`、`anchor{start,end}`、`base_version`、`base_hash`、`client_token`、`candidates`(2–3)、`target_words`(100–800)、`instruction`(≤500)。**生成即按候选合计字数计费，未采纳也计费**；同 `client_token` 重放不重复扣费 |
+| POST | /api/projects/{id}/chapters/{no}/inline/adopt | 是 | 人工采纳候选：按记录 anchor 落一个新版本（`source=inline`），**不二次计费**。body：`gen_id`、`candidate_id`、`base_version`、`base_hash`、`client_token`；版本/哈希漂移返回 409 且候选保留 |
+| GET | /api/projects/{id}/chapters/{no}/inline/drafts | 是 | 该章 48h 内未采纳、未作废候选（重开面板不重复计费） |
+| GET | /api/projects/{id}/chapters/{no}/inline/estimate?chars=&candidates= | 是 | 触发前只读预估（字数/金额），不扣费、不调模型 |
+| POST | /api/projects/{id}/chapters/{no}/inline/apply-suggestion | 是 | **R28 应用小墨建议**：body `conversation_id`、`message_id`、`anchor{start,end}`、`text`、`base_version`、`base_hash`、`client_token`、`edited`。按 `message_id` 回读校验（归属/角色/文本一致/锚点一致）→ 单段校验 → `settle.json kind=inline`（`apply:<client_token>`）→ `apply_inline_text(source=inline)`。同 token 同文本重放不双扣；同 token 不同文本 409 `TOKEN_REUSED`；写盘失败回滚账本与扣费 |
+| GET | /api/projects/{id}/search?q=&limit=&offset=&scope= | 是 | 只读全文检索（R28/R29 共用）：`scope=body/settings/all`，`q` 2–40 字，片段前后 40 字，返回 `items/scanned_chars/truncated/elapsed_ms` |
+
+> 错误码以 detail 前缀返回：`BAD_ANCHOR` / `STALE_BASE_KEEP_CANDIDATES` / `STALE_BASE` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `RATE_LIMITED` / `INLINE_BUSY` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` / `MESSAGE_MISMATCH` / `CROSS_PARAGRAPH` / `TOKEN_REUSED` / `WRITE_FAILED` 等。
+
+### 小墨AI 段落协同（R28）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/assistant/conversations/{cid}/messages | 是 | 发消息（既有）。R28 增 `anchor{ch,start,end,text_sha,issue_refs}`：按段落窗口组装上下文（`context_mode=span`），锚点随消息 `extra.anchor` 落库；响应增 `anchor/anchor_stale/context_mode/budget_tier` |
+| GET | /api/projects/{id}/assistant/conversations/{cid}/anchor-messages?ch=&limit= | 是 | 按 `extra.anchor.ch` 过滤的本章段落问答历史（只读，浮层重开恢复现场） |
+
+### 剧情走向候选与写作便签（R26）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | /api/projects/{id}/chapters/{no}/branches/generate | 是 | 生成 3~5 个剧情走向。body：`count`(3–5，默认 4)、`stuck_type`(`foreshadow/commitment/conflict/pace/custom`，可空)、`stuck_text`(仅 custom，≤200 字)、`client_token`。返回 `{gen_id, items:[{id,direction,summary,source_tag,tags}], words, charged, balance, billing, replayed}`。`source_tag ∈ foreshadow/commitment/conflict/twist/pacing`。`branches_billing_enabled` 开启时按候选合计字数结算一次（`kind=branch`）；关闭时 `charged=0` 且不写账本。失败/空输出不扣费；同 `client_token` 重放返回同一批 |
+| POST | /api/projects/{id}/chapters/{no}/branches/adopt | 是 | 把某个走向存为写作便签。body：`gen_id`、`item_id`、`client_token`（可选）。以 `(gen_id,item_id)` 为自然键幂等，返回 `{draft_id, duplicated, item}`；**不改正文、不落版本、不二次计费** |
+| GET | /api/projects/{id}/chapters/{no}/branches/notes | 是 | 该章写作便签列表（v2 多便签；旧单槽结构读时迁移），返回 `{items:[{draft_id,direction,summary,source_tag,tags,origin,created_at}]}` |
+| DELETE | /api/projects/{id}/chapters/{no}/branches/notes/{draft_id} | 是 | 删除单条便签：只删便签，不退费、不改正文；不存在返回 404 `NOTE_NOT_FOUND` |
+
+> 错误码：`BAD_STUCK` / `BAD_ITEM` / `GEN_EXPIRED` / `INSUFFICIENT_BALANCE` / `PROJECT_BUSY` / `TOKEN_CONFLICT` / `LLM_EMPTY` / `COMPLIANCE_BLOCKED` / `SETTLE_FAILED` / `WRITE_FAILED` / `NOTE_NOT_FOUND`。旧 `/continue-branches` + `/apply-branch` 双轨期保持冻结且不计费；`apply_branch` 写盘失败改为 500 `DRAFT_WRITE_FAILED`（不再返回 `saved=True`）。
+
+### 写作参考侧栏（R29）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | /api/projects/{id}/writing-context?ch=N | 是 | 只读聚合（零 LLM / 零写盘 / 不计费）：`chapter` 当前章计划（`ChapterPlan.to_dict()`，含 `goal/core_event/conflict/cliffhanger/character_moves/foreshadowing`）、`characters[]`（按章计划文本名称命中，≤12，含 `name/role/personality/desc/speech_style`）、`foreshadow.items[]`（`state ∈ due_soon/overdue` 或 `reveal_ch == N`，含 `state_label/severity/reveal_in/excerpt`）、`foreshadow.counts`（planted/due_soon/overdue/stalled/revealed）、`available.{outline,world,foreshadow}`；`ch<1` 返回 400 `BAD_CHAPTER`；`reader_ledger` 关闭时伏笔为空且 `available.foreshadow=false` |
+| GET | /api/projects/{id}/outline | 是 | 侧栏「大纲」页签数据：`volumes[]` + `chapters[]`（含 `volume_no`、`core_event`、`goal`、`tag`） |
+| GET | /api/projects/{id}/world | 是 | 侧栏「人物」「设定」页签数据：`characters[]`、`world_view`、`mechanism_rules`、`locations/factions/enemies/style_taboos`；**R29 只读新增 `terminology[]` 与 `items[]`**（只增字段，语义不变） |
+| GET | /api/projects/{id}/foreshadowing | 是 | 侧栏「伏笔」页签数据：`items[]`（`state/state_label/distance/distance_label/buried_ch/reveal_ch/revealed_ch/excerpt`）、`unstructured[]`、`summary`（五态计数） |
+| GET | /api/projects/{id}/search?q=&scope=&limit=&offset= | 是 | 侧栏「搜索」页签，复用 R25 只读全文检索（`search_enabled` 关闭时 403 `SEARCH_DISABLED`） |
+
 ### 生成控制
 
 | 方法 | 路径 | 鉴权 | 说明 |
@@ -133,6 +174,21 @@
 | POST | /api/projects/{id}/start | 是 | 开始生成 |
 | POST | /api/projects/{id}/stop | 是 | 停止生成 |
 | GET | /api/projects/{id}/status | 是 | 生成状态（轮询用，3秒一次） |
+
+### 分步确认式生成流（R27，2026-11-18）
+
+编排状态唯一权威源为项目文件 `generation_stage.json`；阶段 `research / outline / world / volume / chapters`。
+`volume` 固定为 `skipped(reason=merged_into_outline)`（卷纲并入大纲确认）。`expand` 项目 `supported=false`。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | /api/projects/{id}/generation/flow?with_card=1 | 是 | 只读：`{supported, mode, mode_source, flow}`；`flow=null` 表示未启动；`flow.stages[]` 含状态/digest/run_id/last_error，`flow.cards[]` 为当前阶段确认卡（lines/actions/regenerate_estimate）。每次读取按 run 侧写与产物 digest 对账，**不主动起 run** |
+| POST | /api/projects/{id}/generation/flow/start | 是 | body：`{mode?: "auto"\|"stepwise"}`；建流程并起首阶段（`with_research=false` 时调研 skipped；正文在 stepwise 下只置 `ready` 不起 run）；已存在流程直接返回现状（双击幂等）。expand → 400 `MODE_UNSUPPORTED` |
+| POST | /api/projects/{id}/generation/flow/confirm | 是 | body：`{stage, action: continue\|regenerate\|skip\|back_outline, digest, client_token?, force?}`。确认放行/放弃本步重生成（**新版本、再次扣费**，10 分钟内二次需 `force=true`）/跳过未开始的调研/返回改大纲。旧 digest → 409 `STAGE_CHANGED`；状态不符 → 409 `STAGE_NOT_READY`；同 `(flow_id,stage,action,digest)` 重放返回首次结果（`idempotent=true`）。确认大纲/世界观时同步通过对应审阅门 |
+| POST | /api/projects/{id}/generation/flow/mode | 是 | body：`{mode: "auto"\|"stepwise"}`；写 `config.json` 的 `generation_mode`；stepwise→auto 且当前阶段为 done 时自动放行下一阶段 |
+| POST | /api/projects/{id}/generation/flow/abort | 是 | 停止当前阶段 run 并置 `stopped`（已完成产物与结算保留，不自动重试） |
+
+> 资金语义：起 run 前失败（402/409/429）阶段状态与产物不变、不扣费；run 失败不自动重试；重生成按新版本再次结算。
 
 ### 质量与审校
 

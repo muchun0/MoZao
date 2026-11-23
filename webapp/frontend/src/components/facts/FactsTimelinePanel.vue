@@ -1,14 +1,14 @@
 <template>
   <div class="tl">
     <FactsPanelHead
-      title="时间线"
-      sub="按章看「已经发生的事件」，以及「发展方向的事件」（埋线、伏笔推进）。虚线卡是作者排的计划事件——只影响写对应章时的约束，不会被当作已发生事实。人物、地点、状态在「世界事实」，检查结论在「全书体检」。"
+      title="剧情时间线"
+      sub="按章看「已经发生的事件」，以及「发展方向的事件」（埋线、伏笔推进）。虚线卡是作者排的计划事件——只影响写对应章时的约束，不会被当作已发生事实。人物、地点、状态在「人物设定」，检查结论在「全书体检」。"
       :loading="loading"
       :readonly="false"
       @refresh="reload"
     />
 
-    <el-empty v-if="off" description="时间线未启用（后台开关 timeline_view 关闭）">
+    <el-empty v-if="off" description="剧情时间线未启用（后台开关 timeline_view 关闭）">
       <p class="tl-tip">后台「开关管理」打开 timeline_view 后回到这里刷新即可，无需重新生成。</p>
     </el-empty>
 

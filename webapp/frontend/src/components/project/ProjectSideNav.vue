@@ -49,21 +49,26 @@ const ICONS = {
 
 const groups = computed(() => [
   {
-    label: '内容',
+    label: '写作主线',
     items: [
       { key: 'chapters', name: '章节', icon: ICONS.chapters, badge: props.chapterCount || '' },
       { key: 'outline', name: '大纲', icon: ICONS.outline },
-      { key: 'plan', name: '创作图', icon: ICONS.plan },
       { key: 'world', name: '世界观', icon: ICONS.world },
-      { key: 'facts', name: '时间线', icon: ICONS.facts },
-      { key: 'graph', name: '世界事实', icon: ICONS.graph },
+    ],
+  },
+  {
+    label: '更多设定',
+    items: [
+      { key: 'plan', name: '章节规划', icon: ICONS.plan },
+      { key: 'facts', name: '剧情时间线', icon: ICONS.facts },
+      { key: 'graph', name: '人物设定', icon: ICONS.graph },
     ],
   },
   {
     label: '智能',
     items: [
       { key: 'assistant', name: '小墨AI', icon: ICONS.assistant },
-      { key: 'agent', name: 'Agent', icon: ICONS.agent },
+      { key: 'agent', name: '创作角色', icon: ICONS.agent },
       { key: 'health', name: '全书体检', icon: ICONS.health },
       { key: 'tools', name: TOOL_TAB_NAME, icon: ICONS.tools },
     ],

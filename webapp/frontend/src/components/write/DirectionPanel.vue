@@ -3,24 +3,24 @@
   <section class="panel">
     <div class="p-head">
       <span class="p-title">剧情走向</span>
-      <el-tooltip content="候选只是方向，由你判断要不要用；生成按候选合计字数计费" placement="left">
+      <el-tooltip content="方向仅供参考，由你判断要不要用；生成按方向合计字数计费" placement="left">
         <span class="p-badge">仅供参考</span>
       </el-tooltip>
     </div>
 
     <div class="block">
       <div class="row">
-        <span class="label">卡点</span>
+        <span class="label">当前难点</span>
         <el-select :model-value="stuckType" size="small" style="width: 150px"
                    @update:model-value="v => $emit('update:stuckType', v || '')">
           <el-option v-for="s in stuckTypes" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </div>
       <el-input v-if="stuckType === 'custom'" :model-value="stuckText" type="textarea" :rows="2"
-                maxlength="200" show-word-limit placeholder="说说你卡在哪：例如主角动机接不上"
+                maxlength="200" show-word-limit placeholder="说说当前卡在哪：例如主角动机接不上"
                 @update:model-value="v => $emit('update:stuckText', v)" />
       <div class="row">
-        <span class="label">方向数</span>
+        <span class="label">方向数量</span>
         <el-radio-group :model-value="count" size="small"
                         @update:model-value="v => $emit('update:count', v)">
           <el-radio-button v-for="n in [3, 4, 5]" :key="n" :value="n">{{ n }} 个</el-radio-button>
@@ -33,7 +33,7 @@
       {{ generating ? '生成中…' : (batch?.items?.length ? '换一批' : '生成走向') }}
     </el-button>
     <p v-if="blockedReason" class="warn">{{ blockedReason }}</p>
-    <p v-if="billingHint" class="hint">生成即按候选合计字数计费；换一批会再次计费。</p>
+    <p v-if="billingHint" class="hint">生成即按方向合计字数计费；换一批会再次计费。</p>
 
     <div v-if="batch" class="charged">
       本批 {{ batch.items?.length || 0 }} 个方向
@@ -42,7 +42,7 @@
     </div>
 
     <div v-if="batch?.items?.length" class="cards">
-      <p v-if="generic" class="hint">本批偏通用：没有收伏笔/兑承诺的方向，可换个卡点再试。</p>
+      <p v-if="generic" class="hint">本批偏通用：没有收伏笔/兑承诺的方向，可换个难点再试。</p>
       <div v-for="(item, i) in batch.items" :key="item.id" class="card">
         <div class="card-head">
           <span class="card-no">走向 {{ i + 1 }}</span>

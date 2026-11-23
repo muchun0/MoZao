@@ -44,16 +44,16 @@
         <div v-if="v.fatal_issue" class="ver-fatal">⚠ {{ v.fatal_issue }}</div>
         <!-- 改稿建议：本弹窗是唯一的 issue 详情与操作面；标题与列表行同口径（分桶 + 总数） -->
         <div v-if="hasIssueDetail(v)" class="ver-issues">
-          <div class="ver-issues-head">改稿建议（{{ issueText(v.quality) }}）</div>
+          <div class="ver-issues-head">修改建议（{{ issueText(v.quality) }}）</div>
           <div v-if="!(v.quality.issues || []).length" class="ver-issues-empty">
             本版只记录了问题数，逐条明细未留存；可重新质检生成明细。
           </div>
           <div v-for="(it, i) in visibleIssues(v)" :key="i" class="ver-issue-card">
             <div class="ver-issue">
-              <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ it.level || '小改' }}</span>
+              <span :class="it.level === '大改' ? 'lv-big' : (it.level === '中改' ? 'lv-mid' : 'lv-small')">{{ levelLabel(it.level) }}</span>
               <span v-if="it.type" class="ver-issue-type">[{{ it.type }}]</span>
               <span class="ver-issue-detail">{{ it.detail }}</span>
-              <el-button v-if="kind === 'chapter'" size="small" link type="warning" @click="$emit('appeal', it)">申诉</el-button>
+              <el-button v-if="kind === 'chapter'" size="small" link type="warning" title="这条建议若与原文不符，可反馈复核" @click="$emit('appeal', it)">反馈误判</el-button>
               <el-button v-if="kind === 'chapter'" size="small" link type="primary"
                          :loading="rewritingKey === `${v.v}-${i}`" :disabled="!!rewritingKey"
                          title="只改写这条建议命中的段落，其余正文保持不变"
@@ -98,7 +98,7 @@
       <!-- 版本堆到一定数量后不再提供逐对对比（理由见 MAX_COMPARE_VERSIONS 注释） -->
       <div v-if="!canCompare && versionList.length" class="compare-off">
         版本较多（{{ versionList.length }} 个），逐对对比的组合过多、看不过来；
-        请直接看各版本的徽章、推荐理由与改稿建议，或先删掉不再需要的版本。
+        请直接看各版本的徽章、推荐理由与修改建议，或先删掉不再需要的版本。
       </div>
       <div v-if="canCompare && compareSel.length === 2" class="compare-bar">
         <el-button type="primary" size="small" @click="openReview">
@@ -129,7 +129,7 @@ import {
 } from '../api/novel'
 import { evidenceInfo, fixInfo } from './issueText'
 import { needsRecheck, noIssueText, recheckConfirmText, recheckResultText } from './versionQuality'
-import { issueSummaryText } from '../utils/chapterQuality'
+import { issueSummaryText, levelLabel } from '../utils/chapterQuality'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -175,8 +175,8 @@ const emptyText = computed(() => props.kind === 'chapter'
   ? '暂无历史版本（重写/重生成会自动保留多版本）'
   : '暂无历史版本（重生成会自动保留旧版）')
 const tipText = computed(() => props.kind === 'chapter'
-  ? '每次重写/重生成都会追加新版本、保留旧版；首次生成默认展示质检评分最高的版本，手动选择/编辑后以您的操作为准。勾选两个版本可看【审校 + 评审】两视角评论（引用原文说明好在哪、问题在哪、具体怎么改）；版本较多时不再提供逐对对比，请直接看各版本的徽章与改稿建议。每条改稿建议都给出「证据（引用原文）」与「改法」，可直接点「按此改」只改写命中段落并新增一个版本（旧版保留，按新增版本字数计费；定位失败会明确报错，不会整章重写）。改写生成的版本可点「重新质检」补做质检：会调用模型、消耗模型 token，但不按字数计费；已有质检结果时不会重复调用。切换版本后如需与后续章节衔接，建议重新生成后续章节以同步记忆账本。重写/重生成按本次 AI 实际生成字数计费，候选版本同样计费；手动编辑不计费。'
-  : '每次重生成都会追加新版本、保留旧版；带「快照」「导入前备份」标签的版本是历史保存点，同样可「采用此版本」还原。选择某个版本＝把它设为当前生效版本，不会删除已生成正文。勾选两个版本可看【审校 + 评审】两视角评论（本版多了什么、缺了什么、要不要从另一版补回）。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按本次 AI 实际生成字数计费。')
+  ? '每次重写/重生成都会另存新版本、保留旧版；首次默认展示评分最高的版本，您手动选择或编辑后以您的操作为准。勾选两个版本可对比查看两视角评论；每条建议都附「证据（引用原文）」与「改法」，点「按此改」只改写命中段落，旧版保留，按新增版本字数计费；定位失败会明确提示，不会整章重写。「重新质检」会重新检查一遍本版，不按字数计费；已有质检结果时不会重复检查。切换版本后，如需与后续章节衔接，建议重新生成后续章节保持一致。重写/重生成按 AI 实际生成字数计费，新版本同样计费；手动编辑不计费。'
+  : '每次重生成都会另存新版本、保留旧版；带「快照」「导入前备份」标签的版本是历史保存点，同样可「采用此版本」还原。选择某个版本＝把它设为当前生效版本，不会删除已生成正文。勾选两个版本可对比查看两视角评论（本版多了什么、缺了什么、要不要从另一版补回）。若选择的版本比当前旧，基于更新版生成的章节可能与设定不一致，建议按提示重新生成受影响章节。重生成按 AI 实际生成字数计费。')
 
 function sourceText(src) {
   return { ai: 'AI生成', user: '人工编辑', inline: '内联采纳', rewrite: '重写', regen: '重生成', legacy: '初始版' }[src] || src || '未知'
@@ -255,7 +255,7 @@ async function onSelect(v) {
     lines.push('未发现与更新版本强绑定的章节；存量章节可能缺少版本依赖记录，建议切换后抽查前文章节一致性。')
   }
   if (impact.stale_views?.length) {
-    lines.push(`派生视图（记忆账本等）已有 ${impact.stale_views.length} 项落后，重新生成时会自动同步。`)
+    lines.push(`部分关联记录已有 ${impact.stale_views.length} 项更新，重新生成时会自动同步。`)
   }
   try {
     await ElMessageBox.confirm(lines.join('\n'), `选择${label}版本`,

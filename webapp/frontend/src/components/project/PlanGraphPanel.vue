@@ -4,7 +4,7 @@
          门 1 的 diff 只是把「计划 vs 已写」摆出来，不阻断、不自动改稿。 -->
     <div class="panel-toolbar">
       <div class="panel-toolbar-left">
-        <el-tag v-if="version" size="small" effect="plain">分章计划 v{{ version }}</el-tag>
+        <el-tag v-if="version" size="small" effect="plain">章节规划</el-tag>
         <el-tag v-if="!ready" size="small" type="info" effect="plain">尚未生成</el-tag>
         <span class="plan-hint">每章最多 5 条「必须发生」；改完立即生效，下一次生成本章时生效</span>
       </div>

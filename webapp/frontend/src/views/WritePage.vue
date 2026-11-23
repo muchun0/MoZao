@@ -370,7 +370,7 @@ async function adopt(candidate) {
 async function copyCandidate(c) {
   try {
     await navigator.clipboard.writeText(c.text)
-    ElMessage.success('已复制候选')
+    ElMessage.success('已复制段落')
   } catch {
     ElMessage.warning('复制失败，请手动选择文本')
   }
@@ -390,8 +390,8 @@ async function generateDirections() {
   if (dirty.value) { ElMessage.warning('请先保存当前修改'); return }
   if (dirBatch.value?.items?.length) {
     const note = dirBatch.value.billing || dirBatch.value.charged > 0
-      ? '换一批会再次按候选合计字数计费（上一批已计费）。继续？'
-      : '换一批会丢弃当前候选（不涉及计费）。继续？'
+      ? '换一批会再次按段落合计字数计费（上一批已计费）。继续？'
+      : '换一批会丢弃当前段落（不涉及计费）。继续？'
     try {
       await ElMessageBox.confirm(note, '换一批', { type: 'warning' })
     } catch {

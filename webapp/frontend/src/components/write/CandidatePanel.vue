@@ -2,8 +2,8 @@
   <!-- 右侧 AI 面板：模式/长度/候选数/指令 → 生成 → 人工采纳；并展示 48h 内未采纳记录 -->
   <section class="panel">
     <div class="p-head">
-      <span class="p-title">内联写作</span>
-      <el-tooltip content="生成即按候选合计字数计费；未采纳也计费" placement="left">
+      <span class="p-title">AI 写作助手</span>
+      <el-tooltip content="生成即按段落合计字数计费；未采用也计费" placement="left">
         <span class="p-badge">计费说明</span>
       </el-tooltip>
     </div>
@@ -20,13 +20,13 @@
 
     <div class="block">
       <div class="row">
-        <span class="label">每候选字数</span>
+        <span class="label">每段字数</span>
         <el-input-number :model-value="targetWords" :min="100" :max="800" :step="50" size="small"
                          controls-position="right"
                          @update:model-value="v => $emit('update:targetWords', v)" />
       </div>
       <div class="row">
-        <span class="label">候选数</span>
+        <span class="label">生成几段</span>
         <el-radio-group :model-value="candidateCount" size="small"
                         @update:model-value="v => $emit('update:candidateCount', v)">
           <el-radio-button :value="2">2 个</el-radio-button>
@@ -42,7 +42,7 @@
       <span>约 {{ estimate.words }} 字</span>
       <span class="dot">·</span>
       <span class="price">¥{{ Number(estimate.price || 0).toFixed(2) }}</span>
-      <span class="tag">未采纳也计费</span>
+      <span class="tag">未采用也计费</span>
     </div>
     <el-button type="primary" class="gen-btn" :loading="generating" :disabled="!canGenerate"
                @click="$emit('generate')">
@@ -58,11 +58,11 @@
     <div v-if="candidates.length" class="cands">
       <div v-for="(c, i) in candidates" :key="c.id" class="cand">
         <div class="cand-head">
-          <span class="cand-no">候选 {{ i + 1 }}</span>
+          <span class="cand-no">段落 {{ i + 1 }}</span>
           <div class="cand-actions">
             <el-button size="small" text @click="$emit('copy', c)">复制</el-button>
             <el-button size="small" type="primary" :loading="adopting === c.id"
-                       @click="$emit('adopt', c)">采纳</el-button>
+                       @click="$emit('adopt', c)">采用</el-button>
           </div>
         </div>
         <p class="cand-text">{{ c.text }}</p>
@@ -70,7 +70,7 @@
     </div>
 
     <div v-if="drafts.length" class="drafts">
-      <p class="drafts-title">未采纳候选（48 小时内，已计费）</p>
+      <p class="drafts-title">未采用的段落（48 小时内，已计费）</p>
       <div v-for="d in drafts" :key="d.gen_id" class="draft">
         <div class="draft-head">
           <span>{{ modeLabel(d.mode) }} · {{ d.words }} 字</span>

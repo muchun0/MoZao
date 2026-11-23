@@ -109,7 +109,7 @@
               打开第 {{ it.jump }} 章
             </el-button>
             <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
-              @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+              @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章修改建议</el-button>
             <el-button v-if="it.jump || it.chapter" size="small" text type="primary"
               @click="askAssistant(it)">问小墨怎么改</el-button>
             <template v-if="it.handover">
@@ -259,7 +259,7 @@
                 <el-button v-if="it.chapter && it.source !== 'chapter_quality'" size="small" text type="primary"
                   @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
                 <el-button v-if="it.chapter && it.source === 'chapter_quality'" size="small" text type="primary"
-                  @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+                  @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章修改建议</el-button>
                 <el-button v-if="it.chapter" size="small" text type="primary"
                   @click="askAssistant(it)">问小墨怎么改</el-button>
               </div>

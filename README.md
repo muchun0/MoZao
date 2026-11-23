@@ -545,7 +545,7 @@ docker compose ps          # 两个容器均 healthy 即就绪
 
 ## 更新记录
 
-- **2026-11-23**：第三十五次部署（服务器代码 = master，随 devtest `33458c6` 合并，**已上线**）——**新手易用性 P0/P1 前端优化（REQ-R33）**：
+- **2026-11-23**：第三十五次部署（服务器代码 = master `7201d6a`，随 devtest `9801173` 合并，**已上线**）——**新手易用性 P0/P1 前端优化（REQ-R33）**：
   - **① 建书表单（P0）**：必填/选填标注，最简填写提示，按目标字数与每章字数自动估算章数；设定项与质量选项黑话人话化。
   - **② 详情页步骤引导（P0）**：顶部一行小字升级为 5 步步骤条（大纲 → 审阅大纲 → 世界观 → 审阅世界观 → 写正文），可点击跳页签；收敛重叠生成按钮文案层级。
   - **③ 章节阅读入口（P0）**：章节条目补「阅读」按钮，标题加可点视觉提示与 hover。
@@ -554,7 +554,7 @@ docker compose ps          # 两个容器均 healthy 即就绪
   - **⑥ 高级面板可达性（P1，非加说明文案方式）**：导航分三组收纳（写作主线 / 更多设定 / 智能），大白话重命名（章节规划 / 剧情时间线 / 人物设定 / 创作角色）；写作侧「卡点→当前难点」「候选→段落/备选版本」「采纳→采用」等人话化。
   - 回归：全量 pytest **1879 passed**；前端 node:test 56/56 + 66/66 全绿；`npm run build` 成功；浏览器主链路冒烟通过，控制台无 error/warning。
   - 部署：`git archive master` → workbench 上传 → `python3 -m zipfile -e` 解压 `/opt/novel-gen` → `docker compose up -d --build`；线上只验容器 health + 主页 JS 体积（不白屏）。
-  - 上线证据：（Step 8 回填：包 md5 / 容器 healthy / `/api/health` 200 / 主页 JS 体积）。
+  - 上线证据：包 `novel_master.zip` md5 `98cc34d1d155869fca5cc2c8fce314b0`（本地与服务器一致）；部署前备份 `/opt/novel-gen-bak-20261123.tgz`（7.0 M）；镜像 `novel-gen:latest` 重建（容器内前端多阶段构建真实执行，vite v8.3.0 built in 3.15s）；`mysql-mozao` healthy、`novel-gen` healthy；`https://mozao.click/api/health` 200 `{"status":"ok"}`；主页 `assets/index-16CxXn7v.js`（1,120,241 B）不白屏。回滚：`tar xzf /opt/novel-gen-bak-20261123.tgz -C /opt && cd /opt/novel-gen && docker compose up -d --build`。
 - **2026-11-16**：第三十四次部署（服务器代码 = master，随 devtest `d3e5570` 合并，**已上线**）——**创作阶段审阅门 M0 + 验收 bug 修复 + 章末账本承接 B+A**：
   - **① 创作阶段审阅门 M0（`508c6ad` → PR #14 `5a4f408`）**：生成链路拆成断点——大纲生成完停下、世界观生成完停下，各带「通过 / 重生成 / 跳过」门卡；未过门时下游接口返回 409；正文按 5 章一批，批末回材料后停；小字「一键全部生成」是逃生舱（二次确认 + 预估）。
   - **② 验收两处 bug 修复（`910c961` / `3736e4f` → PR #15 `96a270b`）**：门卡片去掉「先编辑」（本就渲染在当前 tab，是空操作，编辑随时可做），动作收敛为「通过 / 重生成 / 跳过」；时间线事件章号归属到本章（`derive_chapter_events` + 章末 summary 兜底），水位改为三源取最大（`state.last_chapter` / `chapter_state.chapter` / `store.last_chapter_no()`），不再把事件全挂第 1 章。

@@ -22,3 +22,19 @@ export const getEntityMentions = (pid, name, aliases = []) =>
     params: { name, alias: aliases },
     paramsSerializer: { indexes: null },
   })
+
+// R30 人机协作：交接工单 / 账本提案（只读列表 + 人工处理）
+export const getHandovers = (pid, params = {}) =>
+  request.get(`/projects/${pid}/handovers`, { params })
+
+export const resolveHandover = (pid, hid, payload) =>
+  request.post(`/projects/${pid}/handovers/${hid}/resolve`, payload)
+
+export const getProposals = (pid, params = {}) =>
+  request.get(`/projects/${pid}/proposals`, { params })
+
+export const mergeProposal = (pid, proposalId, payload = {}) =>
+  request.post(`/projects/${pid}/proposals/${proposalId}/merge`, payload)
+
+export const rejectProposal = (pid, proposalId, payload = {}) =>
+  request.post(`/projects/${pid}/proposals/${proposalId}/reject`, payload)

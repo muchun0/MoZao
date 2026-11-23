@@ -76,6 +76,9 @@
       <!-- 0. 待处理：把「必须先处理 / 建议处理」合成一条清单，默认只看这里 -->
       <div v-show="sub === 'todo'" class="cp-pane">
         <p v-if="!todoItems.length" class="cp-group-empty">没有需要马上处理的问题。想逐条翻记录，切上面的分类。</p>
+        <p v-if="blockingCount" class="cp-blocking-hint">
+          其中 {{ blockingCount }} 件会阻塞生成，处理完才会继续写后续章节。
+        </p>
         <article v-for="(it, i) in todoItems" :key="`t-${i}`" class="cp-item">
           <div class="cp-item-top">
             <span class="cp-dot" :class="`sev-${it.severity}`"></span>
@@ -106,7 +109,23 @@
               打开第 {{ it.jump }} 章
             </el-button>
             <el-button v-if="it.source === 'chapter_quality' && it.chapter" size="small" text type="primary"
-              @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+              @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章修改建议</el-button>
+            <el-button v-if="it.jump || it.chapter" size="small" text type="primary"
+              @click="askAssistant(it)">问小墨怎么改</el-button>
+            <template v-if="it.handover">
+              <el-button size="small" type="primary" :loading="busy"
+                @click="onResolve(it.handover, 'approve')">{{ it.handover.trigger === 'human_stop' ? '放行继续' : '放行' }}</el-button>
+              <el-button size="small" text :disabled="busy"
+                @click="onResolve(it.handover, 'reject')">驳回</el-button>
+              <el-button size="small" text type="danger" :disabled="busy"
+                @click="onAbort(it.handover)">终止任务</el-button>
+            </template>
+            <template v-if="it.proposal">
+              <el-button size="small" type="primary" :loading="busy"
+                @click="onMerge(it.proposal)">合并进设定</el-button>
+              <el-button size="small" text :disabled="busy"
+                @click="onRejectProposal(it.proposal)">驳回</el-button>
+            </template>
           </div>
         </article>
         <p v-if="todoMore" class="cp-footnote">还有 {{ todoMore }} 条没列，完整的在「前后对不上」「伏笔回收」里按分类看。</p>
@@ -169,7 +188,7 @@
           </article>
           <p class="cp-footnote">
             <template v-if="hiddenViews.length">
-              另有 {{ hiddenViews.length }} 项系统内部账本只做自检，界面上不展开，也不用你维护。
+              另有 {{ hiddenViews.length }} 项系统内部记录只做自检，界面上不展开，也不用你维护。
             </template>
             <template v-else>上面只列你能看到内容的记录。</template>
           </p>
@@ -240,7 +259,9 @@
                 <el-button v-if="it.chapter && it.source !== 'chapter_quality'" size="small" text type="primary"
                   @click="emitLocate(it.chapter)">打开第 {{ it.chapter }} 章</el-button>
                 <el-button v-if="it.chapter && it.source === 'chapter_quality'" size="small" text type="primary"
-                  @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章改稿建议</el-button>
+                  @click="emit('open-versions', it.chapter)">看第 {{ it.chapter }} 章修改建议</el-button>
+                <el-button v-if="it.chapter" size="small" text type="primary"
+                  @click="askAssistant(it)">问小墨怎么改</el-button>
               </div>
             </article>
             <el-button v-if="confItems.length < confTotal" size="small" text type="primary" :loading="confLoading"
@@ -307,10 +328,11 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getConsistencyOverview, getForeshadowLedger, getConsistencyConflicts,
   getEntityIndex, getEntityMentions,
+  getHandovers, resolveHandover, getProposals, mergeProposal, rejectProposal,
 } from '../../api/consistency'
 import {
   FORESHADOW_STATES, ENTITY_KIND_OPTIONS, SEVERITY_ORDER,
@@ -326,7 +348,7 @@ import { staleNoticeOf, isItemStale, staleChaptersOf } from '../../utils/stalene
 import StaleNotice from '../common/StaleNotice.vue'
 
 const props = defineProps({ pid: { type: String, required: true } })
-const emit = defineEmits(['locate', 'open-versions'])
+const emit = defineEmits(['locate', 'open-versions', 'ask-assistant', 'changed'])
 
 const loading = ref(false)
 const overview = ref(null)
@@ -357,6 +379,12 @@ const entityLoaded = ref(false)
 const drawerOpen = ref(false)
 const drawer = ref(null)
 const drawerLoading = ref(false)
+// R30 交接工单 / 账本提案（与体检首屏并行加载，失败只隐藏该分组并留痕）
+const handovers = ref([])
+const proposals = ref([])
+const handoverLoaded = ref(false)
+const proposalLoaded = ref(false)
+const busy = ref(false)
 
 const severityLabel = (sev) => severityMeta(sev).label
 const fsLabel = (state) => foreshadowStateLabel(state)
@@ -593,19 +621,190 @@ function buildGroupedItems(ov) {
       recordStale: isItemStale(it),
       advice: conflictAdvice(it), jump: it.chapter || 0,
       source: it.source, chapter: it.chapter || 0,
+      handoverKey: conflictHandoverKey(it),
     })
   }
 
   return items.sort((a, b) => (SEVERITY_ORDER[b.severity] || 0) - (SEVERITY_ORDER[a.severity] || 0))
 }
 
-const groupedItems = computed(() => buildGroupedItems(overview.value))
+const groupedItems = computed(() => mergeWorkbenchItems(buildGroupedItems(overview.value)))
 
 // 待处理页：只放「必须 / 建议」两档，首屏最多 6 条，避免一屏堆满
 const TODO_CAP = 6
 const todoAll = computed(() => groupedItems.value.filter((it) => it.group === 'must' || it.group === 'suggest'))
 const todoItems = computed(() => todoAll.value.slice(0, TODO_CAP))
 const todoMore = computed(() => Math.max(0, todoAll.value.length - todoItems.value.length))
+const blockingCount = computed(
+  () => handovers.value.filter((h) => h.status === 'open' && h.blocking).length)
+
+// ---------- R30 交接 / 提案：并入「待处理」清单 ----------
+const HANDOVER_TITLE = {
+  rule_hit: '硬红线命中，需要你拍板',
+  low_confidence: '质检把握不足，建议你抽检',
+  budget: '余额耗尽，生成停在半路',
+  human_stop: '你暂停了任务，等放行',
+  proposal: '模型新增了设定，待你合并',
+}
+const HANDOVER_ADVICE = {
+  rule_hit: '先看证据与规则；确认是误判就驳回并改方案，是真问题就先改稿/改设定，再重新发起。',
+  low_confidence: '这是抽检项：看一眼原文，没问题就放行，问题明显就驳回。',
+  budget: '充值后点放行继续，已完成的章节不会重写、也不会重复扣费。',
+  human_stop: '点放行继续写剩余章节；不想继续就终止任务，已完成章节保留。',
+  proposal: '合并会把变更写进设定并提交新版本（相关章会标为记录过期）；不同意就驳回。',
+}
+
+const normKey = (v) => String(v || '').replace(/：/g, ':').trim().replace(/\s+/g, ' ')
+function conflictHandoverKey(it) {
+  const ch = Number(it.chapter || 0)
+  const rule = normKey(it.checkType || '')
+  return ch && rule ? `ch:${ch}:rule:${rule}` : ''
+}
+
+function handoverWhere(h) {
+  const ch = Number((h.evidence || {}).quote?.ch || 0)
+  return ch ? `第 ${ch} 章 · 任务 ${h.task_id || ''}` : `任务 ${h.task_id || ''}`
+}
+
+function handoverDetails(h) {
+  const rows = []
+  const rule = h.evidence?.rule
+  const snippet = h.evidence?.quote?.snippet
+  if (rule) rows.push({ label: '规则', text: rule })
+  if (snippet) rows.push({ label: '证据原文', text: `「${snippet}」` })
+  if (h.evidence?.issue_count) rows.push({ label: '问题条数', text: String(h.evidence.issue_count) })
+  rows.push({ label: '为什么停', text: h.blocking ? '这类问题不允许自动重试消化' : '抽检项，不阻塞生成' })
+  return rows
+}
+
+function proposalName(p) {
+  const m = String(p.path || '').match(/\[([^\]]+)\]/)
+  return m ? m[1] : String(p.path || '')
+}
+
+function mergeWorkbenchItems(items) {
+  const out = []
+  for (const h of handovers.value) {
+    if (h.status !== 'open') continue
+    const hit = items.find((x) => x.handoverKey && x.handoverKey === h.dedupe_key)
+    if (hit) {
+      hit.handover = h
+      if (h.blocking) hit.group = 'must'
+      continue
+    }
+    const severity = h.severity === 'high' ? 'high' : (h.blocking ? 'medium' : 'low')
+    out.push({
+      severity, group: h.blocking ? 'must' : 'suggest',
+      title: HANDOVER_TITLE[h.trigger] || '有一个交接点等你处理',
+      where: handoverWhere(h),
+      advice: HANDOVER_ADVICE[h.trigger] || '看完证据后放行或驳回；驳回不会丢已完成的稿。',
+      details: handoverDetails(h),
+      jump: Number(h.evidence?.quote?.ch || 0),
+      handover: h,
+    })
+  }
+  for (const p of proposals.value) {
+    if (p.status !== 'open') continue
+    const name = proposalName(p)
+    const ch = Number(p.evidence?.ch || 0)
+    out.push({
+      severity: 'medium', group: 'must',
+      title: `设定有新增待合并：${name}`,
+      where: ch ? `第 ${ch} 章新增 · ${p.path}` : p.path,
+      advice: p.reason || '合并后才生效；未合并不进入正文、不计入记忆。',
+      details: [{ label: '变更', text: `${p.op} → ${JSON.stringify(p.new)}` }],
+      jump: ch, proposal: p,
+    })
+  }
+  return items.concat(out).sort(
+    (a, b) => (SEVERITY_ORDER[b.severity] || 0) - (SEVERITY_ORDER[a.severity] || 0))
+}
+
+async function loadWorkbench() {
+  const [h, p] = await Promise.allSettled([
+    getHandovers(props.pid, { status: 'open', limit: 100 }),
+    getProposals(props.pid, { status: 'open', limit: 100 }),
+  ])
+  if (h.status === 'fulfilled') {
+    handovers.value = h.value.items || []
+    handoverLoaded.value = true
+  } else {
+    handovers.value = []
+    console.info('[R30] 交接工单不可用（可能开关未启用）', h.reason?.response?.status || h.reason)
+  }
+  if (p.status === 'fulfilled') {
+    proposals.value = p.value.items || []
+    proposalLoaded.value = true
+  } else {
+    proposals.value = []
+    console.info('[R30] 账本提案不可用（可能开关未启用）', p.reason?.response?.status || p.reason)
+  }
+}
+
+async function onResolve(h, action) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const r = await resolveHandover(props.pid, h.handover_id, {
+      action,
+      reason: action === 'reject' ? '作者驳回（全书体检页）' : '全书体检页放行',
+    })
+    if (r?.resumed) ElMessage.success('已放行，继续生成剩余章节')
+    else if (action === 'reject') ElMessage.info('已驳回；任务保持待审，改好方案后可再放行')
+    else ElMessage.success('已处理')
+    await loadWorkbench()
+    emit('changed')
+  } catch (e) {
+    console.warn('[R30] 交接处理失败', e)
+    ElMessage.error(e?.response?.data?.detail || '处理失败，请稍后重试')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onAbort(h) {
+  try {
+    await ElMessageBox.confirm(
+      '终止后本次任务结束，已完成章节保留；需要重写时重新发起生成。',
+      '终止任务', { type: 'warning', confirmButtonText: '终止', cancelButtonText: '不终止' })
+  } catch {
+    return
+  }
+  await onResolve(h, 'abort')
+}
+
+async function onMerge(p) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const r = await mergeProposal(props.pid, p.proposal_id, { reason: '全书体检页合并' })
+    const v = r?.proposal?.result_version
+    ElMessage.success(v ? `已合并并提交新版本 v${v}；相关章会标为记录过期` : '已合并进设定')
+    await loadWorkbench()
+    emit('changed')
+  } catch (e) {
+    console.warn('[R30] 提案合并失败', e)
+    ElMessage.error(e?.response?.data?.detail || '合并失败，请稍后重试')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onRejectProposal(p) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    await rejectProposal(props.pid, p.proposal_id, { reason: '作者驳回（全书体检页）' })
+    ElMessage.success('已驳回，设定未变更')
+    await loadWorkbench()
+    emit('changed')
+  } catch (e) {
+    console.warn('[R30] 提案驳回失败', e)
+    ElMessage.error(e?.response?.data?.detail || '驳回失败，请稍后重试')
+  } finally {
+    busy.value = false
+  }
+}
 
 const fsEmptyText = computed(() => (fsState.value
   ? '这个状态下暂时没有需要处理的伏笔，换个状态看看。'
@@ -627,6 +826,30 @@ const entityEmptyText = computed(() => (entityQuery.value
 // 章节跳转：只在有真实章号时发事件
 function emitLocate(no) {
   if (no) emit('locate', no)
+}
+
+// R28：取条目里可定位的原文片段（去掉「设定名」前缀），供写作页按子串选段
+function issueEvidence(it) {
+  const rows = it.details || []
+  const pick = rows.find((d) => d.label === '记录原文')
+    || rows.find((d) => d.label === '对照设定') || rows[0]
+  if (!pick || !pick.text) return ''
+  return String(pick.text)
+    .replace(/^「[^」]*」[:：]?/, '')
+    .replace(/^「|」$/g, '')
+    .trim()
+}
+
+// R28：跳写作页问小墨（章 + 证据原文 + 已有建议），定位失败由写作页提示手动选段
+function askAssistant(it) {
+  const ch = it.jump || it.chapter || 0
+  if (!ch) return
+  emit('ask-assistant', {
+    ch,
+    issue: it.title || '',
+    advice: it.advice || '',
+    evidence: issueEvidence(it),
+  })
 }
 
 async function loadOverview() {
@@ -737,7 +960,10 @@ function jump(no) {
   emit('locate', no)
 }
 
-onMounted(loadOverview)
+onMounted(() => {
+  loadOverview()
+  loadWorkbench()
+})
 // 切到未加载过的子页时按需拉取（冲突/索引不在首屏全量返回）
 watch(sub, async () => {
   if (overview.value) await loadCurrentSub()
@@ -830,6 +1056,8 @@ watch(sub, async () => {
 .cp-group-hint { font-size: 12px; color: var(--muted); }
 .cp-group-body { padding: 2px 14px 10px; }
 .cp-group-empty { font-size: 12px; color: var(--muted); line-height: 1.7; padding: 6px 0 2px; }
+.cp-blocking-hint { font-size: 12px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 6px; padding: 6px 10px; margin: 4px 0 8px; line-height: 1.6; }
 .cp-group-more { font-size: 12px; color: var(--muted); line-height: 1.7; margin-top: 4px; }
 
 /* 条目卡：问题 / 位置 / 建议三要素 */

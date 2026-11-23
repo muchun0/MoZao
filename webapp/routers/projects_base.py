@@ -7,7 +7,56 @@ from ..core import *  # noqa: F401,F403  共享状态/工具/模型/鉴权依赖
 from .. import db  # noqa: F401  数据层
 from .. import generate_service  # noqa: F401  Agent 运行进度快照（GET /projects/{id} 暴露真实阶段/进度）
 from .. import gates  # REQ-创作阶段审阅门 M0：门状态随项目详情下发（fail-open）
+from ..error_text import sanitize_error
 from ..user_memory import UserMemoryService  # 用户级记忆库（跨书创作偏好继承）
+
+
+_OUTLINE_FIELD_MAP = {
+    "核心事件": "core_event", "主要事件": "core_event", "事件": "core_event",
+    "冲突": "conflict", "冲突设计": "conflict",
+    "人物": "character_moves", "人物动线": "character_moves", "出场人物": "character_moves",
+    "伏笔": "foreshadowing", "伏笔与回收": "foreshadowing",
+    "情绪": "emotion", "情绪价值": "emotion", "爽点": "emotion",
+    "转场": "transition", "转场提示": "transition",
+    "标签": "tag", "节点": "tag",
+    "章末钩子": "cliffhanger", "钩子": "cliffhanger",
+    "时间线": "timeline",
+}
+
+
+def _parse_chapter_plan(no: int, title: str, body: str) -> "ChapterPlan":
+    """把「标签：内容」形式的章节梗概拆成结构化字段；没有标签的行合并进 goal。
+
+    无标签（作者直接贴的章节梗概）时至少把首句放 goal、其余放 core_event，
+    避免导入后除「剧情目标」外全空、生成正文拿不到事件。
+    """
+    fields = {"core_event": "", "conflict": "", "character_moves": "", "foreshadowing": "",
+              "emotion": "", "transition": "", "tag": "", "cliffhanger": "", "timeline": ""}
+    free_lines: list[str] = []
+    for raw in (body or "").splitlines():
+        line = raw.strip().lstrip("-*· ").strip()
+        if not line:
+            continue
+        m = re.match(r"^([^：:]{1,12})[：:]\s*(.+)$", line)
+        key = _OUTLINE_FIELD_MAP.get(m.group(1).strip()) if m else None
+        if key:
+            fields[key] = (fields[key] + "；" + m.group(2).strip()).strip("；")
+        else:
+            free_lines.append(line)
+    goal = "\n".join(free_lines).strip() or fields["core_event"]
+    if not fields["core_event"]:
+        # 自由文本：首句作为剧情目标，其余作为本章要发生的事（core_event）；
+        # 只有一句时两者同源，保证章纲至少「目标 + 事件」两项可用。
+        sentences = [s for s in re.split(r"(?<=[。！？!?])", goal) if s.strip()]
+        if len(sentences) > 1:
+            fields["core_event"] = "".join(sentences[1:]).strip()
+            goal = sentences[0].strip()
+        else:
+            fields["core_event"] = goal
+    return ChapterPlan(no=no, title=title, goal=goal, **fields)
+
+
+_CHAPTER_HEADING_RE = re.compile(r"^第\s*[0-9０-９零一二三四五六七八九十百千]+\s*[章回节]")
 
 
 def _import_user_outline(store, text: str) -> bool:
@@ -22,22 +71,28 @@ def _import_user_outline(store, text: str) -> bool:
     if not text:
         return False
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # 书名：取首个非空行（去掉 markdown # 前缀与书名号）
-    title = re.sub(r"^#+\s*", "", lines[0]).strip("《》 \t") if lines else ""
+    # 书名：取首个非空行（去掉 markdown # 前缀与整对书名号；半对书名号保留原样，避免吞字）
+    raw_title = re.sub(r"^#+\s*", "", lines[0]).strip() if lines else ""
+    if _CHAPTER_HEADING_RE.match(raw_title):
+        # 作者直接从「第1章」开始贴：首行是章标题，不是书名，别把章标题当书名
+        title = ""
+    elif raw_title.startswith("《") and raw_title.endswith("》"):
+        title = raw_title[1:-1].strip()
+    else:
+        title = raw_title.lstrip("《").strip()
 
     intro = ""
     plans = []
     for ch in split_chapters(text):
         body = (ch.get("content") or "").strip()
         if not ch.get("title"):
-            # 无标题段落（通常是总纲/前导说明）归入总纲，不占章节
+            # 无标题段落（通常是总纲/前导说明）归入总纲，不占章节；
+            # 若这段就是首行书名（会与标题框重复），跳过不重复展示
+            if body.strip("《》 ") == title:
+                continue
             intro = (intro + "\n" + body).strip() if intro else body
             continue
-        plans.append(ChapterPlan(
-            no=len(plans) + 1,
-            title=ch["title"],
-            goal=body,  # 章节正文完整保留（以用户传入为准），用户可继续编辑
-        ))
+        plans.append(_parse_chapter_plan(len(plans) + 1, ch["title"], body))
     if not plans:
         # 未识别到章节结构：不落盘，避免空大纲阻塞「生成大纲与世界观」
         logger.info("用户大纲未识别到章节结构，跳过导入: project=%s", store.dir.name)
@@ -221,6 +276,11 @@ def create_project(req: ProjectCreateReq, user: dict = Depends(_require_user)):
     }
 
 
+def _display_title(cfg) -> str:
+    from novel_gen.store.project import _display_name
+    return _display_name(cfg.effective_title())
+
+
 @app.get("/api/projects/{project_id}")
 def project_detail(project_id: str, user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
@@ -248,14 +308,14 @@ def project_detail(project_id: str, user: dict = Depends(_require_user)):
         "chapters_done": len(chapters),
         "chapters_total": total,
         "running": running,
-        "error": (handle.error if handle and handle.error else state.error),
+        "error": sanitize_error(handle.error if handle and handle.error else state.error, ""),
         "generated_words": sum(len(c.content) for c in chapters),
-        "has_txt": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.txt").exists(),
+        "has_txt": bool(chapters),
         "has_cover": _cover_files(store)[0].exists(),
         "cover_used": _cover_used_count(store),
         "cover_max": 5,
-        "has_epub": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.epub").exists(),
-        "has_docx": (OUTPUT_DIR / f"{_safe_name(cfg.effective_title())}.docx").exists(),
+        "has_epub": (OUTPUT_DIR / f"{project_id}_{_display_title(cfg)}.epub").exists(),
+        "has_docx": (OUTPUT_DIR / f"{project_id}_{_display_title(cfg)}.docx").exists(),
         # 门状态：读取即做版本比对与失效级联；任何异常都降级为空字典，不影响详情返回
         "gates": _gates_snapshot(store),
     }
@@ -308,14 +368,18 @@ def refund_project(project_id: str, user: dict = Depends(_require_user)):
     try:
         import shutil
         shutil.rmtree(store.dir, ignore_errors=True)
-        from novel_gen.store.project import _safe_name
-        for ext in ("txt", "epub", "docx", "png"):
-            f = OUTPUT_DIR / f"{_safe_name(title)}.{ext}"
-            if f.exists():
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
+        from novel_gen.store.project import _display_name
+        disp = _display_name(title)
+        for ext in ("txt", "epub", "docx", "md", "png"):
+            for f in (OUTPUT_DIR / f"{disp}.{ext}",
+                      OUTPUT_DIR / f"{project_id}_{disp}.{ext}",
+                      OUTPUT_DIR / f"{_safe_name(title)}.{ext}",
+                      OUTPUT_DIR / f"{project_id}_{_safe_name(title)}.{ext}"):
+                if f.exists():
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
     except Exception:
         logger.exception("删除项目文件失败: project=%s", project_id)
 
@@ -392,70 +456,86 @@ def delete_project(project_id: str, user: dict = Depends(_require_user)):
     return {"ok": True}
 
 
+def _chapter_display_title(ch, fallback_no: int) -> str:
+    title = (ch.title or "").strip() or f"第{fallback_no}章"
+    if title.startswith("第") and "章" in title:
+        return title
+    return f"第{fallback_no}章 {title}"
+
+
+def _build_plain_export(store, cfg, fmt: str) -> str:
+    """TXT / Markdown 直接由已保存章节拼接：零模型依赖，不需要 provider / API Key。"""
+    chapters = store.list_chapters()
+    if not chapters:
+        raise HTTPException(status_code=400, detail="还没有已保存的章节正文，无法导出纯文本")
+    lines: list[str] = []
+    if fmt == "md":
+        lines += [f"# {cfg.effective_title()}", ""]
+        if cfg.premise:
+            lines += [f"> {cfg.premise}", ""]
+        for ch in chapters:
+            lines += [f"## {_chapter_display_title(ch, ch.no)}", "", (ch.content or "").strip(), ""]
+    else:
+        lines += [cfg.effective_title(), ""]
+        if cfg.premise:
+            lines += [cfg.premise, ""]
+        for ch in chapters:
+            lines += [_chapter_display_title(ch, ch.no), "", (ch.content or "").strip(), ""]
+    return "\n".join(lines)
+
+
+def _atomic_write_text(path, text: str) -> None:
+    """产物原子写（临时文件 + os.replace），避免下载到半截文件。"""
+    import os
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 @app.get("/api/projects/{project_id}/download")
 def download(project_id: str, format: str = "txt", user: dict = Depends(_require_user)):
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     cfg = store.load_config()
-    name = _safe_name(cfg.effective_title())
+    from novel_gen.store.project import _display_name
+    name = _display_name(cfg.effective_title())
     fmt = (format or "txt").lower()
+    out = OUTPUT_DIR / f"{project_id}_{name}.{fmt}"
 
-    if fmt == "txt":
-        media = "text/plain; charset=utf-8"
-        out = OUTPUT_DIR / f"{project_id}_{name}.txt"
-        if not out.exists():
-            try:
-                pipeline = _open_pipeline(store)
-                src = pipeline.export()
-                shutil.copy2(src, out)
-            except Exception as exc:
-                raise HTTPException(status_code=404, detail=f"尚未生成可下载的 txt：{exc}")
-    elif fmt == "epub":
-        media = "application/epub+zip"
-        out = OUTPUT_DIR / f"{project_id}_{name}.epub"
-        if not out.exists():
-            try:
-                src = export_epub(store)
-                shutil.copy2(src, out)
-            except Exception as exc:
-                raise HTTPException(status_code=404, detail=f"导出 epub 失败：{exc}")
-    elif fmt == "docx":
-        media = ("application/vnd.openxmlformats-officedocument."
-                 "wordprocessingml.document")
-        out = OUTPUT_DIR / f"{project_id}_{name}.docx"
-        if not out.exists():
-            try:
-                src = export_docx(store)
-                shutil.copy2(src, out)
-            except Exception as exc:
-                raise HTTPException(status_code=404, detail=f"导出 docx 失败：{exc}")
-    elif fmt == "md":
-        out = OUTPUT_DIR / f"{project_id}_{name}.md"
-        media = "text/markdown; charset=utf-8"
-        if not out.exists():
-            try:
-                pipeline = _open_pipeline(store)
-                chapters_dir = pipeline.store.dir / "chapters"
-                lines = [f"# {cfg.effective_title()}", ""]
-                if cfg.premise:
-                    lines += [f"> {cfg.premise}", ""]
-                for ch_file in sorted(chapters_dir.glob("ch*.txt")):
-                    try:
-                        text = ch_file.read_text(encoding="utf-8")
-                        first_nl = text.find("\n")
-                        title = text[:first_nl].strip() if first_nl > 0 else ch_file.stem
-                        body = text[first_nl+1:].strip() if first_nl > 0 else ""
-                        lines += [f"## {title}", "", body, ""]
-                    except Exception:
-                        continue
-                out.write_text("\n".join(lines), encoding="utf-8")
-            except Exception as exc:
-                raise HTTPException(status_code=404, detail=f"导出 Markdown 失败：{exc}")
+    # 重生成类操作先删旧产物，禁止把上一版或空壳当成本次结果
+    if fmt in ("txt", "md", "epub", "docx"):
+        out.unlink(missing_ok=True)
     else:
         raise HTTPException(status_code=400, detail=f"不支持的导出格式：{format}")
 
+    if fmt == "txt":
+        media = "text/plain; charset=utf-8"
+        _atomic_write_text(out, _build_plain_export(store, cfg, "txt"))
+    elif fmt == "md":
+        media = "text/markdown; charset=utf-8"
+        _atomic_write_text(out, _build_plain_export(store, cfg, "md"))
+    elif fmt == "epub":
+        media = "application/epub+zip"
+        try:
+            shutil.copy2(export_epub(store), out)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("导出 epub 失败: project=%s", project_id)
+            raise HTTPException(status_code=400, detail="导出 EPUB 失败：请先确认已生成章节，再重试") from exc
+    else:
+        media = ("application/vnd.openxmlformats-officedocument."
+                 "wordprocessingml.document")
+        try:
+            shutil.copy2(export_docx(store), out)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("导出 docx 失败: project=%s", project_id)
+            raise HTTPException(status_code=400, detail="导出 DOCX 失败：请先确认已生成章节，再重试") from exc
+
     if not out.exists():
-        raise HTTPException(status_code=404, detail="尚未生成可下载的文件")
+        raise HTTPException(status_code=400, detail="尚未生成可下载的文件")
     logger.info("下载导出: uid=%d project=%s format=%s file=%s", user["id"], project_id, fmt, out.name)
     return FileResponse(str(out), filename=f"{name}.{fmt}", media_type=media)
 

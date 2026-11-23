@@ -21,8 +21,9 @@
    `list()` 返回的 `words` 供结算与展示复用（§3.1）。
 5. **provenance**：`run_id` 缺省从 `store.current_run()`（§3.9，1B 落地）读取，无 run 上下文时
    降级为空串不报错；`upstream=None` 自动读取当前 outline/world selected 版本号（评审 I-2）。
-6. `source` 枚举收敛为 `ai|rewrite|user|legacy`（§4.7）；`source="user"` 置 `user_managed`，
-   此后 `auto_select_best` 不再覆盖用户选择。
+6. `source` 枚举为 `ai|rewrite|inline|user|legacy`（§4.7 + R25 基座）；`source in {user, inline}`
+   置 `user_managed`，此后 `auto_select_best` 不再覆盖用户选择。`inline` = 人已拍板的内联采纳，
+   同样视为「用户已管理」，但没有「用户亲写」的个人风格锚语义。
 """
 from __future__ import annotations
 
@@ -161,7 +162,7 @@ class VersionedProduct:
           大纲快照与导入前自动备份都并入版本库，用标签区分用途、供版本弹窗展示。
         - `ts`：版本时间戳（秒）；缺省当前时间。导入存量快照时传原文件时间，保序。
         - `quality`：写入 history（版本弹窗数据源）。
-        - `source="user"`：置 `user_managed=True`，此后 auto_select_best 不覆盖。
+        - `source="user"` / `source="inline"`：置 `user_managed=True`，此后 auto_select_best 不覆盖。
         - `run_id`：缺省取 `store.current_run()`（无 run 上下文降级为空串）。
         - `upstream`：默认 None = 自动读取当前 outline/world selected 版本号。
         """
@@ -240,7 +241,9 @@ class VersionedProduct:
             entry["upstream"] = up
         history.append(entry)
 
-        user_managed = bool(rec.get("user_managed")) or source == "user"
+        # R25 基座：inline（内联采纳）由人拍板，与 user 一样阻止自动选分覆盖；
+        # 单一判定点在此，不在 auto_select_best 里再加第二个分支。
+        user_managed = bool(rec.get("user_managed")) or source in {"user", "inline"}
         selected = next_v if promote else rec.get("selected")
 
         # 版本上限淘汰最旧（跳过 selected，HEAD 永不淘汰）

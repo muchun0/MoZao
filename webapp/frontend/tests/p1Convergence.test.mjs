@@ -10,10 +10,12 @@ import { fileURLToPath } from 'node:url'
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const REPO = path.resolve(FRONTEND, '..', '..')
 const read = (rel, base = FRONTEND) => fs.readFileSync(path.join(base, rel), 'utf8')
+// 断言只看会渲染出去的内容：剔除 HTML 注释与 JS 行注释，历史说明不留进扫描命中
+const visible = (rel) => read(rel).replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
 
 // ---------- P1-1 大纲快照并入版本库 ----------
 test('大纲工具条不再有独立「大纲快照」入口，只留版本弹窗', () => {
-  const detail = read('src/views/ProjectDetail.vue')
+  const detail = visible('src/views/ProjectDetail.vue')
   assert.equal(detail.includes('大纲快照'), false, '工具条不应再有快照下拉')
   assert.equal(detail.includes('onSnapCmd'), false, '快照命令链应已删除')
   assert.equal(detail.includes('listSnapshots'), false, '不再从 tools api 读快照')

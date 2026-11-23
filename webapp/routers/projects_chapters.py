@@ -17,6 +17,38 @@ from novel_gen.pipeline.templates import _style_reference
 import time
 
 
+@app.post("/api/projects/{project_id}/chapters")
+def create_chapter(project_id: str, req: dict = Body(default=None),
+                   user: dict = Depends(_require_user)):
+    """新建一章空白正文（手写入口）：source=user，AI 批量生成不会覆盖。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    req = req or {}
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中，请等本批结束再手写")
+    try:
+        no = int(req.get("no") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="章号必须是正整数")
+    if no <= 0:
+        no = max((c.no for c in store.list_chapters()), default=0) + 1
+    if store.load_chapter(no) is not None:
+        raise HTTPException(status_code=400, detail=f"第 {no} 章已有正文，请直接打开编辑")
+    outline = store.load_outline()
+    total = len(outline.chapters) if outline and getattr(outline, "chapters", None) else 0
+    if total and no > total:
+        raise HTTPException(
+            status_code=400,
+            detail=f"大纲只有 {total} 章；要写第 {no} 章请先在大纲页补一章")
+    title = str(req.get("title") or "").strip() or f"第{no}章"
+    store.save_chapter(Chapter(no=no, title=title, content="", source="user"),
+                       source="user", label="manual:create")
+    logger.info("新建手写章节: uid=%d project=%s no=%d title=%s",
+                user["id"], project_id, no, title)
+    return {"no": no, "title": title}
+
+
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")
 def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_require_user)):
     """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记 + 推荐徽章。"""
@@ -374,7 +406,12 @@ def project_chapter(project_id: str, no: int, user: dict = Depends(_require_user
     ch = store.load_chapter(no)
     if not ch:
         raise HTTPException(status_code=404, detail=f"章节 {no} 未生成")
-    return {"no": ch.no, "title": ch.title, "content": ch.content, "summary": ch.summary}
+    # R25：写作页需要 version + base_hash 做锚点乐观锁（只读补充字段，向后兼容）
+    from novel_gen.store.inline_edit import content_hash, current_version
+    return {"no": ch.no, "title": ch.title, "content": ch.content, "summary": ch.summary,
+            "source": ch.source, "user_edited": ch.user_edited,
+            "summary_stale": ch.summary_stale,
+            "version": current_version(store, no), "base_hash": content_hash(ch.content)}
 
 
 @app.put("/api/projects/{project_id}/chapters/{no}")
@@ -397,10 +434,12 @@ def edit_chapter(project_id: str, no: int, req: ChapterEditReq,
     # 摘要处理：用户显式给 → 用之；否则若正文变了且允许 → 自动重新生成
     if req.summary:
         ch.summary = req.summary
+        ch.summary_stale = False  # R25：摘要被显式刷新，落后标记清除
     elif req.regen_summary and req.content and req.content != _load_prev_content(store, no):
         new_summary = _regenerate_summary(store, ch)
         if new_summary:
             ch.summary = new_summary
+            ch.summary_stale = False
 
     # REQ-双锚风格锚定：用户编辑保存 = 人工修订标记（个人风格锚来源）
     ch.user_edited = True
@@ -619,7 +658,10 @@ def continue_branches(project_id: str, req: dict, user: dict = Depends(_require_
 @app.post("/api/projects/{project_id}/apply-branch")
 def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)):
     """F3 应用选中分支：默认预览模式——把选中的续写草稿记录到 continue_drafts.json，
-    不自动改写章节正文（由用户在编辑器里自行粘贴，防污染既有正文链路）。"""
+    不自动改写章节正文（由用户在编辑器里自行粘贴，防污染既有正文链路）。
+
+    R26 前置修复：写盘失败必须显式报错（此前吞异常仍返回 saved=True，验收会失真）。
+    """
     _check_project_access(project_id, user)
     store = _find_project(project_id)
     chapter_no = int(req.get("chapter_no", 0) or 0)
@@ -627,12 +669,14 @@ def apply_branch(project_id: str, req: dict, user: dict = Depends(_require_user)
     if not preview:
         raise HTTPException(status_code=400, detail="缺少分支续写内容")
     draft = {"direction": req.get("direction", ""), "label": req.get("label", ""),
-             "preview": preview, "applied_at": time.time()}
+             "preview": preview, "applied_at": time.time(), "origin": "tools"}
     try:
         store.save_continue_draft(chapter_no, draft)
     except Exception:
-        logger.exception("[ApplyBranch] 续写草稿落盘失败（仍返回预览）: project=%s ch=%d",
+        logger.exception("[ApplyBranch] 续写草稿落盘失败: project=%s ch=%d",
                          project_id, chapter_no)
+        raise HTTPException(status_code=500,
+                            detail="DRAFT_WRITE_FAILED: 续写草稿写入失败，请重试")
     return {"saved": True, "chapter_no": chapter_no, "preview": preview,
             "msg": "续写草稿已记录（预览模式，未自动写入章节正文，请复制到编辑器使用）"}
 
@@ -751,6 +795,46 @@ def get_book_facts_timeline(project_id: str, view: str = "chapter", at_ch: int =
     items.sort(key=lambda r: (int(r.get("ch") or 0), str(r.get("key") or "")))
     return {"view": view, "items": items, "count": len(items),
             "stale": bool(snap.get("stale")), "degraded": bool(facts.degraded)}
+
+
+@app.get("/api/projects/{project_id}/book-facts/canon-graph")
+def get_book_facts_canon_graph(project_id: str, view: str = "all", seed: str = "",
+                               depth: int = 1, rel: str = "", at_ch: int = 0,
+                               user: dict = Depends(_require_user)):
+    """REQ-R24 G0'：每书 Canon 事实图（节点 + 带证据的边）。
+
+    view=all 返回整图（含 sources/skipped_edges/fingerprint）；view=validate 返回
+    体检结论；view=entity 按 seed（节点 id、名称或已登记别名）取单节点与相邻边；
+    view=subgraph 从 seed 按 rel（默认 holds/part_of）扩散 depth 跳；
+    view=impact（G1'）按 seed 回答「改这个实体影响哪些章、哪些伏笔」。
+    开关 state_graph_v2 关闭时 404——与 R22 四视图并存，不互相替代。
+    """
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    cfg = _facts_cfg(store)
+    _require_flag(cfg, "state_graph_v2")
+    from novel_gen.pipeline.state.graph import (EDGE_RELS, SUBGRAPH_RELS,
+                                                CanonGraph)
+    g = CanonGraph(store, cfg)
+    view = (view or "all").strip()
+    if view not in ("all", "validate", "entity", "subgraph", "impact"):
+        raise HTTPException(status_code=400,
+                            detail=f"未知 view: {view}（可选 all/validate/entity/subgraph/impact）")
+    if view == "validate":
+        return g.validate(at_ch=at_ch)
+    if view == "all":
+        graph = g.build(at_ch=at_ch)
+        return {"version": g.fingerprint(graph), "graph": graph}
+    if not seed.strip():
+        raise HTTPException(status_code=400, detail="view=entity/subgraph/impact 需要 seed")
+    if view == "impact":
+        return g.impact(entity=seed, ch=int(at_ch or 0), at_ch=at_ch)
+    if view == "entity":
+        rels = tuple(r for r in (rel or "").split(",") if r in EDGE_RELS) or SUBGRAPH_RELS
+        return g.subgraph(seed=seed, depth=1, rels=rels, at_ch=at_ch)
+    rels = tuple(r for r in (rel or "").split(",") if r in EDGE_RELS) or SUBGRAPH_RELS
+    return g.subgraph(seed=seed, depth=max(1, min(int(depth or 1), 3)),
+                      rels=rels, at_ch=at_ch)
 
 
 @app.get("/api/projects/{project_id}/book-facts/graph")

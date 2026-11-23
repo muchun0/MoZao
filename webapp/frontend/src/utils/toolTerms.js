@@ -25,8 +25,8 @@ export const TOOL_SECTIONS = [
   },
   {
     key: 'reference',
-    title: '参考与候选',
-    hint: '产出候选供你挑选，不写入正文，选中后自己复制使用。',
+    title: '参考与备选',
+    hint: '产出备选供你挑选，不写入正文，选中后自己复制使用。',
   },
   {
     key: 'asset',

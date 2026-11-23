@@ -16,9 +16,9 @@
         >
           <span class="rail-item-main">
             <span class="rail-name">{{ a.name }}</span>
-            <span class="rail-version">{{ versionShort(a.key) }}</span>
           </span>
           <span class="rail-desc">{{ a.desc }}</span>
+          <span class="rail-stage">{{ a.stage }}</span>
           <span v-if="isRunningAgent(a.key)" class="rail-running">
             <span class="pulse" />运行中
           </span>
@@ -33,7 +33,7 @@
         <div class="billing-detail">
           {{ billingMode === 'user_llm'
             ? '使用您自己的模型额度，产物仍按版本记账'
-            : '按 AI 实际生成字数结算：统一 3 元/万字；候选/重写版本同样计费' }}
+            : '按 AI 实际生成字数结算：统一 3 元/万字；备选/重写版本同样计费' }}
         </div>
         <template v-if="billingMode === 'platform'">
           <div class="billing-balance" :class="{ danger: balance <= 0 }">
@@ -52,7 +52,6 @@
           <header class="stage-head">
             <div class="stage-title">
               <h3>{{ currentAgent.name }}</h3>
-              <el-tag size="small" type="info" effect="plain">{{ promptVersion(currentAgent.key) }}</el-tag>
             </div>
             <div class="stage-head-actions">
               <span v-if="isRunningAgent(currentAgent.key)" class="stage-running"><span class="pulse" />运行中</span>
@@ -60,6 +59,7 @@
             </div>
           </header>
           <p class="stage-desc">{{ currentAgent.desc }}</p>
+          <p class="stage-meta">适用阶段：{{ currentAgent.stage }} · 计费：平台模式按实际生成字数（3 元/万字），自备 Key 不扣平台余额</p>
 
           <!-- writer.chapter 参数：scope 三态（§4.1 params schema） -->
           <div v-if="currentAgent.key === 'writer.chapter'" class="stage-field">
@@ -80,7 +80,9 @@
               <span>章 至</span>
               <el-input-number v-model="toCh" :min="fromCh" size="small" controls-position="right" />
               <span>章</span>
-              <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">到末尾</el-checkbox>
+            </div>
+            <div v-if="chapterScope === 'range'" class="field-aux">
+              <el-checkbox v-model="toChOpen" size="small" @change="(v) => { if (v) toCh = 0 }">一直写到当前最后一章（到末尾）</el-checkbox>
             </div>
           </div>
 
@@ -118,7 +120,10 @@
                 运行 {{ currentAgent.name }}
               </el-button>
               <span v-if="estimates[currentAgent.key] > 0" class="action-hint">
-                预估 ¥{{ estimates[currentAgent.key].toFixed(2) }}（按实际生成字数结算）
+                预估 ¥{{ estimates[currentAgent.key].toFixed(2) }}（按近期实际字数估算，结算按实际生成字数）
+              </span>
+              <span v-else-if="estimateErrors[currentAgent.key]" class="action-hint danger">
+                {{ estimateErrors[currentAgent.key] }}
               </span>
               <span v-else-if="running" class="action-hint">「{{ runningAgentName }}」运行中，结束后可再次运行</span>
               <span v-else-if="billingMode === 'platform' && balance <= 0" class="action-hint danger">余额不足，请先充值</span>
@@ -133,7 +138,7 @@
               <span class="skills-chevron" :class="{ open: skillsOpen }">▾</span>
             </button>
             <div v-show="skillsOpen" class="skills-body">
-              <p class="skills-hint">技能注入该角色 system 提示词，对全部角色运行生效</p>
+              <p class="skills-hint">所选技能会作为该角色的写作要求生效，对该角色每次运行都适用</p>
               <SkillPicker v-model="skillIds" />
             </div>
           </div>
@@ -145,20 +150,20 @@
     <el-dialog v-model="promptDialog" :title="`编辑人设 · ${editingAgentName}`" width="640px">
       <el-alert :closable="false" type="info" class="prompt-tip">
         <template #title>
-          人设将作为 system 提示词注入该 Agent（追加到默认模板末尾）。保存即生成新版本，历史版本不可变、可追溯；当前版本 {{ editingVersion }}。请勿写入越权指令，输出仍受平台合规校验约束。
+          这里设置该角色的写作风格与分工。保存后会另存一份修改记录，可随时回看历史版本；请勿写入违规内容，输出仍受平台合规校验约束。
         </template>
       </el-alert>
       <div class="prompt-mode-bar">
         <el-radio-group v-model="promptMode" size="small">
           <el-radio-button value="preview">预览</el-radio-button>
-          <el-radio-button value="edit">编辑（Markdown 源码）</el-radio-button>
+          <el-radio-button value="edit">编辑（纯文本）</el-radio-button>
         </el-radio-group>
       </div>
       <div v-if="promptMode === 'preview'" class="prompt-preview markdown-body" v-html="renderedPrompt"></div>
       <el-input v-else v-model="editingText" type="textarea" :rows="12" maxlength="8000" show-word-limit />
       <template #footer>
         <el-button @click="promptDialog = false">取消</el-button>
-        <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存为新版本</el-button>
+        <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存修改</el-button>
       </template>
     </el-dialog>
 
@@ -180,6 +185,7 @@ import SkillPicker from './SkillPicker.vue'
 import StaleGateDialog from '../common/StaleGateDialog.vue'
 import MarkdownIt from 'markdown-it'
 import { applyAgentProgress } from '../../composables/useGenerationProgress'
+import { errorDetail } from '../../utils/agentRun'
 
 // 人设 Markdown 预览：html=false 转义原始 HTML（防 XSS），linkify 自动识别链接
 const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: false })
@@ -193,11 +199,11 @@ const props = defineProps({
 const emit = defineEmits(['changed', 'recharge', 'started'])
 
 const AGENTS = [
-  { key: 'researcher', name: '题材调研', desc: '联网调研题材共性，产出写作建议与参考资料' },
-  { key: 'architect.outline', name: '大纲架构', desc: '设计/重生成全书大纲（结构、节奏、冲突递进）' },
-  { key: 'architect.world', name: '世界观架构', desc: '构建/重生成世界观、人物卡与伏笔体系' },
-  { key: 'architect.volume', name: '卷纲架构', desc: '重写指定分卷的简介与章规划' },
-  { key: 'writer.chapter', name: '章节写手', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
+  { key: 'researcher', name: '题材调研', stage: '建书后、写大纲前', desc: '联网调研题材共性，产出写作建议与参考资料（按次计费）' },
+  { key: 'architect.outline', name: '大纲架构', stage: '大纲阶段', desc: '设计/重生成全书大纲（结构、节奏、冲突递进）' },
+  { key: 'architect.world', name: '世界观架构', stage: '大纲通过后', desc: '构建/重生成世界观、人物卡与伏笔体系' },
+  { key: 'architect.volume', name: '卷纲架构', stage: '已有分卷时', desc: '重写指定分卷的简介与章规划' },
+  { key: 'writer.chapter', name: '章节写手', stage: '大纲+世界观就绪后', desc: '按范围生成章节正文（逐章结算、余额不足自动停止）' },
 ]
 
 // ---------- 角色选择（默认聚焦章节写手：正文生成是项目详情页的主操作） ----------
@@ -212,14 +218,6 @@ const staleGateRef = ref(null)
 
 // ---------- 人设版本 ----------
 const prompts = ref({})
-function promptVersion(agent) {
-  return prompts.value[agent]?.version || `${agent}@v1`
-}
-// 左栏只显示版本号本身（v1/v2），完整 agent@v 版本标识留给右栏标签
-function versionShort(agent) {
-  const matched = /@v(\d+)$/.exec(promptVersion(agent))
-  return matched ? `v${matched[1]}` : promptVersion(agent)
-}
 
 // ---------- 运行参数 ----------
 const skillIds = ref([])
@@ -233,6 +231,7 @@ const toChOpen = ref(false)
 const volNo = ref(1)
 const userPrompts = reactive({})
 const estimates = reactive({})
+const estimateErrors = reactive({})
 
 // 外部送来「从第X章起重写」时，切到章节写手 + 区间，并预填起止章（默认到末尾）
 watch(() => props.presetRange, (r) => {
@@ -347,7 +346,8 @@ async function startRun(agent) {
     const d = e?.response?.data?.detail
     // 档3：目标章之前有未纳入本次的过期章 → 二次确认（仍然继续 / 从第X章起重写）
     if (!staleGateRef.value?.open(props.pid, d, payload, (body) => onRunStarted(agent, body))) {
-      ElMessage.error(typeof d === 'string' ? d : (d?.message || '启动失败'))
+      // P1-10：后端 detail 可能是对象或已是原始异常文本，统一转成作者能看懂的一句话
+      ElMessage.error(errorDetail(e, '启动失败'))
     }
   }
 }
@@ -376,7 +376,7 @@ async function poll() {
           const q = o.quality
           const score = (q && q.score != null)
             ? `（质检 ${q.score}${q.passed ? ' 通过' : ' 未过'}）` : ''
-          return `第${o.no}章质检未通过${score}，已保留上一版，新稿存为候选 v${o.candidate_version}，可在版本弹窗查看/切换`
+          return `第${o.no}章质检未通过${score}，已保留上一版，新稿存为备选版本 v${o.candidate_version}，可在版本弹窗查看/切换`
         })
         ElMessage.warning(lines.join('；'))
         if (billed) ElMessage.info(`本次扣费 ¥${Number(billed).toFixed(2)}`)
@@ -385,6 +385,9 @@ async function poll() {
       }
     } else if (body.status === 'stopped') {
       ElMessage.warning(body.error || '已停止（已完成部分保留）')
+    } else if (body.status === 'pending_review') {
+      // R30：任务停在交接点，不按失败处理；入口收敛到全书体检「待处理」
+      ElMessage.warning('任务停在交接点，已完成的章节已保存并结算。请到「全书体检 · 待处理」放行或终止。')
     } else {
       ElMessage.error(body.error || '运行失败')
     }
@@ -431,7 +434,6 @@ const promptSaving = ref(false)
 const editingAgent = ref('')
 const editingAgentName = ref('')
 const editingText = ref('')
-const editingVersion = ref('')
 // 弹窗默认渲染态（可读），可切到编辑态改 Markdown 源码
 const promptMode = ref('preview')
 const renderedPrompt = computed(() => mdRenderer.render(editingText.value || ''))
@@ -440,7 +442,6 @@ function openPromptEditor(a) {
   editingAgent.value = a.key
   editingAgentName.value = a.name
   editingText.value = prompts.value[a.key]?.text || ''
-  editingVersion.value = promptVersion(a.key)
   promptMode.value = 'preview'
   promptDialog.value = true
 }
@@ -453,7 +454,7 @@ async function savePrompt() {
   promptSaving.value = true
   try {
     const body = await saveAgentPrompt(props.pid, editingAgent.value, editingText.value.trim())
-    ElMessage.success(`已保存为 ${body.version}`)
+    ElMessage.success('已保存修改')
     promptDialog.value = false
     await loadPrompts()
   } catch (e) {
@@ -470,7 +471,12 @@ async function refreshEstimate() {
   try {
     const body = await estimateAgentRun(props.pid, { agent, params: buildParams(agent) })
     estimates[agent] = body.estimated_price || 0
-  } catch { /* 参数非法等：保留旧预估值 */ }
+    estimateErrors[agent] = ''
+  } catch (e) {
+    // 参数非法（如章号超出大纲）：把原因露出来，别静默保留旧预估价
+    estimates[agent] = 0
+    estimateErrors[agent] = errorDetail(e, '参数不合法，请检查生成范围')
+  }
 }
 watch(
   [selectedAgent, chapterScope, chNo, fromCh, toCh, toChOpen, volNo],
@@ -526,7 +532,7 @@ onMounted(() => {
   refreshBilling()
   initBatchRange()
   if (!localStorage.getItem(BILLING_NOTICE_KEY)) {
-    ElMessage.info('提示：重生成与候选版本同样按本次生成字数计费；余额不足时自动停止')
+    ElMessage.info('提示：重生成与备选版本同样按本次生成字数计费；余额不足时自动停止')
     localStorage.setItem(BILLING_NOTICE_KEY, '1')
   }
 })
@@ -586,6 +592,7 @@ onBeforeUnmount(() => {
   line-height: 1.4;
   color: var(--muted);
 }
+.rail-stage { font-size: 11px; color: #8a93a6; margin-top: 2px; }
 .rail-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
 
 /* ---------- 计费环境：常驻左栏底部，替代原先横贯顶部的告警条 ---------- */
@@ -619,7 +626,9 @@ onBeforeUnmount(() => {
 .stage-title h3 { font-family: var(--serif); font-size: 19px; font-weight: 600; }
 .stage-head-actions { display: flex; align-items: center; gap: 10px; }
 .stage-running { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-deep); }
-.stage-desc { max-width: 620px; margin: 6px 0 22px; font-size: 13px; color: var(--ink-soft); }
+.stage-desc { max-width: 620px; margin: 6px 0 6px; font-size: 13px; color: var(--ink-soft); }
+.stage-meta { max-width: 680px; margin: 0 0 22px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.field-aux { margin-top: 8px; }
 .stage-field { margin-bottom: 18px; }
 .field-label { margin-bottom: 7px; font-size: 12px; color: var(--muted); }
 .field-optional { margin-left: 6px; font-size: 11px; color: #b9bdc9; }

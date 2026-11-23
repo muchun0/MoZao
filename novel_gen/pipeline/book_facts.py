@@ -478,7 +478,17 @@ class BookFacts:
                 events = EventStream(self.store).all()
             except Exception:
                 logger.exception("events.jsonl 读取失败（生死/物品规则降级为不判定）")
-            rows = detect(chapters, events, canonical_map)
+            graph = None
+            if self._flag("state_graph_v2"):
+                # G1'：生死/归属两条规则改读 Canon 图（同一份证据、可回指）。
+                # 图构建失败不影响其余三条规则——宁少报，不让冲突提醒整块消失。
+                try:
+                    from .state.graph import CanonGraph
+                    graph = CanonGraph(self.store, self.cfg).build(at_ch=at_ch)
+                except Exception:
+                    logger.exception("Canon 图构建失败（生死/归属规则退回账本文本判定）")
+                    graph = None
+            rows = detect(chapters, events, canonical_map, graph)
             return rows[:limit] if limit else rows
         except Exception:
             logger.exception("冲突规则汇总失败（不注入提醒）")

@@ -107,6 +107,7 @@ def _public_world(world) -> dict:
             "mechanism_ruleset": [], "goldfinger_rules":
             GoldfingerRules().to_dict(), "power_system": PowerLevelSystem().to_dict(),
             "mechanism_rules": "",
+            "terminology": [], "items": [],
         }
     return {
         "world_view": world.world_view,
@@ -133,6 +134,9 @@ def _public_world(world) -> dict:
                          if (ps := getattr(world, "power_system", None))
                          else PowerLevelSystem().to_dict()),
         "mechanism_rules": getattr(world, "mechanism_rules", "") or "",
+        # R29 写作侧栏「设定」页签只读速查：术语统一表与物品卡（只增字段，不改变既有语义）
+        "terminology": [t.to_dict() for t in (getattr(world, "terminology", None) or [])],
+        "items": [i.to_dict() for i in (getattr(world, "items", None) or [])],
     }
 
 

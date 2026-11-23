@@ -105,3 +105,7 @@ input[type=number] {
   -moz-appearance: textfield;
   appearance: textfield;
 }
+
+/* 全局 toast：默认压在顶栏/logo 上，统一下移到内容区上方，并限制宽度避免长错误遮住整屏 */
+.el-message { top: 76px !important; max-width: min(720px, 76vw); }
+.el-message .el-message__content { line-height: 1.6; word-break: break-word; }

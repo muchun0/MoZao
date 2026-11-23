@@ -1,6 +1,8 @@
 import request from './request'
 
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
+// 手写入口：新建一章空白正文（source=user，AI 批量不会覆盖）
+export const createChapter = (pid, data = {}) => request.post(`/projects/${pid}/chapters`, data)
 // R12 章节质量总览：一次性取各章选中版本的质检摘要（只读，不逐章读版本）
 export const getChapterQualityOverview = (pid) => request.get(`/projects/${pid}/chapters/quality-overview`)
 // 档1 上游过期标记：读时推导各章基于的大纲/世界观版本是否落后（只读）
@@ -39,6 +41,14 @@ export const getVersionSelectImpact = (pid, kind, v) => request.get(`/projects/$
 // 不再是 git 式的行级增删
 export const getVersionReview = (pid, kind, v1, v2, chapterNo) =>
   request.get(`/projects/${pid}/products/${kind}/versions/review`, { params: { v1, v2, chapter_no: chapterNo || undefined } })
+
+// Plan 计划图（REQ-R24 P2）：门 1 分章约束卡 / 门 2 编辑 Base 前的影响预览
+// getPlanGraph(pid, { view: 'cards'|'validate'|'diff'|'impact', ch, seed })
+export const getPlanGraph = (pid, params) => request.get(`/projects/${pid}/plan-graph`, { params })
+export const compilePlanGraph = (pid, data = {}) => request.post(`/projects/${pid}/plan-graph/compile`, data)
+export const savePlanConstraint = (pid, data) => request.put(`/projects/${pid}/plan-graph/constraints`, data)
+export const deletePlanConstraint = (pid, cid) => request.delete(`/projects/${pid}/plan-graph/constraints/${cid}`)
+export const previewPlanImpact = (pid, entities) => request.post(`/projects/${pid}/plan-graph/impact-preview`, { entities })
 
 // Agent 人设提示词（阶段 1C）：当前人设列表（懒快照 v1）/ 保存为新版本
 export const getAgentPrompts = (pid) => request.get(`/projects/${pid}/agent-prompts`)

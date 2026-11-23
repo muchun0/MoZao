@@ -33,11 +33,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
-    try { await authApi.logout() } catch {}
+    // 先清本地登录态再发请求：否则登出接口未返回时页面仍算「已登录」，
+    // 路由守卫会把 /login 又重定向回书架，出现「退出后还停在上一个账号的书架」。
     token.value = ''
     user.value = null
     localStorage.removeItem('token')
     localStorage.removeItem('user')
+    try { await authApi.logout() } catch { /* 服务端登出失败不影响本地已退出 */ }
   }
 
   return { token, user, isLoggedIn, isAdmin, login, logout, fetchMe }

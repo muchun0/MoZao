@@ -29,7 +29,7 @@
           <el-button size="small" type="primary" plain @click="$router.push('/project/'+p.id)">
             {{ p.archived ? '查看' : '进入' }}
           </el-button>
-          <el-button v-if="p.chapters_done" size="small" @click="$router.push('/project/'+p.id+'/write')">继续写</el-button>
+          <el-button v-if="p.chapters_done && !p.archived" size="small" @click="$router.push('/project/'+p.id+'/write')">继续写</el-button>
           <el-button v-if="!p.archived" size="small" @click="doArchive(p)">归档</el-button>
           <el-button v-else size="small" @click="doArchive(p)">取消归档</el-button>
           <el-button size="small" @click="doClone(p)">克隆</el-button>

@@ -76,8 +76,13 @@ export function issueSummaryText(issues = [], issueCount) {
 // 章行质量徽标的索引说明：只报等级/分数/条数，明确指向唯一详情面
 export function qualityIndexTitle(row) {
   if (!row || !row.has_quality) return '这一章还没跑质检，点击查看版本与改稿建议'
+  const count = Number(row.issue_count) || 0
+  if (count > 0) {
+    const parts = countsText(row.counts || {})
+    return `质检：${parts ? `${parts}，` : ''}共 ${count} 处待改，点击查看证据与改法`
+  }
   const score = row.score === null || row.score === undefined ? '未记录分数' : `${row.score} 分`
-  return `质检 ${score} · ${Number(row.issue_count) || 0} 处改稿建议，点击查看证据与改法`
+  return `质检 ${score} · 无改稿建议，点击查看质检证据`
 }
 
 // 顶部「最需要处理」提示；没有 worst 时返回空串（由调用方展示空态文案）
@@ -85,9 +90,15 @@ export function qualityWorstText(overview, chapters = []) {
   const worst = overview && overview.worst
   if (!worst) return ''
   const title = (chapters.find((c) => c.no === worst.no) || {}).title || ''
-  const score = worst.score == null ? '无评分' : `${worst.score}分`
   const counts = qualityCountsText(worst)
-  return `最需要处理：第${worst.no}章${title ? `《${title}》` : ''} · ${score}${counts ? ` · ${counts}` : ''}`
+  const bucketTotal = Number((worst.counts || {}).high || 0)
+    + Number((worst.counts || {}).medium || 0) + Number((worst.counts || {}).low || 0)
+  const total = Math.max(Number(worst.issue_count) || 0, bucketTotal)
+  // 有改稿建议时不显示分数：score 是独立评分维度，和「100 分 + 11 处待改」并列会自相矛盾
+  const body = counts
+    ? `共 ${total} 处待改（${counts}）`
+    : (worst.score == null ? '无评分' : `${worst.score}分`)
+  return `最需要处理：第${worst.no}章${title ? `《${title}》` : ''} · ${body}`
 }
 
 // 数据缺口说明（未质检章、索引缺失等，由后端 data_gaps 给出）

@@ -237,15 +237,30 @@ def outline_review(store) -> dict:
         {"label": "预计正文", "value": f"{len(chapters) * per_ch} 字"},
     ]
     checks: list[dict] = []
-    checks.extend(_missing_field_checks(chapters))
+    checks.extend(_missing_field_checks(chapters, cfg))
     checks.extend(_duplicate_title_checks(chapters))
     checks.extend(_numbering_checks(chapters))
     checks.extend(_cliffhanger_checks(chapters))
     return {"gate": "outline", "summary": summary, "checks": checks, "total": len(checks)}
 
 
-def _missing_field_checks(chapters: list) -> list[dict]:
-    """章纲字段完整度：按字段聚合，一条覆盖多章（默认卡片只展 3 条）。"""
+def _missing_field_checks(chapters: list, cfg=None) -> list[dict]:
+    """章纲字段完整度：按字段聚合，一条覆盖多章（默认卡片只展 3 条）。
+
+    作者导入的纯梗概大纲（扩写模式、全部章都没写冲突/人物动线）不逐项报缺，
+    合并为一条 info：这类字段可留空，正文按「剧情目标 + 核心事件」生成。
+    """
+    if (str(getattr(cfg, "mode", "") or "") == "expand"
+            and chapters
+            and not any(str(getattr(c, "conflict", "") or "").strip()
+                        or str(getattr(c, "character_moves", "") or "").strip()
+                        for c in chapters)):
+        return [{
+            "level": "info",
+            "title": "导入的大纲只有剧情梗概",
+            "detail": "未写「冲突设计 / 人物动线」不影响生成：正文会按每章的剧情目标与核心事件展开，需要更细的节奏可在章纲里补这两项",
+            "anchor": f"chapter:{chapters[0].no}",
+        }]
     out: list[dict] = []
     for field_name, label in PLAN_REQUIRED_FIELDS:
         missing = [c.no for c in chapters if not str(getattr(c, field_name, "") or "").strip()]

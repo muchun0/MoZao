@@ -51,11 +51,12 @@
     <!-- 空书兜底：没有章节时给出去处，避免停在一张空白编辑器上 -->
     <div v-if="!chapters.length && !loadingChapter" class="wp-empty">
       <h3 class="wp-empty-title">这本书还没有章节</h3>
-      <p class="wp-empty-text">先在项目页生成大纲并开始写正文，写好第一章后就能在这里逐章修改、让 AI 续写。</p>
+      <p class="wp-empty-text">可以直接手写第一章（AI 不会覆盖你的手写正文），也可以回项目页生成大纲让 AI 写。</p>
       <div class="wp-empty-actions">
         <el-button @click="$router.push(`/project/${pid}`)">回项目页</el-button>
-        <el-button type="primary" @click="$router.push(`/project/${pid}`)">去生成大纲 / 正文</el-button>
+        <el-button type="primary" :loading="creatingChapter" @click="createFirstChapter">手写第一章</el-button>
       </div>
+      <p class="wp-empty-tip">想先确认大纲与人物？回项目页看「大纲 / 世界观」。</p>
     </div>
 
     <VersionDialog v-model="versionsDialog" :pid="pid" kind="chapter" :chapter-no="currentNo"
@@ -67,7 +68,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getChapters, getChapter, updateChapterContent } from '../api/novel'
+import { getChapters, getChapter, updateChapterContent, createChapter } from '../api/novel'
 import { inlineGenerate, inlineAdopt, getInlineDrafts, getInlineEstimate,
   contentHash, newClientToken } from '../api/inline'
 import { generateDirections as apiGenerateDirections,
@@ -97,6 +98,7 @@ const loadingChapter = ref(false)
 const saving = ref(false)
 const tab = ref('ai')
 const versionsDialog = ref(false)
+const creatingChapter = ref(false)
 
 const mode = ref('continue')
 const targetWords = ref(300)
@@ -184,6 +186,23 @@ async function loadDirNotes(no) {
 
 async function reloadCurrent() {
   if (currentNo.value) await loadChapter(currentNo.value)
+}
+
+/** 空书手写入口：建一章空白正文并直接进入编辑，不再把作者赶回项目页。 */
+async function createFirstChapter() {
+  if (creatingChapter.value) return
+  creatingChapter.value = true
+  try {
+    const res = await createChapter(pid, {})
+    await loadChapters()
+    currentNo.value = res.no
+    await loadChapter(res.no)
+    ElMessage.success(`已新建第 ${res.no} 章，直接开始写`)
+  } catch (e) {
+    ElMessage.error(errorDetail(e, '新建章节失败'))
+  } finally {
+    creatingChapter.value = false
+  }
 }
 
 async function switchChapter(no) {
@@ -537,6 +556,7 @@ watch(dirty, (v) => { if (v) { genToken.value = ''; dirToken.value = '' } })
 .wp-empty-title { font-family: var(--serif); font-size: 22px; margin: 0; }
 .wp-empty-text { max-width: 520px; color: var(--muted); font-size: 13px; line-height: 1.8; margin: 0; }
 .wp-empty-actions { display: flex; gap: 10px; margin-top: 6px; }
+.wp-empty-tip { font-size: 12px; color: var(--muted); }
 .tabs { display: flex; border-bottom: 1px solid var(--card-line); }
 .tab {
   flex: 1; border: 0; background: transparent; padding: 10px 0; cursor: pointer;

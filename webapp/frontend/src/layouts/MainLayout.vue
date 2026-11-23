@@ -36,10 +36,10 @@ import { ArrowDown } from '@element-plus/icons-vue'
 const auth = useAuthStore()
 const router = useRouter()
 
-function onCommand(cmd) {
+async function onCommand(cmd) {
   if (cmd === 'logout') {
-    auth.logout()
-    router.push('/login')
+    await auth.logout()
+    await router.replace('/login')
   }
 }
 </script>
@@ -77,7 +77,7 @@ function onCommand(cmd) {
 }
 .right { display: flex; align-items: center; gap: 4px; }
 /* 深色顶栏上的文字按钮默认用深色字，几乎看不见：统一提亮并保证 hover 可辨识 */
-.right :deep(.el-button.is-text) { color: rgba(240, 236, 220, .84); }
+.right :deep(.el-button.is-text) { color: rgba(246, 242, 231, .96); font-weight: 500; }
 .right :deep(.el-button.is-text:hover) { color: #f0e2b6; background: rgba(255, 255, 255, .06); }
 .footer {
   padding: 14px 0 20px;
@@ -92,6 +92,6 @@ function onCommand(cmd) {
 .username {
   cursor: pointer;
   font-size: 14px;
-  color: rgba(233,228,210,.75);
+  color: rgba(246,242,231,.95);
 }
 </style>

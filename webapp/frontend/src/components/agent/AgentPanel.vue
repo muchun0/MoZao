@@ -122,7 +122,10 @@
                 运行 {{ currentAgent.name }}
               </el-button>
               <span v-if="estimates[currentAgent.key] > 0" class="action-hint">
-                预估 ¥{{ estimates[currentAgent.key].toFixed(2) }}（按实际生成字数结算）
+                预估 ¥{{ estimates[currentAgent.key].toFixed(2) }}（按近期实际字数估算，结算按实际生成字数）
+              </span>
+              <span v-else-if="estimateErrors[currentAgent.key]" class="action-hint danger">
+                {{ estimateErrors[currentAgent.key] }}
               </span>
               <span v-else-if="running" class="action-hint">「{{ runningAgentName }}」运行中，结束后可再次运行</span>
               <span v-else-if="billingMode === 'platform' && balance <= 0" class="action-hint danger">余额不足，请先充值</span>
@@ -238,6 +241,7 @@ const toChOpen = ref(false)
 const volNo = ref(1)
 const userPrompts = reactive({})
 const estimates = reactive({})
+const estimateErrors = reactive({})
 
 // 外部送来「从第X章起重写」时，切到章节写手 + 区间，并预填起止章（默认到末尾）
 watch(() => props.presetRange, (r) => {
@@ -479,7 +483,12 @@ async function refreshEstimate() {
   try {
     const body = await estimateAgentRun(props.pid, { agent, params: buildParams(agent) })
     estimates[agent] = body.estimated_price || 0
-  } catch { /* 参数非法等：保留旧预估值 */ }
+    estimateErrors[agent] = ''
+  } catch (e) {
+    // 参数非法（如章号超出大纲）：把原因露出来，别静默保留旧预估价
+    estimates[agent] = 0
+    estimateErrors[agent] = errorDetail(e, '参数不合法，请检查生成范围')
+  }
 }
 watch(
   [selectedAgent, chapterScope, chNo, fromCh, toCh, toChOpen, volNo],

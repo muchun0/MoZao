@@ -17,6 +17,38 @@ from novel_gen.pipeline.templates import _style_reference
 import time
 
 
+@app.post("/api/projects/{project_id}/chapters")
+def create_chapter(project_id: str, req: dict = Body(default=None),
+                   user: dict = Depends(_require_user)):
+    """新建一章空白正文（手写入口）：source=user，AI 批量生成不会覆盖。"""
+    _check_project_access(project_id, user)
+    store = _find_project(project_id)
+    req = req or {}
+    with _LOCK:
+        if project_id in _RUNS and _RUNS[project_id].thread and _RUNS[project_id].thread.is_alive():
+            raise HTTPException(status_code=409, detail="该项目正在生成中，请等本批结束再手写")
+    try:
+        no = int(req.get("no") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="章号必须是正整数")
+    if no <= 0:
+        no = max((c.no for c in store.list_chapters()), default=0) + 1
+    if store.load_chapter(no) is not None:
+        raise HTTPException(status_code=400, detail=f"第 {no} 章已有正文，请直接打开编辑")
+    outline = store.load_outline()
+    total = len(outline.chapters) if outline and getattr(outline, "chapters", None) else 0
+    if total and no > total:
+        raise HTTPException(
+            status_code=400,
+            detail=f"大纲只有 {total} 章；要写第 {no} 章请先在大纲页补一章")
+    title = str(req.get("title") or "").strip() or f"第{no}章"
+    store.save_chapter(Chapter(no=no, title=title, content="", source="user"),
+                       source="user", label="manual:create")
+    logger.info("新建手写章节: uid=%d project=%s no=%d title=%s",
+                user["id"], project_id, no, title)
+    return {"no": no, "title": title}
+
+
 @app.get("/api/projects/{project_id}/chapters/{no}/versions")
 def list_chapter_versions(project_id: str, no: int, user: dict = Depends(_require_user)):
     """章节版本列表（REQ-章节版本化）：返回全部保留版本 + 当前选中标记 + 推荐徽章。"""

@@ -35,13 +35,13 @@
               <template #header>
                 <div class="ov-head">
                   <b>最近作品</b>
-                  <el-button link type="primary" @click="$router.push('/projects')">全部作品</el-button>
+                  <el-button link type="primary" @click="$router.push('/')">全部作品</el-button>
                 </div>
               </template>
               <div v-if="recentProjects.length" class="ov-list">
                 <div v-for="p in recentProjects" :key="p.id" class="ov-row" @click="$router.push(`/project/${p.id}/write`)">
                   <span class="ov-name">{{ p.title }}</span>
-                  <span class="muted">{{ p.chapter_count || 0 }} 章 · {{ fmtTime(p.updated_at || p.created_at) }}</span>
+                  <span class="muted">{{ recentProjectMeta(p) }}</span>
                 </div>
               </div>
               <div v-else class="muted" style="padding:8px 0">还没有作品，去书架新建一本。</div>
@@ -61,7 +61,7 @@
                   <span class="muted">{{ b.time ? fmtTime(b.time) : '' }}</span>
                 </div>
               </div>
-              <div v-else class="muted" style="padding:8px 0">暂无充值或退款记录。</div>
+              <div v-else class="muted" style="padding:8px 0">暂无收支记录。</div>
             </el-card>
           </el-col>
         </el-row>
@@ -81,10 +81,17 @@
         </el-row>
 
         <el-card style="margin-bottom:12px">
-          <template #header><b>充值流水</b></template>
-          <el-table :data="recharges" stripe size="small" empty-text="还没有充值记录">
+          <template #header><b>收支流水</b></template>
+          <el-table :data="recharges" stripe size="small" empty-text="还没有收支记录">
+            <el-table-column label="类型" width="110">
+              <template #default="{ row }">{{ billType(row) }}</template>
+            </el-table-column>
             <el-table-column prop="amount" label="金额" width="120">
-              <template #default="{ row }">¥{{ row.amount.toFixed(2) }}</template>
+              <template #default="{ row }">
+                <span :class="row.amount < 0 ? 'bill-out' : 'bill-in'">
+                  {{ row.amount < 0 ? '-' : '+' }}¥{{ Math.abs(row.amount || 0).toFixed(2) }}
+                </span>
+              </template>
             </el-table-column>
             <el-table-column prop="note" label="备注" />
             <el-table-column prop="created_at" label="时间" width="180">
@@ -251,6 +258,9 @@
               <el-button size="small" link type="primary" @click="openRoleDlg(r)">挂载 / 编辑</el-button>
               <el-button size="small" link type="danger" @click="delRole(r)">删</el-button>
             </span>
+            <el-tooltip v-else content="平台角色是公共配置，不能直接改；复制一份成「我的角色」后即可挂载技能" placement="top">
+              <el-button size="small" link type="primary" @click="copyPlatformRole(r)">复制后挂载</el-button>
+            </el-tooltip>
           </div>
           <div v-if="!styleRoles.length" class="muted" style="padding:12px 0">还没有风格角色</div>
         </el-card>
@@ -373,16 +383,35 @@ const inviteLink = computed(() => `https://mozao.click/?invite=${referral.value.
 const rechargeRef = ref(null)
 const llmRef = ref(null)
 const recentProjects = ref([])
+// 账目类型：金额符号 + 备注关键字，避免把生成扣费一律写成「充值」
+function billType(row) {
+  const note = String(row?.note || '')
+  const amount = Number(row?.amount || 0)
+  if (note.includes('退款')) return amount >= 0 ? '退款退回' : '退款支出'
+  if (note.includes('返佣') || note.includes('推广')) return '推广返佣'
+  if (amount < 0) return '生成扣费'
+  return '充值'
+}
 const recentBills = computed(() => {
   const items = []
-  for (const r of (recharges.value || []).slice(0, 3)) {
-    items.push({ key: `rc-${r.id ?? r.created_at}`, label: `充值 ¥${(r.amount || 0).toFixed(2)}`, time: r.created_at })
+  for (const r of (recharges.value || []).slice(0, 4)) {
+    const type = billType(r)
+    const amount = Math.abs(Number(r.amount || 0)).toFixed(2)
+    const sign = Number(r.amount || 0) < 0 ? '-' : '+'
+    items.push({ key: `rc-${r.id ?? r.created_at}`, label: `${type} ${sign}¥${amount}`, time: r.created_at })
   }
   for (const r of (refundRequests.value || []).slice(0, 3)) {
     items.push({ key: `rf-${r.id ?? r.created_at}`, label: `退款申请 ¥${(r.amount || 0).toFixed(2)}（${r.status || '处理中'}）`, time: r.created_at })
   }
   return items.sort((a, b) => (b.time || 0) - (a.time || 0)).slice(0, 4)
 })
+
+// 书架接口字段是 chapters_done/updated；时间缺失时不留孤立的「·」
+function recentProjectMeta(p) {
+  const chapters = `${p.chapters_done ?? p.chapter_count ?? 0} 章`
+  const time = fmtTime(p.updated || p.updated_at || p.created || p.created_at)
+  return time ? `${chapters} · ${time}` : chapters
+}
 
 async function loadRecentProjects() {
   try {
@@ -529,6 +558,15 @@ function openRoleDlg(r) {
   newMount.value = ''
   showRoleDlg.value = true
 }
+/** 平台角色只读：复制成「我的」角色再挂载，不动公共配置。 */
+function copyPlatformRole(r) {
+  openRoleDlg({
+    id: 0, name: `${r.name}（我的）`, description: r.description || '',
+    role_prompt: r.role_prompt || '', reference_text: r.reference_text || '',
+    skills: [...(r.skills || [])],
+  })
+  ElMessage.info('已复制平台角色，保存后会成为你自己的角色，可继续挂载技能')
+}
 function addMount() {
   if (!newMount.value) return
   const [type, id] = newMount.value.split(':')
@@ -593,6 +631,8 @@ onMounted(() => {
 .stat-label { font-size: 12px; color: #909399; margin-top: 4px; }
 .stat-sub { display: block; font-size: 12px; color: #7a8699; margin-top: 2px; }
 .muted { color: #909399; font-size: 13px; }
+.bill-in { color: #67c23a; font-weight: 600; }
+.bill-out { color: #f56c6c; font-weight: 600; }
 .fs-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 13px; border-bottom: 1px solid #f2f3f5; }
 .ref-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 14px; }
 .ov-head { display: flex; align-items: center; justify-content: space-between; }

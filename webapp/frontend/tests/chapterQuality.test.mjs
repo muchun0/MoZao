@@ -54,10 +54,13 @@ test('只看需要处理：仅保留 needs_attention 章', () => {
   assert.deepEqual(filterRows(rows, false).map((r) => r.no), [1, 2, 3])
 })
 
-test('R15 列表行只做索引：徽标说明报分数/条数，不再渲染问题类型', () => {
+test('R15 列表行只做索引：有建议报条数与分桶，无建议报分数', () => {
   assert.equal(
     qualityIndexTitle({ has_quality: true, score: 75, issue_count: 10 }),
-    '质检 75 分 · 10 处改稿建议，点击查看证据与改法')
+    '质检：共 10 处待改，点击查看证据与改法')
+  assert.equal(
+    qualityIndexTitle({ has_quality: true, score: 100, issue_count: 3, counts: { medium: 3 } }),
+    '质检：中改 3 处，共 3 处待改，点击查看证据与改法')
   assert.match(qualityIndexTitle({ has_quality: true, score: null, issue_count: 0 }), /未记录分数/)
   assert.match(qualityIndexTitle({ has_quality: false }), /还没跑质检/)
 })
@@ -80,14 +83,18 @@ test('R15 详情面标题与列表行同口径：分桶 + 总数', () => {
   assert.equal(issueSummaryText(issues), '大改 2 处、中改 1 处，共 3 处')
 })
 
-test('最需要处理提示带章名、分数与问题分桶', () => {
+test('最需要处理提示带章名与待改条数（有改稿建议时不并列分数）', () => {
   const overview = {
-    worst: { no: 11, score: 15, counts: { high: 3, medium: 0, low: 2 } },
+    worst: { no: 11, score: 15, counts: { high: 3, medium: 0, low: 2 }, issue_count: 5 },
   }
   const chapters = [{ no: 11, title: '矿道' }]
   assert.equal(
     qualityWorstText(overview, chapters),
-    '最需要处理：第11章《矿道》 · 15分 · 大改 3 处、小改 2 处')
+    '最需要处理：第11章《矿道》 · 共 5 处待改（大改 3 处、小改 2 处）')
+  // 没有任何改稿建议时才回落到分数
+  assert.equal(
+    qualityWorstText({ worst: { no: 3, score: 100, counts: {}, issue_count: 0 } }, []),
+    '最需要处理：第3章 · 100分')
   assert.equal(qualityWorstText({ worst: null }, chapters), '')
 })
 

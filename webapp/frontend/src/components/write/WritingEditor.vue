@@ -48,6 +48,7 @@ const emit = defineEmits(['update:modelValue', 'select', 'save', 'back', 'versio
 
 const taRef = ref(null)
 const dirty = computed(() => props.modelValue !== props.serverContent)
+const words = computed(() => (props.modelValue || '').length)
 
 function onInput(e) {
   emit('update:modelValue', e.target.value)

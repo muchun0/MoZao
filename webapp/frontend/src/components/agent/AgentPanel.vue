@@ -16,7 +16,6 @@
         >
           <span class="rail-item-main">
             <span class="rail-name">{{ a.name }}</span>
-            <span class="rail-version">{{ versionShort(a.key) }}</span>
           </span>
           <span class="rail-desc">{{ a.desc }}</span>
           <span class="rail-stage">{{ a.stage }}</span>
@@ -34,7 +33,7 @@
         <div class="billing-detail">
           {{ billingMode === 'user_llm'
             ? '使用您自己的模型额度，产物仍按版本记账'
-            : '按 AI 实际生成字数结算：统一 3 元/万字；候选/重写版本同样计费' }}
+            : '按 AI 实际生成字数结算：统一 3 元/万字；备选/重写版本同样计费' }}
         </div>
         <template v-if="billingMode === 'platform'">
           <div class="billing-balance" :class="{ danger: balance <= 0 }">
@@ -53,7 +52,6 @@
           <header class="stage-head">
             <div class="stage-title">
               <h3>{{ currentAgent.name }}</h3>
-              <el-tag size="small" type="info" effect="plain">{{ promptVersion(currentAgent.key) }}</el-tag>
             </div>
             <div class="stage-head-actions">
               <span v-if="isRunningAgent(currentAgent.key)" class="stage-running"><span class="pulse" />运行中</span>
@@ -140,7 +138,7 @@
               <span class="skills-chevron" :class="{ open: skillsOpen }">▾</span>
             </button>
             <div v-show="skillsOpen" class="skills-body">
-              <p class="skills-hint">技能注入该角色 system 提示词，对全部角色运行生效</p>
+              <p class="skills-hint">所选技能会作为该角色的写作要求生效，对该角色每次运行都适用</p>
               <SkillPicker v-model="skillIds" />
             </div>
           </div>
@@ -152,20 +150,20 @@
     <el-dialog v-model="promptDialog" :title="`编辑人设 · ${editingAgentName}`" width="640px">
       <el-alert :closable="false" type="info" class="prompt-tip">
         <template #title>
-          人设将作为 system 提示词注入该 Agent（追加到默认模板末尾）。保存即生成新版本，历史版本不可变、可追溯；当前版本 {{ editingVersion }}。请勿写入越权指令，输出仍受平台合规校验约束。
+          这里设置该角色的写作风格与分工。保存后会另存一份修改记录，可随时回看历史版本；请勿写入违规内容，输出仍受平台合规校验约束。
         </template>
       </el-alert>
       <div class="prompt-mode-bar">
         <el-radio-group v-model="promptMode" size="small">
           <el-radio-button value="preview">预览</el-radio-button>
-          <el-radio-button value="edit">编辑（Markdown 源码）</el-radio-button>
+          <el-radio-button value="edit">编辑（纯文本）</el-radio-button>
         </el-radio-group>
       </div>
       <div v-if="promptMode === 'preview'" class="prompt-preview markdown-body" v-html="renderedPrompt"></div>
       <el-input v-else v-model="editingText" type="textarea" :rows="12" maxlength="8000" show-word-limit />
       <template #footer>
         <el-button @click="promptDialog = false">取消</el-button>
-        <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存为新版本</el-button>
+        <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存修改</el-button>
       </template>
     </el-dialog>
 
@@ -220,14 +218,6 @@ const staleGateRef = ref(null)
 
 // ---------- 人设版本 ----------
 const prompts = ref({})
-function promptVersion(agent) {
-  return prompts.value[agent]?.version || `${agent}@v1`
-}
-// 左栏只显示版本号本身（v1/v2），完整 agent@v 版本标识留给右栏标签
-function versionShort(agent) {
-  const matched = /@v(\d+)$/.exec(promptVersion(agent))
-  return matched ? `v${matched[1]}` : promptVersion(agent)
-}
 
 // ---------- 运行参数 ----------
 const skillIds = ref([])
@@ -386,7 +376,7 @@ async function poll() {
           const q = o.quality
           const score = (q && q.score != null)
             ? `（质检 ${q.score}${q.passed ? ' 通过' : ' 未过'}）` : ''
-          return `第${o.no}章质检未通过${score}，已保留上一版，新稿存为候选 v${o.candidate_version}，可在版本弹窗查看/切换`
+          return `第${o.no}章质检未通过${score}，已保留上一版，新稿存为备选版本 v${o.candidate_version}，可在版本弹窗查看/切换`
         })
         ElMessage.warning(lines.join('；'))
         if (billed) ElMessage.info(`本次扣费 ¥${Number(billed).toFixed(2)}`)
@@ -444,7 +434,6 @@ const promptSaving = ref(false)
 const editingAgent = ref('')
 const editingAgentName = ref('')
 const editingText = ref('')
-const editingVersion = ref('')
 // 弹窗默认渲染态（可读），可切到编辑态改 Markdown 源码
 const promptMode = ref('preview')
 const renderedPrompt = computed(() => mdRenderer.render(editingText.value || ''))
@@ -453,7 +442,6 @@ function openPromptEditor(a) {
   editingAgent.value = a.key
   editingAgentName.value = a.name
   editingText.value = prompts.value[a.key]?.text || ''
-  editingVersion.value = promptVersion(a.key)
   promptMode.value = 'preview'
   promptDialog.value = true
 }
@@ -466,7 +454,7 @@ async function savePrompt() {
   promptSaving.value = true
   try {
     const body = await saveAgentPrompt(props.pid, editingAgent.value, editingText.value.trim())
-    ElMessage.success(`已保存为 ${body.version}`)
+    ElMessage.success('已保存修改')
     promptDialog.value = false
     await loadPrompts()
   } catch (e) {
@@ -544,7 +532,7 @@ onMounted(() => {
   refreshBilling()
   initBatchRange()
   if (!localStorage.getItem(BILLING_NOTICE_KEY)) {
-    ElMessage.info('提示：重生成与候选版本同样按本次生成字数计费；余额不足时自动停止')
+    ElMessage.info('提示：重生成与备选版本同样按本次生成字数计费；余额不足时自动停止')
     localStorage.setItem(BILLING_NOTICE_KEY, '1')
   }
 })

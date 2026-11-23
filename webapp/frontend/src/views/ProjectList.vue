@@ -46,22 +46,24 @@
                :close-on-click-modal="false" append-to-body>
       <el-form :model="form" label-width="110px">
         <div class="fg-title">基本信息</div>
+        <p class="fg-min-hint">带 * 为必填，其余选填。最少填书名 + 一句核心设定即可开始，后续可在项目里补充。</p>
         <el-form-item label="书名" required>
           <el-input ref="titleInputRef" v-model="form.title" placeholder="给你的小说起个名字（必填）" />
         </el-form-item>
-        <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情" /></el-form-item>
+        <el-form-item label="题材"><el-input v-model="form.genre" placeholder="如：都市科幻、玄幻、言情（选填）" /></el-form-item>
         <div class="fg-row">
           <el-form-item label="目标字数" style="flex:1"><el-input-number v-model="form.total_words" :min="1000" :max="1000000" :step="1000" /></el-form-item>
           <el-form-item label="每章字数" style="flex:1"><el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" /></el-form-item>
         </div>
+        <p class="fg-chap-hint">按当前字数估算，约 {{ estChapters }} 章（创建后可再调整）</p>
         <div class="fg-title">生成模式</div>
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
-            <el-radio value="auto">全自动生成（大纲/世界观/正文都由 AI 推进）</el-radio>
-            <el-radio value="expand">AI扩写（我提供大纲）</el-radio>
+            <el-radio value="auto">AI 从头推进（大纲、世界观、正文都由 AI 生成）</el-radio>
+            <el-radio value="expand">AI 扩写（我提供大纲）</el-radio>
           </el-radio-group>
         </el-form-item>
-        <p v-if="form.mode === 'auto'" class="fg-note">建书后默认分步：大纲、世界观各跑完一次会停下等你审阅；也可在项目页切换成自动推进。</p>
+        <p v-if="form.mode === 'auto'" class="fg-note">建书后大纲、世界观会先停下等你看过再继续；也可在项目页切换成自动推进。</p>
         <template v-if="form.mode === 'expand'">
           <div class="fg-sub">更新信息 · 只对新增字数计费</div>
         <el-form-item label="现有字数">
@@ -92,8 +94,8 @@
 
         <div class="fg-title">故事设定</div>
         <el-form-item label="核心设定"><el-input v-model="form.premise" type="textarea" :rows="3" placeholder="一句话讲清故事核心创意（如：社畜穿越到修真界，靠内卷法则证道）" /></el-form-item>
-        <el-form-item label="故事背景"><el-input v-model="form.background" type="textarea" :rows="3" placeholder="时代背景 / 世界规则 / 主要地点等（强约束，AI 不得违背）" /></el-form-item>
-        <el-form-item label="主角设定"><el-input v-model="form.hero" type="textarea" :rows="2" placeholder="主角身份 / 性格 / 目标 / 金手指等（强约束）" /></el-form-item>
+        <el-form-item label="故事背景"><el-input v-model="form.background" type="textarea" :rows="3" placeholder="时代背景 / 世界规则 / 主要地点等（AI 会严格遵守，不会写反）" /></el-form-item>
+        <el-form-item label="主角设定"><el-input v-model="form.hero" type="textarea" :rows="2" placeholder="主角身份 / 性格 / 目标 / 特殊优势（如重生记忆、异能）" /></el-form-item>
         <el-form-item label="预设人物">
           <div class="tag-wrap">
             <el-tag v-for="(c, i) in form.characters" :key="i" closable @close="form.characters.splice(i, 1)" style="margin:0 6px 6px 0">{{ c }}</el-tag>
@@ -101,23 +103,22 @@
           </div>
           <span class="muted fg-tip">每回车一次添加一个人物；建议「姓名｜身份｜与主角关系｜目标」写清，便于 AI 区分</span>
         </el-form-item>
-        <el-form-item label="剧情走向"><el-input v-model="form.plot_direction" type="textarea" :rows="2" placeholder="主线脉络 / 必须出现的桥段 / 关键冲突（参考方向，AI 在此基础上细化）" /></el-form-item>
+        <el-form-item label="剧情走向"><el-input v-model="form.plot_direction" type="textarea" :rows="2" placeholder="主线脉络 / 希望出现的桥段 / 关键冲突（参考方向，AI 在此基础上细化）" /></el-form-item>
         <el-form-item label="避雷元素">
           <div class="tag-wrap">
             <el-tag v-for="(f, i) in form.forbidden" :key="i" closable type="danger" @close="form.forbidden.splice(i, 1)" style="margin:0 6px 6px 0">{{ f }}</el-tag>
             <el-input v-model="forbidInput" size="small" style="width:220px" placeholder="输入后回车添加" @keyup.enter="addForbidden" />
           </div>
-          <span class="muted fg-tip">不想出现的元素/情节（强约束，如：主角不圣母、拒绝悲剧结局）</span>
+          <span class="muted fg-tip">不想出现的元素/情节（AI 会严格遵守，如：主角不圣母、拒绝悲剧结局）</span>
         </el-form-item>
 
         <div class="fg-title">质量选项</div>
-        <el-form-item label="记忆窗口">
+        <el-form-item label="上下文回顾">
           <el-input-number v-model="form.memory_window" :min="0" :max="20" />
-          <span class="muted fg-tip">生成当前章时回填最近 N 章摘要（越大越连贯、成本越高）</span>
+          <span class="muted fg-tip">写当前章时回顾最近几章：越大越连贯、成本越高</span>
         </el-form-item>
         <div class="muted fg-tip" style="margin:0 0 10px 110px;font-size:12px;line-height:1.7">
-          已统一启用高质量模式（场景级生成 + 动态模块轮换 + 每章自动改稿与读者视角审校），
-          编辑质检 / 去 AI 味 / 防同质化 / 人物立体化 默认全开，单价 3 元/万字
+          已默认开启：分场景细化写作、逐章自动润色与读者视角检查；去 AI 味、防套路重复、人物描写更立体，单价 3 元/万字
         </div>
 
         <el-form-item label="费用估算">
@@ -216,6 +217,13 @@ const aiWords = computed(() => {
 const estPrice = computed(() => {
   const rate = 3
   return ((aiWords.value / 10000) * rate).toFixed(2)
+})
+// 按目标字数 / 每章字数估算章节数，给新手一个直观体量概念（仅提示，不参与计费）
+const estChapters = computed(() => {
+  const per = Number(form.value.chapter_words) || 0
+  const total = Number(form.value.total_words) || 0
+  if (!per || !total) return 0
+  return Math.max(1, Math.round(total / per))
 })
 // 建书前就把余额与预估对上，避免填完表单才被后端 400 打回
 const insufficient = computed(() => Number(balance.value || 0) < Number(estPrice.value))
@@ -410,6 +418,8 @@ onMounted(() => { load(); loadBalance() })
 .create-est .muted { font-size: 12px; }
 .create-balance-warn { font-size: 12px; color: #f56c6c; }
 .fg-note { font-size: 12px; color: #909399; margin: -2px 0 8px 110px; line-height: 1.6; }
+.fg-min-hint { font-size: 12px; color: #606266; margin: 0 0 10px 8px; line-height: 1.6; }
+.fg-chap-hint { font-size: 12px; color: #909399; margin: -4px 0 8px 110px; }
 /* 建书表单长：头部与底部固定，中间独立滚动，滚到费用区时仍能看到标题/关闭 */
 :deep(.create-dialog .el-dialog__body) { max-height: 66vh; overflow-y: auto; }
 .price-hint { background: #f6f8fa; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.8; color: #606266; }

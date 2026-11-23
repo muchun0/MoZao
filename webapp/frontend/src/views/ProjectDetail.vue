@@ -34,7 +34,15 @@
       </div>
     </header>
 
-    <p class="pd-guide">推荐顺序：大纲页生成或导入大纲 → 审阅通过 → 世界观页生成 → 通过 → 章节页开始写正文。Agent 页可单独运行任一角色；不确定时按上方步骤条走。</p>
+    <nav class="pd-steps" aria-label="写作步骤">
+      <template v-for="(s, i) in guideSteps" :key="s.key">
+        <button type="button" class="pd-step" :class="`is-${s.status}`" @click="tab = s.tab">
+          <span class="pd-step-dot">{{ i + 1 }}</span>
+          <span class="pd-step-label">{{ s.label }}</span>
+        </button>
+        <span v-if="i < guideSteps.length - 1" class="pd-step-arrow">›</span>
+      </template>
+    </nav>
 
     <!-- 生成中横幅：全项目唯一的进度指示组件（统一进度条 + 阶段文案 + 取消/继续），
          各阶段共用，不再出现第二个进度条；状态/进度/文案由 useGenerationProgress 统一驱动 -->
@@ -50,7 +58,7 @@
       <div class="gen-fail-main">
         <strong>上次生成没有完成</strong>
         <p class="gen-fail-text">{{ genFailMsg }}</p>
-        <p class="gen-fail-hint">已生成并保存的章节不会丢失；可以重试，或到 Agent 页查看这次运行的详细记录。</p>
+        <p class="gen-fail-hint">已生成并保存的章节不会丢失；可以重试，或到创作角色页查看这次运行的详细记录。</p>
       </div>
       <div class="gen-fail-actions">
         <el-button size="small" @click="tab = 'agent'">查看运行记录</el-button>
@@ -91,7 +99,7 @@
           <div v-if="chapters.length" class="ch-quality-bar">
             <div class="ch-quality-summary">
               <el-tag v-if="worstText" type="danger" size="small" effect="plain" class="ch-worst-tag clickable"
-                      role="button" tabindex="0" title="查看该章的改稿建议与改法"
+                      role="button" tabindex="0" title="查看该章的修改建议与改法"
                       @click="openWorstVersions" @keydown.enter.prevent="openWorstVersions">
                 {{ worstText }}
               </el-tag>
@@ -121,7 +129,7 @@
           <div v-if="!chapters.length && !genRunning" class="ch-empty">
             <h3>还没有章节</h3>
             <p>先确认大纲与世界观，再生成第 1 章；也可以自己手写第一章，AI 不会覆盖手写正文。</p>
-            <el-button type="primary" @click="tab = 'agent'">去生成第 1 章</el-button>
+            <el-button type="primary" @click="tab = 'agent'">开始写第 1 章</el-button>
             <el-button @click="$router.push(`/project/${pid}/write`)">手写第 1 章</el-button>
             <el-button v-if="!outlineReady" @click="tab = 'outline'">先看大纲</el-button>
           </div>
@@ -131,7 +139,7 @@
               <div v-for="c in g.list" :key="c.no" class="ch-item" @click="openChapter(c)">
                 <span class="ch-no">第{{ c.no }}章</span>
                 <span class="ch-title-wrap">
-                  <span class="ch-title">{{ c.title }}</span>
+                  <span class="ch-title" title="点击阅读本章">{{ c.title }}</span>
                 </span>
                 <!-- 质量徽标：只做索引（等级/分数/条数），点击进入唯一的改稿建议详情面 -->
                 <span v-if="c.quality" class="ch-quality" role="button" tabindex="0"
@@ -152,6 +160,7 @@
                 </el-tag>
                 <el-tag v-if="c.status" :type="statusType(c.status)" size="small" effect="plain">{{ statusText(c.status) }}</el-tag>
                 <div class="ch-actions" @click.stop>
+                  <el-button size="small" type="primary" link class="read-btn" @click="openChapter(c)">阅读</el-button>
                   <el-button size="small" type="warning" link @click="regenChapter(c)" :loading="regenNo === c.no" :disabled="genRunning">重生成</el-button>
                   <el-button size="small" type="primary" link @click="openVersions(c)">版本</el-button>
                   <el-button size="small" :type="isChLocked(c.no) ? 'success' : 'default'" link
@@ -168,7 +177,7 @@
             </el-empty>
           </div>
           <el-empty v-else :description="outlineReady ? '大纲已就绪，还没有章节正文' : '还没有章节，需要先生成大纲'">
-            <el-button v-if="outlineReady" type="primary" @click="tab = 'agent'">去 Agent 页生成正文</el-button>
+            <el-button v-if="outlineReady" type="primary" @click="tab = 'agent'">去生成正文</el-button>
             <el-button v-else type="primary" @click="tab = 'outline'">去生成大纲</el-button>
           </el-empty>
         </section>
@@ -192,7 +201,7 @@
           </el-empty>
           <!-- 门 1：大纲跑完即停，这里给判断材料与三个动作（通过 / 先编辑 / 重生成） -->
           <GateCard v-if="outlineReady"
-            title="门 1 · 大纲已生成，先审阅再继续"
+            title="大纲已生成，先审阅再继续"
             :status="gateOf('outline').status" :status-label="gateLabel('outline')"
             :summary="gateReview('outline').summary || []" :checks="gateReview('outline').checks || []"
             :busy="gateBusy === 'outline'" approve-text="通过，继续生成世界观"
@@ -201,7 +210,7 @@
             @regen="doRegenOutline" @locate="locateAnchor" />
           <div v-if="outlineReady && gateApproved('outline') && !worldReady" class="gate-next">
             <el-button type="primary" @click="runWorld">生成世界观（按字数计费）</el-button>
-            <span class="gate-next-hint">也可以先跳过：直接去 Agent 页写正文，世界观缺失会降低一致性</span>
+            <span class="gate-next-hint">也可以先跳过：直接去创作角色写正文，世界观缺失会降低一致性</span>
           </div>
           <OutlineEditor v-if="outlineReady || hadOutline" :key="outlineReloadKey" :pid="pid"
                          :target-chapters="genTotal" @saved="loadAll" @open-versions="openProductVersions('outline')" />
@@ -216,7 +225,7 @@
         <section v-if="visited.world" v-show="tab === 'world'">
           <!-- 门 2：世界观审阅（含"受影响章纲清单"反向提示） -->
           <GateCard v-if="worldReady"
-            title="门 2 · 世界观已生成，先审阅再写正文"
+            title="世界观已生成，先审阅再写正文"
             :status="gateOf('world').status" :status-label="gateLabel('world')"
             :summary="gateReview('world').summary || []" :checks="gateReview('world').checks || []"
             :busy="gateBusy === 'world'" approve-text="通过，进入写正文"
@@ -391,13 +400,28 @@ const lastRunPayload = ref(null)
 const worldReady = ref(false)
 const gateOf = (g) => gates.value?.[g] || { status: 'pending', current_version: null, approved_version: null }
 const gateApproved = (g) => gateOf(g).status === 'approved'
+// 顶部新手步骤条：按当前产物状态推导各步 done/active/todo，点击跳到对应页签
+const guideSteps = computed(() => {
+  const outlineDone = outlineReady.value
+  const outlineApproved = gateApproved('outline')
+  const worldDone = worldReady.value
+  const worldApproved = gateApproved('world')
+  const chaptersDone = chapters.value.length > 0
+  return [
+    { key: 'outline', label: '生成大纲', tab: 'outline', status: outlineDone ? 'done' : 'active' },
+    { key: 'review-outline', label: '审阅大纲', tab: 'outline', status: outlineApproved ? 'done' : (outlineDone ? 'active' : 'todo') },
+    { key: 'world', label: '生成世界观', tab: 'world', status: worldDone ? 'done' : (outlineApproved ? 'active' : 'todo') },
+    { key: 'review-world', label: '审阅世界观', tab: 'world', status: worldApproved ? 'done' : (worldDone ? 'active' : 'todo') },
+    { key: 'chapters', label: '写正文', tab: 'chapters', status: chaptersDone ? 'done' : (worldApproved ? 'active' : 'todo') },
+  ]
+})
 const gateLabel = (g) => ({ pending: '待审阅', approved: '已通过', skipped: '已跳过' }[gateOf(g).status] || '')
 function gateHint(g) {
   const st = gateOf(g)
-  if (st.status === 'approved' || st.status === 'skipped') return `审批版本 ${st.approved_version}`
+  if (st.status === 'approved' || st.status === 'skipped') return '已通过审阅，可继续下一步'
   if (!st.current_version) return '产物尚未生成'
-  if (st.approved_version) return `产物已变更为 ${st.current_version}，原审批（${st.approved_version}）已失效，请重新审阅`
-  return `当前版本 ${st.current_version}`
+  if (st.approved_version) return '内容已更新，之前的审阅已失效，请重新审阅'
+  return '等待审阅'
 }
 // 门卡片的动作：编辑始终允许（编辑器就在卡片下方），所以按钮只留"通过/重生成"，
 // 原先的「先编辑」是空操作（点了只是切到当前 tab），已移除
@@ -694,7 +718,7 @@ async function regenChapter(c) {
     if (fb && fb.kept_previous) {
       const q = fb.quality
       const score = (q && q.score != null) ? `（质检 ${q.score}${q.passed ? ' 通过' : ' 未过'}）` : ''
-      ElMessage.warning(`第${c.no}章质检未通过${score}，已保留上一版，新稿存为候选 v${fb.candidate_version}，可在版本弹窗查看/切换`)
+      ElMessage.warning(`第${c.no}章质检未通过${score}，已保留上一版，新稿存为备选版本 v${fb.candidate_version}，可在版本弹窗查看/切换`)
     } else {
       ElMessage.success(`第${c.no}章已重新生成`)
     }
@@ -1071,7 +1095,7 @@ async function buildBatchCard(from, to) {
   // P0-2：本批实际 0 章落盘时不渲染「本批已完成」，交由失败提示说明
   const written = chapters.value.filter(c => Number(c.no) >= from && Number(c.no) <= to && (c.words || c.status === 'done'))
   if (!written.length) {
-    if (!genFailMsg.value) genFailMsg.value = `第 ${from}–${to} 章没有写出任何正文，请查看 Agent 页的运行记录后重试`
+    if (!genFailMsg.value) genFailMsg.value = `第 ${from}–${to} 章没有写出任何正文，请查看创作角色页的运行记录后重试`
     lastFailed.value = true
     batchCard.value = null
     return
@@ -1250,8 +1274,17 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .pd-title { font-size: 24px; font-weight: 600; letter-spacing: .01em; line-height: 1.2; }
 .pd-meta { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .pd-head-actions { display: flex; gap: 12px; align-items: center; flex-shrink: 0; }
-.pd-guide { margin: -4px 0 14px; font-size: 12px; color: var(--muted); line-height: 1.7; }
-@media (max-width: 720px) { .pd-guide { display: none; } }
+/* 顶部新手步骤条：当前阶段高亮，已完成打勾，未开始置灰 */
+.pd-steps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 16px; padding: 10px 12px; background: var(--el-fill-color-blank); border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.pd-step { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 13px; color: var(--el-text-color-secondary); padding: 2px 4px; border-radius: 6px; }
+.pd-step-dot { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-variant-numeric: tabular-nums; background: var(--el-fill-color); color: var(--el-text-color-secondary); }
+.pd-step.is-done { color: var(--el-text-color-primary); }
+.pd-step.is-done .pd-step-dot { background: var(--el-color-success); color: #fff; }
+.pd-step.is-active { color: var(--el-text-color-primary); font-weight: 600; }
+.pd-step.is-active .pd-step-dot { background: var(--el-color-primary); color: #fff; }
+.pd-step.is-todo .pd-step-dot { background: var(--el-fill-color); }
+.pd-step-arrow { color: var(--el-text-color-placeholder); }
+@media (max-width: 720px) { .pd-steps { flex-wrap: nowrap; overflow-x: auto; } }
 
 /* ===== 生成中横幅：全宽，仅生成/出错时出现 ===== */
 .gen-banner {
@@ -1317,6 +1350,7 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 /* 标题单行省略；问题类型不再在行内展示，统一进版本弹窗 */
 .ch-title-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .ch-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.ch-item:hover .ch-title { color: var(--el-color-primary); text-decoration: underline; }
 /* 质量徽标：等级 + 分数 + 条数，点击进入唯一的改稿建议详情面 */
 .ch-quality {
   display: flex; align-items: center; gap: 5px; flex-shrink: 0;
@@ -1327,7 +1361,7 @@ onUnmounted(() => { document.removeEventListener('mousedown', onDocMouseDown); i
 .ch-score { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .ch-issue-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ch-words { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: .55; pointer-events: auto; transition: opacity .15s ease; }
+.ch-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: .85; pointer-events: auto; transition: opacity .15s ease; }
 .ch-item:hover .ch-actions, .ch-item:focus-within .ch-actions { opacity: 1; }
 /* 触屏设备无 hover，操作常驻 */
 @media (hover: none) { .ch-actions { opacity: 1; pointer-events: auto; } }

@@ -1,11 +1,11 @@
 // R26 剧情走向候选的纯函数（无网络依赖，供组件与 node 单测共用）
 
 export const STUCK_TYPES = [
-  { value: '', label: '不指定卡点' },
+  { value: '', label: '不指定难点' },
   { value: 'foreshadow', label: '伏笔该收了' },
   { value: 'commitment', label: '承诺要兑现' },
   { value: 'conflict', label: '冲突不够强' },
-  { value: 'pace', label: '节奏拖了' },
+  { value: 'pace', label: '节奏偏慢' },
   { value: 'custom', label: '自定义' },
 ]
 

@@ -92,14 +92,14 @@
     <el-card v-if="candidates.length" class="candidate-card">
       <template #header>
         <div class="intro-header">
-          <b>编辑质检修订候选（请选择采用一个）</b>
+          <b>质检给出的修订版本（请选择采用一个）</b>
           <el-tag type="warning" size="small">当前大纲尚未自动更新</el-tag>
         </div>
       </template>
       <div class="candidate-list">
         <div v-for="c in candidates" :key="c.index" class="candidate-item">
           <div class="candidate-head">
-            <el-tag size="small" type="info">候选 {{ c.index + 1 }}</el-tag>
+            <el-tag size="small" type="info">版本 {{ c.index + 1 }}</el-tag>
             <b style="margin-left:8px">{{ c.title || '（未命名）' }}</b>
             <span class="muted" style="margin-left:8px">{{ c.chapterCount }} 章</span>
           </div>
@@ -108,7 +108,7 @@
             <el-tag v-for="ch in c.chapters" :key="ch" size="small" effect="plain" style="margin:2px">{{ ch }}</el-tag>
           </div>
           <el-button size="small" type="primary" :loading="applying === c.index"
-                     @click="applyCandidate(c.index)">采用此候选</el-button>
+                     @click="applyCandidate(c.index)">采用此版本</el-button>
         </div>
       </div>
     </el-card>
@@ -228,7 +228,7 @@ async function applyCandidate(i) {
   applying.value = i
   try {
     await applyOutlineCandidate(props.pid, i)
-    ElMessage.success('已采用该候选大纲（候选版本同样计费，可在大纲版本中查看）')
+    ElMessage.success('已采用该修订大纲（备选版本同样计费，可在大纲版本中查看）')
     candidates.value = []
     emit('saved')
     // TECH §10.2：apply 候选后跳转版本列表，让用户看到新版本与计费记录

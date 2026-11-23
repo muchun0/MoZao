@@ -13,12 +13,15 @@
             <el-button size="small" type="primary" link @click="$emit('open-versions', 'world')">世界观版本</el-button>
           </el-tooltip>
           <el-tooltip :content="isWorldLocked ? '已加锁：重生成世界观时不会覆盖当前内容，点击解锁' : '加锁：重生成世界观时保留当前内容不被覆盖'" placement="bottom">
-            <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
+            <el-button size="small" :type="isWorldLocked ? 'success' : 'default'" link
+                       :aria-label="isWorldLocked ? '取消世界观锁定' : '锁定世界观（重生成时不覆盖）'"
+                       :title="isWorldLocked ? '已加锁，点击解锁' : '加锁：重生成时不覆盖当前世界观'"
+                       @click="$emit('toggle-lock', 'world_view', '', !isWorldLocked)">
               {{ isWorldLocked ? '🔒已锁' : '🔓锁' }}
             </el-button>
           </el-tooltip>
           <el-tooltip content="按当前大纲调用 AI 生成/重生成世界观；只在你点击后执行" placement="bottom">
-            <el-button size="small" @click="$emit('regen-world')">AI 生成</el-button>
+            <el-button size="small" @click="$emit('regen-world', { firstTime: isWorldEmpty })">AI 生成</el-button>
           </el-tooltip>
           <el-button size="small" link @click="toggleAllCollapse">{{ allOpen ? '收起全部' : '展开全部' }}</el-button>
           <el-button type="primary" size="small" @click="saveWorldDraft" :loading="worldSaving">保存</el-button>
@@ -264,6 +267,11 @@ const selectedCharIndex = ref(0)
 
 const isWorldLocked = computed(() => !!props.lock.world_view)
 const isCharLocked = (name) => !!(props.lock.character || {})[name]
+// 首次生成（没有任何世界设定/人物）不弹「重生成会覆盖」，措辞按实际状态给
+const isWorldEmpty = computed(() => {
+  const w = worldDraft.value || {}
+  return !String(w.world_view || '').trim() && !(w.characters || []).length
+})
 
 // 机制区块是否显示 + 标题：resolve_types 得到 none（且无机制说明文本）时整块不出现
 const mechVisible = computed(() => hasMechanism(worldDraft.value))

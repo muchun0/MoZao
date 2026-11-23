@@ -25,7 +25,11 @@ _OUTLINE_FIELD_MAP = {
 
 
 def _parse_chapter_plan(no: int, title: str, body: str) -> "ChapterPlan":
-    """把「标签：内容」形式的章节梗概拆成结构化字段；没有标签的行合并进 goal。"""
+    """把「标签：内容」形式的章节梗概拆成结构化字段；没有标签的行合并进 goal。
+
+    无标签（作者直接贴的章节梗概）时至少把首句放 goal、其余放 core_event，
+    避免导入后除「剧情目标」外全空、生成正文拿不到事件。
+    """
     fields = {"core_event": "", "conflict": "", "character_moves": "", "foreshadowing": "",
               "emotion": "", "transition": "", "tag": "", "cliffhanger": "", "timeline": ""}
     free_lines: list[str] = []
@@ -40,7 +44,19 @@ def _parse_chapter_plan(no: int, title: str, body: str) -> "ChapterPlan":
         else:
             free_lines.append(line)
     goal = "\n".join(free_lines).strip() or fields["core_event"]
+    if not fields["core_event"]:
+        # 自由文本：首句作为剧情目标，其余作为本章要发生的事（core_event）；
+        # 只有一句时两者同源，保证章纲至少「目标 + 事件」两项可用。
+        sentences = [s for s in re.split(r"(?<=[。！？!?])", goal) if s.strip()]
+        if len(sentences) > 1:
+            fields["core_event"] = "".join(sentences[1:]).strip()
+            goal = sentences[0].strip()
+        else:
+            fields["core_event"] = goal
     return ChapterPlan(no=no, title=title, goal=goal, **fields)
+
+
+_CHAPTER_HEADING_RE = re.compile(r"^第\s*[0-9０-９零一二三四五六七八九十百千]+\s*[章回节]")
 
 
 def _import_user_outline(store, text: str) -> bool:
@@ -57,7 +73,10 @@ def _import_user_outline(store, text: str) -> bool:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     # 书名：取首个非空行（去掉 markdown # 前缀与整对书名号；半对书名号保留原样，避免吞字）
     raw_title = re.sub(r"^#+\s*", "", lines[0]).strip() if lines else ""
-    if raw_title.startswith("《") and raw_title.endswith("》"):
+    if _CHAPTER_HEADING_RE.match(raw_title):
+        # 作者直接从「第1章」开始贴：首行是章标题，不是书名，别把章标题当书名
+        title = ""
+    elif raw_title.startswith("《") and raw_title.endswith("》"):
         title = raw_title[1:-1].strip()
     else:
         title = raw_title.lstrip("《").strip()

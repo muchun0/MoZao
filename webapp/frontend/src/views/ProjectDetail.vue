@@ -60,7 +60,7 @@
     </div>
 
     <!-- R27 分步确认：只渲染后端状态；确认/推进由 GenerationFlow 自己调接口 -->
-    <GenerationFlow :pid="pid" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
+    <GenerationFlow :pid="pid" :has-outline="outlineReady" @changed="refreshAfterGen(true)" @edit="openFlowStage" />
     <!-- R32 固化编排：只读计划条（off 不渲染，shadow 标注只记录不生效） -->
     <SupervisorPlanBar :pid="pid" @plan-state="onPlanState" />
 
@@ -120,8 +120,9 @@
           </div>
           <div v-if="!chapters.length && !genRunning" class="ch-empty">
             <h3>还没有章节</h3>
-            <p>先确认大纲与世界观，再生成第 1 章。生成过程中正文只读，写完一批会停下让你检查。</p>
+            <p>先确认大纲与世界观，再生成第 1 章；也可以自己手写第一章，AI 不会覆盖手写正文。</p>
             <el-button type="primary" @click="tab = 'agent'">去生成第 1 章</el-button>
+            <el-button @click="$router.push(`/project/${pid}/write`)">手写第 1 章</el-button>
             <el-button v-if="!outlineReady" @click="tab = 'outline'">先看大纲</el-button>
           </div>
           <div v-if="chapters.length" class="ch-list">
@@ -139,7 +140,7 @@
                   <el-tag size="small" :type="qualityMeta(c.quality.severity).type" effect="plain">
                     {{ qualityMeta(c.quality.severity).label }}
                   </el-tag>
-                  <span v-if="c.quality.has_quality && c.quality.score !== null" class="ch-score">
+                  <span v-if="c.quality.has_quality && c.quality.score !== null && !c.quality.issue_count" class="ch-score">
                     {{ c.quality.score }}分
                   </span>
                   <span v-if="c.quality.has_quality" class="ch-issue-count">{{ c.quality.issue_count }}处</span>
@@ -1030,14 +1031,17 @@ async function doRegenOutline() {
     startPolling()
   } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
 }
-async function doRegenWorld() {
-  try { await ElMessageBox.confirm(`重生成世界观会覆盖现有世界设定，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成世界观', { type: 'warning' }) } catch { return }
+async function doRegenWorld(evt) {
+  const firstTime = !!(evt && evt.firstTime)
+  if (!firstTime) {
+    try { await ElMessageBox.confirm(`重生成世界观会覆盖现有世界设定，已加${LOCK_TERM}的内容不受影响。继续？`, '重生成世界观', { type: 'warning' }) } catch { return }
+  }
   try {
     await runAgent(pid, { agent: 'architect.world', params: {} })
-    ElMessage.success('已开始重生成世界观')
-    beginGenUI('正在重生成世界观…')
+    ElMessage.success(firstTime ? '已开始生成世界观' : '已开始重生成世界观')
+    beginGenUI(firstTime ? '正在生成世界观…' : '正在重生成世界观…')
     startPolling()
-  } catch (e) { ElMessage.error(errorDetail(e, '失败')) }
+  } catch (e) { ElMessage.error(errorDetail(e, '启动失败')) }
 }
 async function startGen() {
   // M0：正文不再 scope=all，默认按 5 章一批（批末停，给批末卡片）

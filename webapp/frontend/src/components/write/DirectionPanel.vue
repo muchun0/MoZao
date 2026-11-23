@@ -105,8 +105,8 @@ const billingHint = computed(() => !!props.batch?.billing)
 
 <style scoped>
 .panel {
-  width: 340px; flex: 0 0 340px; height: 100%; overflow-y: auto; box-sizing: border-box;
-  padding: 16px; background: var(--card); border-left: 1px solid var(--card-line);
+  width: 100%; min-width: 0; height: 100%; overflow-y: auto; box-sizing: border-box;
+  padding: 16px; background: var(--card);
 }
 .p-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .p-title { font-family: var(--serif); font-size: 15px; letter-spacing: 2px; color: var(--ink); }

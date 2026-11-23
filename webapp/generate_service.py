@@ -209,6 +209,41 @@ def guard_locked(store: ProjectStore, agent: str, params: dict) -> None:
                                 "本章已被用户锁定，如需重生成请先解锁")
 
 
+def guard_chapter_range(store: ProjectStore, agent: str, params: dict) -> None:
+    """章节范围守卫：请求章号必须落在大纲章数内，越界直接 400。
+
+    旧行为：第 9–9 章（大纲仅 4 章）被静默夹成 0 章，run 记 ok、0 字、无提示，
+    作者以为写完了。这里在占槽/计费之前拒绝，并给出可改的边界。
+    """
+    if agent != "writer.chapter":
+        return
+    outline = store.load_outline()
+    total = len(outline.chapters) if outline and getattr(outline, "chapters", None) else 0
+    if total <= 0:
+        raise HTTPException(status_code=400,
+                            detail="还没有分章大纲：请先在大纲页生成或导入大纲，再写正文")
+    scope = params.get("scope")
+    if scope == "single":
+        ch = int(params.get("ch_no") or 0)
+        if ch > total:
+            raise HTTPException(
+                status_code=400,
+                detail=f"大纲只有 {total} 章，没有第 {ch} 章；请把章号改到 1–{total}")
+        return
+    if scope == "range":
+        from_ch = int(params.get("from_ch") or 0)
+        to_ch = params.get("to_ch")
+        to_ch = int(to_ch) if to_ch is not None else total
+        if from_ch > total:
+            raise HTTPException(
+                status_code=400,
+                detail=f"大纲只有 {total} 章，起始章 {from_ch} 超出范围；请改到 1–{total}")
+        if to_ch > total:
+            raise HTTPException(
+                status_code=400,
+                detail=f"大纲只有 {total} 章，结束章 {to_ch} 超出范围；请改到 1–{total}")
+
+
 def guard_user_chapter(store: ProjectStore, agent: str, params: dict) -> None:
     """手写/内联采纳章守卫：单章拒重写；范围起点 ≤ 最大受保护章号拒。
 
@@ -290,6 +325,26 @@ def guard_skill_limits(skill_ids: list[int]) -> None:
 
 # ---------- 启动 / 重拾 / 查询 ----------
 
+def _estimate_factor(store: ProjectStore, target: int) -> float:
+    """按近几章实际/目标字数比修正预估，避免「预估 ¥0.30、实扣 ¥0.55」。
+
+    模型常把一章写到目标的 1.5–2 倍；只用目标字数会让余额校验和预估价偏低。
+    取已写章节平均字数与每章目标的比值，夹在 1.0–2.0（没有参考章时按 1.0）。
+    """
+    if target <= 0:
+        return 1.0
+    try:
+        done = [c for c in store.list_chapters() if (c.content or "").strip()]
+    except Exception:
+        return 1.0
+    if not done:
+        return 1.0
+    avg = sum(len(c.content or "") for c in done) / len(done)
+    if avg <= 0:
+        return 1.0
+    return max(1.0, min(2.0, avg / target))
+
+
 def _estimated_price(agent: str, params: dict, store: ProjectStore, mode: str) -> float:
     """预估价（仅供前端提示；真实结算按产物实际字数）。BYOK 恒 0。"""
     if mode != "platform":
@@ -306,7 +361,8 @@ def _estimated_price(agent: str, params: dict, store: ProjectStore, mode: str) -
         else:
             done = {c.no for c in store.list_chapters()}
             n = max(0, total - len(done))
-        words = n * int(getattr(cfg, "chapter_words", 2500) or 2500)
+        target = int(getattr(cfg, "chapter_words", 2500) or 2500)
+        words = round(n * target * _estimate_factor(store, target))
     else:
         words = _EST_WORDS.get(agent, 2000)
     discount = db.project_discount(store.dir.name)
@@ -322,6 +378,7 @@ def estimate_agent_price(store: ProjectStore, req: AgentRunReq, user: dict) -> d
     mode = resolve_billing_mode(uid)
     guard_agent_product(req.agent)
     params = guard_params(req.agent, req.params)
+    guard_chapter_range(store, req.agent, params)
     return {"agent": req.agent, "billing_mode": mode,
             "estimated_price": _estimated_price(req.agent, params, store, mode)}
 
@@ -492,6 +549,8 @@ def start_agent_run(store: ProjectStore, req: AgentRunReq, user: dict,
     gates.guard_agent(store, req.agent)
     guard_locked(store, req.agent, params)
     guard_user_chapter(store, req.agent, params)
+    if not internal:
+        guard_chapter_range(store, req.agent, params)
     # 档3：章节一致性门禁——必须在计费/占槽之前（被拦截的请求不占槽、不产生任何扣费）
     if not internal:
         verdict = stale_guard.guard_staleness(

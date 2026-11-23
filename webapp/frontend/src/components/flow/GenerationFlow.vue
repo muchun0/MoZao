@@ -22,8 +22,9 @@
     <div v-else-if="!flow" class="gf-empty">
       <span v-if="mode === 'stepwise'" class="gf-tip">新书默认分步：调研 → 大纲 → 世界观各阶段完成后停下等你确认，正文开跑前再确认一次。</span>
       <span v-else class="gf-tip">当前为全自动：沿用页面现有生成按钮，阶段之间不暂停。</span>
-      <el-button v-if="mode === 'stepwise'" type="primary" size="small" :loading="busy"
-                 @click="startFlow">开始分步生成</el-button>
+      <el-button v-if="mode === 'stepwise'" type="primary" plain size="small" :loading="busy"
+                 :title="hasOutline ? '大纲已有，从这里接着按分步流程确认世界观与正文' : '还没有大纲：从调研开始，再生成大纲'"
+                 @click="startFlow">{{ hasOutline ? '按分步流程继续（世界观 → 正文）' : '从调研开始全流程（分步）' }}</el-button>
     </div>
     <template v-else>
       <StageConfirmCard v-if="card" :card="card" :busy="busy"
@@ -51,6 +52,8 @@ import StageConfirmCard from './StageConfirmCard.vue'
 
 const props = defineProps({
   pid: { type: String, required: true },
+  // 已有大纲时，分步流程从世界观继续；没有大纲才是「从调研开始」的入口
+  hasOutline: { type: Boolean, default: false },
 })
 const emit = defineEmits(['changed', 'edit'])
 

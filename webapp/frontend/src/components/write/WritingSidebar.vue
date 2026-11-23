@@ -6,7 +6,7 @@
     <!-- 收起态：只留一个入口，点开后再在顶部选页签；不再把 6 个页签压成竖排单字 -->
     <nav v-if="!open" class="rail">
       <button class="rail-btn rail-open" title="展开参考侧栏（本章上下文 / 大纲 / 人物 / 伏笔 / 设定 / 检索）" @click="expand()">
-        参
+        <span class="rail-text">参考</span>
         <span v-if="badgeTotal" class="dot" :class="badgeClass">{{ badgeTotal }}</span>
       </button>
     </nav>
@@ -169,6 +169,8 @@ onUnmounted(() => {
   position: relative;
 }
 .rail-btn:hover { background: var(--indigo-soft); }
+/* 收起态只占 40px：两个竖排字比单个「参」更像入口，也避免被读成残字 */
+.rail-text { display: block; writing-mode: vertical-rl; letter-spacing: 3px; line-height: 1.25; font-size: 12px; }
 .rail-fold { margin-top: auto; margin-bottom: 10px; color: var(--muted); }
 
 .ws-head {

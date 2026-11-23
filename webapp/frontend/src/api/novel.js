@@ -1,6 +1,8 @@
 import request from './request'
 
 export const getChapters = (pid) => request.get(`/projects/${pid}/chapters`)
+// 手写入口：新建一章空白正文（source=user，AI 批量不会覆盖）
+export const createChapter = (pid, data = {}) => request.post(`/projects/${pid}/chapters`, data)
 // R12 章节质量总览：一次性取各章选中版本的质检摘要（只读，不逐章读版本）
 export const getChapterQualityOverview = (pid) => request.get(`/projects/${pid}/chapters/quality-overview`)
 // 档1 上游过期标记：读时推导各章基于的大纲/世界观版本是否落后（只读）
